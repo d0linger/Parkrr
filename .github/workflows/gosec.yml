@@ -13,7 +13,7 @@ jobs:
     name: Security scan (gosec)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # gosec 2.27.x needs a newer Go to build than the app targets; pin both
       # the Go version and the gosec version so the scan is deterministic and
