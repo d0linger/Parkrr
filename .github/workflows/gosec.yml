@@ -15,13 +15,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # gosec 2.27.x needs a newer Go to build than the app targets; pin both
+      # the Go version and the gosec version so the scan is deterministic and
+      # a new gosec release cannot break CI with newly added default rules.
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: "1.25"
           cache: true
 
       - name: Run gosec
         run: |
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.27.1
           gosec -exclude-dir=.github ./...

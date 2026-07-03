@@ -45,6 +45,9 @@ func requestLogger(mgr *auth.Manager, next http.Handler) http.Handler {
 		w.Header().Set("X-Request-ID", id)
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
+		// #nosec G706 -- method/path are user-controlled, but slog encodes string
+		// attribute values (JSON handler escapes control chars; text handler
+		// quotes them), so newline/CR log-forging is not possible here.
 		slog.Info("request",
 			"id", id,
 			"method", r.Method,

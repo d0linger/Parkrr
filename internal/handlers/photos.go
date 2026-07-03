@@ -76,6 +76,8 @@ func (h *Handler) UploadPhoto(w http.ResponseWriter, r *http.Request) {
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxPhotoBytes+1024)
+	// #nosec G120 -- the request body is capped by MaxBytesReader above, so the
+	// multipart parse is bounded and cannot exhaust memory.
 	if err := r.ParseMultipartForm(maxPhotoBytes + 1024); err != nil {
 		writeError(w, http.StatusRequestEntityTooLarge, "file too large")
 		return

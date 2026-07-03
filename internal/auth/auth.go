@@ -174,6 +174,9 @@ func (m *Manager) CreateSession(ctx context.Context, w http.ResponseWriter, r *h
 	}
 
 	secure := m.cookieSecure(r)
+	// #nosec G124 -- HttpOnly + SameSite=Lax are set; Secure is derived from
+	// cookieSecure(r) and is true behind TLS/a trusted proxy (false only for
+	// plain-HTTP local dev).
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookie,
 		Value:    token,
@@ -184,7 +187,8 @@ func (m *Manager) CreateSession(ctx context.Context, w http.ResponseWriter, r *h
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
-	// CSRF token is readable by JS so it can be echoed back in a header.
+	// #nosec G124 -- the CSRF token is a double-submit value that JavaScript must
+	// read to echo it back in a header, so HttpOnly is deliberately false.
 	http.SetCookie(w, &http.Cookie{
 		Name:     CSRFCookie,
 		Value:    csrf,
@@ -208,6 +212,8 @@ func (m *Manager) DestroySession(ctx context.Context, w http.ResponseWriter, r *
 }
 
 func (m *Manager) clearCookie(w http.ResponseWriter, name string) {
+	// #nosec G124 -- expiry cookie (empty value, MaxAge<0) that only deletes the
+	// named cookie; attributes intentionally mirror how it was set.
 	http.SetCookie(w, &http.Cookie{
 		Name:     name,
 		Value:    "",
