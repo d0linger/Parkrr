@@ -19,7 +19,7 @@ jobs:
       # the Go version and the gosec version so the scan is deterministic and
       # a new gosec release cannot break CI with newly added default rules.
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.25"
           cache: true
