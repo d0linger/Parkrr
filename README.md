@@ -1,88 +1,92 @@
+<div align="center">
+
+<img src="web/static/icons/icon.svg" width="104" alt="Parkrr logo">
+
 # Parkrr
 
-Parkrr ist eine mobil-optimierte Web-Anwendung (PWA) zur Verwaltung von
-**Einstellplätzen**: Gefährte (Auto, Anhänger, Wohnwagen, Wohnmobil …),
-die Personen einstellen, sowie das laufende **Kostentracking** je Gefährt
-auf monatlicher oder jährlicher Basis.
+**Selbst gehostete Verwaltung für Einstellplätze** – Gefährte, Personen und Kosten
+als mobil-optimierte PWA. In Go geschrieben, mit PostgreSQL, komplett per Docker.
 
-Geschrieben in **Go**, mit **PostgreSQL** als Datenbank, komplett über
-**Docker** betreibbar. Alle Frontend-Assets (CSS, JS, Icons) werden lokal
-ausgeliefert – keine externen CDNs.
+[![CI](https://github.com/preining/parkrr/actions/workflows/ci.yml/badge.svg)](https://github.com/preining/parkrr/actions/workflows/ci.yml)
+[![golangci-lint](https://github.com/preining/parkrr/actions/workflows/golangci-lint.yml/badge.svg)](https://github.com/preining/parkrr/actions/workflows/golangci-lint.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-14b8a6.svg)](LICENSE)
+![Go](https://img.shields.io/badge/Go-1.23-00ADD8?logo=go&logoColor=white)
+![PWA](https://img.shields.io/badge/PWA-installierbar-0d9488)
+![Self-hosted](https://img.shields.io/badge/self--hosted-Docker-2496ED?logo=docker&logoColor=white)
 
----
+</div>
 
-## Funktionen
+Parkrr hilft kleinen Betrieben (Stellplatz-Vermietung, Winterlager, Camping- und
+Bootslager …), **Gefährte** (Auto, Anhänger, Wohnwagen, Wohnmobil, Motorrad …)
+zu verwalten, die **Personen** einstellen, und die **laufenden Kosten** je Gefährt
+auf monatlicher oder jährlicher Basis tagesgenau zu berechnen.
 
-- **Personenverwaltung** – Kunden anlegen, bearbeiten, löschen, mit
-  Detailseite (Deep-Link) inkl. Saldo, Diagrammen und Buchungen.
-- **Gefährteverwaltung** – mehrere Gefährte pro Person; schlankes Formular
-  (nur Stammdaten), **Detailseite** mit Fotos, Status und Verlauf.
-- **Schieberegler-Bedienung** – Lager- und Zahlstatus je Gefährt direkt per
-  Slider *reserviert · eingelagert · abgeholt* bzw. *offen · bezahlt* – ein
-  Tipp, ohne Formular, direkt auf der Karte.
-- **Saisonales Wiederverwenden** – Button *„↻ Erneut einstellen"* dupliziert
-  ein abgeholtes Gefährt (Typ, Kennzeichen, Preis **und Fotos**) mit neuem
-  Einstelldatum; für Kunden, die ihr Gefährt jedes Jahr einlagern.
-- **Lebenszyklus & Reservierungen** – Status *reserviert → eingelagert →
-  abgeholt → storniert* inkl. **Statusverlauf** (wer/wann/Notiz).
-  Beim Abholen wird das Enddatum automatisch gesetzt.
-- **Fotos** – pro Gefährt Bilder hochladen (JPEG/PNG/WebP, in der DB
-  gespeichert), Galerie mit Lightbox.
-- **Zentrale Tarife** – Gefährt-Typen mit Standardpreisen (Monat/Jahr),
-  zentral verwaltbar, **pro Gefährt überschreibbar** (Sonderpreis).
-- **Kostentracking** – tagesgenaue Kosten ab Einstell- bis Abholdatum (oder
-  bis heute).
-- **Zahlstatus per Slider** – „offen/bezahlt" wird direkt am Gefährt umgeschaltet
-  (kein separates Zahlungs-Ledger). Offener Saldo = aufgelaufene Miete +
-  Zusatzkosten − (als bezahlt markierte Gefährte inkl. ihrer Zusatzkosten).
-- **Zusatzkosten** – Zusatzleistungen (Strom, Reinigung, Winterservice …)
-  als Positionen; zentraler **Dienste-Katalog** mit Standardpreisen.
-- **Statistiken & Diagramme** – Umsatz pro Monat, Zusatzkosten, Status­verteilung,
-  bezahlt/offen, Kosten pro Person nach Monat und Jahr (lokale SVG-Charts, kein CDN).
-- **Suche, Sortierung & Pagination** in allen Listen.
-- **Audit-Log** – jede Änderung wird protokolliert (Admin-Ansicht).
-- **Multi-User & Rollen** – Rollen *Admin, Standortleiter, Buchhaltung,
-  Nur-Lesen*. Der **Admin** wird per Docker-ENV definiert und legt weitere
-  Benutzer an. Siehe [Rollen & Rechte](#rollen--rechte).
-- **Sicherheit** – **2FA (TOTP)** mit QR-Enrollment + **Backup-Codes**,
-  TOTP-Secret **verschlüsselt** gespeichert (AES-GCM); Session-Tokens
-  **gehasht** (SHA-256) in der DB; Login-Rate-Limiting + genereller per-IP-
-  Throttle; **Sitzungsverwaltung** (aktive Geräte, einzeln/„überall" abmelden);
-  gehärtete HTTP-Header (CSP, HSTS hinter TLS, Permissions-Policy);
-  Foto-Uploads werden validiert & neu kodiert (EXIF/GPS entfernt).
-- **Komfort** – manueller **Hell/Dunkel-Umschalter** (gespeichert),
-  **Rückgängig** nach dem Löschen, moderne `<dialog>`-Modals.
-- **PWA** – installierbar am Handy, offline-fähige App-Shell, mobil optimiert.
+> Alle Frontend-Assets (CSS, JS, Icons, Diagramme) werden **lokal** ausgeliefert –
+> keine externen CDNs, kein Tracking, keine Cloud. Deine Daten bleiben bei dir.
 
 ---
 
-## Schnellstart (Docker)
+## 📸 Screenshots
+
+| Login | Übersicht | Gefährte | Person |
+| --- | --- | --- | --- |
+| ![Login](docs/screenshots/01-login.png) | ![Übersicht](docs/screenshots/02-dashboard.png) | ![Gefährte](docs/screenshots/03-vehicles.png) | ![Person](docs/screenshots/04-person.png) |
+
+---
+
+## ✨ Funktionen
+
+- **Personen & Gefährte** – mehrere Gefährte pro Person, schlankes Formular,
+  Detailseiten (Deep-Links) mit Saldo, Diagrammen und Verlauf.
+- **Schieberegler-Bedienung** – Lager- und Zahlstatus je Gefährt direkt per Slider
+  (*reserviert · eingelagert · abgeholt* bzw. *offen · bezahlt*), ein Tipp, ohne Formular.
+- **Saisonales Wiederverwenden** – *„↻ Erneut einstellen"* dupliziert ein abgeholtes
+  Gefährt (Typ, Kennzeichen, Preis **und Fotos**) mit neuem Einstelldatum.
+- **Lebenszyklus & Reservierungen** – Statusverlauf (wer/wann/Notiz); beim Abholen
+  wird das Enddatum automatisch gesetzt.
+- **Fotos** – pro Gefährt (JPEG/PNG), beim Upload validiert und neu kodiert
+  (EXIF/GPS entfernt), Galerie mit Lightbox.
+- **Zentrale Tarife** – Gefährt-Typen mit Standardpreisen, **pro Gefährt
+  überschreibbar** (Sonderpreis).
+- **Kostentracking** – tagesgenaue Kosten ab Einstell- bis Abholdatum (oder bis heute).
+- **Zusatzkosten** – Strom, Reinigung, Winterservice … aus einem Dienste-Katalog.
+- **Statistiken & Diagramme** – Umsatz/Monat, Status­verteilung, bezahlt/offen,
+  Kosten pro Person nach Monat und Jahr (lokale SVG-Charts).
+- **Multi-User & Rollen** – *Admin, Standortleiter, Buchhaltung, Nur-Lesen*.
+- **Sicherheit** – 2FA (TOTP) + Backup-Codes, gehashte Session-Tokens,
+  Rate-Limiting, gehärtete HTTP-Header. Siehe [Sicherheit](#-sicherheit).
+- **PWA** – installierbar am Handy, Hell/Dunkel, offline-fähige App-Shell.
+
+---
+
+## 🚀 Schnellstart (Docker)
 
 Voraussetzungen: Docker + Docker Compose.
 
 ```bash
-# 1. Konfiguration vorbereiten
+git clone https://github.com/preining/parkrr.git
+cd parkrr
+
+# 1. Konfiguration
 cp .env.example .env
 #   in .env mindestens setzen:
 #   - PARKRR_ADMIN_PASSWORD
-#   - PARKRR_SESSION_SECRET  (z. B. `openssl rand -base64 48`)
+#   - PARKRR_SESSION_SECRET   (z. B.:  openssl rand -base64 48)
 #   - PARKRR_DB_PASSWORD
 
 # 2. Starten
 docker compose up -d --build
 
-# 3. Öffnen
-#   http://localhost:8080
-#   Login mit PARKRR_ADMIN_USERNAME / PARKRR_ADMIN_PASSWORD
+# 3. Öffnen:  http://localhost:8080
+#    Login mit PARKRR_ADMIN_USERNAME / PARKRR_ADMIN_PASSWORD
 ```
 
-Die Datenbank läuft als eigenständiger Postgres-Container und ist nur
-innerhalb des Compose-Netzwerks erreichbar (kein Host-Port).
-Datenbankschema-Migrationen laufen automatisch beim Start.
+Die Datenbank läuft als eigenständiger Postgres-Container (nur im Compose-Netz
+erreichbar). Schema-Migrationen laufen automatisch beim Start.
 
 ---
 
-## Konfiguration (Umgebungsvariablen)
+## ⚙️ Konfiguration
 
 | Variable | Beschreibung | Default |
 | --- | --- | --- |
@@ -103,12 +107,11 @@ Datenbankschema-Migrationen laufen automatisch beim Start.
 | `PARKRR_LOG_FORMAT` / `PARKRR_LOG_LEVEL` | `json`\|`text` / `debug`..`error` | `json` / `info` |
 
 > Der Admin-Account wird bei **jedem Start** aus den ENV-Werten erstellt bzw.
-> aktualisiert (Passwort, E-Mail, Admin-Flag). Die ENV bleibt die
-> maßgebliche Quelle für den Admin.
+> aktualisiert – die ENV bleibt die maßgebliche Quelle für den Admin.
 
 ---
 
-## Betrieb hinter einem Reverse Proxy (Nginx Proxy Manager, Traefik, Caddy …)
+## 🌐 Betrieb hinter einem Reverse Proxy (Nginx Proxy Manager, Traefik, Caddy …)
 
 Parkrr nutzt ausschließlich **relative Pfade** und lauscht auf `:8080` – es lässt
 sich ohne Anpassung hinter einem Reverse Proxy auf einer eigenen (Sub-)Domain
@@ -119,28 +122,22 @@ betreiben. TLS wird am Proxy terminiert.
 ```env
 PARKRR_TRUSTED_PROXY=true      # X-Forwarded-For/-Proto vertrauen (nur hinter Proxy!)
 PARKRR_SECURE_COOKIES=true     # optional; wird bei X-Forwarded-Proto=https automatisch gesetzt
-# Optional: keinen Host-Port veröffentlichen und stattdessen nur im Docker-Netz
-# erreichbar machen, wenn Proxy im selben Netzwerk läuft.
 ```
 
 Mit `PARKRR_TRUSTED_PROXY=true` verwendet Parkrr die echte Client-IP aus
-`X-Forwarded-For`/`X-Real-IP` (für Logs, Rate-Limiting, Audit) und erkennt
-HTTPS über `X-Forwarded-Proto` (→ `Secure`-Cookies + HSTS). **Ohne** Proxy
-sollte der Wert `false` bleiben, um Header-Spoofing zu verhindern.
+`X-Forwarded-For`/`X-Real-IP` (für Logs, Rate-Limiting, Audit) und erkennt HTTPS
+über `X-Forwarded-Proto` (→ `Secure`-Cookies + HSTS). **Ohne** Proxy sollte der
+Wert `false` bleiben, um Header-Spoofing zu verhindern.
 
-**2. Nginx Proxy Manager – Proxy Host anlegen:**
+**2. Nginx Proxy Manager – Proxy Host:**
 
-- **Scheme:** `http`
-- **Forward Hostname/IP:** Container-Name/Host von Parkrr (z. B. `parkrr-app`
-  wenn NPM im selben Docker-Netz läuft, sonst die Host-IP)
-- **Forward Port:** `8080` (Container-Port) bzw. der veröffentlichte Host-Port
-- **Websockets Support:** nicht nötig
-- Reiter **SSL:** Zertifikat (Let's Encrypt) auswählen, *Force SSL* + *HTTP/2*
-  aktivieren. NPM setzt `X-Forwarded-Proto`/`X-Forwarded-For` automatisch.
+- **Scheme** `http` · **Forward Hostname** `parkrr-app` (bei gemeinsamem Docker-Netz)
+  bzw. Host-IP · **Forward Port** `8080` · **Websockets** nicht nötig
+- Reiter **SSL:** Let's-Encrypt-Zertifikat, *Force SSL* + *HTTP/2* aktivieren.
+  NPM setzt `X-Forwarded-Proto`/`X-Forwarded-For` automatisch.
 
-Damit NPM den Container direkt erreicht, beide in dasselbe Docker-Netz hängen –
-dann ist kein veröffentlichter Host-Port nötig (in `docker-compose.yml` den
-`ports:`-Block der `app` entfernen und das externe NPM-Netz einbinden).
+Für den direkten Zugriff im Docker-Netz beide Container in dasselbe Netz hängen
+und den `ports:`-Block der `app` in `docker-compose.yml` entfernen.
 
 **3. Generisches Nginx-Beispiel:**
 
@@ -164,7 +161,7 @@ server {
 
 ---
 
-## Rollen & Rechte
+## 👥 Rollen & Rechte
 
 | Rolle | Lesen | Personen & Gefährte | Zusatzkosten | Tarife, Dienste, Benutzer, Audit |
 | --- | :---: | :---: | :---: | :---: |
@@ -173,49 +170,68 @@ server {
 | **Buchhaltung** (`accounting`) | ✓ | – | ✓ | – |
 | **Nur-Lesen** (`readonly`) | ✓ | – | – | – |
 
-Neue Benutzer erhalten standardmäßig die Rolle *Standortleiter*. Der letzte
-Admin kann nicht herabgestuft oder gelöscht werden.
+Neue Benutzer erhalten standardmäßig die Rolle *Standortleiter*. Der letzte Admin
+kann nicht herabgestuft oder gelöscht werden.
 
-## Architektur
+---
 
-```
-cmd/parkrr/            – Einstiegspunkt, Admin-Bootstrap, Server-Lifecycle
-internal/config/       – Konfiguration aus ENV
-internal/database/     – pgx-Pool + eingebettete SQL-Migrationen (001–004)
-internal/models/       – Domänentypen + Kostenberechnung (mit Tests)
-internal/auth/         – bcrypt, Sessions/CSRF, Rollen, 2FA (TOTP), Rate-Limit
-internal/handlers/     – JSON-API (Auth/2FA, Personen, Gefährte, Fotos, Tarife,
-                         Dienste, Zusatzkosten, Stats, Users, Audit)
-internal/server/       – Routing, Middleware (Access-Log, Rate-Limit,
-                         Security-Header), rollenbasierte Autorisierung
-web/static/            – PWA-Frontend (SPA, SVG-Charts, Service Worker, Icons)
-```
+## 🔒 Sicherheit
 
-- **Backend:** Go-Standardbibliothek (`net/http` mit method-based Routing),
-  Laufzeitabhängigkeiten: `pgx`, `golang.org/x/crypto`, `pquerna/otp` (2FA).
-- **Frontend:** Vanilla JS Single-Page-App mit Hash-Routing, native
-  `<dialog>`-Modals, SVG-Diagramme, moderne CSS (Custom Properties),
-  Hell/Dunkel automatisch **oder** manuell umschaltbar.
-- **Sicherheit:** bcrypt-Passwörter, HttpOnly-Session-Cookies mit **gehashten
-  Tokens** in der DB, CSRF-Token (Double-Submit), rollenbasierte Autorisierung,
-  2FA (TOTP, verschlüsselt) + Backup-Codes, Login- **und** per-IP-Rate-Limiting,
-  strukturierte Logs (slog) mit Request-ID, gehärtete Header (CSP, HSTS,
-  Permissions-Policy), Reverse-Proxy-fähig (`X-Forwarded-*`),
-  Nicht-Root-Container (distroless).
+- **Passwörter** mit bcrypt, **Session-Tokens gehasht** (SHA-256) in der DB.
+- **CSRF** via Double-Submit-Token, **rollenbasierte** Autorisierung.
+- **2FA (TOTP)** mit QR-Enrollment und **einmaligen Backup-Codes**; das
+  TOTP-Secret wird **verschlüsselt** (AES-GCM) gespeichert.
+- **Rate-Limiting**: Login-Lockout nach zu vielen Fehlversuchen **plus**
+  genereller per-IP-Throttle.
+- **Foto-Uploads** werden dekodiert und neu kodiert (**EXIF/GPS entfernt**),
+  nur echtes JPEG/PNG, mit Dimensions- und Anzahllimit.
+- Gehärtete HTTP-Header: **CSP**, **HSTS** (hinter TLS), `Permissions-Policy`,
+  COOP/CORP; Session-Cookies `HttpOnly` + `SameSite`.
+- **Sitzungsverwaltung**: aktive Geräte anzeigen, einzeln oder „überall" abmelden.
+- **Audit-Log** jeder Änderung; strukturierte Logs (slog) mit Request-ID.
+- Läuft als **Nicht-Root** in einem `distroless`-Container.
 
-### Kostenberechnung
+Sicherheitslücken bitte **nicht** über öffentliche Issues melden – siehe
+[SECURITY.md](SECURITY.md).
 
-Für jedes Gefährt gilt ein **effektiver Preis** = Sonderpreis, sonst der
-zentrale Tarifpreis für die gewählte Abrechnungsart (monatlich/jährlich).
-Die aufgelaufenen Kosten werden tagesgenau vom Einstelldatum bis zum
+---
+
+## 🧮 Kostenberechnung
+
+Effektiver Preis = Sonderpreis, sonst zentraler Tarifpreis für die gewählte
+Abrechnungsart. Aufgelaufene Kosten werden tagesgenau vom Einstell- bis zum
 Abholdatum (oder bis heute) proratiert:
 
 - monatlich: `Preis × Tage / (365,25 / 12)`
 - jährlich: `Preis × Tage / 365,25`
 
+„Bezahlt" ergibt sich aus dem **Zahl-Slider** je Gefährt; offener Saldo =
+aufgelaufene Miete + Zusatzkosten − (als bezahlt markierte Gefährte).
+
 ---
 
-## Entwicklung (ohne Docker)
+## 🏗️ Architektur
+
+```
+cmd/parkrr/        – Einstiegspunkt, Admin-Bootstrap, Logging, Server-Lifecycle
+internal/config/   – Konfiguration aus ENV
+internal/database/ – pgx-Pool + eingebettete SQL-Migrationen (001–004)
+internal/models/   – Domänentypen + Kostenberechnung (mit Tests)
+internal/auth/     – bcrypt, Sessions/CSRF, Rollen, 2FA (TOTP/AES-GCM), Rate-Limit
+internal/handlers/ – JSON-API (Auth/2FA, Personen, Gefährte, Fotos, Tarife,
+                     Dienste, Zusatzkosten, Stats, Users, Audit)
+internal/server/   – Routing, Middleware (Access-Log, Rate-Limit, Security-Header)
+web/static/        – PWA-Frontend (SPA, SVG-Charts, Service Worker, Icons)
+```
+
+- **Backend:** Go-Standardbibliothek (`net/http`, method-based Routing);
+  Laufzeit-Abhängigkeiten nur `pgx`, `golang.org/x/crypto`, `pquerna/otp`.
+- **Frontend:** Vanilla-JS-SPA mit Hash-Routing, native `<dialog>`-Modals,
+  SVG-Diagramme, moderne CSS – kein Framework, kein Build-Step.
+
+---
+
+## 🧑‍💻 Entwicklung (ohne Docker)
 
 Voraussetzungen: Go 1.23+, ein laufender PostgreSQL.
 
@@ -225,11 +241,10 @@ export PARKRR_ADMIN_PASSWORD="dev-admin-pw"
 export PARKRR_SESSION_SECRET="dev-session-secret-please-change"
 
 go mod tidy
-go run ./cmd/parkrr
-# http://localhost:8080
+go run ./cmd/parkrr        # http://localhost:8080
 ```
 
-Tests & Qualität:
+Qualität:
 
 ```bash
 go test ./...
@@ -241,24 +256,33 @@ govulncheck ./...          # Vulnerabilities
 
 ---
 
-## CI / CD
+## 🔁 CI / CD
 
-GitHub Actions Workflows unter `.github/workflows/`:
+GitHub-Actions-Workflows unter `.github/workflows/`:
 
 | Workflow | Zweck |
 | --- | --- |
-| `ci.yml` | Build, `go vet`, Tests (mit Race-Detector), Docker-Build |
+| `ci.yml` | Build, `go vet`, Tests (Race-Detector), Docker-Build |
 | `golangci-lint.yml` | Statische Analyse / Linting |
 | `gosec.yml` | Security-Scanner |
-| `govulncheck.yml` | Abgleich bekannter Schwachstellen (auch wöchentlich) |
-| `dependency-review.yml` | Dependency-Review + Modul-Graph/Updates |
+| `govulncheck.yml` | Bekannte Schwachstellen (auch wöchentlich) |
+| `dependency-review.yml` | Dependency-Review + Modul-Graph |
 
-**Dependabot** (`.github/dependabot.yml`) hält Go-Module, GitHub-Actions und
-Docker-Basis-Images aktuell.
+**Dependabot** hält Go-Module, GitHub-Actions und Docker-Basis-Images aktuell.
 
 ---
 
-## Lizenz
+## 🤝 Mitmachen
 
-MIT – siehe [LICENSE](LICENSE). Es werden ausschließlich freie, lizenzkosten-
-freie Werkzeuge und Bibliotheken verwendet.
+Beiträge sind willkommen! Bitte lies [CONTRIBUTING.md](CONTRIBUTING.md).
+Kurz: Fork → Branch → `go test ./... && golangci-lint run` grün → Pull Request.
+
+---
+
+## 📄 Lizenz
+
+[MIT](LICENSE) – frei nutzbar, ohne Lizenzkosten. Es werden ausschließlich freie
+Werkzeuge und Bibliotheken verwendet.
+
+> **Hinweis:** Bereitgestellt „wie besehen", ohne Gewähr. Für den produktiven
+> Betrieb selbst für TLS, Backups (`pg_dump`) und Updates sorgen.
