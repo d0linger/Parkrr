@@ -1,0 +1,128 @@
+// Command parkrr starts the Parkrr web application server.
+package main
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/preining/parkrr/internal/auth"
+	"github.com/preining/parkrr/internal/config"
+	"github.com/preining/parkrr/internal/database"
+	"github.com/preining/parkrr/internal/server"
+)
+
+func main() {
+	setupLogging()
+	if err := run(); err != nil {
+		slog.Error("fatal", "err", err)
+		os.Exit(1)
+	}
+}
+
+// setupLogging configures the default slog logger. Format and level are
+// controlled by PARKRR_LOG_FORMAT (json|text) and PARKRR_LOG_LEVEL.
+func setupLogging() {
+	level := slog.LevelInfo
+	switch strings.ToLower(os.Getenv("PARKRR_LOG_LEVEL")) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	}
+	opts := &slog.HandlerOptions{Level: level}
+	var h slog.Handler = slog.NewJSONHandler(os.Stdout, opts)
+	if strings.EqualFold(os.Getenv("PARKRR_LOG_FORMAT"), "text") {
+		h = slog.NewTextHandler(os.Stdout, opts)
+	}
+	slog.SetDefault(slog.New(h))
+}
+
+func run() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(),
+		os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := database.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	if err := database.Migrate(ctx, pool); err != nil {
+		return err
+	}
+	slog.Info("database migrations applied")
+
+	if err := ensureAdmin(ctx, cfg); err != nil {
+		return err
+	}
+
+	authMgr, err := auth.NewManager(pool, cfg.SessionMaxAge, cfg.SecureCookies, cfg.TrustedProxies, cfg.SessionSecret)
+	if err != nil {
+		return err
+	}
+
+	// Bootstrap/refresh the admin account from environment variables.
+	if err := bootstrapAdmin(ctx, pool, cfg); err != nil {
+		return err
+	}
+
+	handler, err := server.New(pool, authMgr, cfg.RateLimitPerMin)
+	if err != nil {
+		return err
+	}
+
+	cleanupStop := make(chan struct{})
+	go server.StartSessionCleanup(authMgr, cleanupStop)
+	defer close(cleanupStop)
+
+	srv := &http.Server{
+		Addr:              cfg.ListenAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	serverErr := make(chan error, 1)
+	go func() {
+		slog.Info("parkrr listening", "addr", cfg.ListenAddr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+		}
+	}()
+
+	select {
+	case err := <-serverErr:
+		return err
+	case <-ctx.Done():
+		slog.Info("shutdown signal received")
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return srv.Shutdown(shutdownCtx)
+}
+
+// ensureAdmin validates admin configuration is present.
+func ensureAdmin(_ context.Context, cfg *config.Config) error {
+	if cfg.AdminUsername == "" || cfg.AdminPassword == "" {
+		return errors.New("admin username and password must be configured")
+	}
+	return nil
+}

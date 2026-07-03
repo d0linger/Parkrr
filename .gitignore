@@ -1,0 +1,49 @@
+# Binaries
+/parkrr
+/parkrr.exe
+*.exe
+*.dll
+*.so
+*.dylib
+/out/
+/bin/
+/dist/
+
+# Test & coverage
+*.test
+*.out
+coverage.*
+/coverage/
+
+# Go workspace
+go.work
+go.work.sum
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs & temp
+*.log
+/tmp/
+/temp/
+*.tmp
+
+# Local docker volumes / data
+/data/
+/postgres-data/
+
+# Node (not used, but guard against tooling artifacts)
+node_modules/

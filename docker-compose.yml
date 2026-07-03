@@ -1,0 +1,58 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: parkrr-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PARKRR_DB_USER:-parkrr}
+      POSTGRES_PASSWORD: ${PARKRR_DB_PASSWORD:-parkrr}
+      POSTGRES_DB: ${PARKRR_DB_NAME:-parkrr}
+    volumes:
+      - parkrr-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PARKRR_DB_USER:-parkrr} -d ${PARKRR_DB_NAME:-parkrr}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # DB is only reachable inside the compose network; no host port exposed.
+    networks:
+      - parkrr-net
+
+  app:
+    build:
+      context: .
+      args:
+        VERSION: ${PARKRR_VERSION:-dev}
+    image: parkrr:latest
+    container_name: parkrr-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PARKRR_LISTEN_ADDR: ":8080"
+      PARKRR_DB_HOST: db
+      PARKRR_DB_PORT: "5432"
+      PARKRR_DB_USER: ${PARKRR_DB_USER:-parkrr}
+      PARKRR_DB_PASSWORD: ${PARKRR_DB_PASSWORD:-parkrr}
+      PARKRR_DB_NAME: ${PARKRR_DB_NAME:-parkrr}
+      PARKRR_DB_SSLMODE: disable
+      PARKRR_ADMIN_USERNAME: ${PARKRR_ADMIN_USERNAME:-admin}
+      PARKRR_ADMIN_EMAIL: ${PARKRR_ADMIN_EMAIL:-admin@example.com}
+      PARKRR_ADMIN_PASSWORD: ${PARKRR_ADMIN_PASSWORD:?PARKRR_ADMIN_PASSWORD must be set}
+      PARKRR_SESSION_SECRET: ${PARKRR_SESSION_SECRET:?PARKRR_SESSION_SECRET must be set}
+      PARKRR_SECURE_COOKIES: ${PARKRR_SECURE_COOKIES:-false}
+      PARKRR_TRUSTED_PROXY: ${PARKRR_TRUSTED_PROXY:-false}
+      PARKRR_RATE_LIMIT_PER_MIN: ${PARKRR_RATE_LIMIT_PER_MIN:-600}
+      PARKRR_LOG_FORMAT: ${PARKRR_LOG_FORMAT:-json}
+      PARKRR_LOG_LEVEL: ${PARKRR_LOG_LEVEL:-info}
+    ports:
+      - "${PARKRR_HTTP_PORT:-8080}:8080"
+    networks:
+      - parkrr-net
+
+volumes:
+  parkrr-db-data:
+
+networks:
+  parkrr-net:
