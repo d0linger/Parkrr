@@ -6,7 +6,7 @@ toolchain go1.25.11
 
 require (
 	github.com/jackc/pgx/v5 v5.9.2
-	github.com/pquerna/otp v1.4.0
+	github.com/pquerna/otp v1.5.0
 	golang.org/x/crypto v0.31.0
 )
 
