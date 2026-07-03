@@ -1,42 +1,54 @@
-# golangci-lint configuration for Parkrr.
+version: "2"
 run:
-  timeout: 5m
   tests: true
-
 linters:
   enable:
-    - errcheck
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
-    - gofmt
-    - goimports
-    - misspell
-    - revive
-    - gocritic
     - bodyclose
+    - gocritic
+    - misspell
+    - nakedret
+    - revive
     - unconvert
     - unparam
-    - nakedret
-
-linters-settings:
-  goimports:
-    local-prefixes: github.com/preining/parkrr
-  misspell:
-    locale: US
-    ignore-words:
-      - cancelled
-  revive:
+  settings:
+    misspell:
+      locale: US
+      ignore-rules:
+        - cancelled
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
     rules:
-      - name: exported
-        disabled: true
-
+      - linters:
+          - gocritic
+          - unparam
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - unparam
-        - gocritic
   max-issues-per-linter: 0
   max-same-issues: 0
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/preining/parkrr
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

@@ -10,7 +10,7 @@ als mobil-optimierte PWA. In Go geschrieben, mit PostgreSQL, komplett per Docker
 [![CI](https://github.com/preining/parkrr/actions/workflows/ci.yml/badge.svg)](https://github.com/preining/parkrr/actions/workflows/ci.yml)
 [![golangci-lint](https://github.com/preining/parkrr/actions/workflows/golangci-lint.yml/badge.svg)](https://github.com/preining/parkrr/actions/workflows/golangci-lint.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-14b8a6.svg)](LICENSE)
-![Go](https://img.shields.io/badge/Go-1.23-00ADD8?logo=go&logoColor=white)
+![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)
 ![PWA](https://img.shields.io/badge/PWA-installierbar-0d9488)
 ![Self-hosted](https://img.shields.io/badge/self--hosted-Docker-2496ED?logo=docker&logoColor=white)
 
@@ -233,7 +233,7 @@ web/static/        – PWA-Frontend (SPA, SVG-Charts, Service Worker, Icons)
 
 ## 🧑‍💻 Entwicklung (ohne Docker)
 
-Voraussetzungen: Go 1.23+, ein laufender PostgreSQL.
+Voraussetzungen: Go 1.25+, ein laufender PostgreSQL.
 
 ```bash
 export PARKRR_DATABASE_URL="postgres://parkrr:parkrr@localhost:5432/parkrr?sslmode=disable"
