@@ -59,11 +59,6 @@ func (m *Manager) EncryptTOTPSecret(plaintext string) (string, error) {
 	return m.encrypt(plaintext)
 }
 
-// DecryptTOTPSecret decrypts a stored TOTP secret.
-func (m *Manager) DecryptTOTPSecret(encoded string) (string, error) {
-	return m.decrypt(encoded)
-}
-
 // ValidateEncryptedTOTP decrypts the stored secret and checks the code.
 func (m *Manager) ValidateEncryptedTOTP(encoded, code string) bool {
 	secret, err := m.decrypt(encoded)

@@ -263,12 +263,26 @@ GitHub-Actions-Workflows unter `.github/workflows/`:
 | Workflow | Zweck |
 | --- | --- |
 | `ci.yml` | Build, `go vet`, Tests (Race-Detector), Docker-Build |
-| `golangci-lint.yml` | Statische Analyse / Linting |
+| `golangci-lint.yml` | Statische Analyse / Linting (golangci-lint v2) |
 | `gosec.yml` | Security-Scanner |
 | `govulncheck.yml` | Bekannte Schwachstellen (auch wöchentlich) |
+| `deadcode.yml` | Toter / unerreichbarer Code (schlägt bei Funden fehl) |
+| `gitleaks.yml` | Secret-Scanning der Git-Historie (auch wöchentlich) |
+| `docker-publish.yml` | Multi-Arch-Image (amd64 + arm64) nach **GHCR** |
 | `dependency-review.yml` | Dependency-Review + Modul-Graph |
 
 **Dependabot** hält Go-Module, GitHub-Actions und Docker-Basis-Images aktuell.
+
+### Vorgebautes Image aus GHCR
+
+`docker-publish.yml` veröffentlicht bei jedem Push auf `main` (und für Tags `v*`)
+ein Multi-Arch-Image nach `ghcr.io/<owner>/parkrr`. Ohne lokalen Build starten:
+
+```bash
+cp .env.example .env   # Pflichtwerte setzen (Admin-PW, Session-Secret …)
+docker compose -f docker-compose.ghcr.yml up -d
+# feste Version statt latest:  PARKRR_TAG=1.2 docker compose -f docker-compose.ghcr.yml up -d
+```
 
 ---
 
