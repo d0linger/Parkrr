@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -38,10 +39,12 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Username = trim(req.Username)
-	key := req.Username + "|" + h.Auth.ClientIP(r)
+	ip := h.Auth.ClientIP(r)
+	key := req.Username + "|" + ip
 
 	if ok, wait := h.Limiter.Allowed(key); !ok {
 		w.Header().Set("Retry-After", formatSeconds(wait))
+		slog.Warn("login blocked (rate limit)", "user", req.Username, "ip", ip)
 		writeError(w, http.StatusTooManyRequests,
 			"too many attempts, try again in "+formatMinutes(wait))
 		return
@@ -50,6 +53,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	u, err := h.Auth.Authenticate(r.Context(), req.Username, req.Password)
 	if err != nil {
 		h.Limiter.RecordFailure(key)
+		slog.Warn("login failed", "user", req.Username, "ip", ip, "reason", "bad credentials")
 		writeError(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
@@ -70,6 +74,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		}
 		if !ok {
 			h.Limiter.RecordFailure(key)
+			slog.Warn("login failed", "user", u.Username, "ip", ip, "reason", "bad 2fa code")
 			writeJSON(w, http.StatusUnauthorized, map[string]any{
 				"error":         "invalid two-factor code",
 				"totp_required": true,
@@ -83,12 +88,18 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create session")
 		return
 	}
-	h.audit(r, "login", "user", u.ID, "signed in")
+	slog.Info("login", "user", u.Username, "user_id", u.ID, "ip", ip,
+		"role", u.Role, "twofactor", u.TOTPEnabled)
+	h.auditAs(r, u.ID, u.Username, "login", "user", u.ID, u.Username+" signed in")
 	writeJSON(w, http.StatusOK, u)
 }
 
 // Logout ends the current session.
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	if u, ok := auth.UserFrom(r.Context()); ok {
+		slog.Info("logout", "user", u.Username, "user_id", u.ID, "ip", h.Auth.ClientIP(r))
+		h.audit(r, "logout", "user", u.ID, u.Username+" signed out")
+	}
 	h.Auth.DestroySession(r.Context(), w, r)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

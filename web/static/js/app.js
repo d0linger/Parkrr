@@ -146,7 +146,7 @@
     }
 
     // ---------- form modal ----------
-    function formModal({ title, fields, submitLabel = 'Speichern' }) {
+    function formModal({ title, fields, submitLabel = 'Speichern', onRender = null }) {
         return new Promise((resolve) => {
             const dlg = $('#modal');
             $('#modal-title').textContent = title;
@@ -208,6 +208,7 @@
             form.addEventListener('submit', onSubmit);
             $('#modal-cancel').addEventListener('click', onCancel);
             $('#modal-close').addEventListener('click', onCancel);
+            if (typeof onRender === 'function') onRender(body);
             dlg.showModal();
             // Accessibility: move focus into the dialog's first field.
             const firstField = body.querySelector('input:not([type=checkbox]), select, textarea, input');
@@ -431,7 +432,7 @@
             render: (p) => el('div', { class: 'card' },
                 el('div', { class: 'card-row' },
                     el('div', { style: 'flex:1;cursor:pointer', onclick: () => navigate('persons/' + p.id) },
-                        el('h3', {}, personName(p)),
+                        el('h3', {}, personName(p), ' ', p.has_flat_rate ? el('span', { class: 'badge badge-active', title: 'Pauschale' }, 'Pauschale') : null),
                         el('div', { class: 'card-meta' }, [p.email, p.phone].filter(Boolean).join(' · ') || 'keine Kontaktdaten')),
                     el('div', { class: 'card-actions' },
                         el('button', { class: 'btn btn-ghost btn-sm', onclick: () => navigate('persons/' + p.id) }, '›'),
@@ -480,25 +481,57 @@
         // balance card
         const balCls = stats.balance > 0.005 ? 'amt-pos' : 'amt-zero';
         page.append(el('div', { class: 'card' },
-            el('div', { class: 'balance' }, el('span', {}, 'Aufgelaufene Miete'), el('span', { class: 'amt' }, eur(stats.total_accrued))),
+            el('div', { class: 'balance' }, el('span', {}, stats.has_flat_rate ? 'Pauschale' : 'Aufgelaufene Miete'), el('span', { class: 'amt' }, eur(stats.total_accrued))),
             el('div', { class: 'balance' }, el('span', {}, 'Zusatzkosten'), el('span', { class: 'amt' }, eur(stats.total_charges))),
             el('div', { class: 'balance' }, el('span', {}, 'Bezahlt (per Slider)'), el('span', { class: 'amt' }, '− ' + eur(stats.total_paid))),
             el('div', { class: 'balance' }, el('strong', {}, 'Offener Saldo'), el('strong', { class: 'amt ' + balCls }, eur(stats.balance)))));
 
+        // flat rate (Pauschale) card
+        if (canBill() || stats.has_flat_rate) {
+            const frCard = el('div', { class: 'card' });
+            frCard.append(el('div', { class: 'card-row' },
+                el('h3', { style: 'margin:0' }, 'Pauschale'),
+                canBill() ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => flatRateForm(id, stats) },
+                    stats.has_flat_rate ? '✎ Ändern' : '+ Einrichten') : null));
+            if (stats.has_flat_rate) {
+                const unit = stats.flat_rate_period === 'yearly' ? '/Jahr' : '/Monat';
+                frCard.append(el('div', { class: 'card-meta', style: 'margin:.4rem 0' },
+                    `${eur(stats.flat_rate)}${unit} · deckt alle Gefährte · seit ${fmtDate(stats.flat_rate_start)}` +
+                    (stats.flat_rate_end ? ` bis ${fmtDate(stats.flat_rate_end)}` : '') +
+                    ` · aufgelaufen ${eur(stats.flat_rate_accrued)}`));
+                frCard.append(el('div', { class: 'card-meta', style: 'margin-top:.2rem' }, 'Bezahlstatus je Jahr unter „Kosten pro Jahr".'));
+            } else {
+                frCard.append(el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Keine Pauschale – Abrechnung je Gefährt.'));
+            }
+            page.append(frCard);
+        }
+
         // monthly chart
-        const chartCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Aufgelaufene Miete pro Monat · ' + stats.year));
+        const chartCard = el('div', { class: 'chart-card' }, el('h3', {}, (stats.has_flat_rate ? 'Pauschale pro Monat · ' : 'Aufgelaufene Miete pro Monat · ') + stats.year));
         chartCard.append(chartBars(stats.monthly_accrued, MONTHS));
         page.append(chartCard);
 
-        // years
+        // years — for a flat rate each year has its own open/paid slider
         if (stats.years.length) {
-            const max = Math.max(...stats.years.map((y) => y.cost), 1);
-            const bars = el('div', { class: 'bars' });
-            for (const y of stats.years) bars.append(el('div', { class: 'bar-row' },
-                el('div', {}, String(y.year)),
-                el('div', { class: 'bar-track' }, el('div', { class: 'bar-fill', style: `width:${(y.cost / max) * 100}%` })),
-                el('div', { class: 'bar-val' }, eur(y.cost))));
-            page.append(el('div', { class: 'chart-card' }, el('h3', {}, 'Kosten pro Jahr'), bars));
+            const yc = el('div', { class: 'chart-card' }, el('h3', {}, 'Kosten pro Jahr'));
+            if (stats.has_flat_rate) {
+                for (const y of stats.years) {
+                    const row = el('div', { class: 'balance', style: 'align-items:center' },
+                        el('span', {}, String(y.year) + ' · ' + eur(y.cost)),
+                        canBill() ? flatYearPaidSlider(id, y.year, y.paid)
+                            : el('span', { class: 'badge ' + (y.paid ? 'badge-active' : 'badge-ended') }, y.paid ? 'bezahlt' : 'offen'));
+                    yc.append(row);
+                }
+            } else {
+                const max = Math.max(...stats.years.map((y) => y.cost), 1);
+                const bars = el('div', { class: 'bars' });
+                for (const y of stats.years) bars.append(el('div', { class: 'bar-row' },
+                    el('div', {}, String(y.year)),
+                    el('div', { class: 'bar-track' }, el('div', { class: 'bar-fill', style: `width:${(y.cost / max) * 100}%` })),
+                    el('div', { class: 'bar-val' }, eur(y.cost))));
+                yc.append(bars);
+            }
+            page.append(yc);
         }
 
         // vehicles
@@ -506,7 +539,7 @@
         if (canManage()) vh.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => vehicleForm(null, id) }, '+ Gefährt'));
         page.append(vh);
         if (!vehicles.length) page.append(el('p', { class: 'muted' }, 'Keine Gefährte.'));
-        else vehicles.forEach((v) => page.append(vehicleCard(v)));
+        else vehicles.forEach((v) => page.append(vehicleCard(v, { linkable: true, hidePaid: stats.has_flat_rate })));
 
         // charges
         const ch = el('div', { class: 'page-head' }, el('h3', {}, 'Zusatzkosten'));
@@ -544,7 +577,7 @@
         });
     };
 
-    function vehicleCard(v, { linkable = true } = {}) {
+    function vehicleCard(v, { linkable = true, hidePaid = false } = {}) {
         const title = v.label || v.license_plate || v.category_name;
         const rateUnit = v.billing_period === 'yearly' ? '/Jahr' : '/Monat';
         const main = el('div', { style: 'flex:1;' + (linkable ? 'cursor:pointer' : ''), onclick: linkable ? () => navigate('vehicles/' + v.id) : null },
@@ -559,18 +592,58 @@
             canManage() && el('button', { class: 'btn btn-ghost btn-sm', onclick: () => delVehicle(v) }, '🗑'));
         return el('div', { class: 'card' },
             el('div', { class: 'card-row' }, main, actions),
-            vehicleControls(v));
+            vehicleControls(v, hidePaid));
     }
 
     // Slider-based quick controls: status + payment, shown on card and detail.
-    function vehicleControls(v) {
+    // When hidePaid is set (person on a flat rate) the payment slider is replaced
+    // by a hint that the vehicle is covered by the flat rate.
+    function vehicleControls(v, hidePaid = false) {
         const wrap = el('div', { class: 'controls-row' });
         wrap.append(statusSlider(v));
-        if (canBill()) wrap.append(paidSlider(v));
+        if (hidePaid) wrap.append(el('span', { class: 'badge badge-cat', title: 'Kosten über die Pauschale abgerechnet' }, 'in Pauschale'));
+        else if (canBill()) wrap.append(paidSlider(v));
         if (canManage() && v.status === 'collected') {
             wrap.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => duplicateVehicle(v) }, '↻ Erneut einstellen'));
         }
         return wrap;
+    }
+
+    // Per-year paid slider for the flat rate (Pauschale).
+    function flatYearPaidSlider(personId, year, paid) {
+        const seg = el('div', { class: 'seg-mini pay', role: 'radiogroup', 'aria-label': 'Zahlstatus ' + year });
+        const setPaid = async (val, e) => {
+            markActive(e.currentTarget);
+            try { await api.post('/persons/' + personId + '/flatrate/paid', { year, paid: val }); toast(val ? year + ' bezahlt' : year + ' offen', 'success'); render(); }
+            catch (err) { toast(err.message, 'error'); render(); }
+        };
+        seg.append(el('button', { class: (!paid ? 'active open' : ''), type: 'button', role: 'radio', 'aria-checked': String(!paid), 'aria-label': 'offen', onclick: (e) => setPaid(false, e) }, 'offen'));
+        seg.append(el('button', { class: (paid ? 'active done' : ''), type: 'button', role: 'radio', 'aria-checked': String(paid), 'aria-label': 'bezahlt', onclick: (e) => setPaid(true, e) }, 'bezahlt'));
+        return seg;
+    }
+
+    async function flatRateForm(personId, stats) {
+        const data = await formModal({
+            title: 'Pauschale',
+            submitLabel: 'Speichern',
+            fields: [
+                { name: 'enabled', label: 'Pauschale aktiv (statt Abrechnung je Gefährt)', type: 'checkbox', value: !!stats.has_flat_rate },
+                { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', min: 0, value: stats.flat_rate ?? '' },
+                { name: 'period', label: 'Zeitraum', type: 'select', value: stats.flat_rate_period || 'monthly', options: [{ value: 'monthly', label: 'pro Monat' }, { value: 'yearly', label: 'pro Jahr' }] },
+                { name: 'start_date', label: 'Gültig ab', type: 'date', value: stats.flat_rate_start ? stats.flat_rate_start.slice(0, 10) : today() },
+                { name: 'end_date', label: 'Gültig bis (optional)', type: 'date', value: stats.flat_rate_end ? stats.flat_rate_end.slice(0, 10) : '', help: 'Leer lassen für laufend.' },
+            ],
+        });
+        if (!data) return;
+        const payload = {
+            enabled: data.enabled,
+            amount: data.amount === '' ? null : Number(data.amount),
+            period: data.period,
+            start_date: data.start_date,
+            end_date: data.end_date === '' ? null : data.end_date,
+        };
+        try { await api.put('/persons/' + personId + '/flatrate', payload); toast('Pauschale gespeichert', 'success'); render(); }
+        catch (e) { toast(e.message, 'error'); }
     }
 
     const STATUS_FLOW = ['reserved', 'stored', 'collected'];
@@ -842,7 +915,7 @@
             page.append(el('p', { class: 'muted', style: 'margin-top:-.3rem' }, 'Zentrale Gefährt-Typen mit Standardpreisen (beim Gefährt überschreibbar).'));
             for (const c of state.categories) {
                 page.append(el('div', { class: 'card' }, el('div', { class: 'card-row' },
-                    el('div', {}, el('h3', {}, esc(c.name)), el('div', { class: 'card-meta' }, `${eur(c.default_monthly_cost)} / Monat · ${eur(c.default_yearly_cost)} / Jahr`)),
+                    el('div', {}, el('h3', {}, esc(c.name), ' ', c.rates_synced ? el('span', { class: 'badge badge-cat', title: 'Jahr = Monat × 12' }, '×12') : null), el('div', { class: 'card-meta' }, `${eur(c.default_monthly_cost)} / Monat · ${eur(c.default_yearly_cost)} / Jahr`)),
                     isAdmin() && el('div', { class: 'card-actions' },
                         el('button', { class: 'btn btn-ghost btn-sm', onclick: () => categoryForm(c) }, '✎'),
                         el('button', { class: 'btn btn-ghost btn-sm', onclick: () => delCategory(c) }, '🗑')))));
@@ -864,12 +937,25 @@
             title: existing ? 'Tarif bearbeiten' : 'Neuer Tarif',
             fields: [
                 { name: 'name', label: 'Name', required: true, value: existing?.name },
-                { name: 'default_monthly_cost', label: 'Preis / Monat', type: 'number', step: '0.01', min: 0, value: existing?.default_monthly_cost ?? 0 },
-                { name: 'default_yearly_cost', label: 'Preis / Jahr', type: 'number', step: '0.01', min: 0, value: existing?.default_yearly_cost ?? 0 },
+                { name: 'rates_synced', label: 'Monats-/Jahrespreis koppeln (Jahr = Monat × 12)', type: 'checkbox', value: existing?.rates_synced },
+                { name: 'default_monthly_cost', label: 'Preis / Monat (€)', type: 'number', step: '0.01', min: 0, value: existing?.default_monthly_cost ?? 0 },
+                { name: 'default_yearly_cost', label: 'Preis / Jahr (€)', type: 'number', step: '0.01', min: 0, value: existing?.default_yearly_cost ?? 0 },
             ],
+            // When "koppeln" is checked, editing one price auto-fills the other.
+            onRender: (body) => {
+                const sync = body.querySelector('#f_rates_synced');
+                const m = body.querySelector('#f_default_monthly_cost');
+                const y = body.querySelector('#f_default_yearly_cost');
+                const r2 = (n) => Math.round(n * 100) / 100;
+                const fromMonthly = () => { if (sync.checked) y.value = r2((parseFloat(m.value) || 0) * 12); };
+                const fromYearly = () => { if (sync.checked) m.value = r2((parseFloat(y.value) || 0) / 12); };
+                m.addEventListener('input', fromMonthly);
+                y.addEventListener('input', fromYearly);
+                sync.addEventListener('change', fromMonthly);
+            },
         });
         if (!data) return;
-        const payload = { name: data.name, default_monthly_cost: Number(data.default_monthly_cost), default_yearly_cost: Number(data.default_yearly_cost) };
+        const payload = { name: data.name, default_monthly_cost: Number(data.default_monthly_cost), default_yearly_cost: Number(data.default_yearly_cost), rates_synced: data.rates_synced };
         try { existing ? await api.put('/categories/' + existing.id, payload) : await api.post('/categories', payload); toast('Tarif gespeichert', 'success'); render(); }
         catch (e) { toast(e.message, 'error'); }
     }
@@ -903,10 +989,16 @@
                     u.totp_enabled ? el('span', { class: 'badge badge-stored', title: '2FA aktiv' }, '🔐') : null),
                     el('div', { class: 'card-meta' }, esc(u.email) || 'keine E-Mail')),
                 el('div', { class: 'card-actions' },
+                    u.totp_enabled ? el('button', { class: 'btn btn-ghost btn-sm', title: '2FA zurücksetzen', onclick: () => resetUserMfa(u) }, '🔓') : null,
                     el('button', { class: 'btn btn-ghost btn-sm', onclick: () => userForm(u) }, '✎'),
                     u.id === state.user.id ? null : el('button', { class: 'btn btn-ghost btn-sm', onclick: () => delUser(u) }, '🗑')))),
         });
     };
+    async function resetUserMfa(u) {
+        if (!await confirmDialog('2FA zurücksetzen?', `Für „${u.username}" wird die Zwei-Faktor-Authentifizierung deaktiviert und alle Recovery-Codes gelöscht. Der Benutzer kann sich dann ohne 2FA anmelden und es neu einrichten.`, 'Zurücksetzen')) return;
+        try { await api.post('/users/' + u.id + '/reset-2fa'); toast('2FA zurückgesetzt', 'success'); render(); }
+        catch (e) { toast(e.message, 'error'); }
+    }
     async function userForm(existing) {
         const data = await formModal({
             title: existing ? 'Benutzer bearbeiten' : 'Neuer Benutzer',
@@ -954,8 +1046,12 @@
         // 2FA
         const twoFA = el('div', { class: 'card' }, el('h3', {}, 'Zwei-Faktor-Authentifizierung'));
         if (state.user.totp_enabled) {
-            twoFA.append(el('p', { class: 'muted' }, '🔐 2FA ist aktiv.'),
-                el('button', { class: 'btn btn-danger btn-block', onclick: disable2FA }, '2FA deaktivieren'));
+            let remaining = null;
+            try { remaining = (await api.get('/auth/2fa/backup-codes')).remaining; } catch { /* ignore */ }
+            twoFA.append(el('p', { class: 'muted' }, '🔐 2FA ist aktiv.' + (remaining != null ? ` · ${remaining} Recovery-Codes übrig` : '')));
+            if (remaining != null && remaining <= 2) twoFA.append(el('p', { class: 'form-error' }, 'Wenige Recovery-Codes übrig – bitte neu generieren.'));
+            twoFA.append(el('button', { class: 'btn btn-ghost btn-block', style: 'margin-bottom:.5rem', onclick: regenerateRecoveryCodes }, 'Recovery-Codes neu generieren'));
+            twoFA.append(el('button', { class: 'btn btn-danger btn-block', onclick: disable2FA }, '2FA deaktivieren'));
         } else {
             twoFA.append(el('p', { class: 'muted' }, 'Schütze dein Konto mit einer Authenticator-App.'),
                 el('button', { class: 'btn btn-primary btn-block', onclick: setup2FA }, '2FA einrichten'));
@@ -1045,6 +1141,18 @@
         if (!data) return;
         try { await api.post('/auth/2fa/disable', { password: data.password }); toast('2FA deaktiviert', 'success'); state.user.totp_enabled = false; render(); }
         catch (e) { toast(e.message, 'error'); }
+    }
+    async function regenerateRecoveryCodes() {
+        const data = await formModal({
+            title: 'Recovery-Codes neu generieren', submitLabel: 'Generieren',
+            fields: [{ name: 'password', label: 'Passwort zur Bestätigung', type: 'password', required: true, help: 'Alle bisherigen Recovery-Codes werden ungültig.' }],
+        });
+        if (!data) return;
+        try {
+            const res = await api.post('/auth/2fa/backup-codes/regenerate', { password: data.password });
+            toast('Neue Recovery-Codes erstellt', 'success');
+            showBackupCodes(res.backup_codes || []);
+        } catch (e) { toast(e.message, 'error'); }
     }
     async function revokeSession(handle) {
         try { await api.del('/auth/sessions/' + handle); toast('Sitzung abgemeldet', 'success'); render(); }

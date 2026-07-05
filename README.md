@@ -10,7 +10,7 @@ als mobil-optimierte PWA. In Go geschrieben, mit PostgreSQL, komplett per Docker
 [![CI](https://github.com/preining/parkrr/actions/workflows/ci.yml/badge.svg)](https://github.com/preining/parkrr/actions/workflows/ci.yml)
 [![golangci-lint](https://github.com/preining/parkrr/actions/workflows/golangci-lint.yml/badge.svg)](https://github.com/preining/parkrr/actions/workflows/golangci-lint.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-14b8a6.svg)](LICENSE)
-![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)
+![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)
 ![PWA](https://img.shields.io/badge/PWA-installierbar-0d9488)
 ![Self-hosted](https://img.shields.io/badge/self--hosted-Docker-2496ED?logo=docker&logoColor=white)
 
@@ -47,14 +47,20 @@ auf monatlicher oder jährlicher Basis tagesgenau zu berechnen.
 - **Fotos** – pro Gefährt (JPEG/PNG), beim Upload validiert und neu kodiert
   (EXIF/GPS entfernt), Galerie mit Lightbox.
 - **Zentrale Tarife** – Gefährt-Typen mit Standardpreisen, **pro Gefährt
-  überschreibbar** (Sonderpreis).
+  überschreibbar** (Sonderpreis); Monats-/Jahrespreis optional **koppelbar**
+  (Jahr = Monat × 12, ein Feld füllt das andere automatisch).
+- **Pauschale pro Person** – wenn jemand mehrere Gefährte einstellt und **eine
+  Pauschale** (monatlich oder jährlich) für alle Gefährte vereinbart wird, statt
+  je Gefährt abzurechnen: tagesgenau proratiert, **Bezahlstatus je Jahr**
+  (offen/bezahlt); die Gefährte erscheinen dann als „in Pauschale".
 - **Kostentracking** – tagesgenaue Kosten ab Einstell- bis Abholdatum (oder bis heute).
 - **Zusatzkosten** – Strom, Reinigung, Winterservice … aus einem Dienste-Katalog.
 - **Statistiken & Diagramme** – Umsatz/Monat, Status­verteilung, bezahlt/offen,
   Kosten pro Person nach Monat und Jahr (lokale SVG-Charts).
 - **Multi-User & Rollen** – *Admin, Standortleiter, Buchhaltung, Nur-Lesen*.
-- **Sicherheit** – 2FA (TOTP) + Backup-Codes, gehashte Session-Tokens,
-  Rate-Limiting, gehärtete HTTP-Header. Siehe [Sicherheit](#-sicherheit).
+- **Sicherheit** – 2FA (TOTP) + **Recovery-Codes** (Anzahl sichtbar, jederzeit
+  neu generierbar), gehashte Session-Tokens, Rate-Limiting, gehärtete
+  HTTP-Header. Siehe [Sicherheit](#-sicherheit).
 - **PWA** – installierbar am Handy, Hell/Dunkel, offline-fähige App-Shell.
 
 ---
@@ -179,8 +185,9 @@ kann nicht herabgestuft oder gelöscht werden.
 
 - **Passwörter** mit bcrypt, **Session-Tokens gehasht** (SHA-256) in der DB.
 - **CSRF** via Double-Submit-Token, **rollenbasierte** Autorisierung.
-- **2FA (TOTP)** mit QR-Enrollment und **einmaligen Backup-Codes**; das
-  TOTP-Secret wird **verschlüsselt** (AES-GCM) gespeichert.
+- **2FA (TOTP)** mit QR-Enrollment und **einmaligen Recovery-Codes** (jederzeit
+  neu generierbar); das TOTP-Secret wird **verschlüsselt** (AES-GCM) gespeichert.
+  **Admins** können die 2FA eines Benutzers **zurücksetzen** (bei Geräteverlust).
 - **Rate-Limiting**: Login-Lockout nach zu vielen Fehlversuchen **plus**
   genereller per-IP-Throttle.
 - **Foto-Uploads** werden dekodiert und neu kodiert (**EXIF/GPS entfernt**),
@@ -188,7 +195,9 @@ kann nicht herabgestuft oder gelöscht werden.
 - Gehärtete HTTP-Header: **CSP**, **HSTS** (hinter TLS), `Permissions-Policy`,
   COOP/CORP; Session-Cookies `HttpOnly` + `SameSite`.
 - **Sitzungsverwaltung**: aktive Geräte anzeigen, einzeln oder „überall" abmelden.
-- **Audit-Log** jeder Änderung; strukturierte Logs (slog) mit Request-ID.
+- **Audit-Log** jeder Änderung; strukturierte Logs (slog, JSON/Text) mit
+  Request-ID **und angemeldetem Benutzer** je Zugriff. Login-/Logout- und
+  fehlgeschlagene Anmeldeversuche werden mit Benutzer, IP und Grund protokolliert.
 - Läuft als **Nicht-Root** in einem `distroless`-Container.
 
 Sicherheitslücken bitte **nicht** über öffentliche Issues melden – siehe
@@ -199,14 +208,23 @@ Sicherheitslücken bitte **nicht** über öffentliche Issues melden – siehe
 ## 🧮 Kostenberechnung
 
 Effektiver Preis = Sonderpreis, sonst zentraler Tarifpreis für die gewählte
-Abrechnungsart. Aufgelaufene Kosten werden tagesgenau vom Einstell- bis zum
-Abholdatum (oder bis heute) proratiert:
+Abrechnungsart. Aufgelaufene Kosten werden **kalendergenau** vom Einstell- bis
+zum Abholdatum (oder bis heute) proratiert – gegen die **tatsächliche** Länge
+des jeweiligen Kalendermonats/-jahres:
 
-- monatlich: `Preis × Tage / (365,25 / 12)`
-- jährlich: `Preis × Tage / 365,25`
+- pro Monat/Jahr, das komplett im Zeitraum liegt: **exakt** der Monats-/Jahrespreis
+- für Teilmonate/-jahre: `Preis × Tage im Zeitraum / Tage im Kalendermonat bzw. -jahr`
 
-„Bezahlt" ergibt sich aus dem **Zahl-Slider** je Gefährt; offener Saldo =
-aufgelaufene Miete + Zusatzkosten − (als bezahlt markierte Gefährte).
+Dadurch kostet z. B. ein volles Kalenderjahr genau den Jahrespreis (500 € statt
+499,66 €, wie es eine mittlere Jahreslänge von 365,25 Tagen ergeben würde), und
+nur echte Teilzeiträume werden anteilig berechnet.
+
+Bei **Tarifen** können Monats- und Jahrespreis optional **gekoppelt** werden
+(Jahr = Monat × 12): dann füllt das Bearbeiten eines Feldes das andere
+automatisch; ohne Kopplung sind beide Preise frei setzbar.
+
+„Bezahlt" ergibt sich aus dem **Zahl-Slider** je Gefährt (bzw. **je Jahr** bei
+einer Pauschale); offener Saldo = aufgelaufene Miete + Zusatzkosten − bezahlt.
 
 ---
 
@@ -233,7 +251,7 @@ web/static/        – PWA-Frontend (SPA, SVG-Charts, Service Worker, Icons)
 
 ## 🧑‍💻 Entwicklung (ohne Docker)
 
-Voraussetzungen: Go 1.25+, ein laufender PostgreSQL.
+Voraussetzungen: Go 1.26+, ein laufender PostgreSQL.
 
 ```bash
 export PARKRR_DATABASE_URL="postgres://parkrr:parkrr@localhost:5432/parkrr?sslmode=disable"

@@ -278,7 +278,7 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 			`UPDATE vehicles SET status=$1, updated_at=now() WHERE id=$2`, req.Status, id)
 	}
 	h.recordStatus(r, id, oldStatus, req.Status, trim(req.Note))
-	h.audit(r, "update", "vehicle", id, "status "+oldStatus+" → "+req.Status)
+	h.audit(r, "update", "vehicle", id, "Status "+h.vehicleDesc(r, id)+": "+oldStatus+" → "+req.Status)
 	h.writeVehicle(w, r.Context(), id, http.StatusOK)
 }
 
@@ -350,8 +350,23 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 	if req.Paid {
 		label = "bezahlt"
 	}
-	h.audit(r, "update", "vehicle", id, "Zahlung: "+label)
+	h.audit(r, "update", "vehicle", id, "Zahlung "+h.vehicleDesc(r, id)+": "+label)
 	h.writeVehicle(w, r.Context(), id, http.StatusOK)
+}
+
+// vehicleDesc returns a "label (person)" description for audit messages.
+func (h *Handler) vehicleDesc(r *http.Request, id int64) string {
+	var label, plate, first, last string
+	_ = h.Pool.QueryRow(r.Context(),
+		`SELECT v.label, v.license_plate, p.first_name, p.last_name
+		 FROM vehicles v JOIN persons p ON p.id = v.person_id WHERE v.id=$1`, id,
+	).Scan(&label, &plate, &first, &last)
+	name := trim(first + " " + last)
+	desc := vehicleLabel(label, plate)
+	if name != "" {
+		desc += " (" + name + ")"
+	}
+	return desc
 }
 
 type duplicateRequest struct {

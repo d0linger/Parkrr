@@ -43,6 +43,8 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, rateLimitPerMin int) (http.H
 	mux.Handle("POST /api/auth/2fa/setup", authed(hf(ah.TOTPSetup)))
 	mux.Handle("POST /api/auth/2fa/enable", authed(hf(ah.TOTPEnable)))
 	mux.Handle("POST /api/auth/2fa/disable", authed(hf(ah.TOTPDisable)))
+	mux.Handle("GET /api/auth/2fa/backup-codes", authed(hf(ah.TOTPBackupCount)))
+	mux.Handle("POST /api/auth/2fa/backup-codes/regenerate", authed(hf(ah.TOTPRegenerateBackup)))
 
 	// --- Persons (read: any; write: manager/admin) ---
 	mux.Handle("GET /api/persons", authed(hf(h.ListPersons)))
@@ -50,6 +52,8 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, rateLimitPerMin int) (http.H
 	mux.Handle("PUT /api/persons/{id}", manager(hf(h.UpdatePerson)))
 	mux.Handle("DELETE /api/persons/{id}", manager(hf(h.DeletePerson)))
 	mux.Handle("GET /api/persons/{id}/stats", authed(hf(h.PersonStats)))
+	mux.Handle("PUT /api/persons/{id}/flatrate", billing(hf(h.SetFlatRate)))
+	mux.Handle("POST /api/persons/{id}/flatrate/paid", billing(hf(h.SetFlatRatePaid)))
 
 	// --- Vehicles ---
 	mux.Handle("GET /api/vehicles", authed(hf(h.ListVehicles)))
@@ -92,6 +96,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, rateLimitPerMin int) (http.H
 	mux.Handle("POST /api/users", admin(hf(h.CreateUser)))
 	mux.Handle("PUT /api/users/{id}", admin(hf(h.UpdateUser)))
 	mux.Handle("DELETE /api/users/{id}", admin(hf(h.DeleteUser)))
+	mux.Handle("POST /api/users/{id}/reset-2fa", admin(hf(h.ResetUserTOTP)))
 	mux.Handle("GET /api/audit", admin(hf(h.ListAudit)))
 
 	// --- Static assets and SPA shell ---

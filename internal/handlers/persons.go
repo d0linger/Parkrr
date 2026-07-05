@@ -1,17 +1,39 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/preining/parkrr/internal/models"
 )
 
+// personColumns is the shared column list for reading persons.
+const personColumns = `id, first_name, last_name, email, phone, address, notes,
+	flat_rate, flat_rate_period, flat_rate_start, flat_rate_end, flat_rate_paid,
+	created_at, updated_at`
+
+func scanPerson(row rowScanner) (models.Person, error) {
+	var p models.Person
+	err := row.Scan(&p.ID, &p.FirstName, &p.LastName, &p.Email, &p.Phone, &p.Address,
+		&p.Notes, &p.FlatRate, &p.FlatRatePeriod, &p.FlatRateStart, &p.FlatRateEnd,
+		&p.FlatRatePaid, &p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		return p, err
+	}
+	p.HasFlatRate = p.FlatRateActive()
+	return p, nil
+}
+
+// getPerson loads a single person by id.
+func (h *Handler) getPerson(ctx context.Context, id int64) (models.Person, error) {
+	return scanPerson(h.Pool.QueryRow(ctx,
+		`SELECT `+personColumns+` FROM persons WHERE id=$1`, id))
+}
+
 // ListPersons returns all persons.
 func (h *Handler) ListPersons(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.Pool.Query(r.Context(),
-		`SELECT id, first_name, last_name, email, phone, address, notes,
-		        created_at, updated_at
-		 FROM persons ORDER BY last_name, first_name`)
+		`SELECT `+personColumns+` FROM persons ORDER BY last_name, first_name`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -20,9 +42,8 @@ func (h *Handler) ListPersons(w http.ResponseWriter, r *http.Request) {
 
 	persons := []models.Person{}
 	for rows.Next() {
-		var p models.Person
-		if err := rows.Scan(&p.ID, &p.FirstName, &p.LastName, &p.Email, &p.Phone,
-			&p.Address, &p.Notes, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		p, err := scanPerson(rows)
+		if err != nil {
 			writeError(w, http.StatusInternalServerError, "scan failed")
 			return
 		}
@@ -61,15 +82,11 @@ func (h *Handler) CreatePerson(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "first or last name is required")
 		return
 	}
-	var p models.Person
-	err := h.Pool.QueryRow(r.Context(),
+	p, err := scanPerson(h.Pool.QueryRow(r.Context(),
 		`INSERT INTO persons (first_name, last_name, email, phone, address, notes)
 		 VALUES ($1,$2,$3,$4,$5,$6)
-		 RETURNING id, first_name, last_name, email, phone, address, notes,
-		           created_at, updated_at`,
-		req.FirstName, req.LastName, req.Email, req.Phone, req.Address, req.Notes,
-	).Scan(&p.ID, &p.FirstName, &p.LastName, &p.Email, &p.Phone, &p.Address,
-		&p.Notes, &p.CreatedAt, &p.UpdatedAt)
+		 RETURNING `+personColumns,
+		req.FirstName, req.LastName, req.Email, req.Phone, req.Address, req.Notes))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create person")
 		return

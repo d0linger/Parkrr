@@ -183,6 +183,31 @@ func (h *Handler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
+// ResetUserTOTP disables a user's 2FA and removes their recovery codes so they
+// can re-enroll (admin only). Useful when a user loses their authenticator.
+func (h *Handler) ResetUserTOTP(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var username string
+	if err := h.Pool.QueryRow(r.Context(),
+		`SELECT username FROM users WHERE id=$1`, id).Scan(&username); err != nil {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if _, err := h.Pool.Exec(r.Context(),
+		`UPDATE users SET totp_enabled=FALSE, totp_secret='', updated_at=now() WHERE id=$1`,
+		id); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not reset two-factor")
+		return
+	}
+	_, _ = h.Pool.Exec(r.Context(), `DELETE FROM totp_backup_codes WHERE user_id=$1`, id)
+	h.audit(r, "update", "user", id, "reset 2FA for "+username)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "reset"})
+}
+
 // isLastAdmin reports whether the given id is an admin and the only one.
 func (h *Handler) isLastAdmin(r *http.Request, id int64) bool {
 	var count int
