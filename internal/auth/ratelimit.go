@@ -9,11 +9,11 @@ import (
 // given key (username+IP) it locks that key for a cooldown window. Suitable for
 // a single-instance deployment.
 type LoginLimiter struct {
-	mu        sync.Mutex
-	attempts  map[string]*attemptState
-	maxFails  int
-	lockFor   time.Duration
-	failWindw time.Duration
+	mu         sync.Mutex
+	attempts   map[string]*attemptState
+	maxFails   int
+	lockFor    time.Duration
+	failWindow time.Duration
 }
 
 type attemptState struct {
@@ -26,10 +26,10 @@ type attemptState struct {
 // locking for lockDuration.
 func NewLoginLimiter(maxFails int, failWindow, lockDuration time.Duration) *LoginLimiter {
 	return &LoginLimiter{
-		attempts:  make(map[string]*attemptState),
-		maxFails:  maxFails,
-		lockFor:   lockDuration,
-		failWindw: failWindow,
+		attempts:   make(map[string]*attemptState),
+		maxFails:   maxFails,
+		lockFor:    lockDuration,
+		failWindow: failWindow,
 	}
 }
 
@@ -55,7 +55,7 @@ func (l *LoginLimiter) RecordFailure(key string) {
 	defer l.mu.Unlock()
 	now := time.Now()
 	st := l.attempts[key]
-	if st == nil || now.Sub(st.firstFail) > l.failWindw {
+	if st == nil || now.Sub(st.firstFail) > l.failWindow {
 		st = &attemptState{firstFail: now}
 		l.attempts[key] = st
 	}
@@ -64,6 +64,19 @@ func (l *LoginLimiter) RecordFailure(key string) {
 		st.lockedTill = now.Add(l.lockFor)
 		st.fails = 0
 		st.firstFail = now
+	}
+}
+
+// Cleanup removes expired and non-locked attempt entries to prevent memory leaks.
+func (l *LoginLimiter) Cleanup() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	for key, st := range l.attempts {
+		// Remove if not locked and failure window has passed.
+		if now.After(st.lockedTill) && now.Sub(st.firstFail) > l.failWindow {
+			delete(l.attempts, key)
+		}
 	}
 }
 

@@ -18,17 +18,40 @@ type AuthHandler struct {
 
 // NewAuthHandler constructs an AuthHandler.
 func NewAuthHandler(h *Handler, mgr *auth.Manager) *AuthHandler {
-	return &AuthHandler{
+	ah := &AuthHandler{
 		Handler: h,
 		Auth:    mgr,
 		Limiter: auth.NewLoginLimiter(5, 10*time.Minute, 15*time.Minute),
 	}
+	// Start background cleanup of the login throttle.
+	go func() {
+		t := time.NewTicker(10 * time.Minute)
+		defer t.Stop()
+		for range t.C {
+			ah.Limiter.Cleanup()
+		}
+	}()
+	return ah
 }
 
 type loginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 	TOTPCode string `json:"totp_code"`
+}
+
+// checkRateLimit blocks if the username+IP is currently throttled.
+func (h *AuthHandler) checkRateLimit(w http.ResponseWriter, r *http.Request, username string) (string, bool) {
+	ip := h.Auth.ClientIP(r)
+	key := username + "|" + ip
+	if ok, wait := h.Limiter.Allowed(key); !ok {
+		w.Header().Set("Retry-After", formatSeconds(wait))
+		slog.Warn("throttle active", "user", username, "ip", ip, "path", r.URL.Path)
+		writeError(w, http.StatusTooManyRequests,
+			"too many attempts, try again in "+formatMinutes(wait))
+		return key, false
+	}
+	return key, true
 }
 
 // Login authenticates a user (with optional TOTP) and starts a session.
@@ -39,21 +62,15 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Username = trim(req.Username)
-	ip := h.Auth.ClientIP(r)
-	key := req.Username + "|" + ip
-
-	if ok, wait := h.Limiter.Allowed(key); !ok {
-		w.Header().Set("Retry-After", formatSeconds(wait))
-		slog.Warn("login blocked (rate limit)", "user", req.Username, "ip", ip)
-		writeError(w, http.StatusTooManyRequests,
-			"too many attempts, try again in "+formatMinutes(wait))
+	key, ok := h.checkRateLimit(w, r, req.Username)
+	if !ok {
 		return
 	}
 
 	u, err := h.Auth.Authenticate(r.Context(), req.Username, req.Password)
 	if err != nil {
 		h.Limiter.RecordFailure(key)
-		slog.Warn("login failed", "user", req.Username, "ip", ip, "reason", "bad credentials")
+		slog.Warn("login failed", "user", req.Username, "ip", h.Auth.ClientIP(r), "reason", "bad credentials")
 		writeError(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
@@ -74,7 +91,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		}
 		if !ok {
 			h.Limiter.RecordFailure(key)
-			slog.Warn("login failed", "user", u.Username, "ip", ip, "reason", "bad 2fa code")
+			slog.Warn("login failed", "user", u.Username, "ip", h.Auth.ClientIP(r), "reason", "bad 2fa code")
 			writeJSON(w, http.StatusUnauthorized, map[string]any{
 				"error":         "invalid two-factor code",
 				"totp_required": true,
@@ -88,7 +105,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create session")
 		return
 	}
-	slog.Info("login", "user", u.Username, "user_id", u.ID, "ip", ip,
+	slog.Info("login", "user", u.Username, "user_id", u.ID, "ip", h.Auth.ClientIP(r),
 		"role", u.Role, "twofactor", u.TOTPEnabled)
 	h.auditAs(r, u.ID, u.Username, "login", "user", u.ID, u.Username+" signed in")
 	writeJSON(w, http.StatusOK, u)
@@ -131,11 +148,20 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "new password must be at least 8 characters")
 		return
 	}
+
+	key, ok := h.checkRateLimit(w, r, u.Username)
+	if !ok {
+		return
+	}
+
 	// Verify current password.
 	if _, err := h.Auth.Authenticate(r.Context(), u.Username, req.CurrentPassword); err != nil {
+		h.Limiter.RecordFailure(key)
 		writeError(w, http.StatusForbidden, "current password is incorrect")
 		return
 	}
+	h.Limiter.Reset(key)
+
 	hash, err := auth.HashPassword(req.NewPassword)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not hash password")

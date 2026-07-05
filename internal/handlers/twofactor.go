@@ -92,10 +92,19 @@ func (h *AuthHandler) TOTPDisable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+
+	key, ok := h.checkRateLimit(w, r, u.Username)
+	if !ok {
+		return
+	}
+
 	if _, err := h.Auth.Authenticate(r.Context(), u.Username, req.Password); err != nil {
+		h.Limiter.RecordFailure(key)
 		writeError(w, http.StatusForbidden, "password is incorrect")
 		return
 	}
+	h.Limiter.Reset(key)
+
 	if _, err := h.Pool.Exec(r.Context(),
 		`UPDATE users SET totp_enabled=FALSE, totp_secret='', updated_at=now() WHERE id=$1`,
 		u.ID); err != nil {
@@ -131,10 +140,19 @@ func (h *AuthHandler) TOTPRegenerateBackup(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+
+	key, ok := h.checkRateLimit(w, r, u.Username)
+	if !ok {
+		return
+	}
+
 	if _, err := h.Auth.Authenticate(r.Context(), u.Username, req.Password); err != nil {
+		h.Limiter.RecordFailure(key)
 		writeError(w, http.StatusForbidden, "password is incorrect")
 		return
 	}
+	h.Limiter.Reset(key)
+
 	codes, err := h.Auth.GenerateBackupCodes(r.Context(), u.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not generate recovery codes")
