@@ -103,6 +103,43 @@ func (h *AuthHandler) TOTPDisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.Auth.DeleteBackupCodes(r.Context(), u.ID)
-	h.audit(r, "update", "user", u.ID, "disabled two-factor authentication")
+	h.audit(r, "update", "user", u.ID, u.Username+" disabled two-factor authentication")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "disabled"})
+}
+
+// TOTPBackupCount returns how many unused recovery codes remain.
+func (h *AuthHandler) TOTPBackupCount(w http.ResponseWriter, r *http.Request) {
+	u, _ := auth.UserFrom(r.Context())
+	n, err := h.Auth.RemainingBackupCodes(r.Context(), u.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"remaining": n, "enabled": u.TOTPEnabled})
+}
+
+// TOTPRegenerateBackup issues a fresh set of recovery codes (invalidating the
+// old ones) after re-authenticating with the password. 2FA must be enabled.
+func (h *AuthHandler) TOTPRegenerateBackup(w http.ResponseWriter, r *http.Request) {
+	u, _ := auth.UserFrom(r.Context())
+	if !u.TOTPEnabled {
+		writeError(w, http.StatusConflict, "two-factor is not enabled")
+		return
+	}
+	var req totpDisableRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if _, err := h.Auth.Authenticate(r.Context(), u.Username, req.Password); err != nil {
+		writeError(w, http.StatusForbidden, "password is incorrect")
+		return
+	}
+	codes, err := h.Auth.GenerateBackupCodes(r.Context(), u.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not generate recovery codes")
+		return
+	}
+	h.audit(r, "update", "user", u.ID, u.Username+" regenerated recovery codes")
+	writeJSON(w, http.StatusOK, map[string]any{"backup_codes": codes})
 }

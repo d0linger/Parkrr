@@ -21,10 +21,15 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26"
           cache: true
 
       - name: Run gosec
+        # G706 (log injection) is excluded project-wide: all logging goes through
+        # log/slog, whose handlers escape (JSON) or quote (text) string attribute
+        # values, so user-controlled fields cannot forge log records. Other
+        # reviewed exceptions (G124 cookies, G120 bounded multipart) are handled
+        # with inline #nosec annotations.
         run: |
           go install github.com/securego/gosec/v2/cmd/gosec@v2.27.1
-          gosec -exclude-dir=.github ./...
+          gosec -exclude-dir=.github -exclude=G706 ./...

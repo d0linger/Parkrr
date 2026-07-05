@@ -285,6 +285,8 @@ func (m *Manager) RequireAuth(next http.Handler) http.Handler {
 			writeJSONError(w, http.StatusUnauthorized, "not authenticated")
 			return
 		}
+		// Record who this request belongs to for the access log.
+		setRequestLogUser(r.Context(), u.Username, u.ID)
 		if isStateChanging(r.Method) && !m.csrfOK(r) {
 			writeJSONError(w, http.StatusForbidden, "invalid CSRF token")
 			return

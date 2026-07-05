@@ -72,6 +72,15 @@ func (m *Manager) DeleteBackupCodes(ctx context.Context, userID int64) {
 	_, _ = m.pool.Exec(ctx, `DELETE FROM totp_backup_codes WHERE user_id=$1`, userID)
 }
 
+// RemainingBackupCodes counts a user's unused backup codes.
+func (m *Manager) RemainingBackupCodes(ctx context.Context, userID int64) (int, error) {
+	var n int
+	err := m.pool.QueryRow(ctx,
+		`SELECT count(*) FROM totp_backup_codes WHERE user_id=$1 AND used_at IS NULL`,
+		userID).Scan(&n)
+	return n, err
+}
+
 func randomCode() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)

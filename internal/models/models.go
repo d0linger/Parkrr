@@ -35,11 +35,48 @@ var ValidStatuses = map[string]bool{
 	StatusReserved: true, StatusStored: true, StatusCollected: true, StatusCancelled: true,
 }
 
-// Average length of a year/month in days, used for proration.
-const (
-	daysPerYear  = 365.25
-	daysPerMonth = daysPerYear / 12.0
-)
+// prorate returns amount prorated over [from, to) for the billing period,
+// measured against the ACTUAL length of each calendar month/year the interval
+// touches. As a result a full calendar month or year bills exactly the
+// configured amount; only genuinely partial periods are charged proportionally.
+func prorate(amount float64, period string, from, to time.Time) float64 {
+	if !to.After(from) {
+		return 0
+	}
+	if period == BillingYearly {
+		return prorateByYear(amount, from, to)
+	}
+	return prorateByMonth(amount, from, to)
+}
+
+func prorateByYear(amount float64, from, to time.Time) float64 {
+	total := 0.0
+	for y := from.Year(); y <= to.Year(); y++ {
+		yStart := time.Date(y, 1, 1, 0, 0, 0, 0, time.UTC)
+		yEnd := time.Date(y+1, 1, 1, 0, 0, 0, 0, time.UTC)
+		s, e := maxTime(from, yStart), minTime(to, yEnd)
+		if e.After(s) {
+			total += amount * days(s, e) / days(yStart, yEnd)
+		}
+	}
+	return total
+}
+
+func prorateByMonth(amount float64, from, to time.Time) float64 {
+	total := 0.0
+	cur := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, time.UTC)
+	for cur.Before(to) {
+		mEnd := cur.AddDate(0, 1, 0)
+		s, e := maxTime(from, cur), minTime(to, mEnd)
+		if e.After(s) {
+			total += amount * days(s, e) / days(cur, mEnd)
+		}
+		cur = mEnd
+	}
+	return total
+}
+
+func days(a, b time.Time) float64 { return b.Sub(a).Hours() / 24.0 }
 
 // User is an application login account. Admins manage other users.
 type User struct {
@@ -56,6 +93,9 @@ type User struct {
 }
 
 // Person is a customer who stores one or more vehicles.
+//
+// FlatRate, when set, replaces per-vehicle billing: the person is charged one
+// agreed amount (monthly or yearly) that covers all of their vehicles.
 type Person struct {
 	ID        int64     `json:"id"`
 	FirstName string    `json:"first_name"`
@@ -66,6 +106,49 @@ type Person struct {
 	Notes     string    `json:"notes"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+
+	// Flat rate (Pauschale). FlatRate == nil means per-vehicle billing.
+	FlatRate       *float64   `json:"flat_rate"`
+	FlatRatePeriod string     `json:"flat_rate_period"`
+	FlatRateStart  *time.Time `json:"flat_rate_start"`
+	FlatRateEnd    *time.Time `json:"flat_rate_end"`
+	FlatRatePaid   bool       `json:"flat_rate_paid"`
+
+	// Derived (not stored).
+	HasFlatRate bool `json:"has_flat_rate"`
+}
+
+// FlatRateActive reports whether this person is billed a flat rate.
+func (p *Person) FlatRateActive() bool {
+	return p.FlatRate != nil && *p.FlatRate > 0 && p.FlatRateStart != nil
+}
+
+// FlatRateInRange returns the flat-rate cost accrued within [from, to),
+// constrained to the flat-rate start/end window.
+func (p *Person) FlatRateInRange(from, to time.Time) float64 {
+	if !p.FlatRateActive() {
+		return 0
+	}
+	start := maxTime(*p.FlatRateStart, from)
+	end := to
+	if p.FlatRateEnd != nil && p.FlatRateEnd.Before(end) {
+		end = *p.FlatRateEnd
+	}
+	return ProrateAmount(*p.FlatRate, p.FlatRatePeriod, start, end)
+}
+
+// FlatRateAccruedAsOf returns the flat-rate cost accrued until asOf.
+func (p *Person) FlatRateAccruedAsOf(asOf time.Time) float64 {
+	if !p.FlatRateActive() {
+		return 0
+	}
+	return p.FlatRateInRange(*p.FlatRateStart, asOf.AddDate(0, 0, 1))
+}
+
+// ProrateAmount prorates a flat amount over [from, to) for the billing period,
+// using calendar-accurate proration (see prorate).
+func ProrateAmount(amount float64, period string, from, to time.Time) float64 {
+	return prorate(amount, period, from, to)
 }
 
 // Category is a centrally-managed vehicle type with default pricing.
@@ -74,6 +157,7 @@ type Category struct {
 	Name               string    `json:"name"`
 	DefaultMonthlyCost float64   `json:"default_monthly_cost"`
 	DefaultYearlyCost  float64   `json:"default_yearly_cost"`
+	RatesSynced        bool      `json:"rates_synced"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
 }
@@ -187,12 +271,7 @@ func (v *Vehicle) CostInRange(cat Category, from, to time.Time) float64 {
 	if !end.After(start) {
 		return 0
 	}
-	days := end.Sub(start).Hours() / 24.0
-	rate := v.EffectiveRateFor(cat)
-	if v.BillingPeriod == BillingYearly {
-		return rate * (days / daysPerYear)
-	}
-	return rate * (days / daysPerMonth)
+	return prorate(v.EffectiveRateFor(cat), v.BillingPeriod, start, end)
 }
 
 // AccruedCostAsOf returns the total cost accrued from the start date until the
@@ -206,10 +285,18 @@ type YearStat struct {
 	Year         int     `json:"year"`
 	Cost         float64 `json:"cost"`
 	VehicleCount int     `json:"vehicle_count"`
+	Paid         bool    `json:"paid"` // flat-rate per-year paid status
 }
 
 func maxTime(a, b time.Time) time.Time {
 	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
 		return a
 	}
 	return b

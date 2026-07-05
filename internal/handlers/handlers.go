@@ -55,13 +55,21 @@ func trim(s string) string { return strings.TrimSpace(s) }
 // audit writes an entry to the audit log, deriving the acting user from the
 // request context. Failures are ignored so auditing never breaks a request.
 func (h *Handler) audit(r *http.Request, action, entity string, id int64, summary string) {
-	var (
-		userID   *int64
-		username string
-	)
+	var actorID int64
+	var actorName string
 	if u, ok := auth.UserFrom(r.Context()); ok {
-		userID = &u.ID
-		username = u.Username
+		actorID = u.ID
+		actorName = u.Username
+	}
+	h.auditAs(r, actorID, actorName, action, entity, id, summary)
+}
+
+// auditAs writes an audit entry with an explicit acting user. Use this where the
+// user is not yet in the request context (e.g. at login).
+func (h *Handler) auditAs(r *http.Request, actorID int64, actorName, action, entity string, id int64, summary string) {
+	var uid *int64
+	if actorID > 0 {
+		uid = &actorID
 	}
 	var entID *int64
 	if id > 0 {
@@ -70,5 +78,5 @@ func (h *Handler) audit(r *http.Request, action, entity string, id int64, summar
 	_, _ = h.Pool.Exec(r.Context(),
 		`INSERT INTO audit_log (user_id, username, action, entity, entity_id, summary)
 		 VALUES ($1,$2,$3,$4,$5,$6)`,
-		userID, username, action, entity, entID, summary)
+		uid, actorName, action, entity, entID, summary)
 }

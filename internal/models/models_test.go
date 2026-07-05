@@ -10,10 +10,9 @@ func date(y int, m time.Month, d int) time.Time {
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
 
-// approx allows a small relative tolerance because costs are prorated using an
-// average year length (365.25 days), so exact-year spans over leap years differ
-// slightly from a round multiple of the rate.
-func approx(a, b float64) bool { return math.Abs(a-b) <= 0.02*b+0.01 }
+// exact compares to within a cent: with calendar-accurate proration a full
+// month/year bills exactly the configured amount.
+func exact(a, b float64) bool { return math.Abs(a-b) < 0.005 }
 
 func TestEffectiveRateFor(t *testing.T) {
 	cat := Category{DefaultMonthlyCost: 50, DefaultYearlyCost: 550}
@@ -41,10 +40,37 @@ func TestCostInRangeMonthly(t *testing.T) {
 		BillingPeriod: BillingMonthly,
 		StartDate:     date(2024, time.January, 1),
 	}
-	// One full year should be ~12 monthly charges.
+	// One full year is exactly 12 monthly charges (each full month = full rate).
 	got := v.CostInRange(cat, date(2024, time.January, 1), date(2025, time.January, 1))
-	if !approx(got, 30*12) {
-		t.Errorf("one year monthly: got %.2f want ~360", got)
+	if !exact(got, 30*12) {
+		t.Errorf("one year monthly: got %.2f want 360.00", got)
+	}
+}
+
+// TestFullYearIsExact reproduces the reported case: a full calendar year on a
+// yearly rate must bill exactly the configured amount (not 499.66 via 365.25).
+func TestFullYearIsExact(t *testing.T) {
+	cat := Category{DefaultYearlyCost: 500}
+	v := Vehicle{BillingPeriod: BillingYearly, StartDate: date(2024, time.January, 1)}
+	got := v.CostInRange(cat, date(2025, time.January, 1), date(2026, time.January, 1))
+	if !exact(got, 500) {
+		t.Errorf("full year 2025: got %.4f want 500.00", got)
+	}
+	// A full leap year (2024, 366 days) is also exactly the rate.
+	got = v.CostInRange(cat, date(2024, time.January, 1), date(2025, time.January, 1))
+	if !exact(got, 500) {
+		t.Errorf("full leap year 2024: got %.4f want 500.00", got)
+	}
+}
+
+// TestFullMonthIsExact: a full calendar month bills exactly the monthly rate,
+// regardless of the month's length.
+func TestFullMonthIsExact(t *testing.T) {
+	cat := Category{DefaultMonthlyCost: 90}
+	v := Vehicle{BillingPeriod: BillingMonthly, StartDate: date(2025, time.February, 1)}
+	got := v.CostInRange(cat, date(2025, time.February, 1), date(2025, time.March, 1)) // 28 days
+	if !exact(got, 90) {
+		t.Errorf("full February: got %.4f want 90.00", got)
 	}
 }
 
@@ -55,8 +81,8 @@ func TestCostInRangeYearly(t *testing.T) {
 		StartDate:     date(2024, time.January, 1),
 	}
 	got := v.CostInRange(cat, date(2024, time.January, 1), date(2025, time.January, 1))
-	if !approx(got, 600) {
-		t.Errorf("one year yearly: got %.2f want ~600", got)
+	if !exact(got, 600) {
+		t.Errorf("one year yearly: got %.2f want 600.00", got)
 	}
 }
 
@@ -68,10 +94,10 @@ func TestAccruedRespectsEndDate(t *testing.T) {
 		StartDate:     date(2024, time.January, 1),
 		EndDate:       &end,
 	}
-	// ~6 months of accrual regardless of a far-future asOf.
+	// Exactly 6 full months of accrual regardless of a far-future asOf.
 	got := v.AccruedCostAsOf(cat, date(2030, time.January, 1))
-	if !approx(got, 30*6) {
-		t.Errorf("capped by end date: got %.2f want ~180", got)
+	if !exact(got, 30*6) {
+		t.Errorf("capped by end date: got %.2f want 180.00", got)
 	}
 }
 

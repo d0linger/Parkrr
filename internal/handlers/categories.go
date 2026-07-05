@@ -9,7 +9,7 @@ import (
 // ListCategories returns all centrally-managed vehicle categories.
 func (h *Handler) ListCategories(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.Pool.Query(r.Context(),
-		`SELECT id, name, default_monthly_cost, default_yearly_cost,
+		`SELECT id, name, default_monthly_cost, default_yearly_cost, rates_synced,
 		        created_at, updated_at
 		 FROM categories ORDER BY name`)
 	if err != nil {
@@ -22,7 +22,7 @@ func (h *Handler) ListCategories(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var c models.Category
 		if err := rows.Scan(&c.ID, &c.Name, &c.DefaultMonthlyCost,
-			&c.DefaultYearlyCost, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			&c.DefaultYearlyCost, &c.RatesSynced, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan failed")
 			return
 		}
@@ -35,6 +35,7 @@ type categoryRequest struct {
 	Name               string  `json:"name"`
 	DefaultMonthlyCost float64 `json:"default_monthly_cost"`
 	DefaultYearlyCost  float64 `json:"default_yearly_cost"`
+	RatesSynced        bool    `json:"rates_synced"`
 }
 
 // CreateCategory adds a new vehicle category (admin only).
@@ -55,12 +56,12 @@ func (h *Handler) CreateCategory(w http.ResponseWriter, r *http.Request) {
 	}
 	var c models.Category
 	err := h.Pool.QueryRow(r.Context(),
-		`INSERT INTO categories (name, default_monthly_cost, default_yearly_cost)
-		 VALUES ($1,$2,$3)
-		 RETURNING id, name, default_monthly_cost, default_yearly_cost,
+		`INSERT INTO categories (name, default_monthly_cost, default_yearly_cost, rates_synced)
+		 VALUES ($1,$2,$3,$4)
+		 RETURNING id, name, default_monthly_cost, default_yearly_cost, rates_synced,
 		           created_at, updated_at`,
-		req.Name, req.DefaultMonthlyCost, req.DefaultYearlyCost,
-	).Scan(&c.ID, &c.Name, &c.DefaultMonthlyCost, &c.DefaultYearlyCost,
+		req.Name, req.DefaultMonthlyCost, req.DefaultYearlyCost, req.RatesSynced,
+	).Scan(&c.ID, &c.Name, &c.DefaultMonthlyCost, &c.DefaultYearlyCost, &c.RatesSynced,
 		&c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -97,9 +98,9 @@ func (h *Handler) UpdateCategory(w http.ResponseWriter, r *http.Request) {
 	}
 	ct, err := h.Pool.Exec(r.Context(),
 		`UPDATE categories SET name=$1, default_monthly_cost=$2,
-		        default_yearly_cost=$3, updated_at=now()
-		 WHERE id=$4`,
-		req.Name, req.DefaultMonthlyCost, req.DefaultYearlyCost, id)
+		        default_yearly_cost=$3, rates_synced=$4, updated_at=now()
+		 WHERE id=$5`,
+		req.Name, req.DefaultMonthlyCost, req.DefaultYearlyCost, req.RatesSynced, id)
 	if err != nil {
 		if isUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "a category with that name already exists")

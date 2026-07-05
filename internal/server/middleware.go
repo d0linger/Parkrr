@@ -43,12 +43,13 @@ func requestLogger(mgr *auth.Manager, next http.Handler) http.Handler {
 		start := time.Now()
 		id := requestID()
 		w.Header().Set("X-Request-ID", id)
+		// Install a request-log record so auth middleware can add the user.
+		ctx := auth.WithRequestLog(r.Context())
+		r = r.WithContext(ctx)
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
-		// #nosec G706 -- method/path are user-controlled, but slog encodes string
-		// attribute values (JSON handler escapes control chars; text handler
-		// quotes them), so newline/CR log-forging is not possible here.
-		slog.Info("request",
+
+		attrs := []any{
 			"id", id,
 			"method", r.Method,
 			"path", r.URL.Path,
@@ -56,7 +57,11 @@ func requestLogger(mgr *auth.Manager, next http.Handler) http.Handler {
 			"bytes", rec.bytes,
 			"ip", mgr.ClientIP(r),
 			"dur_ms", time.Since(start).Milliseconds(),
-		)
+		}
+		if user, uid := auth.RequestLogUser(ctx); user != "" {
+			attrs = append(attrs, "user", user, "user_id", uid)
+		}
+		slog.Info("request", attrs...)
 	})
 }
 
