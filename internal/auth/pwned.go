@@ -15,8 +15,9 @@ import (
 
 // hibpEndpoint is the Have I Been Pwned range API. Only the first five hex
 // characters of the password's SHA-1 hash are ever sent (k-anonymity), so the
-// password itself never leaves the process.
-const hibpEndpoint = "https://api.pwnedpasswords.com/range/"
+// password itself never leaves the process. A var (not const) so tests can
+// point it at a local stub.
+var hibpEndpoint = "https://api.pwnedpasswords.com/range/"
 
 // BreachedPasswordCount reports how many times the password appears in known
 // breaches per the HIBP range API. A count > 0 means the password is exposed.
