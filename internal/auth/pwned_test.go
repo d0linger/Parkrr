@@ -14,7 +14,7 @@ import (
 // hibpStub serves a canned range response for the prefix of the given password.
 func hibpStub(t *testing.T, password string, count int) *httptest.Server {
 	t.Helper()
-	sum := sha1.Sum([]byte(password))
+	sum := sha1.Sum([]byte(password)) // #nosec G401 -- test mirrors the HIBP protocol hashing.
 	full := strings.ToUpper(hex.EncodeToString(sum[:]))
 	suffix := full[5:]
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
