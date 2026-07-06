@@ -101,6 +101,19 @@ func TestAccruedRespectsEndDate(t *testing.T) {
 	}
 }
 
+// TestProrationNoDriftManyPeriods: summing many full periods in integer cents
+// must stay exact even for awkward per-cent rates (no float drift).
+func TestProrationNoDriftManyPeriods(t *testing.T) {
+	cat := Category{DefaultMonthlyCost: 33.33}
+	v := Vehicle{BillingPeriod: BillingMonthly, StartDate: date(2000, time.January, 1)}
+	// 120 full months must equal exactly 120 * 33.33 = 3999.60.
+	got := v.CostInRange(cat, date(2000, time.January, 1), date(2010, time.January, 1))
+	want := 33.33 * 120
+	if math.Abs(got-want) > 0.001 {
+		t.Errorf("120 months: got %.2f want %.2f", got, want)
+	}
+}
+
 func TestCostZeroBeforeStart(t *testing.T) {
 	cat := Category{DefaultMonthlyCost: 30}
 	v := Vehicle{

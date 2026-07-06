@@ -1,7 +1,10 @@
 // Package models defines the core domain types and cost calculations.
 package models
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // BillingPeriod enumerates the supported billing intervals.
 const (
@@ -39,37 +42,46 @@ var ValidStatuses = map[string]bool{
 // measured against the ACTUAL length of each calendar month/year the interval
 // touches. As a result a full calendar month or year bills exactly the
 // configured amount; only genuinely partial periods are charged proportionally.
+//
+// The arithmetic is carried out in integer cents (not float euros): each
+// partial period is rounded to a whole cent and the periods are summed as
+// integers, so aggregating many months/years never accumulates binary
+// floating-point drift. money is stored as exact NUMERIC(12,2) in the database.
 func prorate(amount float64, period string, from, to time.Time) float64 {
 	if !to.After(from) {
 		return 0
 	}
+	cents := toCents(amount)
+	var total int64
 	if period == BillingYearly {
-		return prorateByYear(amount, from, to)
+		total = prorateByYear(cents, from, to)
+	} else {
+		total = prorateByMonth(cents, from, to)
 	}
-	return prorateByMonth(amount, from, to)
+	return float64(total) / 100
 }
 
-func prorateByYear(amount float64, from, to time.Time) float64 {
-	total := 0.0
+func prorateByYear(cents int64, from, to time.Time) int64 {
+	var total int64
 	for y := from.Year(); y <= to.Year(); y++ {
 		yStart := time.Date(y, 1, 1, 0, 0, 0, 0, time.UTC)
 		yEnd := time.Date(y+1, 1, 1, 0, 0, 0, 0, time.UTC)
 		s, e := maxTime(from, yStart), minTime(to, yEnd)
 		if e.After(s) {
-			total += amount * days(s, e) / days(yStart, yEnd)
+			total += fractionCents(cents, days(s, e), days(yStart, yEnd))
 		}
 	}
 	return total
 }
 
-func prorateByMonth(amount float64, from, to time.Time) float64 {
-	total := 0.0
+func prorateByMonth(cents int64, from, to time.Time) int64 {
+	var total int64
 	cur := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, time.UTC)
 	for cur.Before(to) {
 		mEnd := cur.AddDate(0, 1, 0)
 		s, e := maxTime(from, cur), minTime(to, mEnd)
 		if e.After(s) {
-			total += amount * days(s, e) / days(cur, mEnd)
+			total += fractionCents(cents, days(s, e), days(cur, mEnd))
 		}
 		cur = mEnd
 	}
@@ -77,6 +89,19 @@ func prorateByMonth(amount float64, from, to time.Time) float64 {
 }
 
 func days(a, b time.Time) float64 { return b.Sub(a).Hours() / 24.0 }
+
+// toCents converts a euro amount to integer cents, rounded to the nearest cent.
+func toCents(euros float64) int64 { return int64(math.Round(euros * 100)) }
+
+// fractionCents returns cents * num/den rounded to the nearest whole cent. A
+// full period (num == den) returns exactly cents, so a complete month or year
+// always bills the configured amount to the cent.
+func fractionCents(cents int64, num, den float64) int64 {
+	if den <= 0 {
+		return 0
+	}
+	return int64(math.Round(float64(cents) * num / den))
+}
 
 // User is an application login account. Admins manage other users.
 type User struct {
