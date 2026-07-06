@@ -586,7 +586,11 @@
                 v.photo_count ? el('span', { class: 'muted' }, '  📷 ' + v.photo_count) : null),
             el('div', { class: 'card-meta' }, `${eur(v.effective_rate)}${rateUnit}` + (v.cost_override != null ? ' (Sonderpreis)' : '') +
                 ` · seit ${fmtDate(v.start_date)}` + (v.end_date ? ` bis ${fmtDate(v.end_date)}` : '')),
-            el('div', { class: 'card-meta', style: 'color:var(--text);font-weight:600;margin-top:.3rem' }, 'Aufgelaufen: ' + eur(v.accrued_cost)));
+            // For a flat-rate person the per-vehicle accrued cost is not billed
+            // (the flat rate covers it), so showing it here would contradict the
+            // balance. Suppress it in that case.
+            hidePaid ? null
+                : el('div', { class: 'card-meta', style: 'color:var(--text);font-weight:600;margin-top:.3rem' }, 'Aufgelaufen: ' + eur(v.accrued_cost)));
         const actions = el('div', { class: 'card-actions' },
             canManage() && el('button', { class: 'btn btn-ghost btn-sm', onclick: () => vehicleForm(v) }, '✎'),
             canManage() && el('button', { class: 'btn btn-ghost btn-sm', onclick: () => delVehicle(v) }, '🗑'));
