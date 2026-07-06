@@ -34,9 +34,36 @@
     const today = () => new Date().toISOString().slice(0, 10);
     const norm = (s) => String(s ?? '').toLowerCase();
 
+    // ---------- i18n ----------
+    // Central message catalogue. User-facing strings should be added here and
+    // referenced via t('key'); this is the foundation for future localisation.
+    const MESSAGES = {
+        de: {
+            'validation.required': 'Pflichtfeld',
+            'validation.email': 'Bitte eine gültige E-Mail-Adresse eingeben',
+            'validation.min': 'Mindestens {n} Zeichen',
+            'validation.numberMin': 'Muss mindestens {n} sein',
+            'validation.number': 'Bitte eine gültige Zahl eingeben',
+            'offline.banner': 'Offline – Änderungen werden erst nach erneuter Verbindung möglich.',
+            'offline.action': 'Keine Internetverbindung – bitte später erneut versuchen.',
+        },
+    };
+    const LANG = (document.documentElement.lang || 'de').slice(0, 2);
+    function t(key, params) {
+        let s = (MESSAGES[LANG] && MESSAGES[LANG][key]) || MESSAGES.de[key] || key;
+        if (params) for (const [k, v] of Object.entries(params)) s = s.split('{' + k + '}').join(v);
+        return s;
+    }
+    const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
     // ---------- API ----------
     const api = {
         async request(method, path, body) {
+            // Fail fast on write attempts while offline with a friendly message
+            // rather than a confusing network error.
+            if (method !== 'GET' && typeof navigator !== 'undefined' && navigator.onLine === false) {
+                throw new Error(t('offline.action'));
+            }
             const opts = { method, headers: { Accept: 'application/json' }, credentials: 'same-origin' };
             if (body !== undefined) {
                 opts.headers['Content-Type'] = 'application/json';
@@ -146,6 +173,24 @@
     }
 
     // ---------- form modal ----------
+    // Client-side validation mirroring the server's rules, for fast feedback.
+    function validateField(f, rawValue) {
+        if (f.type === 'checkbox' || f.type === 'select') return '';
+        const v = String(rawValue ?? '').trim();
+        if (f.required && !v) return t('validation.required');
+        if (!v) return '';
+        if (f.type === 'email' || f.name === 'email') {
+            if (!EMAIL_RE.test(v)) return t('validation.email');
+        }
+        if (f.type === 'number') {
+            const n = Number(v);
+            if (!Number.isFinite(n)) return t('validation.number');
+            if (f.min != null && n < Number(f.min)) return t('validation.numberMin', { n: f.min });
+        }
+        if (f.minLength && v.length < f.minLength) return t('validation.min', { n: f.minLength });
+        return '';
+    }
+
     function formModal({ title, fields, submitLabel = 'Speichern', onRender = null }) {
         return new Promise((resolve) => {
             const dlg = $('#modal');
@@ -187,6 +232,7 @@
                     }
                 }
                 body.append(input);
+                body.append(el('div', { class: 'field-error', id: 'err_' + f.name, role: 'alert', hidden: true }));
                 if (f.help) body.append(el('div', { class: 'card-meta' }, f.help));
             }
             const form = $('#modal-form');
@@ -199,10 +245,22 @@
             const onSubmit = (e) => {
                 e.preventDefault();
                 const data = {};
+                let firstInvalid = null;
                 for (const f of fields) {
                     const node = $('#f_' + f.name, body);
-                    data[f.name] = f.type === 'checkbox' ? node.checked : node.value;
+                    const value = f.type === 'checkbox' ? node.checked : node.value;
+                    data[f.name] = value;
+                    const msg = validateField(f, value);
+                    const errNode = $('#err_' + f.name, body);
+                    if (errNode) { errNode.textContent = msg; errNode.hidden = !msg; }
+                    if (msg) {
+                        node.setAttribute('aria-invalid', 'true');
+                        if (!firstInvalid) firstInvalid = node;
+                    } else {
+                        node.removeAttribute('aria-invalid');
+                    }
                 }
+                if (firstInvalid) { firstInvalid.focus(); return; }
                 cleanup(); dlg.close(); resolve(data);
             };
             form.addEventListener('submit', onSubmit);
@@ -358,7 +416,12 @@
     async function render() {
         const { name, id } = parseHash();
         const routeName = id != null && (name === 'persons' || name === 'vehicles') ? name.slice(0, -1) : name;
-        $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.route === (TAB_FOR[routeName] || TAB_FOR[name])));
+        $$('.tab').forEach((t) => {
+            const on = t.dataset.route === (TAB_FOR[routeName] || TAB_FOR[name]);
+            t.classList.toggle('active', on);
+            if (on) t.setAttribute('aria-current', 'page');
+            else t.removeAttribute('aria-current');
+        });
         const page = $('#page');
         page.innerHTML = '';
         page.append(skeleton());
@@ -1009,7 +1072,7 @@
             fields: [
                 { name: 'username', label: 'Benutzername', required: !existing, value: existing?.username },
                 { name: 'email', label: 'E-Mail', type: 'email', value: existing?.email },
-                { name: 'password', label: existing ? 'Neues Passwort (optional)' : 'Passwort', type: 'password', help: 'Mindestens 8 Zeichen.' },
+                { name: 'password', label: existing ? 'Neues Passwort (optional)' : 'Passwort', type: 'password', required: !existing, minLength: 8, help: 'Mindestens 8 Zeichen.' },
                 { name: 'role', label: 'Rolle', type: 'select', value: existing?.role || 'manager', options: Object.entries(ROLE_LABEL).map(([v, l]) => ({ value: v, label: l })) },
             ],
         });
@@ -1090,7 +1153,7 @@
             title: 'Passwort ändern', submitLabel: 'Ändern',
             fields: [
                 { name: 'current_password', label: 'Aktuelles Passwort', type: 'password', required: true },
-                { name: 'new_password', label: 'Neues Passwort', type: 'password', required: true, help: 'Mindestens 8 Zeichen.' },
+                { name: 'new_password', label: 'Neues Passwort', type: 'password', required: true, minLength: 8, help: 'Mindestens 8 Zeichen.' },
             ],
         });
         if (!data) return;
@@ -1253,11 +1316,15 @@
             }, 8000);
         });
     }
-    // Simple offline indicator (a banner while the network is down).
+    // Offline indicator: a banner plus a body class while the network is down.
     function setupOfflineIndicator() {
-        const banner = el('div', { class: 'offline-banner', role: 'status', hidden: true }, 'Offline – Änderungen sind derzeit nicht möglich.');
+        const banner = el('div', { class: 'offline-banner', role: 'status', 'aria-live': 'polite', hidden: true }, t('offline.banner'));
         document.body.append(banner);
-        const update = () => { banner.hidden = navigator.onLine; };
+        const update = () => {
+            const off = navigator.onLine === false;
+            banner.hidden = !off;
+            document.body.classList.toggle('is-offline', off);
+        };
         window.addEventListener('online', update);
         window.addEventListener('offline', update);
         update();

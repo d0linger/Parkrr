@@ -1,0 +1,12 @@
+{
+  "name": "parkrr-a11y",
+  "private": true,
+  "description": "Accessibility smoke tests for Parkrr (Playwright + axe-core).",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.10.0",
+    "@playwright/test": "^1.48.0"
+  }
+}
