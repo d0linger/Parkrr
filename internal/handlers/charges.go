@@ -133,10 +133,13 @@ func (h *Handler) ListCharges(w http.ResponseWriter, r *http.Request) {
 	base := `SELECT c.id, c.person_id, c.vehicle_id, c.description, c.amount, c.quantity,
 	                c.charged_on, c.created_at, trim(pe.first_name || ' ' || pe.last_name)
 	         FROM charges c JOIN persons pe ON pe.id = c.person_id`
+	limit, offset := pageParams(r, 1000, 1000)
 	if pid := r.URL.Query().Get("person_id"); pid != "" {
-		rows, err = h.Pool.Query(r.Context(), base+` WHERE c.person_id=$1 ORDER BY c.charged_on DESC, c.id DESC`, pid)
+		rows, err = h.Pool.Query(r.Context(),
+			base+` WHERE c.person_id=$1 ORDER BY c.charged_on DESC, c.id DESC LIMIT $2 OFFSET $3`, pid, limit, offset)
 	} else {
-		rows, err = h.Pool.Query(r.Context(), base+` ORDER BY c.charged_on DESC, c.id DESC`)
+		rows, err = h.Pool.Query(r.Context(),
+			base+` ORDER BY c.charged_on DESC, c.id DESC LIMIT $1 OFFSET $2`, limit, offset)
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")

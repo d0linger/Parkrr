@@ -78,6 +78,27 @@ func pathID(r *http.Request) (int64, bool) {
 
 func trim(s string) string { return strings.TrimSpace(s) }
 
+// pageParams parses ?limit and ?offset for list endpoints, applying a default
+// page size and a hard maximum so a single request can never pull an unbounded
+// result set into memory.
+func pageParams(r *http.Request, defLimit, maxLimit int) (limit, offset int) {
+	limit = defLimit
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > maxLimit {
+		limit = maxLimit
+	}
+	if o := r.URL.Query().Get("offset"); o != "" {
+		if n, err := strconv.Atoi(o); err == nil && n > 0 {
+			offset = n
+		}
+	}
+	return limit, offset
+}
+
 // audit writes an entry to the audit log, deriving the acting user from the
 // request context. Failures are ignored so auditing never breaks a request.
 func (h *Handler) audit(r *http.Request, action, entity string, id int64, summary string) {

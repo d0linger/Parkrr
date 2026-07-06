@@ -32,8 +32,10 @@ func (h *Handler) getPerson(ctx context.Context, id int64) (models.Person, error
 
 // ListPersons returns all persons.
 func (h *Handler) ListPersons(w http.ResponseWriter, r *http.Request) {
+	limit, offset := pageParams(r, 1000, 1000)
 	rows, err := h.Pool.Query(r.Context(),
-		`SELECT `+personColumns+` FROM persons ORDER BY last_name, first_name`)
+		`SELECT `+personColumns+` FROM persons ORDER BY last_name, first_name LIMIT $1 OFFSET $2`,
+		limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
