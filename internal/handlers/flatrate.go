@@ -42,6 +42,9 @@ func (h *Handler) SetFlatRate(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "person not found")
 			return
 		}
+		// Drop per-year paid marks so a later re-enrolment starts clean instead
+		// of resurfacing stale "bezahlt" years from the old arrangement.
+		_, _ = h.Pool.Exec(r.Context(), `DELETE FROM flatrate_paid_years WHERE person_id=$1`, id)
 		h.audit(r, "update", "person", id, "removed flat rate for "+h.personLabel(r, id))
 		h.writePerson(w, r, id)
 		return
