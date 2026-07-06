@@ -23,8 +23,8 @@ type Config struct {
 
 	// Security
 	SessionSecret   string
-	SessionMaxAge   int // seconds
-	SecureCookies   bool
+	SessionMaxAge   int  // seconds
+	SecureCookies   bool // force the Secure flag on cookies (default true; set false only for plain-HTTP dev)
 	TrustedProxies  bool
 	RateLimitPerMin int // general per-IP request budget (0 = disabled)
 }
@@ -39,7 +39,7 @@ func Load() (*Config, error) {
 		AdminPassword:   os.Getenv("PARKRR_ADMIN_PASSWORD"),
 		SessionSecret:   os.Getenv("PARKRR_SESSION_SECRET"),
 		SessionMaxAge:   getenvInt("PARKRR_SESSION_MAX_AGE", 60*60*24*7),
-		SecureCookies:   getenvBool("PARKRR_SECURE_COOKIES", false),
+		SecureCookies:   getenvBool("PARKRR_SECURE_COOKIES", true),
 		TrustedProxies:  getenvBool("PARKRR_TRUSTED_PROXY", false),
 		RateLimitPerMin: getenvInt("PARKRR_RATE_LIMIT_PER_MIN", 600),
 	}

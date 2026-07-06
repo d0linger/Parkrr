@@ -107,7 +107,7 @@ erreichbar). Schema-Migrationen laufen automatisch beim Start.
 | `PARKRR_ADMIN_PASSWORD` | **Pflicht** – Admin-Passwort | – |
 | `PARKRR_SESSION_SECRET` | **Pflicht** – Session-Secret (min. 16 Zeichen) | – |
 | `PARKRR_SESSION_MAX_AGE` | Session-Dauer in Sekunden | `604800` (7 Tage) |
-| `PARKRR_SECURE_COOKIES` | `Secure`-Flag für Cookies (bei HTTPS `true`) | `false` |
+| `PARKRR_SECURE_COOKIES` | `Secure`-Flag für Cookies (secure-by-default; `false` nur für Plain-HTTP-Dev auf Nicht-`localhost`) | `true` |
 | `PARKRR_TRUSTED_PROXY` | hinter Reverse Proxy: `X-Forwarded-*` vertrauen | `false` |
 | `PARKRR_RATE_LIMIT_PER_MIN` | genereller per-IP-Request-Budget/Minute (`0` = aus) | `600` |
 | `PARKRR_LOG_FORMAT` / `PARKRR_LOG_LEVEL` | `json`\|`text` / `debug`..`error` | `json` / `info` |
@@ -127,7 +127,7 @@ betreiben. TLS wird am Proxy terminiert.
 
 ```env
 PARKRR_TRUSTED_PROXY=true      # X-Forwarded-For/-Proto vertrauen (nur hinter Proxy!)
-PARKRR_SECURE_COOKIES=true     # optional; wird bei X-Forwarded-Proto=https automatisch gesetzt
+PARKRR_SECURE_COOKIES=true     # Standard; hinter TLS/Proxy korrekt (bei Plain-HTTP-Dev ggf. false)
 ```
 
 Mit `PARKRR_TRUSTED_PROXY=true` verwendet Parkrr die echte Client-IP aus
