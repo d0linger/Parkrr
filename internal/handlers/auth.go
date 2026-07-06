@@ -16,19 +16,24 @@ type AuthHandler struct {
 	Limiter *auth.LoginLimiter
 }
 
-// NewAuthHandler constructs an AuthHandler.
-func NewAuthHandler(h *Handler, mgr *auth.Manager) *AuthHandler {
+// NewAuthHandler constructs an AuthHandler. The background login-throttle
+// cleanup goroutine runs until stop is closed.
+func NewAuthHandler(h *Handler, mgr *auth.Manager, stop <-chan struct{}) *AuthHandler {
 	ah := &AuthHandler{
 		Handler: h,
 		Auth:    mgr,
 		Limiter: auth.NewLoginLimiter(5, 10*time.Minute, 15*time.Minute),
 	}
-	// Start background cleanup of the login throttle.
 	go func() {
 		t := time.NewTicker(10 * time.Minute)
 		defer t.Stop()
-		for range t.C {
-			ah.Limiter.Cleanup()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				ah.Limiter.Cleanup()
+			}
 		}
 	}()
 	return ah
