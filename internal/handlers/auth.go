@@ -153,6 +153,11 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "new password must be at least 8 characters")
 		return
 	}
+	if h.passwordBreached(r.Context(), req.NewPassword) {
+		writeError(w, http.StatusBadRequest,
+			"this password has appeared in a known data breach; please choose another")
+		return
+	}
 
 	key, ok := h.checkRateLimit(w, r, u.Username)
 	if !ok {
@@ -175,6 +180,12 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	if _, err := h.Pool.Exec(r.Context(),
 		`UPDATE users SET password_hash=$1, updated_at=now() WHERE id=$2`, hash, u.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update password")
+		return
+	}
+	// Terminate every existing session and bind the new password to a fresh
+	// session + CSRF token (signs out other devices, defeats fixation).
+	if err := h.Auth.RotateSession(r.Context(), w, r, u.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not refresh session")
 		return
 	}
 	h.audit(r, "update", "user", u.ID, "changed own password")

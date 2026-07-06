@@ -19,8 +19,9 @@ import (
 // New builds the top-level HTTP handler with all routes registered. Background
 // goroutines started here (rate-limiter cleanup, login-throttle cleanup) run
 // until stop is closed.
-func New(pool *pgxpool.Pool, authMgr *auth.Manager, rateLimitPerMin int, metricsToken string, stop <-chan struct{}) (http.Handler, error) {
+func New(pool *pgxpool.Pool, authMgr *auth.Manager, rateLimitPerMin int, metricsToken string, checkBreachedPasswords bool, stop <-chan struct{}) (http.Handler, error) {
 	h := handlers.New(pool)
+	h.CheckBreachedPasswords = checkBreachedPasswords
 	ah := handlers.NewAuthHandler(h, authMgr, stop)
 
 	mux := http.NewServeMux()

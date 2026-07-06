@@ -113,6 +113,20 @@ func CheckPassword(hash, password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 }
 
+// dummyHash is a valid bcrypt hash at the default cost. When a login names an
+// unknown user we still compare the supplied password against this hash so the
+// request spends the same time as a real bcrypt verification, denying an
+// attacker a timing oracle for user enumeration. Computed once at startup.
+var dummyHash = mustBcryptHash("parkrr-timing-equalizer")
+
+func mustBcryptHash(s string) []byte {
+	h, err := bcrypt.GenerateFromPassword([]byte(s), bcrypt.DefaultCost)
+	if err != nil {
+		panic("bcrypt init: " + err.Error())
+	}
+	return h
+}
+
 func randomToken(n int) (string, error) {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
@@ -125,8 +139,9 @@ func randomToken(n int) (string, error) {
 func (m *Manager) Authenticate(ctx context.Context, username, password string) (*models.User, error) {
 	u, err := m.userByUsername(ctx, username)
 	if err != nil {
-		// Run a dummy hash to reduce user-enumeration timing differences.
-		_ = bcrypt.CompareHashAndPassword([]byte("$2a$10$invalidinvalidinvalidinvalidinvalidinvalidinvalidinva"), []byte(password))
+		// Compare against a real hash so an unknown user costs the same time as a
+		// known one (constant-time-ish; mitigates user enumeration).
+		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
 		return nil, errors.New("invalid credentials")
 	}
 	if !CheckPassword(u.PasswordHash, password) {

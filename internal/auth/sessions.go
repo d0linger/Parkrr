@@ -53,5 +53,23 @@ func (m *Manager) RevokeOtherSessions(ctx context.Context, userID int64, keepTok
 	return err
 }
 
+// RevokeAllSessions deletes every session for a user, signing them out on all
+// devices. Use after a password change or an admin-forced credential reset.
+func (m *Manager) RevokeAllSessions(ctx context.Context, userID int64) error {
+	_, err := m.pool.Exec(ctx, `DELETE FROM sessions WHERE user_id = $1`, userID)
+	return err
+}
+
+// RotateSession invalidates all of the user's existing sessions and issues a
+// fresh session + CSRF token on the response. Use it right after a password
+// change so the new credentials are bound to a brand-new session and any other
+// (potentially compromised) sessions are terminated.
+func (m *Manager) RotateSession(ctx context.Context, w http.ResponseWriter, r *http.Request, userID int64) error {
+	if err := m.RevokeAllSessions(ctx, userID); err != nil {
+		return err
+	}
+	return m.CreateSession(ctx, w, r, userID)
+}
+
 // CurrentToken exposes the request's session token (used by handlers).
 func CurrentToken(r *http.Request) string { return currentToken(r) }

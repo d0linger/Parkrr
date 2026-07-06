@@ -115,7 +115,8 @@ func run() error {
 	cleanupStop := make(chan struct{})
 	defer close(cleanupStop)
 
-	handler, err := server.New(pool, authMgr, cfg.RateLimitPerMin, cfg.MetricsToken, cleanupStop)
+	handler, err := server.New(pool, authMgr, cfg.RateLimitPerMin, cfg.MetricsToken,
+		cfg.CheckBreachedPasswords, cleanupStop)
 	if err != nil {
 		return err
 	}

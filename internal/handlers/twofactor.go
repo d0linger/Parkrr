@@ -61,10 +61,17 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "start setup first")
 		return
 	}
+	// Throttle: a 6-digit code is otherwise brute-forceable during enrolment.
+	key, ok := h.checkRateLimit(w, r, u.Username)
+	if !ok {
+		return
+	}
 	if !h.Auth.ValidateEncryptedTOTP(encSecret, trim(req.Code)) {
+		h.Limiter.RecordFailure(key)
 		writeError(w, http.StatusBadRequest, "invalid code")
 		return
 	}
+	h.Limiter.Reset(key)
 	if _, err := h.Pool.Exec(r.Context(),
 		`UPDATE users SET totp_enabled=TRUE, updated_at=now() WHERE id=$1`, u.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not enable two-factor")
