@@ -12,17 +12,19 @@ import (
 // AuthHandler wires authentication endpoints to the auth Manager.
 type AuthHandler struct {
 	*Handler
-	Auth    *auth.Manager
-	Limiter *auth.LoginLimiter
+	Auth     *auth.Manager
+	WebAuthn *auth.WebAuthnService // nil when passkeys are disabled
+	Limiter  *auth.LoginLimiter
 }
 
 // NewAuthHandler constructs an AuthHandler. The background login-throttle
 // cleanup goroutine runs until stop is closed.
-func NewAuthHandler(h *Handler, mgr *auth.Manager, stop <-chan struct{}) *AuthHandler {
+func NewAuthHandler(h *Handler, mgr *auth.Manager, wa *auth.WebAuthnService, stop <-chan struct{}) *AuthHandler {
 	ah := &AuthHandler{
-		Handler: h,
-		Auth:    mgr,
-		Limiter: auth.NewLoginLimiter(5, 10*time.Minute, 15*time.Minute),
+		Handler:  h,
+		Auth:     mgr,
+		WebAuthn: wa,
+		Limiter:  auth.NewLoginLimiter(5, 10*time.Minute, 15*time.Minute),
 	}
 	go func() {
 		t := time.NewTicker(10 * time.Minute)

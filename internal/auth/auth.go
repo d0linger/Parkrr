@@ -37,26 +37,37 @@ const userCtxKey ctxKey = 0
 
 // Manager provides authentication services backed by Postgres.
 type Manager struct {
-	pool          *pgxpool.Pool
-	sessionMaxAge time.Duration
-	secureCookies bool
-	trustProxy    bool
-	aead          cipher.AEAD
+	pool           *pgxpool.Pool
+	sessionMaxAge  time.Duration
+	sliding        bool          // renew session expiry on activity
+	absoluteMaxAge time.Duration // hard cap on total session lifetime (sliding mode)
+	secureCookies  bool
+	trustProxy     bool
+	aead           cipher.AEAD
+}
+
+// SessionConfig groups the session-lifetime settings for NewManager.
+type SessionConfig struct {
+	MaxAge         int // seconds (idle window when sliding, else absolute)
+	Sliding        bool
+	AbsoluteMaxAge int // seconds; hard cap when sliding
 }
 
 // NewManager constructs an auth Manager. secret is used to derive the key that
 // encrypts TOTP secrets at rest.
-func NewManager(pool *pgxpool.Pool, sessionMaxAge int, secureCookies, trustProxy bool, secret string) (*Manager, error) {
+func NewManager(pool *pgxpool.Pool, sc SessionConfig, secureCookies, trustProxy bool, secret string) (*Manager, error) {
 	aead, err := newAEAD(secret)
 	if err != nil {
 		return nil, err
 	}
 	return &Manager{
-		pool:          pool,
-		sessionMaxAge: time.Duration(sessionMaxAge) * time.Second,
-		secureCookies: secureCookies,
-		trustProxy:    trustProxy,
-		aead:          aead,
+		pool:           pool,
+		sessionMaxAge:  time.Duration(sc.MaxAge) * time.Second,
+		sliding:        sc.Sliding,
+		absoluteMaxAge: time.Duration(sc.AbsoluteMaxAge) * time.Second,
+		secureCookies:  secureCookies,
+		trustProxy:     trustProxy,
+		aead:           aead,
 	}, nil
 }
 
@@ -101,6 +112,10 @@ func (m *Manager) RequestIsHTTPS(r *http.Request) bool {
 func (m *Manager) cookieSecure(r *http.Request) bool {
 	return m.secureCookies || m.RequestIsHTTPS(r)
 }
+
+// CookieSecure exposes the Secure-flag decision for handlers that set their own
+// cookies (e.g. the WebAuthn ceremony cookie).
+func (m *Manager) CookieSecure(r *http.Request) bool { return m.cookieSecure(r) }
 
 // HashPassword returns a bcrypt hash of the given plaintext password.
 func HashPassword(password string) (string, error) {
@@ -188,7 +203,15 @@ func (m *Manager) CreateSession(ctx context.Context, w http.ResponseWriter, r *h
 		return err
 	}
 
+	m.writeSessionCookies(w, r, token, csrf, expires)
+	return nil
+}
+
+// writeSessionCookies sets (or refreshes) the session and CSRF cookies so they
+// expire at expires. Shared by session creation and sliding renewal.
+func (m *Manager) writeSessionCookies(w http.ResponseWriter, r *http.Request, token, csrf string, expires time.Time) {
 	secure := m.cookieSecure(r)
+	maxAge := int(time.Until(expires).Seconds())
 	// #nosec G124 -- HttpOnly + SameSite=Lax are set; Secure is derived from
 	// cookieSecure(r) and is true behind TLS/a trusted proxy (false only for
 	// plain-HTTP local dev).
@@ -197,7 +220,7 @@ func (m *Manager) CreateSession(ctx context.Context, w http.ResponseWriter, r *h
 		Value:    token,
 		Path:     "/",
 		Expires:  expires,
-		MaxAge:   int(m.sessionMaxAge.Seconds()),
+		MaxAge:   maxAge,
 		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
@@ -209,12 +232,52 @@ func (m *Manager) CreateSession(ctx context.Context, w http.ResponseWriter, r *h
 		Value:    csrf,
 		Path:     "/",
 		Expires:  expires,
-		MaxAge:   int(m.sessionMaxAge.Seconds()),
+		MaxAge:   maxAge,
 		HttpOnly: false,
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
-	return nil
+}
+
+// slide extends a session's expiry (and cookie lifetime) on activity, capped by
+// the absolute max age. No-op unless sliding is enabled, and only renews once
+// less than half the idle window remains — limiting DB writes and Set-Cookie
+// churn to roughly once per half-window.
+func (m *Manager) slide(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+	if !m.sliding {
+		return
+	}
+	sc, err := r.Cookie(SessionCookie)
+	if err != nil || sc.Value == "" {
+		return
+	}
+	cc, err := r.Cookie(CSRFCookie)
+	if err != nil {
+		return
+	}
+	tokenHash := hashToken(sc.Value)
+	var createdAt, expiresAt time.Time
+	if err := m.pool.QueryRow(ctx,
+		`SELECT created_at, expires_at FROM sessions WHERE token=$1`, tokenHash).
+		Scan(&createdAt, &expiresAt); err != nil {
+		return
+	}
+	now := time.Now()
+	if expiresAt.Sub(now) > m.sessionMaxAge/2 {
+		return // still fresh; nothing to do
+	}
+	newExpiry := now.Add(m.sessionMaxAge)
+	if capAt := createdAt.Add(m.absoluteMaxAge); newExpiry.After(capAt) {
+		newExpiry = capAt
+	}
+	if !newExpiry.After(expiresAt) {
+		return // at the absolute cap
+	}
+	if _, err := m.pool.Exec(ctx,
+		`UPDATE sessions SET expires_at=$1 WHERE token=$2`, newExpiry, tokenHash); err != nil {
+		return
+	}
+	m.writeSessionCookies(w, r, sc.Value, cc.Value, newExpiry)
 }
 
 // DestroySession removes the current session and clears cookies.
@@ -306,6 +369,8 @@ func (m *Manager) RequireAuth(next http.Handler) http.Handler {
 			writeJSONError(w, http.StatusForbidden, "invalid CSRF token")
 			return
 		}
+		// Extend the session on activity when sliding expiration is enabled.
+		m.slide(r.Context(), w, r)
 		ctx := context.WithValue(r.Context(), userCtxKey, u)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

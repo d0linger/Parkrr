@@ -106,7 +106,12 @@ erreichbar). Schema-Migrationen laufen automatisch beim Start.
 | `PARKRR_ADMIN_EMAIL` | Admin-E-Mail | `admin@example.com` |
 | `PARKRR_ADMIN_PASSWORD` | **Pflicht** – Admin-Passwort | – |
 | `PARKRR_SESSION_SECRET` | **Pflicht** – Session-Secret (min. 16 Zeichen) | – |
-| `PARKRR_SESSION_MAX_AGE` | Session-Dauer in Sekunden | `604800` (7 Tage) |
+| `PARKRR_SESSION_MAX_AGE` | Session-Dauer bzw. Inaktivitätsfenster (Sek.) | `604800` (7 Tage) |
+| `PARKRR_SESSION_SLIDING` | Session bei Aktivität verlängern (Re-Login erst nach Inaktivität) | `false` |
+| `PARKRR_SESSION_ABSOLUTE_MAX_AGE` | harte Obergrenze der Session-Lebensdauer (Sek., bei Sliding) | `7776000` (90 Tage) |
+| `PARKRR_WEBAUTHN_RP_ID` | Passkeys aktivieren: registrierbare Domain (ohne Schema/Port) | – (aus) |
+| `PARKRR_WEBAUTHN_RP_NAME` | Anzeigename im Authenticator | `Parkrr` |
+| `PARKRR_WEBAUTHN_ORIGINS` | erlaubte Origins, z. B. `https://parkrr.example.com` | – |
 | `PARKRR_SECURE_COOKIES` | `Secure`-Flag für Cookies (secure-by-default; `false` nur für Plain-HTTP-Dev auf Nicht-`localhost`) | `true` |
 | `PARKRR_TRUSTED_PROXY` | hinter Reverse Proxy: `X-Forwarded-*` vertrauen | `false` |
 | `PARKRR_RATE_LIMIT_PER_MIN` | genereller per-IP-Request-Budget/Minute (`0` = aus) | `600` |
@@ -136,6 +141,23 @@ das distroless-Image hat keine Shell/curl). Das **Audit-Log ist append-only**
 **Sicherheit:** Passwortänderungen rotieren die Session und melden andere Geräte
 ab; neue Passwörter werden optional gegen HIBP geprüft
 (`PARKRR_CHECK_BREACHED_PASSWORDS`); Login/2FA-Verifizierung sind drosselt.
+
+### 🔑 Passkeys (WebAuthn)
+
+Passwortlose, phishing-resistente Anmeldung per Fingerabdruck/Gesichtserkennung.
+Aktiv, sobald `PARKRR_WEBAUTHN_RP_ID` gesetzt ist (benötigt HTTPS über den Proxy):
+
+```env
+PARKRR_WEBAUTHN_RP_ID=parkrr.example.com
+PARKRR_WEBAUTHN_ORIGINS=https://parkrr.example.com
+```
+
+- Einrichtung: **Einstellungen → Passkeys → „+ Passkey hinzufügen"** (nach normaler Anmeldung).
+- Anmeldung: Button **„Mit Passkey anmelden"** auf dem Login-Screen (ohne Benutzernamen).
+- Passwort + TOTP + Recovery-Codes bleiben als Fallback/Wiederherstellung erhalten.
+- Der Server speichert nur **öffentliche Schlüssel** – kein geheimes Material; der
+  private Schlüssel verlässt das Gerät nie. Ein Passkey ist selbst schon MFA, daher
+  wird bei der Passkey-Anmeldung **kein** TOTP zusätzlich abgefragt.
 
 ---
 

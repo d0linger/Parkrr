@@ -192,6 +192,8 @@ textarea { resize: vertical; min-height: 72px; }
     box-shadow: 0 0 0 2px rgba(218, 54, 51, 0.18);
 }
 
+#passkey-login { margin-top: 0.5rem; }
+
 /* Skip-to-content link, visible only on keyboard focus. */
 .skip-link {
     position: absolute;
