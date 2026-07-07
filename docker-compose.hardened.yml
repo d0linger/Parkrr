@@ -16,7 +16,8 @@ services:
     # to the container filesystem, so the rootfs can be read-only.
     read_only: true
     tmpfs:
-      - /tmp
+      # Bounded so a runaway temp write cannot consume host RAM up to mem_limit.
+      - /tmp:size=32m,mode=1777
     security_opt:
       - no-new-privileges:true
     cap_drop:

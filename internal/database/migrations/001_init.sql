@@ -57,12 +57,3 @@ CREATE TABLE IF NOT EXISTS vehicles (
 );
 CREATE INDEX IF NOT EXISTS idx_vehicles_person ON vehicles(person_id);
 CREATE INDEX IF NOT EXISTS idx_vehicles_category ON vehicles(category_id);
-
--- Seed a starting set of centrally-managed vehicle categories.
-INSERT INTO categories (name, default_monthly_cost, default_yearly_cost) VALUES
-    ('Auto',        50.00,  550.00),
-    ('Anhänger',    30.00,  330.00),
-    ('Wohnwagen',   70.00,  770.00),
-    ('Wohnmobil',   90.00,  990.00),
-    ('Motorrad',    25.00,  275.00)
-ON CONFLICT (name) DO NOTHING;
