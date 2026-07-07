@@ -1,0 +1,46 @@
+# Hardening overlay — apply on top of docker-compose.yml OR docker-compose.ghcr.yml:
+#
+#   docker compose -f docker-compose.yml       -f docker-compose.hardened.yml up -d
+#   docker compose -f docker-compose.ghcr.yml  -f docker-compose.hardened.yml up -d
+#
+# Works with both rootful and rootless engines (Docker rootless / Podman). It
+# adds no-new-privileges, capability dropping, a read-only app rootfs and
+# resource limits. The app is a static distroless binary that already runs as a
+# non-root user and writes nothing to disk, so it can be locked down hard;
+# Postgres needs a writable data dir and a few capabilities for its entrypoint,
+# so it is hardened more conservatively.
+
+services:
+  app:
+    # Static binary, logs to stdout, photos live in the DB — nothing is written
+    # to the container filesystem, so the rootfs can be read-only.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Belt-and-suspenders: the image already sets USER nonroot (uid 65532).
+    user: "65532:65532"
+    mem_limit: 256m
+    pids_limit: 128
+    cpus: 1.0
+
+  db:
+    security_opt:
+      - no-new-privileges:true
+    # Drop everything, then add back only what the official Postgres entrypoint
+    # needs: chown the data dir (CHOWN/FOWNER/DAC_OVERRIDE) and drop to the
+    # postgres user via gosu (SETUID/SETGID). Remove this block if your Postgres
+    # image/entrypoint differs and fails to start.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    mem_limit: 512m
+    pids_limit: 256

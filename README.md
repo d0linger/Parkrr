@@ -221,6 +221,51 @@ server {
 
 ---
 
+## 🛡️ Rootless & hardened deployment
+
+Parkrr runs cleanly under a **rootless engine** (rootless Docker or Podman). It
+needs no privileged features, no host networking, and no bind mounts: the app
+image already runs as a **non-root** user (distroless `nonroot`, uid 65532),
+photos live in the database, and the DB uses a **named volume**. The published
+ports (`8099:8080`) are ≥ 1024, so no extra capability is required to bind them.
+
+**Rootless Docker (Ubuntu):**
+
+```bash
+sudo apt install -y uidmap dbus-user-session
+dockerd-rootless-setuptool.sh install      # run as your non-root user
+loginctl enable-linger "$USER"             # keep containers up after logout
+export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock
+docker compose up -d                        # compose file is unchanged
+```
+
+**Podman (rootless by default):** `podman compose up -d` — no daemon, no setup tool.
+
+**Portainer:** point the endpoint at the rootless socket
+(`/run/user/<uid>/docker.sock`) instead of `/var/run/docker.sock`, then deploy
+Parkrr as a **Stack** (set the env vars in the Stack UI instead of `.env`).
+
+> **Migrating existing data:** a rootless engine uses a different data root
+> (`~/.local/share/docker`), so a previous rootful `parkrr-db-data` volume is not
+> visible. Migrate with `pg_dump` from the old stack and restore into the new one
+> (don't copy the volume directory — the UID mapping differs).
+
+### Extra hardening overlay
+
+`docker-compose.hardened.yml` adds `no-new-privileges`, capability dropping, a
+read-only app rootfs and resource limits. Apply it on top of either base file
+(works rootful **and** rootless):
+
+```bash
+docker compose -f docker-compose.yml      -f docker-compose.hardened.yml up -d
+docker compose -f docker-compose.ghcr.yml -f docker-compose.hardened.yml up -d
+```
+
+The app is locked down hard (read-only rootfs, `cap_drop: ALL`); Postgres is
+hardened more conservatively (it keeps the few capabilities its entrypoint needs).
+
+---
+
 ## 👥 Roles & permissions
 
 | Role | Read | People & vehicles | Extra charges | Tariffs, services, users, audit |
