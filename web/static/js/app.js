@@ -99,7 +99,7 @@
     }
 
     // ---------- state ----------
-    const state = { user: null, persons: [], categories: [], services: [] };
+    const state = { user: null, persons: [], categories: [], services: [], capabilities: {} };
 
     // permission helpers
     const isAdmin = () => !!(state.user && state.user.is_admin);
@@ -1125,6 +1125,11 @@
         }
         page.append(twoFA);
 
+        // passkeys
+        if (state.capabilities.passkeys && webauthnSupported()) {
+            page.append(passkeysCard());
+        }
+
         // sessions
         const sessCard = el('div', { class: 'card' });
         sessCard.append(el('div', { class: 'page-head' }, el('h3', {}, 'Aktive Sitzungen'),
@@ -1263,12 +1268,112 @@
         $('#app-view').hidden = true;
         $('#login-view').hidden = false;
         $('#login-totp-wrap').hidden = true;
+        const pkBtn = $('#passkey-login');
+        if (pkBtn) pkBtn.hidden = !(state.capabilities.passkeys && webauthnSupported());
         $('#login-username').focus();
     }
     async function logout() {
         try { await api.post('/auth/logout'); } catch { /* ignore */ }
         state.user = null;
         showLogin();
+    }
+
+    // ---------- passkeys (WebAuthn) ----------
+    const webauthnSupported = () => typeof window.PublicKeyCredential !== 'undefined';
+    const b64uToBuf = (s) => {
+        s = String(s).replace(/-/g, '+').replace(/_/g, '/');
+        const pad = s.length % 4 ? '='.repeat(4 - (s.length % 4)) : '';
+        const bin = atob(s + pad);
+        const buf = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+        return buf.buffer;
+    };
+    const bufToB64u = (buf) => {
+        const bytes = new Uint8Array(buf);
+        let bin = '';
+        for (const b of bytes) bin += String.fromCharCode(b);
+        return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    };
+
+    async function passkeyRegister() {
+        if (!webauthnSupported()) { toast('Dieses Gerät unterstützt keine Passkeys', 'error'); return; }
+        try {
+            const opts = await api.post('/passkeys/register/begin', {});
+            const pk = opts.publicKey;
+            pk.challenge = b64uToBuf(pk.challenge);
+            pk.user.id = b64uToBuf(pk.user.id);
+            if (pk.excludeCredentials) pk.excludeCredentials.forEach((c) => { c.id = b64uToBuf(c.id); });
+            const cred = await navigator.credentials.create({ publicKey: pk });
+            await api.post('/passkeys/register/finish', {
+                id: cred.id, rawId: bufToB64u(cred.rawId), type: cred.type,
+                response: {
+                    attestationObject: bufToB64u(cred.response.attestationObject),
+                    clientDataJSON: bufToB64u(cred.response.clientDataJSON),
+                    transports: cred.response.getTransports ? cred.response.getTransports() : [],
+                },
+                clientExtensionResults: cred.getClientExtensionResults ? cred.getClientExtensionResults() : {},
+            });
+            toast('Passkey hinzugefügt', 'success');
+            render();
+        } catch (e) {
+            if (e && e.name === 'NotAllowedError') return; // user cancelled the prompt
+            toast(e.message || 'Passkey-Registrierung fehlgeschlagen', 'error');
+        }
+    }
+
+    async function passkeyLogin() {
+        if (!webauthnSupported()) { toast('Dieses Gerät unterstützt keine Passkeys', 'error'); return; }
+        const errEl = $('#login-error'); errEl.hidden = true;
+        try {
+            const opts = await api.post('/auth/passkey/login/begin', {});
+            const pk = opts.publicKey;
+            pk.challenge = b64uToBuf(pk.challenge);
+            if (pk.allowCredentials) pk.allowCredentials.forEach((c) => { c.id = b64uToBuf(c.id); });
+            const cred = await navigator.credentials.get({ publicKey: pk });
+            state.user = await api.post('/auth/passkey/login/finish', {
+                id: cred.id, rawId: bufToB64u(cred.rawId), type: cred.type,
+                response: {
+                    authenticatorData: bufToB64u(cred.response.authenticatorData),
+                    clientDataJSON: bufToB64u(cred.response.clientDataJSON),
+                    signature: bufToB64u(cred.response.signature),
+                    userHandle: cred.response.userHandle ? bufToB64u(cred.response.userHandle) : null,
+                },
+                clientExtensionResults: cred.getClientExtensionResults ? cred.getClientExtensionResults() : {},
+            });
+            showApp();
+        } catch (e) {
+            if (e && e.name === 'NotAllowedError') return; // user cancelled
+            errEl.textContent = e.message || 'Passkey-Anmeldung fehlgeschlagen';
+            errEl.hidden = false;
+        }
+    }
+
+    function passkeysCard() {
+        const card = el('div', { class: 'card' }, el('h3', {}, 'Passkeys'),
+            el('p', { class: 'muted' }, 'Anmeldung per Fingerabdruck/Gesichtserkennung – ohne Passwort.'));
+        const list = el('div', {});
+        card.append(list);
+        const refresh = async () => {
+            list.innerHTML = '';
+            let creds = [];
+            try { creds = await api.get('/passkeys'); } catch { /* ignore */ }
+            if (!creds.length) { list.append(el('p', { class: 'muted' }, 'Noch keine Passkeys.')); return; }
+            for (const c of creds) {
+                list.append(el('div', { class: 'balance' },
+                    el('div', {}, el('div', {}, esc(c.name)),
+                        el('div', { class: 't-time' }, 'seit ' + fmtDate(c.created_at) +
+                            (c.last_used_at ? ' · zuletzt ' + fmtDate(c.last_used_at) : ''))),
+                    el('button', { class: 'btn btn-ghost btn-sm', onclick: () => delPasskey(c) }, 'Entfernen')));
+            }
+        };
+        card.append(el('button', { class: 'btn btn-primary btn-block', style: 'margin-top:.6rem', onclick: passkeyRegister }, '+ Passkey hinzufügen'));
+        refresh();
+        return card;
+    }
+    async function delPasskey(c) {
+        if (!await confirmDialog('Passkey entfernen?', `„${c.name}“ wird entfernt.`, 'Entfernen')) return;
+        try { await api.del('/passkeys/' + c.id); toast('Passkey entfernt', 'success'); render(); }
+        catch (e) { toast(e.message, 'error'); }
     }
 
     function bindStatic() {
@@ -1293,6 +1398,8 @@
                 errEl.hidden = false;
             }
         });
+        const pkBtn = $('#passkey-login');
+        if (pkBtn) pkBtn.addEventListener('click', passkeyLogin);
         $('#theme-btn').addEventListener('click', toggleTheme);
         $('#menu-btn').addEventListener('click', openMenu);
         $$('.tab').forEach((t) => t.addEventListener('click', () => navigate(t.dataset.route)));
@@ -1335,6 +1442,7 @@
         bindStatic();
         setupInstallPrompt();
         setupOfflineIndicator();
+        try { state.capabilities = await api.get('/auth/capabilities'); } catch { state.capabilities = {}; }
         try { state.user = await api.get('/auth/me'); showApp(); }
         catch { showLogin(); }
         if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});

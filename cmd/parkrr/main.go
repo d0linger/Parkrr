@@ -104,7 +104,11 @@ func run() error {
 		return err
 	}
 
-	authMgr, err := auth.NewManager(pool, cfg.SessionMaxAge, cfg.SecureCookies, cfg.TrustedProxies, cfg.SessionSecret)
+	authMgr, err := auth.NewManager(pool, auth.SessionConfig{
+		MaxAge:         cfg.SessionMaxAge,
+		Sliding:        cfg.SessionSliding,
+		AbsoluteMaxAge: cfg.SessionAbsoluteMaxAge,
+	}, cfg.SecureCookies, cfg.TrustedProxies, cfg.SessionSecret)
 	if err != nil {
 		return err
 	}
@@ -114,10 +118,19 @@ func run() error {
 		return err
 	}
 
+	webAuthn, err := auth.NewWebAuthnService(pool, cfg.WebAuthnRPID,
+		cfg.WebAuthnRPDisplayName, cfg.WebAuthnOrigins)
+	if err != nil {
+		return err
+	}
+	if webAuthn.Enabled() {
+		slog.Info("passkeys enabled", "rp_id", cfg.WebAuthnRPID, "origins", cfg.WebAuthnOrigins)
+	}
+
 	cleanupStop := make(chan struct{})
 	defer close(cleanupStop)
 
-	handler, err := server.New(pool, authMgr, cfg.RateLimitPerMin, cfg.MetricsToken,
+	handler, err := server.New(pool, authMgr, webAuthn, cfg.RateLimitPerMin, cfg.MetricsToken,
 		cfg.CheckBreachedPasswords, cleanupStop)
 	if err != nil {
 		return err

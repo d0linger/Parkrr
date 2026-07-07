@@ -22,10 +22,10 @@ import (
 // New builds the top-level HTTP handler with all routes registered. Background
 // goroutines started here (rate-limiter cleanup, login-throttle cleanup) run
 // until stop is closed.
-func New(pool *pgxpool.Pool, authMgr *auth.Manager, rateLimitPerMin int, metricsToken string, checkBreachedPasswords bool, stop <-chan struct{}) (http.Handler, error) {
+func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, checkBreachedPasswords bool, stop <-chan struct{}) (http.Handler, error) {
 	h := handlers.New(pool)
 	h.CheckBreachedPasswords = checkBreachedPasswords
-	ah := handlers.NewAuthHandler(h, authMgr, stop)
+	ah := handlers.NewAuthHandler(h, authMgr, wa, stop)
 
 	mux := http.NewServeMux()
 
@@ -38,6 +38,9 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, rateLimitPerMin int, metrics
 
 	// --- Auth (public) ---
 	mux.HandleFunc("POST /api/auth/login", ah.Login)
+	mux.HandleFunc("GET /api/auth/capabilities", ah.Capabilities)
+	mux.HandleFunc("POST /api/auth/passkey/login/begin", ah.PasskeyLoginBegin)
+	mux.HandleFunc("POST /api/auth/passkey/login/finish", ah.PasskeyLoginFinish)
 
 	// --- Auth (protected) ---
 	mux.Handle("POST /api/auth/logout", authed(hf(ah.Logout)))
@@ -51,6 +54,12 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, rateLimitPerMin int, metrics
 	mux.Handle("POST /api/auth/2fa/disable", authed(hf(ah.TOTPDisable)))
 	mux.Handle("GET /api/auth/2fa/backup-codes", authed(hf(ah.TOTPBackupCount)))
 	mux.Handle("POST /api/auth/2fa/backup-codes/regenerate", authed(hf(ah.TOTPRegenerateBackup)))
+
+	// --- Passkeys / WebAuthn (protected: manage your own) ---
+	mux.Handle("GET /api/passkeys", authed(hf(ah.ListPasskeys)))
+	mux.Handle("POST /api/passkeys/register/begin", authed(hf(ah.PasskeyRegisterBegin)))
+	mux.Handle("POST /api/passkeys/register/finish", authed(hf(ah.PasskeyRegisterFinish)))
+	mux.Handle("DELETE /api/passkeys/{id}", authed(hf(ah.DeletePasskey)))
 
 	// --- Persons (read: any; write: manager/admin) ---
 	mux.Handle("GET /api/persons", authed(hf(h.ListPersons)))

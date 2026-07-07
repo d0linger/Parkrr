@@ -22,11 +22,18 @@ type Config struct {
 	AdminPassword string
 
 	// Security
-	SessionSecret   string
-	SessionMaxAge   int  // seconds
-	SecureCookies   bool // force the Secure flag on cookies (default true; set false only for plain-HTTP dev)
-	TrustedProxies  bool
-	RateLimitPerMin int // general per-IP request budget (0 = disabled)
+	SessionSecret         string
+	SessionMaxAge         int  // seconds (idle window when sliding; else absolute)
+	SessionSliding        bool // renew expiry on activity (re-login only after inactivity)
+	SessionAbsoluteMaxAge int  // seconds; hard cap on a session's total lifetime
+	SecureCookies         bool // force the Secure flag on cookies (default true; set false only for plain-HTTP dev)
+	TrustedProxies        bool
+	RateLimitPerMin       int // general per-IP request budget (0 = disabled)
+
+	// WebAuthn / passkeys (feature-flagged: enabled only when RPID is set)
+	WebAuthnRPID          string   // Relying Party ID = the site's registrable domain
+	WebAuthnRPDisplayName string   // human-readable name shown by the authenticator
+	WebAuthnOrigins       []string // allowed origins, e.g. https://parkrr.example.com
 
 	// Observability & data lifecycle
 	MetricsToken       string // Bearer token required to scrape /metrics ("" = open)
@@ -39,16 +46,22 @@ type Config struct {
 // Load reads configuration from the environment, applying sensible defaults.
 func Load() (*Config, error) {
 	cfg := &Config{
-		ListenAddr:      getenv("PARKRR_LISTEN_ADDR", ":8080"),
-		DatabaseURL:     os.Getenv("PARKRR_DATABASE_URL"),
-		AdminUsername:   getenv("PARKRR_ADMIN_USERNAME", "admin"),
-		AdminEmail:      getenv("PARKRR_ADMIN_EMAIL", "admin@example.com"),
-		AdminPassword:   os.Getenv("PARKRR_ADMIN_PASSWORD"),
-		SessionSecret:   os.Getenv("PARKRR_SESSION_SECRET"),
-		SessionMaxAge:   getenvInt("PARKRR_SESSION_MAX_AGE", 60*60*24*7),
-		SecureCookies:   getenvBool("PARKRR_SECURE_COOKIES", true),
-		TrustedProxies:  getenvBool("PARKRR_TRUSTED_PROXY", false),
-		RateLimitPerMin: getenvInt("PARKRR_RATE_LIMIT_PER_MIN", 600),
+		ListenAddr:            getenv("PARKRR_LISTEN_ADDR", ":8080"),
+		DatabaseURL:           os.Getenv("PARKRR_DATABASE_URL"),
+		AdminUsername:         getenv("PARKRR_ADMIN_USERNAME", "admin"),
+		AdminEmail:            getenv("PARKRR_ADMIN_EMAIL", "admin@example.com"),
+		AdminPassword:         os.Getenv("PARKRR_ADMIN_PASSWORD"),
+		SessionSecret:         os.Getenv("PARKRR_SESSION_SECRET"),
+		SessionMaxAge:         getenvInt("PARKRR_SESSION_MAX_AGE", 60*60*24*7),
+		SessionSliding:        getenvBool("PARKRR_SESSION_SLIDING", false),
+		SessionAbsoluteMaxAge: getenvInt("PARKRR_SESSION_ABSOLUTE_MAX_AGE", 60*60*24*90),
+		SecureCookies:         getenvBool("PARKRR_SECURE_COOKIES", true),
+		TrustedProxies:        getenvBool("PARKRR_TRUSTED_PROXY", false),
+		RateLimitPerMin:       getenvInt("PARKRR_RATE_LIMIT_PER_MIN", 600),
+
+		WebAuthnRPID:          getenv("PARKRR_WEBAUTHN_RP_ID", ""),
+		WebAuthnRPDisplayName: getenv("PARKRR_WEBAUTHN_RP_NAME", "Parkrr"),
+		WebAuthnOrigins:       splitList(os.Getenv("PARKRR_WEBAUTHN_ORIGINS")),
 
 		MetricsToken:       getenv("PARKRR_METRICS_TOKEN", ""),
 		AuditRetentionDays: getenvInt("PARKRR_AUDIT_RETENTION_DAYS", 365),
@@ -95,6 +108,18 @@ func getenvInt(key string, def int) int {
 		}
 	}
 	return def
+}
+
+// splitList parses a comma- or space-separated list, dropping empties.
+func splitList(s string) []string {
+	fields := strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' })
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func getenvBool(key string, def bool) bool {
