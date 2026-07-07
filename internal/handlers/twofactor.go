@@ -10,6 +10,11 @@ import (
 // user and returns the secret plus a QR-code data URI to scan.
 func (h *AuthHandler) TOTPSetup(w http.ResponseWriter, r *http.Request) {
 	u, _ := auth.UserFrom(r.Context())
+
+	if _, ok := h.checkRateLimit(w, r, u.Username); !ok {
+		return
+	}
+
 	if u.TOTPEnabled {
 		writeError(w, http.StatusConflict, "two-factor is already enabled")
 		return
@@ -55,6 +60,12 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+
+	key, ok := h.checkRateLimit(w, r, u.Username)
+	if !ok {
+		return
+	}
+
 	var encSecret string
 	if err := h.Pool.QueryRow(r.Context(),
 		`SELECT totp_secret FROM users WHERE id=$1`, u.ID).Scan(&encSecret); err != nil || encSecret == "" {
@@ -62,9 +73,11 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.Auth.ValidateEncryptedTOTP(encSecret, trim(req.Code)) {
+		h.Limiter.RecordFailure(key)
 		writeError(w, http.StatusBadRequest, "invalid code")
 		return
 	}
+	h.Limiter.Reset(key)
 	if _, err := h.Pool.Exec(r.Context(),
 		`UPDATE users SET totp_enabled=TRUE, updated_at=now() WHERE id=$1`, u.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not enable two-factor")
