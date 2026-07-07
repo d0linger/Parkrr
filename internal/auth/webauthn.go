@@ -51,6 +51,8 @@ type webAuthnUser struct {
 
 func userHandle(id int64) []byte {
 	b := make([]byte, 8)
+	// #nosec G115 -- user id is a positive bigserial; bit-preserving encoding of
+	// the opaque 8-byte WebAuthn user handle.
 	binary.BigEndian.PutUint64(b, uint64(id))
 	return b
 }
@@ -59,6 +61,7 @@ func handleToID(b []byte) int64 {
 	if len(b) != 8 {
 		return 0
 	}
+	// #nosec G115 -- exact inverse of userHandle; ids originate from int64.
 	return int64(binary.BigEndian.Uint64(b))
 }
 
@@ -245,12 +248,4 @@ func (s *WebAuthnService) DeleteCredential(ctx context.Context, userID, id int64
 		return 0, err
 	}
 	return ct.RowsAffected(), nil
-}
-
-// CredentialCount returns how many passkeys the user has enrolled.
-func (s *WebAuthnService) CredentialCount(ctx context.Context, userID int64) (int, error) {
-	var n int
-	err := s.pool.QueryRow(ctx,
-		`SELECT count(*) FROM webauthn_credentials WHERE user_id=$1`, userID).Scan(&n)
-	return n, err
 }

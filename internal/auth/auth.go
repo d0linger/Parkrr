@@ -113,10 +113,6 @@ func (m *Manager) cookieSecure(r *http.Request) bool {
 	return m.secureCookies || m.RequestIsHTTPS(r)
 }
 
-// CookieSecure exposes the Secure-flag decision for handlers that set their own
-// cookies (e.g. the WebAuthn ceremony cookie).
-func (m *Manager) CookieSecure(r *http.Request) bool { return m.cookieSecure(r) }
-
 // HashPassword returns a bcrypt hash of the given plaintext password.
 func HashPassword(password string) (string, error) {
 	b, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)

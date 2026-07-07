@@ -38,7 +38,7 @@ func (h *AuthHandler) passkeysEnabled(w http.ResponseWriter) bool {
 	return true
 }
 
-func (h *AuthHandler) storeCeremony(w http.ResponseWriter, r *http.Request, sd webauthn.SessionData, name string) error {
+func (h *AuthHandler) storeCeremony(w http.ResponseWriter, sd webauthn.SessionData, name string) error {
 	blob, err := json.Marshal(waCeremony{Session: sd, Name: name})
 	if err != nil {
 		return err
@@ -47,10 +47,12 @@ func (h *AuthHandler) storeCeremony(w http.ResponseWriter, r *http.Request, sd w
 	if err != nil {
 		return err
 	}
-	// #nosec G124 -- HttpOnly + SameSite=Lax; Secure per CookieSecure; short-lived.
+	// Secure is unconditionally true: WebAuthn only runs in a secure context
+	// (HTTPS, or http://localhost which browsers treat as secure and still send
+	// Secure cookies to), so this cookie never needs to work over plain HTTP.
 	http.SetCookie(w, &http.Cookie{
 		Name: waCookie, Value: sealed, Path: "/", MaxAge: 300,
-		HttpOnly: true, Secure: h.Auth.CookieSecure(r), SameSite: http.SameSiteLaxMode,
+		HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode,
 	})
 	return nil
 }
@@ -68,11 +70,11 @@ func (h *AuthHandler) loadCeremony(r *http.Request) (waCeremony, error) {
 	return cer, json.Unmarshal([]byte(plain), &cer)
 }
 
-func (h *AuthHandler) clearCeremony(w http.ResponseWriter, r *http.Request) {
-	// #nosec G124 -- deletion cookie mirroring how the ceremony cookie was set.
+func (h *AuthHandler) clearCeremony(w http.ResponseWriter) {
+	// Deletion cookie mirroring how the ceremony cookie was set (Secure always on).
 	http.SetCookie(w, &http.Cookie{
 		Name: waCookie, Value: "", Path: "/", MaxAge: -1,
-		HttpOnly: true, Secure: h.Auth.CookieSecure(r), SameSite: http.SameSiteLaxMode,
+		HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode,
 	})
 }
 
@@ -95,7 +97,7 @@ func (h *AuthHandler) PasskeyRegisterBegin(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "could not start passkey registration")
 		return
 	}
-	if err := h.storeCeremony(w, r, *sd, body.Name); err != nil {
+	if err := h.storeCeremony(w, *sd, body.Name); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not start passkey registration")
 		return
 	}
@@ -113,7 +115,7 @@ func (h *AuthHandler) PasskeyRegisterFinish(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "passkey registration expired, please retry")
 		return
 	}
-	h.clearCeremony(w, r)
+	h.clearCeremony(w)
 	if err := h.WebAuthn.FinishRegistration(r.Context(), u, cer.Session, r, cer.Name); err != nil {
 		slog.Warn("passkey registration failed", "user", u.Username, "err", err)
 		writeError(w, http.StatusBadRequest, "could not verify passkey")
@@ -176,7 +178,7 @@ func (h *AuthHandler) PasskeyLoginBegin(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "could not start passkey login")
 		return
 	}
-	if err := h.storeCeremony(w, r, *sd, ""); err != nil {
+	if err := h.storeCeremony(w, *sd, ""); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not start passkey login")
 		return
 	}
@@ -193,7 +195,7 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "passkey login expired, please retry")
 		return
 	}
-	h.clearCeremony(w, r)
+	h.clearCeremony(w)
 
 	uid, err := h.WebAuthn.FinishLogin(r.Context(), cer.Session, r)
 	if err != nil {

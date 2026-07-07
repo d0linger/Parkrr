@@ -43,9 +43,6 @@ type Config struct {
 	CheckBreachedPasswords bool // check new passwords against the HIBP range API
 }
 
-// WebAuthnEnabled reports whether passkey support is configured.
-func (c *Config) WebAuthnEnabled() bool { return c.WebAuthnRPID != "" }
-
 // Load reads configuration from the environment, applying sensible defaults.
 func Load() (*Config, error) {
 	cfg := &Config{
