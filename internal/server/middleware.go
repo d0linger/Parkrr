@@ -120,7 +120,8 @@ func (l *ipLimiter) cleanup() {
 }
 
 // rateLimit wraps a handler with per-IP throttling. perMin <= 0 disables it.
-func rateLimit(mgr *auth.Manager, perMin int, next http.Handler) http.Handler {
+// The background bucket-cleanup goroutine runs until stop is closed.
+func rateLimit(mgr *auth.Manager, perMin int, stop <-chan struct{}, next http.Handler) http.Handler {
 	if perMin <= 0 {
 		return next
 	}
@@ -128,8 +129,13 @@ func rateLimit(mgr *auth.Manager, perMin int, next http.Handler) http.Handler {
 	go func() {
 		t := time.NewTicker(5 * time.Minute)
 		defer t.Stop()
-		for range t.C {
-			lim.cleanup()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				lim.cleanup()
+			}
 		}
 	}()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -2,11 +2,14 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -16,11 +19,34 @@ import (
 // Handler holds shared dependencies for all HTTP handlers.
 type Handler struct {
 	Pool *pgxpool.Pool
+
+	// CheckBreachedPasswords enables the HIBP k-anonymity check on new passwords.
+	CheckBreachedPasswords bool
+	hibpClient             *http.Client
 }
 
 // New constructs a Handler.
 func New(pool *pgxpool.Pool) *Handler {
-	return &Handler{Pool: pool}
+	return &Handler{
+		Pool:       pool,
+		hibpClient: &http.Client{Timeout: 5 * time.Second},
+	}
+}
+
+// passwordBreached reports whether a new password appears in a known breach.
+// It fails open: if the check is disabled or the HIBP API is unreachable, the
+// password is allowed (availability of password changes is not held hostage to
+// a third-party service), and the failure is logged.
+func (h *Handler) passwordBreached(ctx context.Context, password string) bool {
+	if !h.CheckBreachedPasswords {
+		return false
+	}
+	n, err := auth.BreachedPasswordCount(ctx, h.hibpClient, password)
+	if err != nil {
+		slog.Warn("breached-password check unavailable, allowing", "err", err)
+		return false
+	}
+	return n > 0
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -51,6 +77,27 @@ func pathID(r *http.Request) (int64, bool) {
 }
 
 func trim(s string) string { return strings.TrimSpace(s) }
+
+// pageParams parses ?limit and ?offset for list endpoints, applying a default
+// page size and a hard maximum so a single request can never pull an unbounded
+// result set into memory.
+func pageParams(r *http.Request, defLimit, maxLimit int) (limit, offset int) {
+	limit = defLimit
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > maxLimit {
+		limit = maxLimit
+	}
+	if o := r.URL.Query().Get("offset"); o != "" {
+		if n, err := strconv.Atoi(o); err == nil && n > 0 {
+			offset = n
+		}
+	}
+	return limit, offset
+}
 
 // audit writes an entry to the audit log, deriving the acting user from the
 // request context. Failures are ignored so auditing never breaks a request.

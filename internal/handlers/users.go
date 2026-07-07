@@ -65,6 +65,11 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "username required and password must be at least 8 characters")
 		return
 	}
+	if h.passwordBreached(r.Context(), req.Password) {
+		writeError(w, http.StatusBadRequest,
+			"this password has appeared in a known data breach; please choose another")
+		return
+	}
 	role, ok := normalizeRole(req.Role)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid role")
@@ -130,6 +135,11 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "password must be at least 8 characters")
 			return
 		}
+		if h.passwordBreached(r.Context(), req.Password) {
+			writeError(w, http.StatusBadRequest,
+				"this password has appeared in a known data breach; please choose another")
+			return
+		}
 		hash, err := auth.HashPassword(req.Password)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "could not hash password")
@@ -142,6 +152,9 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 			handleUserUpdateErr(w, err)
 			return
 		}
+		// An admin-forced password change must sign the user out everywhere so
+		// the old credentials can no longer ride an existing session.
+		_, _ = h.Pool.Exec(r.Context(), `DELETE FROM sessions WHERE user_id=$1`, id)
 	} else {
 		_, err := h.Pool.Exec(r.Context(),
 			`UPDATE users SET username=$1, email=$2, role=$3, is_admin=$4, updated_at=now()

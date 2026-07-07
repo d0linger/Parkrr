@@ -2,22 +2,17 @@ package handlers
 
 import (
 	"net/http"
-	"strconv"
 
 	"github.com/preining/parkrr/internal/models"
 )
 
-// ListAudit returns recent audit-log entries (admin only). Supports ?limit=.
+// ListAudit returns recent audit-log entries (admin only). Supports ?limit= and
+// ?offset= for pagination.
 func (h *Handler) ListAudit(w http.ResponseWriter, r *http.Request) {
-	limit := 100
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 500 {
-			limit = n
-		}
-	}
+	limit, offset := pageParams(r, 100, 500)
 	rows, err := h.Pool.Query(r.Context(),
 		`SELECT id, user_id, username, action, entity, entity_id, summary, created_at
-		 FROM audit_log ORDER BY created_at DESC, id DESC LIMIT $1`, limit)
+		 FROM audit_log ORDER BY created_at DESC, id DESC LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return

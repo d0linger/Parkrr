@@ -16,19 +16,24 @@ type AuthHandler struct {
 	Limiter *auth.LoginLimiter
 }
 
-// NewAuthHandler constructs an AuthHandler.
-func NewAuthHandler(h *Handler, mgr *auth.Manager) *AuthHandler {
+// NewAuthHandler constructs an AuthHandler. The background login-throttle
+// cleanup goroutine runs until stop is closed.
+func NewAuthHandler(h *Handler, mgr *auth.Manager, stop <-chan struct{}) *AuthHandler {
 	ah := &AuthHandler{
 		Handler: h,
 		Auth:    mgr,
 		Limiter: auth.NewLoginLimiter(5, 10*time.Minute, 15*time.Minute),
 	}
-	// Start background cleanup of the login throttle.
 	go func() {
 		t := time.NewTicker(10 * time.Minute)
 		defer t.Stop()
-		for range t.C {
-			ah.Limiter.Cleanup()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				ah.Limiter.Cleanup()
+			}
 		}
 	}()
 	return ah
@@ -148,6 +153,11 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "new password must be at least 8 characters")
 		return
 	}
+	if h.passwordBreached(r.Context(), req.NewPassword) {
+		writeError(w, http.StatusBadRequest,
+			"this password has appeared in a known data breach; please choose another")
+		return
+	}
 
 	key, ok := h.checkRateLimit(w, r, u.Username)
 	if !ok {
@@ -170,6 +180,12 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	if _, err := h.Pool.Exec(r.Context(),
 		`UPDATE users SET password_hash=$1, updated_at=now() WHERE id=$2`, hash, u.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update password")
+		return
+	}
+	// Terminate every existing session and bind the new password to a fresh
+	// session + CSRF token (signs out other devices, defeats fixation).
+	if err := h.Auth.RotateSession(r.Context(), w, r, u.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not refresh session")
 		return
 	}
 	h.audit(r, "update", "user", u.ID, "changed own password")

@@ -21,7 +21,7 @@ RUN go mod tidy
 ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
-    -ldflags="-s -w -X main.version=${VERSION}" \
+    -ldflags="-s -w -X github.com/preining/parkrr/internal/server.Version=${VERSION}" \
     -o /out/parkrr ./cmd/parkrr
 
 # ---------- Runtime stage ----------
@@ -32,5 +32,9 @@ COPY --from=build /out/parkrr /app/parkrr
 
 EXPOSE 8080
 USER nonroot:nonroot
+
+# The distroless image has no shell/curl, so the binary probes itself.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["/app/parkrr", "healthcheck"]
 
 ENTRYPOINT ["/app/parkrr"]

@@ -2,7 +2,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -16,10 +19,13 @@ import (
 	"github.com/preining/parkrr/web"
 )
 
-// New builds the top-level HTTP handler with all routes registered.
-func New(pool *pgxpool.Pool, authMgr *auth.Manager, rateLimitPerMin int) (http.Handler, error) {
+// New builds the top-level HTTP handler with all routes registered. Background
+// goroutines started here (rate-limiter cleanup, login-throttle cleanup) run
+// until stop is closed.
+func New(pool *pgxpool.Pool, authMgr *auth.Manager, rateLimitPerMin int, metricsToken string, checkBreachedPasswords bool, stop <-chan struct{}) (http.Handler, error) {
 	h := handlers.New(pool)
-	ah := handlers.NewAuthHandler(h, authMgr)
+	h.CheckBreachedPasswords = checkBreachedPasswords
+	ah := handlers.NewAuthHandler(h, authMgr, stop)
 
 	mux := http.NewServeMux()
 
@@ -99,6 +105,9 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, rateLimitPerMin int) (http.H
 	mux.Handle("POST /api/users/{id}/reset-2fa", admin(hf(h.ResetUserTOTP)))
 	mux.Handle("GET /api/audit", admin(hf(h.ListAudit)))
 
+	// --- Health, readiness and metrics ---
+	registerObservability(mux, pool, metricsToken)
+
 	// --- Static assets and SPA shell ---
 	staticFS, err := fs.Sub(web.StaticFS, "static")
 	if err != nil {
@@ -114,6 +123,11 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, rateLimitPerMin int) (http.H
 	if err != nil {
 		return nil, err
 	}
+	// Asset fingerprinting: append a content hash to the JS/CSS references so a
+	// changed asset gets a new URL (cache-bust) while unchanged assets stay
+	// cacheable forever. Hashes are computed once from the embedded files.
+	indexHTML = fingerprintAsset(indexHTML, staticFS, "/js/app.js", "js/app.js")
+	indexHTML = fingerprintAsset(indexHTML, staticFS, "/css/style.css", "css/style.css")
 
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/")
@@ -135,6 +149,11 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, rateLimitPerMin int) (http.H
 		if path != "" {
 			if f, err := staticFS.Open(path); err == nil {
 				_ = f.Close()
+				// Fingerprinted assets (carrying ?v=) are immutable: safe to cache
+				// aggressively because the URL changes whenever the content does.
+				if r.URL.Query().Get("v") != "" {
+					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+				}
 				fileServer.ServeHTTP(w, r)
 				return
 			}
@@ -145,10 +164,11 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, rateLimitPerMin int) (http.H
 		_, _ = w.Write(indexHTML)
 	})
 
-	// Middleware chain (outermost first): access log -> rate limit ->
+	// Middleware chain (outermost first): access log -> metrics -> rate limit ->
 	// security headers -> routes.
 	chain := securityHeaders(authMgr, mux)
-	chain = rateLimit(authMgr, rateLimitPerMin, chain)
+	chain = rateLimit(authMgr, rateLimitPerMin, stop, chain)
+	chain = metricsMiddleware(mux, chain)
 	chain = requestLogger(authMgr, chain)
 	return chain, nil
 }
@@ -165,15 +185,32 @@ func securityHeaders(authMgr *auth.Manager, next http.Handler) http.Handler {
 		h.Set("Cross-Origin-Resource-Policy", "same-origin")
 		h.Set("Permissions-Policy",
 			"geolocation=(), camera=(), microphone=(), payment=(), usb=(), interest-cohort=()")
-		h.Set("Content-Security-Policy",
-			"default-src 'self'; img-src 'self' data:; style-src 'self'; "+
-				"script-src 'self'; connect-src 'self'; manifest-src 'self'; "+
-				"base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
+		csp := "default-src 'self'; img-src 'self' data:; style-src 'self'; " +
+			"script-src 'self'; connect-src 'self'; manifest-src 'self'; " +
+			"base-uri 'self'; form-action 'self'; frame-ancestors 'none'; " +
+			"object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'self'"
 		if authMgr.RequestIsHTTPS(r) {
+			// Only over HTTPS: forcing upgrades on plain-HTTP local dev would break
+			// same-origin API calls (upgraded to an https port that isn't served).
+			csp += "; upgrade-insecure-requests"
 			h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}
+		h.Set("Content-Security-Policy", csp)
 		next.ServeHTTP(w, r)
 	})
+}
+
+// fingerprintAsset appends "?v=<hash>" to every occurrence of ref in html,
+// where hash is a short content hash of the embedded file at fsPath. If the
+// file cannot be read, html is returned unchanged.
+func fingerprintAsset(html []byte, fsys fs.FS, ref, fsPath string) []byte {
+	b, err := fs.ReadFile(fsys, fsPath)
+	if err != nil {
+		return html
+	}
+	sum := sha256.Sum256(b)
+	v := hex.EncodeToString(sum[:])[:10]
+	return bytes.ReplaceAll(html, []byte(ref+`"`), []byte(ref+`?v=`+v+`"`))
 }
 
 // StartSessionCleanup runs a background loop pruning expired sessions.

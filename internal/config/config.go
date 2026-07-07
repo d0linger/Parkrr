@@ -27,6 +27,13 @@ type Config struct {
 	SecureCookies   bool // force the Secure flag on cookies (default true; set false only for plain-HTTP dev)
 	TrustedProxies  bool
 	RateLimitPerMin int // general per-IP request budget (0 = disabled)
+
+	// Observability & data lifecycle
+	MetricsToken       string // Bearer token required to scrape /metrics ("" = open)
+	AuditRetentionDays int    // prune audit entries older than N days (0 = keep forever)
+
+	// Account security
+	CheckBreachedPasswords bool // check new passwords against the HIBP range API
 }
 
 // Load reads configuration from the environment, applying sensible defaults.
@@ -42,6 +49,11 @@ func Load() (*Config, error) {
 		SecureCookies:   getenvBool("PARKRR_SECURE_COOKIES", true),
 		TrustedProxies:  getenvBool("PARKRR_TRUSTED_PROXY", false),
 		RateLimitPerMin: getenvInt("PARKRR_RATE_LIMIT_PER_MIN", 600),
+
+		MetricsToken:       getenv("PARKRR_METRICS_TOKEN", ""),
+		AuditRetentionDays: getenvInt("PARKRR_AUDIT_RETENTION_DAYS", 365),
+
+		CheckBreachedPasswords: getenvBool("PARKRR_CHECK_BREACHED_PASSWORDS", true),
 	}
 
 	// Allow assembling the DB URL from discrete parts (docker-compose friendly).

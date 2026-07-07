@@ -180,6 +180,31 @@ textarea { resize: vertical; min-height: 72px; }
     margin-top: 0.8rem;
 }
 
+/* Inline per-field validation message under a form input. */
+.field-error {
+    color: var(--danger-hover);
+    font-size: 0.82rem;
+    margin: 0.25rem 0 0.2rem;
+}
+.field-error[hidden] { display: none; }
+[aria-invalid="true"] {
+    border-color: var(--danger) !important;
+    box-shadow: 0 0 0 2px rgba(218, 54, 51, 0.18);
+}
+
+/* Skip-to-content link, visible only on keyboard focus. */
+.skip-link {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+    z-index: 1000;
+    background: var(--primary);
+    color: #fff;
+    padding: 0.6rem 1rem;
+    border-radius: 0 0 var(--radius-sm) 0;
+}
+.skip-link:focus { left: 0; }
+
 /* ---------- Login ---------- */
 .login-view {
     min-height: 100vh; min-height: 100dvh;

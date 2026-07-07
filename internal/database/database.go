@@ -49,9 +49,32 @@ func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-// Migrate applies all embedded SQL migrations that have not yet run.
+// migrationLockKey is a fixed advisory-lock key ("prkr") that serializes schema
+// migrations across application instances, so two pods starting at once cannot
+// apply the same migration concurrently.
+const migrationLockKey int64 = 0x70726b72
+
+// Migrate applies all embedded SQL migrations that have not yet run. It holds a
+// Postgres advisory lock for the duration so only one instance migrates at a
+// time; others block until it finishes, then find every migration applied.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
-	_, err := pool.Exec(ctx, `
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire migration connection: %w", err)
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLockKey); err != nil {
+		return fmt.Errorf("acquire migration lock: %w", err)
+	}
+	defer func() {
+		// Release on a fresh context so a cancelled ctx still unlocks.
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1)`, migrationLockKey)
+	}()
+
+	_, err = conn.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version TEXT PRIMARY KEY,
 			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -75,7 +98,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 
 	for _, name := range names {
 		var exists bool
-		if err := pool.QueryRow(ctx,
+		if err := conn.QueryRow(ctx,
 			`SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = $1)`, name,
 		).Scan(&exists); err != nil {
 			return fmt.Errorf("check migration %s: %w", name, err)
@@ -89,7 +112,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 			return fmt.Errorf("read migration %s: %w", name, err)
 		}
 
-		err = pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, string(sqlBytes)); err != nil {
 				return err
 			}
@@ -103,4 +126,25 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 
 	return nil
+}
+
+// PruneAuditLog deletes audit entries older than keep. It runs inside a
+// transaction that opts into the append-only guard's retention exception (see
+// migration 008), so this is the single sanctioned path for removing audit
+// rows. Returns the number of pruned entries.
+func PruneAuditLog(ctx context.Context, pool *pgxpool.Pool, keep time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-keep)
+	var n int64
+	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SET LOCAL parkrr.allow_audit_prune = 'on'`); err != nil {
+			return err
+		}
+		ct, err := tx.Exec(ctx, `DELETE FROM audit_log WHERE created_at < $1`, cutoff)
+		if err != nil {
+			return err
+		}
+		n = ct.RowsAffected()
+		return nil
+	})
+	return n, err
 }

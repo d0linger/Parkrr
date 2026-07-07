@@ -33,12 +33,14 @@ func (h *Handler) ListVehicles(w http.ResponseWriter, r *http.Request) {
 		rows pgx.Rows
 		err  error
 	)
+	limit, offset := pageParams(r, 1000, 1000)
 	if pid := r.URL.Query().Get("person_id"); pid != "" {
 		rows, err = h.Pool.Query(r.Context(),
-			vehicleSelect+` WHERE v.person_id = $1 ORDER BY v.start_date DESC, v.id DESC`, pid)
+			vehicleSelect+` WHERE v.person_id = $1 ORDER BY v.start_date DESC, v.id DESC LIMIT $2 OFFSET $3`,
+			pid, limit, offset)
 	} else {
 		rows, err = h.Pool.Query(r.Context(),
-			vehicleSelect+` ORDER BY v.start_date DESC, v.id DESC`)
+			vehicleSelect+` ORDER BY v.start_date DESC, v.id DESC LIMIT $1 OFFSET $2`, limit, offset)
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")

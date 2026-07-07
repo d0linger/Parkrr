@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,11 +20,43 @@ import (
 )
 
 func main() {
+	// "parkrr healthcheck" is used by the container HEALTHCHECK. The distroless
+	// image has no shell/curl, so the binary probes itself over HTTP.
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(healthcheck())
+	}
 	setupLogging()
 	if err := run(); err != nil {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
 	}
+}
+
+// healthcheck performs a local GET /healthz and returns a process exit code.
+func healthcheck() int {
+	addr := os.Getenv("PARKRR_LISTEN_ADDR")
+	if addr == "" {
+		addr = ":8080"
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		port = strings.TrimPrefix(addr, ":")
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	// #nosec G704 -- the URL targets this process's own /healthz on the operator-
+	// configured listen address (PARKRR_LISTEN_ADDR), never remote/user input.
+	resp, err := client.Get("http://" + net.JoinHostPort(host, port) + "/healthz")
+	if err != nil {
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 1
+	}
+	return 0
 }
 
 // setupLogging configures the default slog logger. Format and level are
@@ -81,14 +114,18 @@ func run() error {
 		return err
 	}
 
-	handler, err := server.New(pool, authMgr, cfg.RateLimitPerMin)
+	cleanupStop := make(chan struct{})
+	defer close(cleanupStop)
+
+	handler, err := server.New(pool, authMgr, cfg.RateLimitPerMin, cfg.MetricsToken,
+		cfg.CheckBreachedPasswords, cleanupStop)
 	if err != nil {
 		return err
 	}
 
-	cleanupStop := make(chan struct{})
 	go server.StartSessionCleanup(authMgr, cleanupStop)
-	defer close(cleanupStop)
+	go server.StartAuditRetention(pool,
+		time.Duration(cfg.AuditRetentionDays)*24*time.Hour, cleanupStop)
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,

@@ -12,6 +12,29 @@ jobs:
   build-test:
     name: Build & Test
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: parkrr
+          POSTGRES_PASSWORD: parkrr
+          POSTGRES_DB: parkrr_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U parkrr"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Enables the database-gated integration tests (migrations, handlers).
+      PARKRR_TEST_DATABASE_URL: postgres://parkrr:parkrr@localhost:5432/parkrr_test?sslmode=disable
+      # Coverage ratchet floor. Raise this as coverage grows; the gate fails the
+      # build if total statement coverage drops below it.
+      COVERAGE_MIN: "10"
+
     steps:
       - uses: actions/checkout@v4
 
@@ -30,7 +53,14 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: go test -race -coverprofile=coverage.out ./...
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Coverage gate
+        run: |
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/,"",$3); print $3}')
+          echo "Total statement coverage: ${total}% (minimum ${COVERAGE_MIN}%)"
+          awk -v t="$total" -v m="$COVERAGE_MIN" 'BEGIN { exit (t+0 < m+0) ? 1 : 0 }' \
+            || { echo "::error::coverage ${total}% is below the ${COVERAGE_MIN}% floor"; exit 1; }
 
       - name: Build
         run: go build ./...

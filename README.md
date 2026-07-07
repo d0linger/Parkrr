@@ -110,10 +110,32 @@ erreichbar). Schema-Migrationen laufen automatisch beim Start.
 | `PARKRR_SECURE_COOKIES` | `Secure`-Flag für Cookies (secure-by-default; `false` nur für Plain-HTTP-Dev auf Nicht-`localhost`) | `true` |
 | `PARKRR_TRUSTED_PROXY` | hinter Reverse Proxy: `X-Forwarded-*` vertrauen | `false` |
 | `PARKRR_RATE_LIMIT_PER_MIN` | genereller per-IP-Request-Budget/Minute (`0` = aus) | `600` |
+| `PARKRR_AUDIT_RETENTION_DAYS` | Audit-Log-Einträge älter als N Tage werden geprunt (`0` = für immer behalten) | `365` |
+| `PARKRR_METRICS_TOKEN` | Bearer-Token für `/metrics` (leer = offen im internen Netz) | – |
+| `PARKRR_CHECK_BREACHED_PASSWORDS` | neue Passwörter gegen die HIBP-Range-API prüfen (fail-open) | `true` |
 | `PARKRR_LOG_FORMAT` / `PARKRR_LOG_LEVEL` | `json`\|`text` / `debug`..`error` | `json` / `info` |
 
 > Der Admin-Account wird bei **jedem Start** aus den ENV-Werten erstellt bzw.
 > aktualisiert – die ENV bleibt die maßgebliche Quelle für den Admin.
+
+---
+
+## 📈 Health, Readiness & Metrics
+
+| Endpoint | Zweck | Auth |
+|----------|-------|------|
+| `GET /healthz` | Liveness (Prozess läuft, Version) | offen |
+| `GET /readyz` | Readiness (DB erreichbar) – `503` wenn nicht | offen |
+| `GET /metrics` | Prometheus (Request-Zähler/Latenz, DB-Pool) | `PARKRR_METRICS_TOKEN` (Bearer), falls gesetzt |
+
+Der Container bringt einen `HEALTHCHECK` mit (`parkrr healthcheck`, self-probing –
+das distroless-Image hat keine Shell/curl). Das **Audit-Log ist append-only**
+(DB-Trigger blockiert UPDATE/DELETE); nur der Retention-Job
+(`PARKRR_AUDIT_RETENTION_DAYS`) darf alte Einträge löschen.
+
+**Sicherheit:** Passwortänderungen rotieren die Session und melden andere Geräte
+ab; neue Passwörter werden optional gegen HIBP geprüft
+(`PARKRR_CHECK_BREACHED_PASSWORDS`); Login/2FA-Verifizierung sind drosselt.
 
 ---
 
