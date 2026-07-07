@@ -414,6 +414,29 @@ docker compose -f docker-compose.ghcr.yml up -d
 # pin a version instead of latest:  PARKRR_TAG=1.2 docker compose -f docker-compose.ghcr.yml up -d
 ```
 
+### Deploy with Portainer (paste your .env)
+
+Portainer's stack env vars are used for `${VAR}` **substitution** in the compose
+(exactly like a `.env` file). Parkrr's `environment:` block forwards **every**
+`PARKRR_*` variable, so pasting your `.env` populates the container.
+
+1. **Stacks → Add stack →** *Web editor*.
+2. Paste the contents of **`docker-compose.ghcr.yml`** (image-based — Portainer
+   pulls `ghcr.io/d0linger/parkrr`, no build needed).
+3. Below the editor → **Environment variables → Advanced mode** → paste your
+   whole **`.env`** (based on `.env.example`; every line is a clean `KEY=value`).
+   At minimum set `PARKRR_ADMIN_PASSWORD`, `PARKRR_SESSION_SECRET` (≥16 chars)
+   and `PARKRR_DB_PASSWORD` — deployment fails fast if the first two are missing.
+4. **Deploy the stack**, then open `http://<host>:${PARKRR_HTTP_PORT}` (default 8080).
+
+Notes:
+- **Passkeys** need HTTPS + a matching domain — set `PARKRR_WEBAUTHN_RP_ID` and
+  `PARKRR_WEBAUTHN_ORIGINS` to the exact URL you reach Parkrr at (via your proxy).
+- Behind a reverse proxy, set `PARKRR_TRUSTED_PROXY=true`.
+- Portainer's single-file editor can't apply the `-f` hardening overlay; to
+  harden a Portainer stack, paste the `app`/`db` keys from
+  `docker-compose.hardened.yml` into the corresponding services in the editor.
+
 ---
 
 ## 🤝 Contributing
