@@ -23,6 +23,9 @@ var hibpEndpoint = "https://api.pwnedpasswords.com/range/"
 // breaches per the HIBP range API. A count > 0 means the password is exposed.
 // Network/parse failures return an error so callers can fail open.
 func BreachedPasswordCount(ctx context.Context, client *http.Client, password string) (int, error) {
+	// The HIBP range protocol mandates SHA-1 of the candidate password (only a
+	// 5-char prefix is ever sent); it is not used to store or protect passwords.
+	// codeql[go/weak-sensitive-data-hashing]
 	sum := sha1.Sum([]byte(password)) // #nosec G401 -- see note on the import above.
 	full := strings.ToUpper(hex.EncodeToString(sum[:]))
 	prefix, suffix := full[:5], full[5:]

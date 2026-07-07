@@ -66,7 +66,7 @@ func collectors(pool *pgxpool.Pool) prometheus.Collector {
 	)
 }
 
-// metricsMiddleware records request count and latency, labelled by the matched
+// metricsMiddleware records request count and latency, labeled by the matched
 // route pattern (low cardinality — path IDs are collapsed to "{id}").
 func metricsMiddleware(mux *http.ServeMux, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

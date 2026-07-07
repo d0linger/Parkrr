@@ -46,6 +46,8 @@ func healthcheck() int {
 		host = "127.0.0.1"
 	}
 	client := &http.Client{Timeout: 3 * time.Second}
+	// #nosec G704 -- the URL targets this process's own /healthz on the operator-
+	// configured listen address (PARKRR_LISTEN_ADDR), never remote/user input.
 	resp, err := client.Get("http://" + net.JoinHostPort(host, port) + "/healthz")
 	if err != nil {
 		return 1
