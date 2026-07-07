@@ -4,192 +4,202 @@
 
 # Parkrr
 
-**Selbst gehostete Verwaltung für Einstellplätze** – Gefährte, Personen und Kosten
-als mobil-optimierte PWA. In Go geschrieben, mit PostgreSQL, komplett per Docker.
+**Self-hosted management for vehicle storage spaces** — vehicles, people and costs,
+as a mobile-first PWA. Written in Go, backed by PostgreSQL, shipped entirely via Docker.
 
-[![CI](https://github.com/preining/parkrr/actions/workflows/ci.yml/badge.svg)](https://github.com/preining/parkrr/actions/workflows/ci.yml)
-[![golangci-lint](https://github.com/preining/parkrr/actions/workflows/golangci-lint.yml/badge.svg)](https://github.com/preining/parkrr/actions/workflows/golangci-lint.yml)
+[![CI](https://github.com/d0linger/Parkrr/actions/workflows/ci.yml/badge.svg)](https://github.com/d0linger/Parkrr/actions/workflows/ci.yml)
+[![golangci-lint](https://github.com/d0linger/Parkrr/actions/workflows/golangci-lint.yml/badge.svg)](https://github.com/d0linger/Parkrr/actions/workflows/golangci-lint.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-14b8a6.svg)](LICENSE)
 ![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)
-![PWA](https://img.shields.io/badge/PWA-installierbar-0d9488)
+![PWA](https://img.shields.io/badge/PWA-installable-0d9488)
 ![Self-hosted](https://img.shields.io/badge/self--hosted-Docker-2496ED?logo=docker&logoColor=white)
 
 </div>
 
-Parkrr hilft kleinen Betrieben (Stellplatz-Vermietung, Winterlager, Camping- und
-Bootslager …), **Gefährte** (Auto, Anhänger, Wohnwagen, Wohnmobil, Motorrad …)
-zu verwalten, die **Personen** einstellen, und die **laufenden Kosten** je Gefährt
-auf monatlicher oder jährlicher Basis tagesgenau zu berechnen.
+Parkrr helps small operators (storage-space rental, winter storage, camping and
+boat storage …) manage **vehicles** (cars, trailers, caravans, motorhomes,
+motorcycles …) that **people** put into storage, and compute the **ongoing costs**
+per vehicle — monthly or yearly, prorated to the day.
 
-> Alle Frontend-Assets (CSS, JS, Icons, Diagramme) werden **lokal** ausgeliefert –
-> keine externen CDNs, kein Tracking, keine Cloud. Deine Daten bleiben bei dir.
+> All frontend assets (CSS, JS, icons, charts) are served **locally** — no external
+> CDNs, no tracking, no cloud. Your data stays with you.
+>
+> The application UI is in **German**; this README is in English.
 
 ---
 
 ## 📸 Screenshots
 
-| Login | Übersicht | Gefährte | Person |
+| Login | Dashboard | Vehicles | Person |
 | --- | --- | --- | --- |
-| ![Login](docs/screenshots/01-login.png) | ![Übersicht](docs/screenshots/02-dashboard.png) | ![Gefährte](docs/screenshots/03-vehicles.png) | ![Person](docs/screenshots/04-person.png) |
+| ![Login](docs/screenshots/01-login.png) | ![Dashboard](docs/screenshots/02-dashboard.png) | ![Vehicles](docs/screenshots/03-vehicles.png) | ![Person](docs/screenshots/04-person.png) |
 
 ---
 
-## ✨ Funktionen
+## ✨ Features
 
-- **Personen & Gefährte** – mehrere Gefährte pro Person, schlankes Formular,
-  Detailseiten (Deep-Links) mit Saldo, Diagrammen und Verlauf.
-- **Schieberegler-Bedienung** – Lager- und Zahlstatus je Gefährt direkt per Slider
-  (*reserviert · eingelagert · abgeholt* bzw. *offen · bezahlt*), ein Tipp, ohne Formular.
-- **Saisonales Wiederverwenden** – *„↻ Erneut einstellen"* dupliziert ein abgeholtes
-  Gefährt (Typ, Kennzeichen, Preis **und Fotos**) mit neuem Einstelldatum.
-- **Lebenszyklus & Reservierungen** – Statusverlauf (wer/wann/Notiz); beim Abholen
-  wird das Enddatum automatisch gesetzt.
-- **Fotos** – pro Gefährt (JPEG/PNG), beim Upload validiert und neu kodiert
-  (EXIF/GPS entfernt), Galerie mit Lightbox.
-- **Zentrale Tarife** – Gefährt-Typen mit Standardpreisen, **pro Gefährt
-  überschreibbar** (Sonderpreis); Monats-/Jahrespreis optional **koppelbar**
-  (Jahr = Monat × 12, ein Feld füllt das andere automatisch).
-- **Pauschale pro Person** – wenn jemand mehrere Gefährte einstellt und **eine
-  Pauschale** (monatlich oder jährlich) für alle Gefährte vereinbart wird, statt
-  je Gefährt abzurechnen: tagesgenau proratiert, **Bezahlstatus je Jahr**
-  (offen/bezahlt); die Gefährte erscheinen dann als „in Pauschale".
-- **Kostentracking** – tagesgenaue Kosten ab Einstell- bis Abholdatum (oder bis heute).
-- **Zusatzkosten** – Strom, Reinigung, Winterservice … aus einem Dienste-Katalog.
-- **Statistiken & Diagramme** – Umsatz/Monat, Status­verteilung, bezahlt/offen,
-  Kosten pro Person nach Monat und Jahr (lokale SVG-Charts).
-- **Multi-User & Rollen** – *Admin, Standortleiter, Buchhaltung, Nur-Lesen*.
-- **Sicherheit** – 2FA (TOTP) + **Recovery-Codes** (Anzahl sichtbar, jederzeit
-  neu generierbar), gehashte Session-Tokens, Rate-Limiting, gehärtete
-  HTTP-Header. Siehe [Sicherheit](#-sicherheit).
-- **PWA** – installierbar am Handy, Hell/Dunkel, offline-fähige App-Shell.
+- **People & vehicles** — multiple vehicles per person, a lean form, and detail
+  pages (deep-linkable) with balance, charts and history.
+- **Slider controls** — set the storage and payment status per vehicle straight
+  from a slider (*reserved · stored · collected* and *open · paid*), one tap, no form.
+- **Seasonal re-use** — *"↻ Store again"* duplicates a collected vehicle (type,
+  plate, price **and photos**) with a new start date.
+- **Lifecycle & reservations** — status history (who/when/note); the end date is
+  set automatically on collection.
+- **Photos** — per vehicle (JPEG/PNG), validated and re-encoded on upload
+  (EXIF/GPS stripped), gallery with lightbox.
+- **Central tariffs** — vehicle types with default prices, **overridable per
+  vehicle** (special price); monthly/yearly price optionally **coupled**
+  (year = month × 12, one field fills the other automatically).
+- **Per-person flat rate (Pauschale)** — when someone stores several vehicles and
+  agrees **one flat amount** (monthly or yearly) covering all of them instead of
+  per-vehicle billing: prorated to the day, with **paid status per year**
+  (open/paid); the vehicles then show as "covered by the flat rate".
+- **Cost tracking** — day-accurate costs from the start date to the collection
+  date (or to today).
+- **Extra charges** — electricity, cleaning, winter service … from a service catalog.
+- **Statistics & charts** — revenue/month, status distribution, paid/open, and
+  cost per person by month and year (local SVG charts).
+- **Multi-user & roles** — *Admin, Site manager, Accounting, Read-only*.
+- **Security** — passkeys (WebAuthn), 2FA (TOTP) + **recovery codes**, hashed
+  session tokens, rate limiting, hardened HTTP headers. See [Security](#-security).
+- **PWA** — installable on a phone, light/dark, offline-capable app shell.
 
 ---
 
-## 🚀 Schnellstart (Docker)
+## 🚀 Quick start (Docker)
 
-Voraussetzungen: Docker + Docker Compose.
+Requirements: Docker + Docker Compose.
 
 ```bash
-git clone https://github.com/preining/parkrr.git
-cd parkrr
+git clone https://github.com/d0linger/Parkrr.git
+cd Parkrr
 
-# 1. Konfiguration
+# 1. Configuration
 cp .env.example .env
-#   in .env mindestens setzen:
+#   set at least, in .env:
 #   - PARKRR_ADMIN_PASSWORD
-#   - PARKRR_SESSION_SECRET   (z. B.:  openssl rand -base64 48)
+#   - PARKRR_SESSION_SECRET   (e.g.:  openssl rand -base64 48)
 #   - PARKRR_DB_PASSWORD
 
-# 2. Starten
+# 2. Start
 docker compose up -d --build
 
-# 3. Öffnen:  http://localhost:8080
-#    Login mit PARKRR_ADMIN_USERNAME / PARKRR_ADMIN_PASSWORD
+# 3. Open:  http://localhost:8080
+#    Log in with PARKRR_ADMIN_USERNAME / PARKRR_ADMIN_PASSWORD
 ```
 
-Die Datenbank läuft als eigenständiger Postgres-Container (nur im Compose-Netz
-erreichbar). Schema-Migrationen laufen automatisch beim Start.
+The database runs as a standalone Postgres container (reachable only on the
+compose network). Schema migrations run automatically at startup.
 
 ---
 
-## ⚙️ Konfiguration
+## ⚙️ Configuration
 
-| Variable | Beschreibung | Default |
+| Variable | Description | Default |
 | --- | --- | --- |
-| `PARKRR_LISTEN_ADDR` | HTTP-Listen-Adresse | `:8080` |
-| `PARKRR_HTTP_PORT` | veröffentlichter Host-Port (compose) | `8080` |
-| `PARKRR_DATABASE_URL` | vollständige Postgres-URL (überschreibt Einzelwerte) | – |
-| `PARKRR_DB_HOST` / `PARKRR_DB_PORT` | DB-Host / -Port | `db` / `5432` |
-| `PARKRR_DB_USER` / `PARKRR_DB_PASSWORD` / `PARKRR_DB_NAME` | DB-Zugang | `parkrr` |
-| `PARKRR_DB_SSLMODE` | Postgres SSL-Mode | `disable` |
-| `PARKRR_ADMIN_USERNAME` | Admin-Benutzername | `admin` |
-| `PARKRR_ADMIN_EMAIL` | Admin-E-Mail | `admin@example.com` |
-| `PARKRR_ADMIN_PASSWORD` | **Pflicht** – Admin-Passwort | – |
-| `PARKRR_SESSION_SECRET` | **Pflicht** – Session-Secret (min. 16 Zeichen) | – |
-| `PARKRR_SESSION_MAX_AGE` | Session-Dauer bzw. Inaktivitätsfenster (Sek.) | `604800` (7 Tage) |
-| `PARKRR_SESSION_SLIDING` | Session bei Aktivität verlängern (Re-Login erst nach Inaktivität) | `false` |
-| `PARKRR_SESSION_ABSOLUTE_MAX_AGE` | harte Obergrenze der Session-Lebensdauer (Sek., bei Sliding) | `7776000` (90 Tage) |
-| `PARKRR_WEBAUTHN_RP_ID` | Passkeys aktivieren: registrierbare Domain (ohne Schema/Port) | – (aus) |
-| `PARKRR_WEBAUTHN_RP_NAME` | Anzeigename im Authenticator | `Parkrr` |
-| `PARKRR_WEBAUTHN_ORIGINS` | erlaubte Origins, z. B. `https://parkrr.example.com` | – |
-| `PARKRR_SECURE_COOKIES` | `Secure`-Flag für Cookies (secure-by-default; `false` nur für Plain-HTTP-Dev auf Nicht-`localhost`) | `true` |
-| `PARKRR_TRUSTED_PROXY` | hinter Reverse Proxy: `X-Forwarded-*` vertrauen | `false` |
-| `PARKRR_RATE_LIMIT_PER_MIN` | genereller per-IP-Request-Budget/Minute (`0` = aus) | `600` |
-| `PARKRR_AUDIT_RETENTION_DAYS` | Audit-Log-Einträge älter als N Tage werden geprunt (`0` = für immer behalten) | `365` |
-| `PARKRR_METRICS_TOKEN` | Bearer-Token für `/metrics` (leer = offen im internen Netz) | – |
-| `PARKRR_CHECK_BREACHED_PASSWORDS` | neue Passwörter gegen die HIBP-Range-API prüfen (fail-open) | `true` |
+| `PARKRR_LISTEN_ADDR` | HTTP listen address | `:8080` |
+| `PARKRR_HTTP_PORT` | published host port (compose) | `8080` |
+| `PARKRR_DATABASE_URL` | full Postgres URL (overrides the discrete values) | – |
+| `PARKRR_DB_HOST` / `PARKRR_DB_PORT` | DB host / port | `db` / `5432` |
+| `PARKRR_DB_USER` / `PARKRR_DB_PASSWORD` / `PARKRR_DB_NAME` | DB credentials | `parkrr` |
+| `PARKRR_DB_SSLMODE` | Postgres SSL mode | `disable` |
+| `PARKRR_ADMIN_USERNAME` | admin username | `admin` |
+| `PARKRR_ADMIN_EMAIL` | admin email | `admin@example.com` |
+| `PARKRR_ADMIN_PASSWORD` | **required** — admin password | – |
+| `PARKRR_SESSION_SECRET` | **required** — session secret (min. 16 chars) | – |
+| `PARKRR_SESSION_MAX_AGE` | session lifetime / inactivity window (sec.) | `604800` (7 days) |
+| `PARKRR_SESSION_SLIDING` | extend the session on activity (re-login only after inactivity) | `false` |
+| `PARKRR_SESSION_ABSOLUTE_MAX_AGE` | hard cap on session lifetime (sec., when sliding) | `7776000` (90 days) |
+| `PARKRR_WEBAUTHN_RP_ID` | enable passkeys: registrable domain (no scheme/port) | – (off) |
+| `PARKRR_WEBAUTHN_RP_NAME` | display name shown by the authenticator | `Parkrr` |
+| `PARKRR_WEBAUTHN_ORIGINS` | allowed origins, e.g. `https://parkrr.example.com` | – |
+| `PARKRR_SECURE_COOKIES` | `Secure` flag on cookies (secure-by-default; `false` only for plain-HTTP dev on non-`localhost`) | `true` |
+| `PARKRR_TRUSTED_PROXY` | behind a reverse proxy: trust `X-Forwarded-*` | `false` |
+| `PARKRR_RATE_LIMIT_PER_MIN` | general per-IP request budget/minute (`0` = off) | `600` |
+| `PARKRR_AUDIT_RETENTION_DAYS` | prune audit entries older than N days (`0` = keep forever) | `365` |
+| `PARKRR_METRICS_TOKEN` | Bearer token for `/metrics` (empty = open on an internal network) | – |
+| `PARKRR_CHECK_BREACHED_PASSWORDS` | check new passwords against the HIBP range API (fail-open) | `true` |
 | `PARKRR_LOG_FORMAT` / `PARKRR_LOG_LEVEL` | `json`\|`text` / `debug`..`error` | `json` / `info` |
 
-> Der Admin-Account wird bei **jedem Start** aus den ENV-Werten erstellt bzw.
-> aktualisiert – die ENV bleibt die maßgebliche Quelle für den Admin.
+> The admin account is created/updated from the ENV values on **every start** —
+> the ENV remains the source of truth for the admin.
 
 ---
 
-## 📈 Health, Readiness & Metrics
+## 🔐 Passkeys (WebAuthn)
 
-| Endpoint | Zweck | Auth |
-|----------|-------|------|
-| `GET /healthz` | Liveness (Prozess läuft, Version) | offen |
-| `GET /readyz` | Readiness (DB erreichbar) – `503` wenn nicht | offen |
-| `GET /metrics` | Prometheus (Request-Zähler/Latenz, DB-Pool) | `PARKRR_METRICS_TOKEN` (Bearer), falls gesetzt |
-
-Der Container bringt einen `HEALTHCHECK` mit (`parkrr healthcheck`, self-probing –
-das distroless-Image hat keine Shell/curl). Das **Audit-Log ist append-only**
-(DB-Trigger blockiert UPDATE/DELETE); nur der Retention-Job
-(`PARKRR_AUDIT_RETENTION_DAYS`) darf alte Einträge löschen.
-
-**Sicherheit:** Passwortänderungen rotieren die Session und melden andere Geräte
-ab; neue Passwörter werden optional gegen HIBP geprüft
-(`PARKRR_CHECK_BREACHED_PASSWORDS`); Login/2FA-Verifizierung sind drosselt.
-
-### 🔑 Passkeys (WebAuthn)
-
-Passwortlose, phishing-resistente Anmeldung per Fingerabdruck/Gesichtserkennung.
-Aktiv, sobald `PARKRR_WEBAUTHN_RP_ID` gesetzt ist (benötigt HTTPS über den Proxy):
+Passwordless, phishing-resistant sign-in via fingerprint/face recognition. Enabled
+as soon as `PARKRR_WEBAUTHN_RP_ID` is set (requires HTTPS, e.g. via your proxy —
+`http://localhost` also works, as browsers treat it as a secure context):
 
 ```env
 PARKRR_WEBAUTHN_RP_ID=parkrr.example.com
 PARKRR_WEBAUTHN_ORIGINS=https://parkrr.example.com
 ```
 
-- Einrichtung: **Einstellungen → Passkeys → „+ Passkey hinzufügen"** (nach normaler Anmeldung).
-- Anmeldung: Button **„Mit Passkey anmelden"** auf dem Login-Screen (ohne Benutzernamen).
-- Passwort + TOTP + Recovery-Codes bleiben als Fallback/Wiederherstellung erhalten.
-- Der Server speichert nur **öffentliche Schlüssel** – kein geheimes Material; der
-  private Schlüssel verlässt das Gerät nie. Ein Passkey ist selbst schon MFA, daher
-  wird bei der Passkey-Anmeldung **kein** TOTP zusätzlich abgefragt.
+<div align="center">
+<img src="docs/screenshots/05-settings.png" width="300" alt="Settings with the Passkeys card">
+</div>
+
+- **Enroll:** **Settings → Passkeys → "+ Passkey hinzufügen"** (after a normal login).
+- **Sign in:** the **"Mit Passkey anmelden"** button on the login screen —
+  usernameless (the passkey carries your account handle).
+- Password + TOTP + recovery codes remain as the fallback / recovery path.
+- The server stores only **public keys** — no secret material; the private key
+  never leaves the device. A passkey is itself MFA, so TOTP is **not** additionally
+  requested on a passkey login.
+
+> **Where do I configure passkeys?** It's a server-side switch: passkeys are off
+> until `PARKRR_WEBAUTHN_RP_ID` is set. Once it is, the **Passkeys** card appears
+> in Settings and the passkey button appears on the login screen. `RP_ID` and
+> `ORIGINS` must match the exact URL you open Parkrr at.
 
 ---
 
-## 🌐 Betrieb hinter einem Reverse Proxy (Nginx Proxy Manager, Traefik, Caddy …)
+## 📈 Health, readiness & metrics
 
-Parkrr nutzt ausschließlich **relative Pfade** und lauscht auf `:8080` – es lässt
-sich ohne Anpassung hinter einem Reverse Proxy auf einer eigenen (Sub-)Domain
-betreiben. TLS wird am Proxy terminiert.
+| Endpoint | Purpose | Auth |
+|----------|---------|------|
+| `GET /healthz` | liveness (process up, version) | open |
+| `GET /readyz` | readiness (DB reachable) — `503` if not | open |
+| `GET /metrics` | Prometheus (request count/latency, DB pool) | `PARKRR_METRICS_TOKEN` (Bearer), if set |
 
-**1. `.env` anpassen:**
+The container ships a `HEALTHCHECK` (`parkrr healthcheck`, self-probing — the
+distroless image has no shell/curl). The **audit log is append-only** (a DB
+trigger blocks UPDATE/DELETE); only the retention job
+(`PARKRR_AUDIT_RETENTION_DAYS`) may remove old entries.
+
+---
+
+## 🌐 Running behind a reverse proxy (Nginx Proxy Manager, Traefik, Caddy …)
+
+Parkrr uses only **relative paths** and listens on `:8080` — it runs behind a
+reverse proxy on its own (sub)domain without changes. TLS is terminated at the proxy.
+
+**1. Adjust `.env`:**
 
 ```env
-PARKRR_TRUSTED_PROXY=true      # X-Forwarded-For/-Proto vertrauen (nur hinter Proxy!)
-PARKRR_SECURE_COOKIES=true     # Standard; hinter TLS/Proxy korrekt (bei Plain-HTTP-Dev ggf. false)
+PARKRR_TRUSTED_PROXY=true      # trust X-Forwarded-For/-Proto (behind a proxy only!)
+PARKRR_SECURE_COOKIES=true     # default; correct behind TLS/proxy (use false only for plain-HTTP dev)
 ```
 
-Mit `PARKRR_TRUSTED_PROXY=true` verwendet Parkrr die echte Client-IP aus
-`X-Forwarded-For`/`X-Real-IP` (für Logs, Rate-Limiting, Audit) und erkennt HTTPS
-über `X-Forwarded-Proto` (→ `Secure`-Cookies + HSTS). **Ohne** Proxy sollte der
-Wert `false` bleiben, um Header-Spoofing zu verhindern.
+With `PARKRR_TRUSTED_PROXY=true`, Parkrr uses the real client IP from
+`X-Forwarded-For`/`X-Real-IP` (for logs, rate limiting, audit) and detects HTTPS
+via `X-Forwarded-Proto` (→ `Secure` cookies + HSTS). **Without** a proxy, keep it
+`false` to prevent header spoofing.
 
-**2. Nginx Proxy Manager – Proxy Host:**
+**2. Nginx Proxy Manager — Proxy Host:**
 
-- **Scheme** `http` · **Forward Hostname** `parkrr-app` (bei gemeinsamem Docker-Netz)
-  bzw. Host-IP · **Forward Port** `8080` · **Websockets** nicht nötig
-- Reiter **SSL:** Let's-Encrypt-Zertifikat, *Force SSL* + *HTTP/2* aktivieren.
-  NPM setzt `X-Forwarded-Proto`/`X-Forwarded-For` automatisch.
+- **Scheme** `http` · **Forward Hostname** `parkrr-app` (on a shared Docker network)
+  or the host IP · **Forward Port** `8080` · **Websockets** not needed
+- **SSL** tab: Let's Encrypt certificate, enable *Force SSL* + *HTTP/2*.
+  NPM sets `X-Forwarded-Proto`/`X-Forwarded-For` automatically.
 
-Für den direkten Zugriff im Docker-Netz beide Container in dasselbe Netz hängen
-und den `ports:`-Block der `app` in `docker-compose.yml` entfernen.
+For direct access on the Docker network, put both containers on the same network
+and remove the `ports:` block of the `app` service in `docker-compose.yml`.
 
-**3. Generisches Nginx-Beispiel:**
+**3. Generic Nginx example:**
 
 ```nginx
 server {
@@ -197,7 +207,7 @@ server {
     server_name parkrr.example.com;
     # ssl_certificate ...;  ssl_certificate_key ...;
 
-    client_max_body_size 10m;   # Foto-Uploads (bis 8 MB)
+    client_max_body_size 10m;   # photo uploads (up to 8 MB)
 
     location / {
         proxy_pass         http://parkrr-app:8080;
@@ -211,91 +221,101 @@ server {
 
 ---
 
-## 👥 Rollen & Rechte
+## 👥 Roles & permissions
 
-| Rolle | Lesen | Personen & Gefährte | Zusatzkosten | Tarife, Dienste, Benutzer, Audit |
+| Role | Read | People & vehicles | Extra charges | Tariffs, services, users, audit |
 | --- | :---: | :---: | :---: | :---: |
 | **Admin** | ✓ | ✓ | ✓ | ✓ |
-| **Standortleiter** (`manager`) | ✓ | ✓ | ✓ | – |
-| **Buchhaltung** (`accounting`) | ✓ | – | ✓ | – |
-| **Nur-Lesen** (`readonly`) | ✓ | – | – | – |
+| **Site manager** (`manager`) | ✓ | ✓ | ✓ | – |
+| **Accounting** (`accounting`) | ✓ | – | ✓ | – |
+| **Read-only** (`readonly`) | ✓ | – | – | – |
 
-Neue Benutzer erhalten standardmäßig die Rolle *Standortleiter*. Der letzte Admin
-kann nicht herabgestuft oder gelöscht werden.
+New users get the *Site manager* role by default. The last remaining admin
+cannot be demoted or deleted.
 
 ---
 
-## 🔒 Sicherheit
+## 🔒 Security
 
-- **Passwörter** mit bcrypt, **Session-Tokens gehasht** (SHA-256) in der DB.
-- **CSRF** via Double-Submit-Token, **rollenbasierte** Autorisierung.
-- **2FA (TOTP)** mit QR-Enrollment und **einmaligen Recovery-Codes** (jederzeit
-  neu generierbar); das TOTP-Secret wird **verschlüsselt** (AES-GCM) gespeichert.
-  **Admins** können die 2FA eines Benutzers **zurücksetzen** (bei Geräteverlust).
-- **Rate-Limiting**: Login-Lockout nach zu vielen Fehlversuchen **plus**
-  genereller per-IP-Throttle.
-- **Foto-Uploads** werden dekodiert und neu kodiert (**EXIF/GPS entfernt**),
-  nur echtes JPEG/PNG, mit Dimensions- und Anzahllimit.
-- Gehärtete HTTP-Header: **CSP**, **HSTS** (hinter TLS), `Permissions-Policy`,
-  COOP/CORP; Session-Cookies `HttpOnly` + `SameSite`.
-- **Sitzungsverwaltung**: aktive Geräte anzeigen, einzeln oder „überall" abmelden.
-- **Audit-Log** jeder Änderung; strukturierte Logs (slog, JSON/Text) mit
-  Request-ID **und angemeldetem Benutzer** je Zugriff. Login-/Logout- und
-  fehlgeschlagene Anmeldeversuche werden mit Benutzer, IP und Grund protokolliert.
-- Läuft als **Nicht-Root** in einem `distroless`-Container.
+- **Passwords** with bcrypt; **session tokens hashed** (SHA-256) in the DB.
+- **Passkeys (WebAuthn)** — phishing-resistant, passwordless; the server stores
+  only public keys (no secret material).
+- **CSRF** via double-submit token; **role-based** authorization.
+- **2FA (TOTP)** with QR enrollment and single-use **recovery codes** (regenerable
+  any time); the TOTP secret is stored **encrypted** (AES-GCM). **Admins** can
+  **reset** a user's 2FA (on device loss).
+- **Session hardening** — a password change rotates the session and signs out
+  other devices; new passwords are optionally checked against **HIBP**
+  (`PARKRR_CHECK_BREACHED_PASSWORDS`, fail-open); login and 2FA verification are
+  rate-limited. Optional **sliding sessions** re-login only after inactivity.
+- **Rate limiting** — login lockout after too many failures **plus** a general
+  per-IP throttle.
+- **Photo uploads** are decoded and re-encoded (**EXIF/GPS stripped**), accept
+  only genuine JPEG/PNG, with dimension and count limits.
+- Hardened HTTP headers: **CSP**, **HSTS** (behind TLS), `Permissions-Policy`,
+  COOP/CORP; session cookies `HttpOnly` + `SameSite`.
+- **Session management** — view active devices, sign out individually or "everywhere".
+- **Audit log** of every change; structured logs (slog, JSON/text) with a
+  request ID **and the signed-in user** per access. Login/logout and failed
+  attempts are logged with user, IP and reason.
+- Runs as **non-root** in a `distroless` container.
 
-Sicherheitslücken bitte **nicht** über öffentliche Issues melden – siehe
+Please do **not** report vulnerabilities via public issues — see
 [SECURITY.md](SECURITY.md).
 
 ---
 
-## 🧮 Kostenberechnung
+## 🧮 Cost calculation
 
-Effektiver Preis = Sonderpreis, sonst zentraler Tarifpreis für die gewählte
-Abrechnungsart. Aufgelaufene Kosten werden **kalendergenau** vom Einstell- bis
-zum Abholdatum (oder bis heute) proratiert – gegen die **tatsächliche** Länge
-des jeweiligen Kalendermonats/-jahres:
+Effective price = special price, otherwise the central tariff price for the chosen
+billing mode. Accrued costs are prorated **to the calendar** from the start date
+to the collection date (or to today) — against the **actual** length of each
+calendar month/year:
 
-- pro Monat/Jahr, das komplett im Zeitraum liegt: **exakt** der Monats-/Jahrespreis
-- für Teilmonate/-jahre: `Preis × Tage im Zeitraum / Tage im Kalendermonat bzw. -jahr`
+- for any month/year that lies fully within the range: **exactly** the monthly/yearly price
+- for partial months/years: `price × days in range / days in the calendar month or year`
 
-Dadurch kostet z. B. ein volles Kalenderjahr genau den Jahrespreis (500 € statt
-499,66 €, wie es eine mittlere Jahreslänge von 365,25 Tagen ergeben würde), und
-nur echte Teilzeiträume werden anteilig berechnet.
+So a full calendar year costs exactly the yearly price (500 € rather than the
+499.66 € an average year length of 365.25 days would give), and only genuinely
+partial periods are charged pro rata. Internally the math runs in **integer
+cents**, so summing many periods never drifts.
 
-Bei **Tarifen** können Monats- und Jahrespreis optional **gekoppelt** werden
-(Jahr = Monat × 12): dann füllt das Bearbeiten eines Feldes das andere
-automatisch; ohne Kopplung sind beide Preise frei setzbar.
+For **tariffs**, the monthly and yearly price can optionally be **coupled**
+(year = month × 12): editing one field then fills the other automatically;
+without coupling, both prices are set freely.
 
-„Bezahlt" ergibt sich aus dem **Zahl-Slider** je Gefährt (bzw. **je Jahr** bei
-einer Pauschale); offener Saldo = aufgelaufene Miete + Zusatzkosten − bezahlt.
-
----
-
-## 🏗️ Architektur
-
-```
-cmd/parkrr/        – Einstiegspunkt, Admin-Bootstrap, Logging, Server-Lifecycle
-internal/config/   – Konfiguration aus ENV
-internal/database/ – pgx-Pool + eingebettete SQL-Migrationen (001–004)
-internal/models/   – Domänentypen + Kostenberechnung (mit Tests)
-internal/auth/     – bcrypt, Sessions/CSRF, Rollen, 2FA (TOTP/AES-GCM), Rate-Limit
-internal/handlers/ – JSON-API (Auth/2FA, Personen, Gefährte, Fotos, Tarife,
-                     Dienste, Zusatzkosten, Stats, Users, Audit)
-internal/server/   – Routing, Middleware (Access-Log, Rate-Limit, Security-Header)
-web/static/        – PWA-Frontend (SPA, SVG-Charts, Service Worker, Icons)
-```
-
-- **Backend:** Go-Standardbibliothek (`net/http`, method-based Routing);
-  Laufzeit-Abhängigkeiten nur `pgx`, `golang.org/x/crypto`, `pquerna/otp`.
-- **Frontend:** Vanilla-JS-SPA mit Hash-Routing, native `<dialog>`-Modals,
-  SVG-Diagramme, moderne CSS – kein Framework, kein Build-Step.
+"Paid" is derived from the **payment slider** per vehicle (or **per year** for a
+flat rate); open balance = accrued rent + extra charges − paid.
 
 ---
 
-## 🧑‍💻 Entwicklung (ohne Docker)
+## 🏗️ Architecture
 
-Voraussetzungen: Go 1.26+, ein laufender PostgreSQL.
+```
+cmd/parkrr/        – entry point, admin bootstrap, logging, server lifecycle
+internal/config/   – configuration from ENV
+internal/database/ – pgx pool + embedded SQL migrations (advisory-locked)
+internal/models/   – domain types + cost calculation (with tests)
+internal/auth/     – bcrypt, sessions/CSRF, roles, 2FA (TOTP/AES-GCM),
+                     passkeys (WebAuthn), rate limiting, HIBP
+internal/handlers/ – JSON API (auth/2FA/passkeys, people, vehicles, photos,
+                     tariffs, services, charges, stats, users, audit)
+internal/server/   – routing, middleware (access log, rate limit, security
+                     headers, metrics), health/readiness/metrics endpoints
+web/static/        – PWA frontend (SPA, SVG charts, service worker, icons)
+```
+
+- **Backend:** Go standard library (`net/http`, method-based routing); runtime
+  dependencies are `pgx`, `golang.org/x/crypto`, `pquerna/otp`, `go-webauthn`,
+  and the Prometheus client.
+- **Frontend:** vanilla-JS SPA with hash routing, native `<dialog>` modals, SVG
+  charts, modern CSS — no framework, no build step.
+
+---
+
+## 🧑‍💻 Development (without Docker)
+
+Requirements: Go 1.26+, a running PostgreSQL.
 
 ```bash
 export PARKRR_DATABASE_URL="postgres://parkrr:parkrr@localhost:5432/parkrr?sslmode=disable"
@@ -306,59 +326,61 @@ go mod tidy
 go run ./cmd/parkrr        # http://localhost:8080
 ```
 
-Qualität:
+Quality gates:
 
 ```bash
 go test ./...
 go vet ./...
-golangci-lint run          # Linting
-gosec ./...                # Security
-govulncheck ./...          # Vulnerabilities
+golangci-lint run          # linting
+gosec ./...                # security
+govulncheck ./...          # vulnerabilities
 ```
+
+Database-backed integration tests run when `PARKRR_TEST_DATABASE_URL` is set
+(they skip otherwise). Optional accessibility checks live in `tests/a11y/`.
 
 ---
 
 ## 🔁 CI / CD
 
-GitHub-Actions-Workflows unter `.github/workflows/`:
+GitHub Actions workflows under `.github/workflows/`:
 
-| Workflow | Zweck |
+| Workflow | Purpose |
 | --- | --- |
-| `ci.yml` | Build, `go vet`, Tests (Race-Detector), Docker-Build |
-| `golangci-lint.yml` | Statische Analyse / Linting (golangci-lint v2) |
-| `gosec.yml` | Security-Scanner |
-| `govulncheck.yml` | Bekannte Schwachstellen (auch wöchentlich) |
-| `deadcode.yml` | Toter / unerreichbarer Code (schlägt bei Funden fehl) |
-| `gitleaks.yml` | Secret-Scanning der Git-Historie (auch wöchentlich) |
-| `docker-publish.yml` | Multi-Arch-Image (amd64 + arm64) nach **GHCR** |
-| `dependency-review.yml` | Dependency-Review + Modul-Graph |
+| `ci.yml` | build, `go vet`, tests (race detector) + coverage gate, Docker build |
+| `golangci-lint.yml` | static analysis / linting (golangci-lint v2) |
+| `gosec.yml` | security scanner |
+| `govulncheck.yml` | known vulnerabilities (also weekly) |
+| `deadcode.yml` | dead / unreachable code (fails on findings) |
+| `gitleaks.yml` | secret scanning of the git history (also weekly) |
+| `docker-publish.yml` | multi-arch image (amd64 + arm64) to **GHCR** |
+| `dependency-review.yml` | dependency review + module graph |
 
-**Dependabot** hält Go-Module, GitHub-Actions und Docker-Basis-Images aktuell.
+**Dependabot** keeps Go modules, GitHub Actions and Docker base images up to date.
 
-### Vorgebautes Image aus GHCR
+### Prebuilt image from GHCR
 
-`docker-publish.yml` veröffentlicht bei jedem Push auf `main` (und für Tags `v*`)
-ein Multi-Arch-Image nach `ghcr.io/<owner>/parkrr`. Ohne lokalen Build starten:
+`docker-publish.yml` publishes a multi-arch image to `ghcr.io/<owner>/parkrr` on
+every push to `main` (and for `v*` tags). Start without a local build:
 
 ```bash
-cp .env.example .env   # Pflichtwerte setzen (Admin-PW, Session-Secret …)
+cp .env.example .env   # set the required values (admin password, session secret …)
 docker compose -f docker-compose.ghcr.yml up -d
-# feste Version statt latest:  PARKRR_TAG=1.2 docker compose -f docker-compose.ghcr.yml up -d
+# pin a version instead of latest:  PARKRR_TAG=1.2 docker compose -f docker-compose.ghcr.yml up -d
 ```
 
 ---
 
-## 🤝 Mitmachen
+## 🤝 Contributing
 
-Beiträge sind willkommen! Bitte lies [CONTRIBUTING.md](CONTRIBUTING.md).
-Kurz: Fork → Branch → `go test ./... && golangci-lint run` grün → Pull Request.
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md).
+In short: fork → branch → `go test ./... && golangci-lint run` green → pull request.
 
 ---
 
-## 📄 Lizenz
+## 📄 License
 
-[MIT](LICENSE) – frei nutzbar, ohne Lizenzkosten. Es werden ausschließlich freie
-Werkzeuge und Bibliotheken verwendet.
+[MIT](LICENSE) — free to use, no license fees. Only free tools and libraries are used.
 
-> **Hinweis:** Bereitgestellt „wie besehen", ohne Gewähr. Für den produktiven
-> Betrieb selbst für TLS, Backups (`pg_dump`) und Updates sorgen.
+> **Note:** Provided "as is", without warranty. For production, take care of TLS,
+> backups (`pg_dump`) and updates yourself.
