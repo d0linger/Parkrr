@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/binary"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -135,7 +136,11 @@ func (s *WebAuthnService) FinishLogin(ctx context.Context, sd webauthn.SessionDa
 	if err != nil {
 		return 0, err
 	}
-	_ = s.updateSignCount(ctx, cred.ID, cred.Authenticator.SignCount)
+	// The login already succeeded; a failed counter write must not fail it, but
+	// log it since a stale counter degrades cloned-authenticator detection.
+	if err := s.updateSignCount(ctx, cred.ID, cred.Authenticator.SignCount); err != nil {
+		slog.Warn("failed to update passkey sign count", "user_id", uid, "err", err)
+	}
 	return uid, nil
 }
 
