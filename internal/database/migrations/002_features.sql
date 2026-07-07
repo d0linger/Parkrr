@@ -65,12 +65,6 @@ CREATE TABLE IF NOT EXISTS service_types (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-INSERT INTO service_types (name, default_amount) VALUES
-    ('Strom',        15.00),
-    ('Reinigung',    40.00),
-    ('Winterservice', 60.00),
-    ('Reifenwechsel', 35.00)
-ON CONFLICT (name) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS charges (
     id          BIGSERIAL PRIMARY KEY,

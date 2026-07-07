@@ -221,6 +221,51 @@ server {
 
 ---
 
+## 🛡️ Rootless & hardened deployment
+
+Parkrr runs cleanly under a **rootless engine** (rootless Docker or Podman). It
+needs no privileged features, no host networking, and no bind mounts: the app
+image already runs as a **non-root** user (distroless `nonroot`, uid 65532),
+photos live in the database, and the DB uses a **named volume**. The published
+ports (`8099:8080`) are ≥ 1024, so no extra capability is required to bind them.
+
+**Rootless Docker (Ubuntu):**
+
+```bash
+sudo apt install -y uidmap dbus-user-session
+dockerd-rootless-setuptool.sh install      # run as your non-root user
+loginctl enable-linger "$USER"             # keep containers up after logout
+export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock
+docker compose up -d                        # compose file is unchanged
+```
+
+**Podman (rootless by default):** `podman compose up -d` — no daemon, no setup tool.
+
+**Portainer:** point the endpoint at the rootless socket
+(`/run/user/<uid>/docker.sock`) instead of `/var/run/docker.sock`, then deploy
+Parkrr as a **Stack** (set the env vars in the Stack UI instead of `.env`).
+
+> **Migrating existing data:** a rootless engine uses a different data root
+> (`~/.local/share/docker`), so a previous rootful `parkrr-db-data` volume is not
+> visible. Migrate with `pg_dump` from the old stack and restore into the new one
+> (don't copy the volume directory — the UID mapping differs).
+
+### Extra hardening overlay
+
+`docker-compose.hardened.yml` adds `no-new-privileges`, capability dropping, a
+read-only app rootfs and resource limits. Apply it on top of either base file
+(works rootful **and** rootless):
+
+```bash
+docker compose -f docker-compose.yml      -f docker-compose.hardened.yml up -d
+docker compose -f docker-compose.ghcr.yml -f docker-compose.hardened.yml up -d
+```
+
+The app is locked down hard (read-only rootfs, `cap_drop: ALL`); Postgres is
+hardened more conservatively (it keeps the few capabilities its entrypoint needs).
+
+---
+
 ## 👥 Roles & permissions
 
 | Role | Read | People & vehicles | Extra charges | Tariffs, services, users, audit |
@@ -368,6 +413,29 @@ cp .env.example .env   # set the required values (admin password, session secret
 docker compose -f docker-compose.ghcr.yml up -d
 # pin a version instead of latest:  PARKRR_TAG=1.2 docker compose -f docker-compose.ghcr.yml up -d
 ```
+
+### Deploy with Portainer (paste your .env)
+
+Portainer's stack env vars are used for `${VAR}` **substitution** in the compose
+(exactly like a `.env` file). Parkrr's `environment:` block forwards **every**
+`PARKRR_*` variable, so pasting your `.env` populates the container.
+
+1. **Stacks → Add stack →** *Web editor*.
+2. Paste the contents of **`docker-compose.ghcr.yml`** (image-based — Portainer
+   pulls `ghcr.io/d0linger/parkrr`, no build needed).
+3. Below the editor → **Environment variables → Advanced mode** → paste your
+   whole **`.env`** (based on `.env.example`; every line is a clean `KEY=value`).
+   At minimum set `PARKRR_ADMIN_PASSWORD`, `PARKRR_SESSION_SECRET` (≥16 chars)
+   and `PARKRR_DB_PASSWORD` — deployment fails fast if the first two are missing.
+4. **Deploy the stack**, then open `http://<host>:${PARKRR_HTTP_PORT}` (default 8080).
+
+Notes:
+- **Passkeys** need HTTPS + a matching domain — set `PARKRR_WEBAUTHN_RP_ID` and
+  `PARKRR_WEBAUTHN_ORIGINS` to the exact URL you reach Parkrr at (via your proxy).
+- Behind a reverse proxy, set `PARKRR_TRUSTED_PROXY=true`.
+- Portainer's single-file editor can't apply the `-f` hardening overlay; to
+  harden a Portainer stack, paste the `app`/`db` keys from
+  `docker-compose.hardened.yml` into the corresponding services in the editor.
 
 ---
 
