@@ -776,6 +776,7 @@
                 { name: 'label', label: 'Bezeichnung', value: existing?.label, placeholder: 'z. B. Wohnwagen Hobby' },
                 { name: 'license_plate', label: 'Kennzeichen', value: existing?.license_plate },
                 { name: 'start_date', label: 'Einstelldatum', type: 'date', required: true, value: existing?.start_date ? existing.start_date.slice(0, 10) : today() },
+                { name: 'end_date', label: 'Abholdatum (optional)', type: 'date', value: existing?.end_date ? existing.end_date.slice(0, 10) : '', help: 'Leer = noch eingelagert. Hier auch nachträglich änderbar.' },
                 { name: 'billing_period', label: 'Abrechnung', type: 'select', value: existing?.billing_period || 'monthly', options: [{ value: 'monthly', label: 'monatlich' }, { value: 'yearly', label: 'jährlich' }] },
                 { name: 'cost_override', label: 'Sonderpreis (optional)', type: 'number', step: '0.01', min: 0, value: existing?.cost_override ?? '', help: 'Leer = zentraler Tarifpreis. Status & Abholung stellst du danach mit den Schiebereglern ein.' },
                 { name: 'notes', label: 'Notizen', type: 'textarea', value: existing?.notes },
@@ -787,10 +788,10 @@
             label: data.label, license_plate: data.license_plate, notes: data.notes, billing_period: data.billing_period,
             cost_override: data.cost_override === '' ? null : Number(data.cost_override),
             start_date: data.start_date,
-            // Status / end / reservation are managed via the sliders; preserve
-            // existing values here so editing master data never wipes them.
+            // Abholdatum (end_date) is editable here so it can be corrected
+            // retroactively; status/reservation stay slider-managed.
             status: existing?.status || 'stored',
-            end_date: existing?.end_date ? existing.end_date.slice(0, 10) : null,
+            end_date: data.end_date === '' ? null : data.end_date,
             reserved_from: existing?.reserved_from ? existing.reserved_from.slice(0, 10) : null,
             reserved_until: existing?.reserved_until ? existing.reserved_until.slice(0, 10) : null,
         };
