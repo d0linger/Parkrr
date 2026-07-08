@@ -550,14 +550,9 @@
             el('div', { class: 'balance' }, el('span', {}, 'Bezahlt (per Slider)'), el('span', { class: 'amt' }, '− ' + eur(stats.total_paid))),
             el('div', { class: 'balance' }, el('strong', {}, 'Offener Saldo'), el('strong', { class: 'amt ' + balCls }, eur(stats.balance)))));
 
-        // flat-rate agreements (Pauschalen)
+        // flat-rate agreements (Pauschalen). Per-vehicle coverage badges/payment
+        // come from the backend (v.flat_rate_covered / v.uncovered_cost).
         const ags = stats.agreements || [];
-        const coveredVids = new Set();
-        let coversAll = false;
-        for (const a of ags) {
-            if (!a.vehicle_ids || !a.vehicle_ids.length) coversAll = true;
-            else a.vehicle_ids.forEach((vid) => coveredVids.add(vid));
-        }
         if (canBill() || ags.length) {
             const frCard = el('div', { class: 'card' });
             frCard.append(el('div', { class: 'card-row' },
@@ -594,10 +589,10 @@
         if (canManage()) vh.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => vehicleForm(null, id) }, '+ Gefährt'));
         page.append(vh);
         if (!activeVeh.length) page.append(el('p', { class: 'muted' }, 'Keine aktiven Gefährte.'));
-        else activeVeh.forEach((v) => page.append(vehicleCard(v, { linkable: true, covered: coversAll || coveredVids.has(v.id) })));
+        else activeVeh.forEach((v) => page.append(vehicleCard(v, { linkable: true })));
         if (archivedVeh.length) {
             const det = el('details', { class: 'archive-section' }, el('summary', {}, 'Archiv (' + archivedVeh.length + ')'));
-            archivedVeh.forEach((v) => det.append(vehicleCard(v, { linkable: true, covered: coversAll || coveredVids.has(v.id) })));
+            archivedVeh.forEach((v) => det.append(vehicleCard(v, { linkable: true })));
             page.append(det);
         }
 
@@ -642,7 +637,7 @@
         });
     };
 
-    function vehicleCard(v, { linkable = true, covered = false } = {}) {
+    function vehicleCard(v, { linkable = true } = {}) {
         const title = v.label || v.license_plate || v.category_name;
         const rateUnit = v.billing_period === 'yearly' ? '/Jahr' : '/Monat';
         const main = el('div', { style: 'flex:1;' + (linkable ? 'cursor:pointer' : ''), onclick: linkable ? () => navigate('vehicles/' + v.id) : null },
@@ -659,20 +654,25 @@
             canManage() && el('button', { class: 'btn btn-ghost btn-sm', onclick: () => delVehicle(v) }, '🗑'));
         return el('div', { class: 'card' + (v.archived ? ' is-archived' : '') },
             el('div', { class: 'card-row' }, main, actions),
-            vehicleControls(v, covered));
+            vehicleControls(v));
     }
 
     // Slider-based quick controls: status + payment, shown on card and detail.
     // When the vehicle is covered by a flat-rate agreement an "in Pauschale" hint
     // is shown; the payment slider still marks the uncovered portion as paid.
-    function vehicleControls(v, covered = false) {
+    function vehicleControls(v) {
         const wrap = el('div', { class: 'controls-row' });
+        const covered = !!v.flat_rate_covered;
+        // Fully covered = billed and paid entirely through the Pauschale (no
+        // uncovered remainder), so the per-vehicle paid marker is redundant.
+        const fullyCovered = covered && (Number(v.uncovered_cost) || 0) <= 0.005;
+        const pauschaleBadge = (label, title) => el('span', { class: 'badge badge-cat', title }, label);
         // Archived (closed) vehicles are read-only: show the settled state as
         // badges and offer a one-tap reactivate instead of the live sliders.
         if (v.archived) {
             wrap.append(statusBadge(v.status));
             wrap.append(el('span', { class: 'badge ' + (v.paid ? 'badge-active' : 'badge-ended') }, v.paid ? 'bezahlt' : 'offen'));
-            if (covered) wrap.append(el('span', { class: 'badge badge-cat', title: 'Zeitweise über eine Pauschale abgerechnet' }, 'in Pauschale'));
+            if (covered) wrap.append(pauschaleBadge('in Pauschale', 'Über eine Pauschale abgerechnet'));
             if (canManage()) {
                 // "Erneut einstellen" is safe on archived vehicles: it creates a new
                 // vehicle and never mutates this (read-only) record.
@@ -681,9 +681,20 @@
             }
             return wrap;
         }
+        // Status stays editable even when covered — it is the physical lifecycle
+        // (reserved/stored/collected), independent of billing.
         wrap.append(statusSlider(v));
-        if (canBill()) wrap.append(paidSlider(v));
-        if (covered) wrap.append(el('span', { class: 'badge badge-cat', title: 'Zeitweise über eine Pauschale abgerechnet' }, 'in Pauschale'));
+        if (canBill()) {
+            if (fullyCovered) {
+                // Payment belongs to the Pauschale; no per-vehicle paid slider.
+                wrap.append(pauschaleBadge('über Pauschale abgerechnet', 'Zahlung erfolgt über die Pauschale'));
+            } else {
+                wrap.append(paidSlider(v));
+                if (covered) wrap.append(pauschaleBadge('in Pauschale', 'Teilweise über eine Pauschale abgerechnet – der Slider betrifft nur den Restbetrag'));
+            }
+        } else if (covered) {
+            wrap.append(pauschaleBadge('in Pauschale', 'Über eine Pauschale abgerechnet'));
+        }
         if (canManage() && v.status === 'collected') {
             wrap.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => duplicateVehicle(v) }, '↻ Erneut einstellen'));
         }

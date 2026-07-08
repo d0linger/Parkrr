@@ -387,6 +387,12 @@ type Vehicle struct {
 	EffectiveRate float64 `json:"effective_rate"`
 	IsActive      bool    `json:"is_active"`
 	PhotoCount    int     `json:"photo_count"`
+	// FlatRateCovered is true when at least one flat-rate agreement covers this
+	// vehicle. UncoveredCost is the accrued cost (as of now) NOT covered by any
+	// agreement; when it is ~0 on a covered vehicle, payment is handled entirely
+	// by the Pauschale and the per-vehicle paid marker is redundant.
+	FlatRateCovered bool    `json:"flat_rate_covered"`
+	UncoveredCost   float64 `json:"uncovered_cost"`
 }
 
 // ServiceType is a catalog entry for a chargeable extra service.

@@ -69,6 +69,7 @@ func (h *Handler) ListVehicles(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 	vehicles := []models.Vehicle{}
+	cats := map[int64]models.Category{}
 	for rows.Next() {
 		v, cat, err := scanVehicleRow(rows)
 		if err != nil {
@@ -76,8 +77,23 @@ func (h *Handler) ListVehicles(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		enrich(&v, cat, now)
+		cats[cat.ID] = cat
 		vehicles = append(vehicles, v)
 	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "scan failed")
+		return
+	}
+	rows.Close()
+
+	// Derive per-vehicle flat-rate coverage so the list can show "in Pauschale"
+	// and defer payment to the agreement where a vehicle is fully covered.
+	agByPerson, err := h.loadAllAgreements(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	setFlatRateCoverage(vehicles, cats, agByPerson, now)
 	writeJSON(w, http.StatusOK, vehicles)
 }
 
