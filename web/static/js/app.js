@@ -224,12 +224,11 @@
                     if (f.required) input.required = true;
                     if (f.step) input.step = f.step;
                     if (f.min != null) input.min = f.min;
-                    // Open the native date/time picker on tap anywhere in the field.
-                    if (f.type === 'date' || f.type === 'time' || f.type === 'datetime-local') {
-                        const openPicker = () => { try { input.showPicker(); } catch { /* not supported */ } };
-                        input.addEventListener('focus', openPicker);
-                        input.addEventListener('click', openPicker);
-                    }
+                    // Allow manual keyboard/numpad entry (important for back-dating
+                    // older records). We deliberately do NOT auto-open the native
+                    // picker on focus/click — that hijacked the field and blocked
+                    // typing. Mobile still opens its native date UI on tap, and
+                    // desktop shows the built-in calendar icon to click.
                 }
                 body.append(input);
                 body.append(el('div', { class: 'field-error', id: 'err_' + f.name, role: 'alert', hidden: true }));
@@ -878,13 +877,24 @@
     };
 
     async function changeStatus(v, s, opts = {}) {
-        let note = '';
-        if (!opts.silent && (s === 'collected' || s === 'cancelled')) {
+        let note = '', date;
+        if (s === 'collected') {
+            // Always ask for the pickup date (default today, editable) so older
+            // pickups can be back-dated instead of always using the current date.
+            const d = await formModal({
+                title: STATUS_LABEL[s], submitLabel: 'Bestätigen', fields: [
+                    { name: 'date', label: 'Abholdatum', type: 'date', value: (v.end_date || today()).slice(0, 10) },
+                    { name: 'note', label: 'Notiz (optional)', type: 'textarea' },
+                ],
+            });
+            if (!d) { render(); return; } // reset optimistic slider state
+            note = d.note; date = d.date;
+        } else if (!opts.silent && s === 'cancelled') {
             const d = await formModal({ title: STATUS_LABEL[s], submitLabel: 'Bestätigen', fields: [{ name: 'note', label: 'Notiz (optional)', type: 'textarea' }] });
-            if (!d) return; note = d.note;
+            if (!d) { render(); return; } note = d.note;
         }
         try {
-            await api.post('/vehicles/' + v.id + '/status', { status: s, note });
+            await api.post('/vehicles/' + v.id + '/status', { status: s, note, date });
             toast('Status: ' + STATUS_LABEL[s], 'success');
             render();
         } catch (e) { toast(e.message, 'error'); }
