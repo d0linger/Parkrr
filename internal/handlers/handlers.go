@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -102,18 +103,29 @@ func pageParams(r *http.Request, defLimit, maxLimit int) (limit, offset int) {
 // audit writes an entry to the audit log, deriving the acting user from the
 // request context. Failures are ignored so auditing never breaks a request.
 func (h *Handler) audit(r *http.Request, action, entity string, id int64, summary string) {
+	h.auditChange(r, action, entity, id, summary, nil)
+}
+
+// auditChange is like audit but also records per-field before/after values
+// (pass the result of diffFields for updates). A nil/empty changes is stored as
+// NULL.
+func (h *Handler) auditChange(r *http.Request, action, entity string, id int64, summary string, changes any) {
 	var actorID int64
 	var actorName string
 	if u, ok := auth.UserFrom(r.Context()); ok {
 		actorID = u.ID
 		actorName = u.Username
 	}
-	h.auditAs(r, actorID, actorName, action, entity, id, summary)
+	h.auditInsert(r, actorID, actorName, action, entity, id, summary, changes)
 }
 
 // auditAs writes an audit entry with an explicit acting user. Use this where the
 // user is not yet in the request context (e.g. at login).
 func (h *Handler) auditAs(r *http.Request, actorID int64, actorName, action, entity string, id int64, summary string) {
+	h.auditInsert(r, actorID, actorName, action, entity, id, summary, nil)
+}
+
+func (h *Handler) auditInsert(r *http.Request, actorID int64, actorName, action, entity string, id int64, summary string, changes any) {
 	var uid *int64
 	if actorID > 0 {
 		uid = &actorID
@@ -122,8 +134,49 @@ func (h *Handler) auditAs(r *http.Request, actorID int64, actorName, action, ent
 	if id > 0 {
 		entID = &id
 	}
+	var changesArg any // nil -> SQL NULL
+	if changes != nil {
+		if b, err := json.Marshal(changes); err == nil && string(b) != "null" {
+			changesArg = string(b)
+		}
+	}
 	_, _ = h.Pool.Exec(r.Context(),
-		`INSERT INTO audit_log (user_id, username, action, entity, entity_id, summary)
-		 VALUES ($1,$2,$3,$4,$5,$6)`,
-		uid, actorName, action, entity, entID, summary)
+		`INSERT INTO audit_log (user_id, username, action, entity, entity_id, summary, changes)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		uid, actorName, action, entity, entID, summary, changesArg)
+}
+
+// diffFields compares the JSON representations of old and new and returns the
+// changed fields as {"field": {"old": x, "new": y}}, or nil if nothing changed.
+// Fields named in skip (e.g. timestamps) are ignored.
+func diffFields(oldObj, newObj any, skip ...string) map[string]any {
+	om, nm := toJSONMap(oldObj), toJSONMap(newObj)
+	skipset := make(map[string]bool, len(skip))
+	for _, s := range skip {
+		skipset[s] = true
+	}
+	out := map[string]any{}
+	for k, nv := range nm {
+		if skipset[k] {
+			continue
+		}
+		if ov, ok := om[k]; !ok || !reflect.DeepEqual(ov, nv) {
+			out[k] = map[string]any{"old": om[k], "new": nv}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func toJSONMap(v any) map[string]any {
+	m := map[string]any{}
+	if v == nil {
+		return m
+	}
+	if b, err := json.Marshal(v); err == nil {
+		_ = json.Unmarshal(b, &m)
+	}
+	return m
 }

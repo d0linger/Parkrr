@@ -1095,19 +1095,70 @@
     function delUser(u) { deleteWithUndo('Benutzer löschen?', `„${u.username}“ wird gelöscht.`, () => api.del('/users/' + u.id), () => render()); }
 
     // ================= AUDIT (admin) =================
+    const AUDIT_ACTIONS = { create: 'Erstellt', update: 'Geändert', delete: 'Gelöscht', login: 'Login', logout: 'Logout' };
+    const AUDIT_ENTITIES = { person: 'Person', vehicle: 'Gefährt', category: 'Tarif', service: 'Dienst', charge: 'Zusatzkosten', user: 'Benutzer', photo: 'Foto', passkey: 'Passkey' };
+
+    function fmtAuditVal(x) {
+        if (x === null || x === undefined || x === '') return '∅';
+        if (typeof x === 'boolean') return x ? 'ja' : 'nein';
+        if (typeof x === 'object') return JSON.stringify(x);
+        return String(x);
+    }
+    function auditChangesEl(changes) {
+        const box = el('div', { class: 'audit-changes' });
+        for (const [field, v] of Object.entries(changes)) {
+            box.append(el('div', { class: 'audit-change' },
+                el('span', { class: 'audit-field' }, field),
+                el('span', { class: 'audit-old' }, fmtAuditVal(v && v.old)),
+                el('span', { class: 'audit-arrow' }, '→'),
+                el('span', { class: 'audit-new' }, fmtAuditVal(v && v.new))));
+        }
+        return box;
+    }
+    function auditItem(a) {
+        const head = `${AUDIT_ACTIONS[a.action] || a.action} · ${AUDIT_ENTITIES[a.entity] || a.entity}` + (a.summary ? ' — ' + a.summary : '');
+        const li = el('li', {},
+            el('div', {}, el('strong', {}, esc(a.username || 'System')), ' · ' + esc(head)),
+            el('div', { class: 't-time' }, fmtDateTime(a.created_at)));
+        if (a.changes && Object.keys(a.changes).length) li.append(auditChangesEl(a.changes));
+        return li;
+    }
     routes.audit = async (page) => {
         if (!isAdmin()) { page.innerHTML = ''; page.append(emptyState('⚙', 'Nur für Administratoren.')); return; }
-        const entries = await api.get('/audit?limit=200');
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' }, el('button', { class: 'back-btn', onclick: () => navigate('dashboard') }, '‹'), el('h2', { style: 'margin:0' }, 'Audit-Log')));
-        if (!entries.length) { page.append(emptyState('🗒', 'Keine Einträge.')); return; }
+
+        const q = { text: '', action: '', entity: '', offset: 0, limit: 50 };
+        const search = el('input', { type: 'search', placeholder: 'Suchen (Benutzer, Beschreibung)…', 'aria-label': 'Audit-Log durchsuchen' });
+        const optionList = (map, allLabel) => [el('option', { value: '' }, allLabel), ...Object.entries(map).map(([v, l]) => el('option', { value: v }, l))];
+        const actSel = el('select', { 'aria-label': 'Aktion filtern' }, ...optionList(AUDIT_ACTIONS, 'Alle Aktionen'));
+        const entSel = el('select', { 'aria-label': 'Objekt filtern' }, ...optionList(AUDIT_ENTITIES, 'Alle Objekte'));
+        page.append(el('div', { class: 'card audit-filters' }, search, el('div', { class: 'audit-filter-row' }, actSel, entSel)));
+
         const ul = el('ul', { class: 'timeline' });
-        for (const a of entries) {
-            ul.append(el('li', {},
-                el('div', {}, el('strong', {}, esc(a.username || 'System')), ' ' + esc(a.action) + ' · ' + esc(a.entity) + (a.summary ? ' — ' + esc(a.summary) : '')),
-                el('div', { class: 't-time' }, fmtDateTime(a.created_at))));
-        }
         page.append(el('div', { class: 'card' }, ul));
+        const moreBtn = el('button', { class: 'btn btn-ghost btn-block', onclick: () => load(false) }, 'Mehr laden');
+        moreBtn.hidden = true;
+        page.append(moreBtn);
+
+        async function load(reset) {
+            if (reset) { q.offset = 0; ul.innerHTML = ''; }
+            const p = new URLSearchParams({ limit: String(q.limit), offset: String(q.offset) });
+            if (q.text) p.set('q', q.text);
+            if (q.action) p.set('action', q.action);
+            if (q.entity) p.set('entity', q.entity);
+            let entries = [];
+            try { entries = await api.get('/audit?' + p.toString()); } catch { /* ignore */ }
+            for (const a of entries) ul.append(auditItem(a));
+            q.offset += entries.length;
+            moreBtn.hidden = entries.length < q.limit;
+            if (!ul.children.length) ul.append(el('li', { class: 'muted' }, 'Keine Einträge.'));
+        }
+        let t;
+        search.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => { q.text = search.value.trim(); load(true); }, 300); });
+        actSel.addEventListener('change', () => { q.action = actSel.value; load(true); });
+        entSel.addEventListener('change', () => { q.entity = entSel.value; load(true); });
+        load(true);
     };
 
     // ================= SETTINGS (profile / 2FA / sessions) =================

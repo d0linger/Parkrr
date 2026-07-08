@@ -129,6 +129,11 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var old models.User
+	_ = h.Pool.QueryRow(r.Context(),
+		`SELECT id, username, email, role, is_admin FROM users WHERE id=$1`, id).
+		Scan(&old.ID, &old.Username, &old.Email, &old.Role, &old.IsAdmin)
+
 	isAdmin := role == models.RoleAdmin
 	if req.Password != "" {
 		if len(req.Password) < 8 {
@@ -164,7 +169,16 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	h.audit(r, "update", "user", id, "updated user "+req.Username+" ("+role+")")
+	newU := old
+	newU.Username, newU.Email, newU.Role, newU.IsAdmin = req.Username, trim(req.Email), role, isAdmin
+	changes := diffFields(old, newU, "created_at", "updated_at", "id", "totp_enabled", "is_admin")
+	if req.Password != "" {
+		if changes == nil {
+			changes = map[string]any{}
+		}
+		changes["password"] = map[string]any{"old": "•••", "new": "•••"}
+	}
+	h.auditChange(r, "update", "user", id, "updated user "+req.Username+" ("+role+")", changes)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

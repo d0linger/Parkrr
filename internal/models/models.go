@@ -2,6 +2,7 @@
 package models
 
 import (
+	"encoding/json"
 	"math"
 	"time"
 )
@@ -249,16 +250,18 @@ type StatusChange struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// AuditEntry records a change made by a user.
+// AuditEntry records a change made by a user. Changes, when present, holds the
+// per-field before/after values as {"field": {"old": ..., "new": ...}}.
 type AuditEntry struct {
-	ID        int64     `json:"id"`
-	UserID    *int64    `json:"user_id"`
-	Username  string    `json:"username"`
-	Action    string    `json:"action"`
-	Entity    string    `json:"entity"`
-	EntityID  *int64    `json:"entity_id"`
-	Summary   string    `json:"summary"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        int64           `json:"id"`
+	UserID    *int64          `json:"user_id"`
+	Username  string          `json:"username"`
+	Action    string          `json:"action"`
+	Entity    string          `json:"entity"`
+	EntityID  *int64          `json:"entity_id"`
+	Summary   string          `json:"summary"`
+	Changes   json.RawMessage `json:"changes,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
 }
 
 // SessionInfo describes an active login session (for session management).
