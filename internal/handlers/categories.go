@@ -96,6 +96,11 @@ func (h *Handler) UpdateCategory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "costs must not be negative")
 		return
 	}
+	var old models.Category
+	_ = h.Pool.QueryRow(r.Context(),
+		`SELECT id, name, default_monthly_cost, default_yearly_cost, rates_synced
+		 FROM categories WHERE id=$1`, id).
+		Scan(&old.ID, &old.Name, &old.DefaultMonthlyCost, &old.DefaultYearlyCost, &old.RatesSynced)
 	ct, err := h.Pool.Exec(r.Context(),
 		`UPDATE categories SET name=$1, default_monthly_cost=$2,
 		        default_yearly_cost=$3, rates_synced=$4, updated_at=now()
@@ -113,7 +118,11 @@ func (h *Handler) UpdateCategory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "category not found")
 		return
 	}
-	h.audit(r, "update", "category", id, "updated tariff "+req.Name)
+	newC := old
+	newC.Name, newC.DefaultMonthlyCost = req.Name, req.DefaultMonthlyCost
+	newC.DefaultYearlyCost, newC.RatesSynced = req.DefaultYearlyCost, req.RatesSynced
+	changes := diffFields(old, newC, "created_at", "updated_at", "id")
+	h.auditChange(r, "update", "category", id, "updated tariff "+req.Name, changes)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

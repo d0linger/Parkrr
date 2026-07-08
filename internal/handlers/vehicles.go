@@ -246,6 +246,7 @@ func (h *Handler) DeleteVehicle(w http.ResponseWriter, r *http.Request) {
 type statusRequest struct {
 	Status string `json:"status"`
 	Note   string `json:"note"`
+	Date   string `json:"date"` // optional pickup/end date (YYYY-MM-DD) when collecting
 }
 
 // ChangeVehicleStatus transitions a vehicle to a new status and logs history.
@@ -270,12 +271,23 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "vehicle not found")
 		return
 	}
-	// When collecting, stamp the end date if not set.
-	if req.Status == models.StatusCollected {
+	// When collecting, set the pickup/end date: use the caller-supplied date if
+	// given (allows back-dating), otherwise keep any existing end date or today.
+	switch {
+	case req.Status == models.StatusCollected && trim(req.Date) != "":
+		end, perr := time.Parse(dateLayout, trim(req.Date))
+		if perr != nil {
+			writeError(w, http.StatusBadRequest, "date must be YYYY-MM-DD")
+			return
+		}
+		_, _ = h.Pool.Exec(r.Context(),
+			`UPDATE vehicles SET status=$1, end_date=$2, updated_at=now() WHERE id=$3`,
+			req.Status, end, id)
+	case req.Status == models.StatusCollected:
 		_, _ = h.Pool.Exec(r.Context(),
 			`UPDATE vehicles SET status=$1, end_date=COALESCE(end_date, CURRENT_DATE), updated_at=now() WHERE id=$2`,
 			req.Status, id)
-	} else {
+	default:
 		_, _ = h.Pool.Exec(r.Context(),
 			`UPDATE vehicles SET status=$1, updated_at=now() WHERE id=$2`, req.Status, id)
 	}

@@ -194,6 +194,18 @@ textarea { resize: vertical; min-height: 72px; }
 
 #passkey-login { margin-top: 0.5rem; }
 
+/* Audit log: filters + per-field old/new change display. */
+.audit-filters input[type="search"] { width: 100%; }
+.audit-filter-row { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+.audit-filter-row select { flex: 1; min-width: 0; }
+.audit-changes { margin-top: 0.35rem; display: flex; flex-direction: column; gap: 0.2rem; }
+.audit-change { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.35rem; font-size: 0.82rem; }
+.audit-field { font-weight: 600; color: var(--muted, #64748b); }
+.audit-field::after { content: ":"; }
+.audit-old { color: #dc2626; text-decoration: line-through; opacity: 0.85; overflow-wrap: break-word; }
+.audit-arrow { color: var(--muted, #64748b); }
+.audit-new { color: #0d9488; font-weight: 600; overflow-wrap: break-word; }
+
 /* Skip-to-content link, visible only on keyboard focus. */
 .skip-link {
     position: absolute;

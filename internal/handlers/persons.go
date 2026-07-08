@@ -114,6 +114,7 @@ func (h *Handler) UpdatePerson(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "first or last name is required")
 		return
 	}
+	old, _ := h.getPerson(r.Context(), id)
 	ct, err := h.Pool.Exec(r.Context(),
 		`UPDATE persons SET first_name=$1, last_name=$2, email=$3, phone=$4,
 		        address=$5, notes=$6, updated_at=now()
@@ -127,7 +128,9 @@ func (h *Handler) UpdatePerson(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "person not found")
 		return
 	}
-	h.audit(r, "update", "person", id, "updated person "+trim(req.FirstName+" "+req.LastName))
+	newP, _ := h.getPerson(r.Context(), id)
+	changes := diffFields(old, newP, "updated_at", "created_at", "has_flat_rate")
+	h.auditChange(r, "update", "person", id, "updated person "+trim(req.FirstName+" "+req.LastName), changes)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

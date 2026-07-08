@@ -104,8 +104,9 @@
     // permission helpers
     const isAdmin = () => !!(state.user && state.user.is_admin);
     const role = () => (state.user ? state.user.role : '');
-    const canManage = () => isAdmin() || role() === 'manager';
-    const canBill = () => isAdmin() || role() === 'manager' || role() === 'accounting';
+    // Editors may do everything except user management and the audit log.
+    const canManage = () => isAdmin() || role() === 'editor';
+    const canBill = () => isAdmin() || role() === 'editor';
 
     // ---------- theme ----------
     function initTheme() {
@@ -224,12 +225,11 @@
                     if (f.required) input.required = true;
                     if (f.step) input.step = f.step;
                     if (f.min != null) input.min = f.min;
-                    // Open the native date/time picker on tap anywhere in the field.
-                    if (f.type === 'date' || f.type === 'time' || f.type === 'datetime-local') {
-                        const openPicker = () => { try { input.showPicker(); } catch { /* not supported */ } };
-                        input.addEventListener('focus', openPicker);
-                        input.addEventListener('click', openPicker);
-                    }
+                    // Allow manual keyboard/numpad entry (important for back-dating
+                    // older records). We deliberately do NOT auto-open the native
+                    // picker on focus/click — that hijacked the field and blocked
+                    // typing. Mobile still opens its native date UI on tap, and
+                    // desktop shows the built-in calendar icon to click.
                 }
                 body.append(input);
                 body.append(el('div', { class: 'field-error', id: 'err_' + f.name, role: 'alert', hidden: true }));
@@ -330,7 +330,7 @@
     const personName = (p) => (`${p.first_name || ''} ${p.last_name || ''}`).trim() || '(ohne Namen)';
     const catById = (id) => state.categories.find((c) => c.id === Number(id));
     const STATUS_LABEL = { reserved: 'reserviert', stored: 'eingelagert', collected: 'abgeholt', cancelled: 'storniert' };
-    const ROLE_LABEL = { admin: 'Administrator', manager: 'Standortleiter', accounting: 'Buchhaltung', readonly: 'Nur-Lesen' };
+    const ROLE_LABEL = { admin: 'Administrator', editor: 'Bearbeiter', reader: 'Nur-Lesen' };
     const statusBadge = (s) => el('span', { class: 'badge badge-' + s }, STATUS_LABEL[s] || s);
 
     async function refreshLookups() {
@@ -878,13 +878,24 @@
     };
 
     async function changeStatus(v, s, opts = {}) {
-        let note = '';
-        if (!opts.silent && (s === 'collected' || s === 'cancelled')) {
+        let note = '', date;
+        if (s === 'collected') {
+            // Always ask for the pickup date (default today, editable) so older
+            // pickups can be back-dated instead of always using the current date.
+            const d = await formModal({
+                title: STATUS_LABEL[s], submitLabel: 'Bestätigen', fields: [
+                    { name: 'date', label: 'Abholdatum', type: 'date', value: (v.end_date || today()).slice(0, 10) },
+                    { name: 'note', label: 'Notiz (optional)', type: 'textarea' },
+                ],
+            });
+            if (!d) { render(); return; } // reset optimistic slider state
+            note = d.note; date = d.date;
+        } else if (!opts.silent && s === 'cancelled') {
             const d = await formModal({ title: STATUS_LABEL[s], submitLabel: 'Bestätigen', fields: [{ name: 'note', label: 'Notiz (optional)', type: 'textarea' }] });
-            if (!d) return; note = d.note;
+            if (!d) { render(); return; } note = d.note;
         }
         try {
-            await api.post('/vehicles/' + v.id + '/status', { status: s, note });
+            await api.post('/vehicles/' + v.id + '/status', { status: s, note, date });
             toast('Status: ' + STATUS_LABEL[s], 'success');
             render();
         } catch (e) { toast(e.message, 'error'); }
@@ -1073,7 +1084,7 @@
                 { name: 'username', label: 'Benutzername', required: !existing, value: existing?.username },
                 { name: 'email', label: 'E-Mail', type: 'email', value: existing?.email },
                 { name: 'password', label: existing ? 'Neues Passwort (optional)' : 'Passwort', type: 'password', required: !existing, minLength: 8, help: 'Mindestens 8 Zeichen.' },
-                { name: 'role', label: 'Rolle', type: 'select', value: existing?.role || 'manager', options: Object.entries(ROLE_LABEL).map(([v, l]) => ({ value: v, label: l })) },
+                { name: 'role', label: 'Rolle', type: 'select', value: existing?.role || 'editor', options: Object.entries(ROLE_LABEL).map(([v, l]) => ({ value: v, label: l })) },
             ],
         });
         if (!data) return;
@@ -1084,19 +1095,70 @@
     function delUser(u) { deleteWithUndo('Benutzer löschen?', `„${u.username}“ wird gelöscht.`, () => api.del('/users/' + u.id), () => render()); }
 
     // ================= AUDIT (admin) =================
+    const AUDIT_ACTIONS = { create: 'Erstellt', update: 'Geändert', delete: 'Gelöscht', login: 'Login', logout: 'Logout' };
+    const AUDIT_ENTITIES = { person: 'Person', vehicle: 'Gefährt', category: 'Tarif', service: 'Dienst', charge: 'Zusatzkosten', user: 'Benutzer', photo: 'Foto', passkey: 'Passkey' };
+
+    function fmtAuditVal(x) {
+        if (x === null || x === undefined || x === '') return '∅';
+        if (typeof x === 'boolean') return x ? 'ja' : 'nein';
+        if (typeof x === 'object') return JSON.stringify(x);
+        return String(x);
+    }
+    function auditChangesEl(changes) {
+        const box = el('div', { class: 'audit-changes' });
+        for (const [field, v] of Object.entries(changes)) {
+            box.append(el('div', { class: 'audit-change' },
+                el('span', { class: 'audit-field' }, field),
+                el('span', { class: 'audit-old' }, fmtAuditVal(v && v.old)),
+                el('span', { class: 'audit-arrow' }, '→'),
+                el('span', { class: 'audit-new' }, fmtAuditVal(v && v.new))));
+        }
+        return box;
+    }
+    function auditItem(a) {
+        const head = `${AUDIT_ACTIONS[a.action] || a.action} · ${AUDIT_ENTITIES[a.entity] || a.entity}` + (a.summary ? ' — ' + a.summary : '');
+        const li = el('li', {},
+            el('div', {}, el('strong', {}, esc(a.username || 'System')), ' · ' + esc(head)),
+            el('div', { class: 't-time' }, fmtDateTime(a.created_at)));
+        if (a.changes && Object.keys(a.changes).length) li.append(auditChangesEl(a.changes));
+        return li;
+    }
     routes.audit = async (page) => {
         if (!isAdmin()) { page.innerHTML = ''; page.append(emptyState('⚙', 'Nur für Administratoren.')); return; }
-        const entries = await api.get('/audit?limit=200');
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' }, el('button', { class: 'back-btn', onclick: () => navigate('dashboard') }, '‹'), el('h2', { style: 'margin:0' }, 'Audit-Log')));
-        if (!entries.length) { page.append(emptyState('🗒', 'Keine Einträge.')); return; }
+
+        const q = { text: '', action: '', entity: '', offset: 0, limit: 50 };
+        const search = el('input', { type: 'search', placeholder: 'Suchen (Benutzer, Beschreibung)…', 'aria-label': 'Audit-Log durchsuchen' });
+        const optionList = (map, allLabel) => [el('option', { value: '' }, allLabel), ...Object.entries(map).map(([v, l]) => el('option', { value: v }, l))];
+        const actSel = el('select', { 'aria-label': 'Aktion filtern' }, ...optionList(AUDIT_ACTIONS, 'Alle Aktionen'));
+        const entSel = el('select', { 'aria-label': 'Objekt filtern' }, ...optionList(AUDIT_ENTITIES, 'Alle Objekte'));
+        page.append(el('div', { class: 'card audit-filters' }, search, el('div', { class: 'audit-filter-row' }, actSel, entSel)));
+
         const ul = el('ul', { class: 'timeline' });
-        for (const a of entries) {
-            ul.append(el('li', {},
-                el('div', {}, el('strong', {}, esc(a.username || 'System')), ' ' + esc(a.action) + ' · ' + esc(a.entity) + (a.summary ? ' — ' + esc(a.summary) : '')),
-                el('div', { class: 't-time' }, fmtDateTime(a.created_at))));
-        }
         page.append(el('div', { class: 'card' }, ul));
+        const moreBtn = el('button', { class: 'btn btn-ghost btn-block', onclick: () => load(false) }, 'Mehr laden');
+        moreBtn.hidden = true;
+        page.append(moreBtn);
+
+        async function load(reset) {
+            if (reset) { q.offset = 0; ul.innerHTML = ''; }
+            const p = new URLSearchParams({ limit: String(q.limit), offset: String(q.offset) });
+            if (q.text) p.set('q', q.text);
+            if (q.action) p.set('action', q.action);
+            if (q.entity) p.set('entity', q.entity);
+            let entries = [];
+            try { entries = await api.get('/audit?' + p.toString()); } catch { /* ignore */ }
+            for (const a of entries) ul.append(auditItem(a));
+            q.offset += entries.length;
+            moreBtn.hidden = entries.length < q.limit;
+            if (!ul.children.length) ul.append(el('li', { class: 'muted' }, 'Keine Einträge.'));
+        }
+        let t;
+        search.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => { q.text = search.value.trim(); load(true); }, 300); });
+        actSel.addEventListener('change', () => { q.action = actSel.value; load(true); });
+        entSel.addEventListener('change', () => { q.entity = entSel.value; load(true); });
+        load(true);
     };
 
     // ================= SETTINGS (profile / 2FA / sessions) =================
