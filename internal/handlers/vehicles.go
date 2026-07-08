@@ -18,7 +18,7 @@ const dateLayout = "2006-01-02"
 // vehicleSelect is the shared column list + joins for reading vehicles,
 // including a live photo count. Append WHERE/ORDER as needed.
 const vehicleSelect = `SELECT v.id, v.person_id, v.category_id, v.label, v.license_plate,
-	        v.notes, v.billing_period, v.cost_override, v.start_date, v.end_date,
+	        v.notes, v.billing_period, v.rate, v.cost_override, v.start_date, v.end_date,
 	        v.status, v.reserved_from, v.reserved_until, v.paid, v.created_at, v.updated_at,
 	        c.name, c.default_monthly_cost, c.default_yearly_cost,
 	        p.first_name, p.last_name,
@@ -69,6 +69,7 @@ type vehicleRequest struct {
 	LicensePlate  string   `json:"license_plate"`
 	Notes         string   `json:"notes"`
 	BillingPeriod string   `json:"billing_period"`
+	Rate          *float64 `json:"rate"`
 	CostOverride  *float64 `json:"cost_override"`
 	StartDate     string   `json:"start_date"`
 	EndDate       *string  `json:"end_date"`
@@ -122,6 +123,9 @@ func (h *Handler) parseVehicleRequest(r *http.Request) (*parsedVehicle, error) {
 	if req.CostOverride != nil && *req.CostOverride < 0 {
 		return nil, errors.New("cost_override must not be negative")
 	}
+	if req.Rate != nil && *req.Rate < 0 {
+		return nil, errors.New("rate must not be negative")
+	}
 
 	start, err := time.Parse(dateLayout, trim(req.StartDate))
 	if err != nil {
@@ -148,6 +152,29 @@ func (h *Handler) parseVehicleRequest(r *http.Request) (*parsedVehicle, error) {
 	}, nil
 }
 
+// resolveVehicleRate determines the rate to lock onto a vehicle: the explicit
+// rate if given, else the legacy cost override, else the current Tarif default
+// for the billing period (seeded once here so a later Tarif change never
+// re-prices this vehicle).
+func (h *Handler) resolveVehicleRate(ctx context.Context, req vehicleRequest) (float64, error) {
+	if req.Rate != nil {
+		return *req.Rate, nil
+	}
+	if req.CostOverride != nil {
+		return *req.CostOverride, nil
+	}
+	var monthly, yearly float64
+	if err := h.Pool.QueryRow(ctx,
+		`SELECT default_monthly_cost, default_yearly_cost FROM categories WHERE id=$1`, req.CategoryID).
+		Scan(&monthly, &yearly); err != nil {
+		return 0, err
+	}
+	if req.BillingPeriod == models.BillingYearly {
+		return yearly, nil
+	}
+	return monthly, nil
+}
+
 // CreateVehicle adds a vehicle for a person.
 func (h *Handler) CreateVehicle(w http.ResponseWriter, r *http.Request) {
 	pv, err := h.parseVehicleRequest(r)
@@ -155,14 +182,19 @@ func (h *Handler) CreateVehicle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	rate, err := h.resolveVehicleRate(r.Context(), pv.req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "person or category does not exist")
+		return
+	}
 	var id int64
 	err = h.Pool.QueryRow(r.Context(),
 		`INSERT INTO vehicles (person_id, category_id, label, license_plate, notes,
-		        billing_period, cost_override, start_date, end_date, status,
+		        billing_period, rate, cost_override, start_date, end_date, status,
 		        reserved_from, reserved_until)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
 		pv.req.PersonID, pv.req.CategoryID, pv.req.Label, pv.req.LicensePlate,
-		pv.req.Notes, pv.req.BillingPeriod, pv.req.CostOverride,
+		pv.req.Notes, pv.req.BillingPeriod, rate, pv.req.CostOverride,
 		pv.startDate, pv.endDate, pv.req.Status, pv.reservedFrom, pv.reservedUntil,
 	).Scan(&id)
 	if err != nil {
@@ -196,13 +228,18 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "vehicle not found")
 		return
 	}
+	rate, err := h.resolveVehicleRate(r.Context(), pv.req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "person or category does not exist")
+		return
+	}
 	ct, err := h.Pool.Exec(r.Context(),
 		`UPDATE vehicles SET person_id=$1, category_id=$2, label=$3, license_plate=$4,
-		        notes=$5, billing_period=$6, cost_override=$7, start_date=$8,
-		        end_date=$9, status=$10, reserved_from=$11, reserved_until=$12, updated_at=now()
-		 WHERE id=$13`,
+		        notes=$5, billing_period=$6, rate=$7, cost_override=$8, start_date=$9,
+		        end_date=$10, status=$11, reserved_from=$12, reserved_until=$13, updated_at=now()
+		 WHERE id=$14`,
 		pv.req.PersonID, pv.req.CategoryID, pv.req.Label, pv.req.LicensePlate,
-		pv.req.Notes, pv.req.BillingPeriod, pv.req.CostOverride,
+		pv.req.Notes, pv.req.BillingPeriod, rate, pv.req.CostOverride,
 		pv.startDate, pv.endDate, pv.req.Status, pv.reservedFrom, pv.reservedUntil, id)
 	if err != nil {
 		if isForeignKeyViolation(err) {
@@ -414,9 +451,9 @@ func (h *Handler) DuplicateVehicle(w http.ResponseWriter, r *http.Request) {
 	var newID int64
 	err := h.Pool.QueryRow(r.Context(),
 		`INSERT INTO vehicles (person_id, category_id, label, license_plate, notes,
-		        billing_period, cost_override, start_date, status)
+		        billing_period, rate, cost_override, start_date, status)
 		 SELECT person_id, category_id, label, license_plate, notes,
-		        billing_period, cost_override, $2, 'stored'
+		        billing_period, rate, cost_override, $2, 'stored'
 		 FROM vehicles WHERE id = $1
 		 RETURNING id`, id, start).Scan(&newID)
 	if err != nil {
@@ -461,7 +498,7 @@ func scanVehicleRow(row rowScanner) (models.Vehicle, models.Category, error) {
 	var cat models.Category
 	var firstName, lastName string
 	err := row.Scan(&v.ID, &v.PersonID, &v.CategoryID, &v.Label, &v.LicensePlate,
-		&v.Notes, &v.BillingPeriod, &v.CostOverride, &v.StartDate, &v.EndDate,
+		&v.Notes, &v.BillingPeriod, &v.Rate, &v.CostOverride, &v.StartDate, &v.EndDate,
 		&v.Status, &v.ReservedFrom, &v.ReservedUntil, &v.Paid, &v.CreatedAt, &v.UpdatedAt,
 		&cat.Name, &cat.DefaultMonthlyCost, &cat.DefaultYearlyCost,
 		&firstName, &lastName, &v.PhotoCount)

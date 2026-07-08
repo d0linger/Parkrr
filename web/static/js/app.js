@@ -635,7 +635,7 @@
             el('h3', {}, esc(title)),
             el('div', { class: 'card-meta' }, el('span', { class: 'badge badge-cat' }, esc(v.category_name)), ' ', esc(v.person_name),
                 v.photo_count ? el('span', { class: 'muted' }, '  📷 ' + v.photo_count) : null),
-            el('div', { class: 'card-meta' }, `${eur(v.effective_rate)}${rateUnit}` + (v.cost_override != null ? ' (Sonderpreis)' : '') +
+            el('div', { class: 'card-meta' }, `${eur(v.effective_rate)}${rateUnit}` +
                 ` · seit ${fmtDate(v.start_date)}` + (v.end_date ? ` bis ${fmtDate(v.end_date)}` : '')),
             el('div', { class: 'card-meta', style: 'color:var(--text);font-weight:600;margin-top:.3rem' }, 'Aufgelaufen: ' + eur(v.accrued_cost)));
         const actions = el('div', { class: 'card-actions' },
@@ -791,25 +791,41 @@
     async function vehicleForm(existing, presetPerson) {
         if (!state.persons.length) { toast('Zuerst eine Person anlegen', 'error'); return; }
         if (!state.categories.length) { toast('Zuerst einen Tarif anlegen', 'error'); return; }
+        // The price is seeded from the Tarif but then locked onto the vehicle, so
+        // a later Tarif change never re-prices it.
+        const catDefault = (cid, period) => { const c = state.categories.find((x) => x.id === Number(cid)); return c ? (period === 'yearly' ? c.default_yearly_cost : c.default_monthly_cost) : 0; };
+        const initCat = existing?.category_id ?? state.categories[0].id;
+        const initPeriod = existing?.billing_period || 'monthly';
+        const initRate = existing?.rate ?? catDefault(initCat, initPeriod);
         const data = await formModal({
             title: existing ? 'Gefährt bearbeiten' : 'Neues Gefährt',
             fields: [
                 { name: 'person_id', label: 'Person', type: 'select', required: true, value: existing?.person_id ?? presetPerson ?? state.persons[0].id, options: state.persons.map((p) => ({ value: p.id, label: personName(p) })) },
-                { name: 'category_id', label: 'Tarif / Typ', type: 'select', required: true, value: existing?.category_id ?? state.categories[0].id, options: state.categories.map((c) => ({ value: c.id, label: `${c.name} (${eur(c.default_monthly_cost)}/M, ${eur(c.default_yearly_cost)}/J)` })) },
+                { name: 'category_id', label: 'Tarif / Typ', type: 'select', required: true, value: initCat, options: state.categories.map((c) => ({ value: c.id, label: `${c.name} (${eur(c.default_monthly_cost)}/M, ${eur(c.default_yearly_cost)}/J)` })) },
                 { name: 'label', label: 'Bezeichnung', value: existing?.label, placeholder: 'z. B. Wohnwagen Hobby' },
                 { name: 'license_plate', label: 'Kennzeichen', value: existing?.license_plate },
                 { name: 'start_date', label: 'Einstelldatum', type: 'date', required: true, value: existing?.start_date ? existing.start_date.slice(0, 10) : today() },
                 { name: 'end_date', label: 'Abholdatum (optional)', type: 'date', value: existing?.end_date ? existing.end_date.slice(0, 10) : '', help: 'Leer = noch eingelagert. Hier auch nachträglich änderbar.' },
-                { name: 'billing_period', label: 'Abrechnung', type: 'select', value: existing?.billing_period || 'monthly', options: [{ value: 'monthly', label: 'monatlich' }, { value: 'yearly', label: 'jährlich' }] },
-                { name: 'cost_override', label: 'Sonderpreis (optional)', type: 'number', step: '0.01', min: 0, value: existing?.cost_override ?? '', help: 'Leer = zentraler Tarifpreis. Status & Abholung stellst du danach mit den Schiebereglern ein.' },
+                { name: 'billing_period', label: 'Abrechnung', type: 'select', value: initPeriod, options: [{ value: 'monthly', label: 'monatlich' }, { value: 'yearly', label: 'jährlich' }] },
+                { name: 'rate', label: 'Preis (€)', type: 'number', step: '0.01', min: 0, required: true, value: initRate, help: 'Aus dem Tarif übernommen und fest hinterlegt. Eine spätere Tarifänderung ändert diesen Preis nicht.' },
                 { name: 'notes', label: 'Notizen', type: 'textarea', value: existing?.notes },
             ],
+            onRender: (body) => {
+                const rateInp = body.querySelector('#f_rate');
+                const catInp = body.querySelector('#f_category_id');
+                const perInp = body.querySelector('#f_billing_period');
+                let manual = !!existing; // on edit, never auto-overwrite the locked price
+                rateInp.addEventListener('input', () => { manual = true; });
+                const sync = () => { if (!manual) rateInp.value = catDefault(catInp.value, perInp.value); };
+                catInp.addEventListener('change', sync);
+                perInp.addEventListener('change', sync);
+            },
         });
         if (!data) return;
         const payload = {
             person_id: Number(data.person_id), category_id: Number(data.category_id),
             label: data.label, license_plate: data.license_plate, notes: data.notes, billing_period: data.billing_period,
-            cost_override: data.cost_override === '' ? null : Number(data.cost_override),
+            rate: data.rate === '' ? null : Number(data.rate),
             start_date: data.start_date,
             // Abholdatum (end_date) is editable here so it can be corrected
             // retroactively; status/reservation stay slider-managed.
@@ -846,7 +862,7 @@
             el('div', { class: 'balance' }, el('span', {}, 'Person'), el('span', {}, el('a', { href: '#/persons/' + v.person_id }, esc(v.person_name)))),
             el('div', { class: 'balance' }, el('span', {}, 'Typ / Tarif'), el('span', {}, esc(v.category_name))),
             el('div', { class: 'balance' }, el('span', {}, 'Kennzeichen'), el('span', {}, esc(v.license_plate || '–'))),
-            el('div', { class: 'balance' }, el('span', {}, 'Preis'), el('span', { class: 'amt' }, eur(v.effective_rate) + (v.billing_period === 'yearly' ? ' /Jahr' : ' /Monat') + (v.cost_override != null ? ' (Sonderpreis)' : ''))),
+            el('div', { class: 'balance' }, el('span', {}, 'Preis'), el('span', { class: 'amt' }, eur(v.effective_rate) + (v.billing_period === 'yearly' ? ' /Jahr' : ' /Monat'))),
             el('div', { class: 'balance' }, el('span', {}, 'Zeitraum'), el('span', {}, fmtDate(v.start_date) + (v.end_date ? ' – ' + fmtDate(v.end_date) : ' – offen'))),
             v.reserved_from ? el('div', { class: 'balance' }, el('span', {}, 'Reservierung'), el('span', {}, fmtDate(v.reserved_from) + ' – ' + fmtDate(v.reserved_until))) : null,
             el('div', { class: 'balance' }, el('strong', {}, 'Aufgelaufen'), el('strong', { class: 'amt' }, eur(v.accrued_cost))),
