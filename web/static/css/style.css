@@ -197,6 +197,19 @@ textarea { resize: vertical; min-height: 72px; }
 /* Flat-rate agreement: covered-vehicle checkbox list in the form. */
 .agreement-vehicles { display: flex; flex-direction: column; gap: 0.3rem; max-height: 11rem; overflow-y: auto; margin-top: 0.3rem; }
 
+/* Pauschale: inline "new device from Tarif" builder in the form. */
+.new-vehicles { display: flex; flex-direction: column; gap: 0.4rem; margin: 0.3rem 0; }
+.new-vehicle-row { display: flex; gap: 0.4rem; align-items: center; }
+.new-vehicle-row select, .new-vehicle-row input { flex: 1 1 0; min-width: 0; }
+.new-vehicle-row .btn { flex: 0 0 auto; }
+
+/* Pauschale: per-period (year/month) payment list. */
+.period-payments { margin-top: 0.5rem; }
+.period-payments > summary { cursor: pointer; font-size: 0.9rem; color: var(--text-muted); user-select: none; padding: 0.2rem 0; }
+.period-list { display: flex; flex-direction: column; gap: 0.35rem; max-height: 14rem; overflow-y: auto; margin-top: 0.4rem; }
+.period-row { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.period-label { font-size: 0.9rem; }
+
 /* Audit log: filters + per-field old/new change display. */
 .audit-filters input[type="search"] { width: 100%; }
 .audit-filter-row { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
@@ -399,6 +412,21 @@ textarea { resize: vertical; min-height: 72px; }
 .toolbar { display: flex; gap: 0.5rem; margin-bottom: 0.8rem; flex-wrap: wrap; align-items: center; }
 .toolbar .search { flex: 1 1 160px; min-width: 140px; }
 .toolbar select { flex: 0 0 auto; width: auto; }
+.toggle-inline { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.9rem; color: var(--text-muted); cursor: pointer; white-space: nowrap; }
+.toggle-inline input { width: auto; margin: 0; }
+
+/* ---------- Archived (closed) vehicles ---------- */
+.card.is-archived { opacity: 0.72; border-style: dashed; }
+.card.is-archived h3 { font-weight: 600; }
+.archive-section { margin-top: 0.8rem; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev); }
+.archive-section > summary {
+    cursor: pointer; padding: 0.7rem 0.9rem; font-weight: 600; color: var(--text-muted);
+    list-style: none; user-select: none;
+}
+.archive-section > summary::-webkit-details-marker { display: none; }
+.archive-section > summary::before { content: '▸ '; }
+.archive-section[open] > summary::before { content: '▾ '; }
+.archive-section > .card { margin: 0 0.6rem 0.6rem; }
 
 /* ---------- Segmented control ---------- */
 .segments { display: inline-flex; background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 999px; padding: 3px; margin-bottom: 1rem; }

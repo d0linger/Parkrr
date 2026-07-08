@@ -15,11 +15,30 @@ import (
 
 const dateLayout = "2006-01-02"
 
+// errArchived is returned when a mutation is attempted on an archived (closed)
+// vehicle. Archived vehicles are read-only; the client must reactivate first.
+const errArchived = "vehicle is archived – reactivate it first to make changes"
+
+// autoArchiveIfClosed archives a vehicle that has just become fully closed
+// (cancelled, or collected AND paid), so settled vehicles drop out of the
+// active lists automatically. It is a no-op for still-open or already-archived
+// vehicles. Archiving never touches billing – it only affects list/edit
+// visibility – so it is safe to run after any status/payment change.
+func (h *Handler) autoArchiveIfClosed(r *http.Request, id int64) {
+	ct, err := h.Pool.Exec(r.Context(),
+		`UPDATE vehicles SET archived=true, updated_at=now()
+		 WHERE id=$1 AND archived=false
+		   AND (status='cancelled' OR (status='collected' AND paid))`, id)
+	if err == nil && ct.RowsAffected() > 0 {
+		h.audit(r, "update", "vehicle", id, "Gefährt archiviert (abgeschlossen): "+h.vehicleDesc(r, id))
+	}
+}
+
 // vehicleSelect is the shared column list + joins for reading vehicles,
 // including a live photo count. Append WHERE/ORDER as needed.
 const vehicleSelect = `SELECT v.id, v.person_id, v.category_id, v.label, v.license_plate,
 	        v.notes, v.billing_period, v.rate, v.cost_override, v.start_date, v.end_date,
-	        v.status, v.reserved_from, v.reserved_until, v.paid, v.created_at, v.updated_at,
+	        v.status, v.reserved_from, v.reserved_until, v.paid, v.archived, v.created_at, v.updated_at,
 	        c.name, c.default_monthly_cost, c.default_yearly_cost,
 	        p.first_name, p.last_name,
 	        (SELECT count(*) FROM vehicle_photos vp WHERE vp.vehicle_id = v.id)
@@ -238,9 +257,14 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 	}
 	var oldStatus string
 	var oldRate float64
+	var archived bool
 	if err := h.Pool.QueryRow(r.Context(),
-		`SELECT status, rate FROM vehicles WHERE id=$1`, id).Scan(&oldStatus, &oldRate); err != nil {
+		`SELECT status, rate, archived FROM vehicles WHERE id=$1`, id).Scan(&oldStatus, &oldRate, &archived); err != nil {
 		writeError(w, http.StatusNotFound, "vehicle not found")
+		return
+	}
+	if archived {
+		writeError(w, http.StatusConflict, errArchived)
 		return
 	}
 	// Fallback is the existing rate, so an omitted rate keeps the locked price.
@@ -315,9 +339,14 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var oldStatus string
+	var archived bool
 	if err := h.Pool.QueryRow(r.Context(),
-		`SELECT status FROM vehicles WHERE id=$1`, id).Scan(&oldStatus); err != nil {
+		`SELECT status, archived FROM vehicles WHERE id=$1`, id).Scan(&oldStatus, &archived); err != nil {
 		writeError(w, http.StatusNotFound, "vehicle not found")
+		return
+	}
+	if archived {
+		writeError(w, http.StatusConflict, errArchived)
 		return
 	}
 	// When collecting, set the pickup/end date: use the caller-supplied date if
@@ -342,6 +371,7 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	h.recordStatus(r, id, oldStatus, req.Status, trim(req.Note))
 	h.audit(r, "update", "vehicle", id, "Status "+h.vehicleDesc(r, id)+": "+oldStatus+" → "+req.Status)
+	h.autoArchiveIfClosed(r, id)
 	h.writeVehicle(w, r.Context(), id, http.StatusOK)
 }
 
@@ -399,14 +429,19 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE vehicles SET paid=$1, updated_at=now() WHERE id=$2`, req.Paid, id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not update payment status")
+	var archived bool
+	if err := h.Pool.QueryRow(r.Context(),
+		`SELECT archived FROM vehicles WHERE id=$1`, id).Scan(&archived); err != nil {
+		writeError(w, http.StatusNotFound, "vehicle not found")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "vehicle not found")
+	if archived {
+		writeError(w, http.StatusConflict, errArchived)
+		return
+	}
+	if _, err := h.Pool.Exec(r.Context(),
+		`UPDATE vehicles SET paid=$1, updated_at=now() WHERE id=$2`, req.Paid, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update payment status")
 		return
 	}
 	label := "offen"
@@ -414,6 +449,29 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 		label = "bezahlt"
 	}
 	h.audit(r, "update", "vehicle", id, "Zahlung "+h.vehicleDesc(r, id)+": "+label)
+	h.autoArchiveIfClosed(r, id)
+	h.writeVehicle(w, r.Context(), id, http.StatusOK)
+}
+
+// ReactivateVehicle lifts a vehicle out of the archive, making it active and
+// editable again. Used by the one-tap "Reaktivieren" action.
+func (h *Handler) ReactivateVehicle(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	ct, err := h.Pool.Exec(r.Context(),
+		`UPDATE vehicles SET archived=false, updated_at=now() WHERE id=$1`, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not reactivate vehicle")
+		return
+	}
+	if ct.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "vehicle not found")
+		return
+	}
+	h.audit(r, "update", "vehicle", id, "Gefährt reaktiviert: "+h.vehicleDesc(r, id))
 	h.writeVehicle(w, r.Context(), id, http.StatusOK)
 }
 
@@ -511,7 +569,7 @@ func scanVehicleRow(row rowScanner) (models.Vehicle, models.Category, error) {
 	var firstName, lastName string
 	err := row.Scan(&v.ID, &v.PersonID, &v.CategoryID, &v.Label, &v.LicensePlate,
 		&v.Notes, &v.BillingPeriod, &v.Rate, &v.CostOverride, &v.StartDate, &v.EndDate,
-		&v.Status, &v.ReservedFrom, &v.ReservedUntil, &v.Paid, &v.CreatedAt, &v.UpdatedAt,
+		&v.Status, &v.ReservedFrom, &v.ReservedUntil, &v.Paid, &v.Archived, &v.CreatedAt, &v.UpdatedAt,
 		&cat.Name, &cat.DefaultMonthlyCost, &cat.DefaultYearlyCost,
 		&firstName, &lastName, &v.PhotoCount)
 	if err != nil {

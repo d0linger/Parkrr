@@ -3,6 +3,7 @@ package models
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"time"
 )
@@ -187,15 +188,99 @@ type FlatRatePeriod struct {
 	Period     string     `json:"period"` // monthly | yearly
 	StartDate  time.Time  `json:"start_date"`
 	EndDate    *time.Time `json:"end_date"` // nil = open-ended
-	Paid       bool       `json:"paid"`
+	Paid       bool       `json:"paid"`     // master flag: whole agreement paid
 	Note       string     `json:"note"`
 	VehicleIDs []int64    `json:"vehicle_ids"` // empty = all of the person's vehicles
+	// PaidPeriods lists the sub-period keys explicitly marked paid ("YYYY" for
+	// yearly, "YYYY-MM" for monthly). A sub-period is paid when Paid is set OR its
+	// key is in this list, so this only ever adds paid coverage on top of Paid.
+	PaidPeriods []string `json:"paid_periods"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 
 	// Derived (not stored).
 	Accrued float64 `json:"accrued"`
+}
+
+// paidKeySet returns the set of sub-period keys explicitly marked paid.
+func (a *FlatRatePeriod) paidKeySet() map[string]bool {
+	m := make(map[string]bool, len(a.PaidPeriods))
+	for _, k := range a.PaidPeriods {
+		m[k] = true
+	}
+	return m
+}
+
+// PeriodKey returns the sub-period key that time t falls in for this agreement's
+// billing period: "YYYY" for yearly agreements, "YYYY-MM" for monthly ones.
+func (a *FlatRatePeriod) PeriodKey(t time.Time) string {
+	if a.Period == BillingYearly {
+		return fmt.Sprintf("%04d", t.Year())
+	}
+	return fmt.Sprintf("%04d-%02d", t.Year(), int(t.Month()))
+}
+
+// subPeriods invokes fn for each calendar sub-period (month or year, per Period)
+// that the agreement's active window intersects within [from, to). It passes the
+// intersected slice [s, e), the full sub-period bounds [pStart, pEnd) and the
+// sub-period key. Iteration mirrors prorate, so a sub-period's cost is exactly
+// fractionCents(toCents(Amount), days(s,e), days(pStart,pEnd)).
+func (a *FlatRatePeriod) subPeriods(from, to time.Time, fn func(s, e, pStart, pEnd time.Time, key string)) {
+	s, e := a.window(from, to)
+	if !e.After(s) {
+		return
+	}
+	if a.Period == BillingYearly {
+		for y := s.Year(); ; y++ {
+			pStart := time.Date(y, 1, 1, 0, 0, 0, 0, time.UTC)
+			pEnd := pStart.AddDate(1, 0, 0)
+			ss, ee := maxTime(s, pStart), minTime(e, pEnd)
+			if ee.After(ss) {
+				fn(ss, ee, pStart, pEnd, a.PeriodKey(pStart))
+			}
+			if !pEnd.Before(e) {
+				break
+			}
+		}
+		return
+	}
+	cur := time.Date(s.Year(), s.Month(), 1, 0, 0, 0, 0, time.UTC)
+	for cur.Before(e) {
+		pEnd := cur.AddDate(0, 1, 0)
+		ss, ee := maxTime(s, cur), minTime(e, pEnd)
+		if ee.After(ss) {
+			fn(ss, ee, cur, pEnd, a.PeriodKey(cur))
+		}
+		cur = pEnd
+	}
+}
+
+// PaidCentsInRange returns, in integer cents, the portion of the agreement's
+// cost within [from, to) that is marked paid — either by the whole-agreement
+// Paid flag or by an explicit per-period payment. When Paid is set this equals
+// toCents(CostInRange), so the legacy "fully paid" behavior is preserved.
+func (a *FlatRatePeriod) PaidCentsInRange(from, to time.Time) int64 {
+	paid := a.paidKeySet()
+	cents := toCents(a.Amount)
+	var total int64
+	a.subPeriods(from, to, func(s, e, pStart, pEnd time.Time, key string) {
+		if a.Paid || paid[key] {
+			total += fractionCents(cents, days(s, e), days(pStart, pEnd))
+		}
+	})
+	return total
+}
+
+// ElapsedPeriodKeys returns the sub-period keys from the agreement's start
+// through asOf (inclusive), oldest first — the periods that have begun and can
+// therefore be marked paid.
+func (a *FlatRatePeriod) ElapsedPeriodKeys(asOf time.Time) []string {
+	var keys []string
+	a.subPeriods(a.StartDate, asOf.AddDate(0, 0, 1), func(_, _, _, _ time.Time, key string) {
+		keys = append(keys, key)
+	})
+	return keys
 }
 
 // Covers reports whether this agreement applies to the given vehicle. An empty
@@ -288,8 +373,12 @@ type Vehicle struct {
 	ReservedFrom  *time.Time `json:"reserved_from"`
 	ReservedUntil *time.Time `json:"reserved_until"`
 	Paid          bool       `json:"paid"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	// Archived marks a closed vehicle (cancelled, or collected + paid) that has
+	// been tidied out of the active lists. Archived vehicles are read-only until
+	// reactivated, but still count in all billing and statistics.
+	Archived  bool      `json:"archived"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 
 	// Derived / joined fields (not stored directly).
 	CategoryName  string  `json:"category_name,omitempty"`

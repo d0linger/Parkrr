@@ -49,3 +49,51 @@ func TestVehicleFullyCoveredCostsZero(t *testing.T) {
 		t.Errorf("fully covered vehicle should cost 0, got %.2f", got)
 	}
 }
+
+func TestPeriodKey(t *testing.T) {
+	y := FlatRatePeriod{Period: BillingYearly}
+	if got := y.PeriodKey(date(2026, time.March, 4)); got != "2026" {
+		t.Errorf("yearly key: got %q want 2026", got)
+	}
+	m := FlatRatePeriod{Period: BillingMonthly}
+	if got := m.PeriodKey(date(2026, time.March, 4)); got != "2026-03" {
+		t.Errorf("monthly key: got %q want 2026-03", got)
+	}
+}
+
+// The master Paid flag must count every sub-period as paid, exactly matching the
+// full accrued cost — this preserves legacy fully-paid billing.
+func TestPaidCentsMasterMatchesCost(t *testing.T) {
+	a := FlatRatePeriod{Amount: 120, Period: BillingMonthly, StartDate: date(2025, time.January, 1), Paid: true}
+	from, to := date(2025, time.January, 1), date(2025, time.April, 1) // 3 months = 360
+	if cost := a.CostInRange(from, to); cost != 360 {
+		t.Fatalf("precondition cost got %.2f want 360.00", cost)
+	}
+	if cents := a.PaidCentsInRange(from, to); cents != 36000 {
+		t.Errorf("master-paid cents got %d want 36000", cents)
+	}
+}
+
+// Marking a single month paid must credit only that month's cost.
+func TestPaidCentsPerPeriod(t *testing.T) {
+	a := FlatRatePeriod{Amount: 120, Period: BillingMonthly, StartDate: date(2025, time.January, 1),
+		PaidPeriods: []string{"2025-02"}}
+	from, to := date(2025, time.January, 1), date(2025, time.April, 1)
+	if cents := a.PaidCentsInRange(from, to); cents != 12000 {
+		t.Errorf("one-month-paid cents got %d want 12000", cents)
+	}
+}
+
+func TestElapsedPeriodKeys(t *testing.T) {
+	a := FlatRatePeriod{Period: BillingMonthly, StartDate: date(2025, time.January, 1)}
+	got := a.ElapsedPeriodKeys(date(2025, time.March, 15))
+	want := []string{"2025-01", "2025-02", "2025-03"}
+	if len(got) != len(want) {
+		t.Fatalf("elapsed keys got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("elapsed keys got %v want %v", got, want)
+		}
+	}
+}

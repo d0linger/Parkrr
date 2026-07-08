@@ -2,8 +2,11 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/preining/parkrr/internal/models"
 )
@@ -29,6 +32,7 @@ func (h *Handler) loadAgreements(ctx context.Context, personID int64, now time.T
 			return nil, err
 		}
 		a.VehicleIDs = []int64{}
+		a.PaidPeriods = []string{}
 		out = append(out, a)
 		ids = append(ids, a.ID)
 	}
@@ -58,6 +62,26 @@ func (h *Handler) loadAgreements(ctx context.Context, personID int64, now time.T
 		}
 		vrows.Close()
 		if err := vrows.Err(); err != nil {
+			return nil, err
+		}
+		prows, err := h.Pool.Query(ctx,
+			`SELECT period_id, period_key FROM flat_rate_period_payments WHERE period_id = ANY($1)`, ids)
+		if err != nil {
+			return nil, err
+		}
+		for prows.Next() {
+			var pid int64
+			var key string
+			if err := prows.Scan(&pid, &key); err != nil {
+				prows.Close()
+				return nil, err
+			}
+			if a := byID[pid]; a != nil {
+				a.PaidPeriods = append(a.PaidPeriods, key)
+			}
+		}
+		prows.Close()
+		if err := prows.Err(); err != nil {
 			return nil, err
 		}
 	}
@@ -90,6 +114,69 @@ type agreementRequest struct {
 	Note       string   `json:"note"`
 	VehicleIDs []int64  `json:"vehicle_ids"`
 	Paid       bool     `json:"paid"`
+	// NewVehicles are devices created inline while building the Pauschale: real
+	// vehicle records for the person, typed from a Tarif and stored from the
+	// agreement's start date, then covered by the agreement.
+	NewVehicles []newVehicleReq `json:"new_vehicles"`
+}
+
+type newVehicleReq struct {
+	CategoryID   int64  `json:"category_id"`
+	Label        string `json:"label"`
+	LicensePlate string `json:"license_plate"`
+}
+
+// errNoCategory flags a missing/invalid Tarif for an inline vehicle.
+var errNoCategory = errors.New("tariff does not exist")
+
+// createdVehicle is an inline device created while saving a Pauschale.
+type createdVehicle struct {
+	id    int64
+	label string
+	plate string
+}
+
+// createVehiclesTx creates the inline "new devices" for an agreement as real
+// vehicle records within the caller's transaction: person-owned, typed from a
+// Tarif, stored from the agreement's start date with the Tarif's price locked
+// on (Option A). Running in the same transaction as the agreement save means a
+// later failure rolls the vehicles back instead of orphaning them.
+func createVehiclesTx(ctx context.Context, tx pgx.Tx, personID int64, period string, start time.Time, news []newVehicleReq) ([]createdVehicle, error) {
+	out := make([]createdVehicle, 0, len(news))
+	for _, nv := range news {
+		if nv.CategoryID <= 0 {
+			return nil, errNoCategory
+		}
+		var monthly, yearly float64
+		if err := tx.QueryRow(ctx,
+			`SELECT default_monthly_cost, default_yearly_cost FROM categories WHERE id=$1`, nv.CategoryID).
+			Scan(&monthly, &yearly); err != nil {
+			return nil, err // pgx.ErrNoRows -> mapped to a 400 by the caller
+		}
+		rate := monthly
+		if period == models.BillingYearly {
+			rate = yearly
+		}
+		label, plate := trim(nv.Label), trim(nv.LicensePlate)
+		var id int64
+		if err := tx.QueryRow(ctx,
+			`INSERT INTO vehicles (person_id, category_id, label, license_plate, billing_period, rate, start_date, status)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,'stored') RETURNING id`,
+			personID, nv.CategoryID, label, plate, period, rate, start).Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, createdVehicle{id: id, label: label, plate: plate})
+	}
+	return out, nil
+}
+
+// agreementSaveError maps a saveAgreement failure to a client (message, status):
+// a missing Tarif for an inline device is a 400, everything else the fallback.
+func agreementSaveError(err error, fallback string) (string, int) {
+	if errors.Is(err, errNoCategory) || errors.Is(err, pgx.ErrNoRows) || isForeignKeyViolation(err) {
+		return "tariff does not exist", http.StatusBadRequest
+	}
+	return fallback, http.StatusInternalServerError
 }
 
 // parse validates the request and returns a partially-filled agreement (without
@@ -191,13 +278,19 @@ func (h *Handler) vehiclesBelongTo(ctx context.Context, personID int64, vids []i
 
 // validateAgreement checks vehicle ownership and time/vehicle overlap. Returns a
 // (clientMessage, httpStatus) to send, or ("", 0) when the candidate is valid.
-func (h *Handler) validateAgreement(ctx context.Context, personID, excludeID int64, cand models.FlatRatePeriod) (string, int) {
+func (h *Handler) validateAgreement(ctx context.Context, personID, excludeID int64, cand models.FlatRatePeriod, hasNew bool) (string, int) {
 	ok, err := h.vehiclesBelongTo(ctx, personID, cand.VehicleIDs)
 	if err != nil {
 		return "query failed", http.StatusInternalServerError
 	}
 	if !ok {
 		return "all covered vehicles must belong to this person", http.StatusBadRequest
+	}
+	// A new-devices-only agreement covers just those brand-new vehicles, which
+	// cannot overlap any existing agreement, so skip the overlap check (an empty
+	// VehicleIDs would otherwise be read as "covers all vehicles").
+	if len(cand.VehicleIDs) == 0 && hasNew {
+		return "", 0
 	}
 	msg, err := h.checkOverlap(ctx, personID, excludeID, cand, time.Now())
 	if err != nil {
@@ -226,12 +319,16 @@ func (h *Handler) CreateAgreement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
-	if m, code := h.validateAgreement(r.Context(), pid, 0, cand); m != "" {
+	if m, code := h.validateAgreement(r.Context(), pid, 0, cand, len(req.NewVehicles) > 0); m != "" {
 		writeError(w, code, m)
 		return
 	}
-	if err := h.saveAgreement(r.Context(), 0, pid, cand); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not create agreement")
+	// Inline devices are created inside saveAgreement's transaction and covered,
+	// so a new-device-only Pauschale is scoped to them (not "all vehicles") and a
+	// failure never leaves orphaned vehicles behind.
+	if err := h.saveAgreement(r, 0, pid, cand, req.NewVehicles); err != nil {
+		msg, code := agreementSaveError(err, "could not create agreement")
+		writeError(w, code, msg)
 		return
 	}
 	h.audit(r, "create", "flatrate", pid, "Pauschale angelegt für "+h.personLabel(r, pid))
@@ -261,12 +358,13 @@ func (h *Handler) UpdateAgreement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
-	if m, code := h.validateAgreement(r.Context(), pid, id, cand); m != "" {
+	if m, code := h.validateAgreement(r.Context(), pid, id, cand, len(req.NewVehicles) > 0); m != "" {
 		writeError(w, code, m)
 		return
 	}
-	if err := h.saveAgreement(r.Context(), id, pid, cand); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not update agreement")
+	if err := h.saveAgreement(r, id, pid, cand, req.NewVehicles); err != nil {
+		msg, code := agreementSaveError(err, "could not update agreement")
+		writeError(w, code, msg)
 		return
 	}
 	h.audit(r, "update", "flatrate", id, "Pauschale geändert für "+h.personLabel(r, pid))
@@ -275,12 +373,23 @@ func (h *Handler) UpdateAgreement(w http.ResponseWriter, r *http.Request) {
 
 // saveAgreement inserts (id==0) or updates an agreement and replaces its covered
 // vehicles, in one transaction.
-func (h *Handler) saveAgreement(ctx context.Context, id, personID int64, a models.FlatRatePeriod) error {
+func (h *Handler) saveAgreement(r *http.Request, id, personID int64, a models.FlatRatePeriod, news []newVehicleReq) error {
+	ctx := r.Context()
 	tx, err := h.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Create inline devices in this same transaction and cover them, so a later
+	// failure rolls them back instead of leaving orphaned vehicles.
+	created, err := createVehiclesTx(ctx, tx, personID, a.Period, a.StartDate, news)
+	if err != nil {
+		return err
+	}
+	for _, c := range created {
+		a.VehicleIDs = append(a.VehicleIDs, c.id)
+	}
 
 	if id == 0 {
 		if err := tx.QueryRow(ctx,
@@ -307,7 +416,15 @@ func (h *Handler) saveAgreement(ctx context.Context, id, personID int64, a model
 			return err
 		}
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	// Post-commit, best-effort: status history + audit for the created devices.
+	for _, c := range created {
+		h.recordStatus(r, c.id, "", models.StatusStored, "über Pauschale angelegt")
+		h.audit(r, "create", "vehicle", c.id, "created vehicle via Pauschale "+vehicleLabel(c.label, c.plate))
+	}
+	return nil
 }
 
 // DeleteAgreement removes an agreement.
@@ -348,11 +465,28 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	// The master flag is the "reset all" control: it also clears any per-period
+	// payment rows, so "bezahlt" = everything paid and "offen" = nothing paid.
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update agreement")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
 	var pid int64
-	if err := h.Pool.QueryRow(r.Context(),
+	if err := tx.QueryRow(r.Context(),
 		`UPDATE flat_rate_periods SET paid=$1, updated_at=now() WHERE id=$2 RETURNING person_id`,
 		req.Paid, id).Scan(&pid); err != nil {
 		writeError(w, http.StatusNotFound, "agreement not found")
+		return
+	}
+	if _, err := tx.Exec(r.Context(),
+		`DELETE FROM flat_rate_period_payments WHERE period_id=$1`, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update agreement")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update agreement")
 		return
 	}
 	state := "offen"
@@ -361,6 +495,94 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit(r, "update", "flatrate", id, "Pauschale "+h.personLabel(r, pid)+" "+state)
 	h.writeAgreements(w, r, pid)
+}
+
+type agreementPeriodPaidRequest struct {
+	PeriodKey string `json:"period_key"`
+	Paid      bool   `json:"paid"`
+}
+
+// SetAgreementPeriodPaid marks a single sub-period (a year "YYYY" or month
+// "YYYY-MM") of an agreement paid or open. Turning a period off while the master
+// Paid flag is set first records every elapsed period as an explicit paid
+// row and clears the master flag, so only the chosen period becomes open.
+func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req agreementPeriodPaidRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	key := trim(req.PeriodKey)
+	if key == "" {
+		writeError(w, http.StatusBadRequest, "period_key is required")
+		return
+	}
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update payment")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+
+	// Read + lock the agreement inside the transaction so the master-flag branch
+	// below acts on a consistent snapshot even under concurrent paid toggles.
+	var a models.FlatRatePeriod
+	if err := tx.QueryRow(r.Context(),
+		`SELECT id, person_id, period, start_date, end_date, paid
+		 FROM flat_rate_periods WHERE id=$1 FOR UPDATE`, id).
+		Scan(&a.ID, &a.PersonID, &a.Period, &a.StartDate, &a.EndDate, &a.Paid); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "agreement not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "could not update payment")
+		return
+	}
+
+	if req.Paid {
+		if _, err := tx.Exec(r.Context(),
+			`INSERT INTO flat_rate_period_payments (period_id, period_key) VALUES ($1,$2)
+			 ON CONFLICT DO NOTHING`, id, key); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not update payment")
+			return
+		}
+	} else {
+		if a.Paid {
+			for _, k := range a.ElapsedPeriodKeys(time.Now()) {
+				if _, err := tx.Exec(r.Context(),
+					`INSERT INTO flat_rate_period_payments (period_id, period_key) VALUES ($1,$2)
+					 ON CONFLICT DO NOTHING`, id, k); err != nil {
+					writeError(w, http.StatusInternalServerError, "could not update payment")
+					return
+				}
+			}
+			if _, err := tx.Exec(r.Context(),
+				`UPDATE flat_rate_periods SET paid=false, updated_at=now() WHERE id=$1`, id); err != nil {
+				writeError(w, http.StatusInternalServerError, "could not update payment")
+				return
+			}
+		}
+		if _, err := tx.Exec(r.Context(),
+			`DELETE FROM flat_rate_period_payments WHERE period_id=$1 AND period_key=$2`, id, key); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not update payment")
+			return
+		}
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update payment")
+		return
+	}
+	state := "offen"
+	if req.Paid {
+		state = "bezahlt"
+	}
+	h.audit(r, "update", "flatrate", id, "Pauschale "+h.personLabel(r, a.PersonID)+" "+key+": "+state)
+	h.writeAgreements(w, r, a.PersonID)
 }
 
 func (h *Handler) writeAgreements(w http.ResponseWriter, r *http.Request, personID int64) {
@@ -388,6 +610,7 @@ func (h *Handler) loadAllAgreements(ctx context.Context) (map[int64][]models.Fla
 			return nil, err
 		}
 		a.VehicleIDs = []int64{}
+		a.PaidPeriods = []string{}
 		out[a.PersonID] = append(out[a.PersonID], a)
 	}
 	rows.Close()
@@ -414,7 +637,26 @@ func (h *Handler) loadAllAgreements(ctx context.Context) (map[int64][]models.Fla
 		}
 	}
 	vrows.Close()
-	return out, vrows.Err()
+	if err := vrows.Err(); err != nil {
+		return nil, err
+	}
+	prows, err := h.Pool.Query(ctx, `SELECT period_id, period_key FROM flat_rate_period_payments`)
+	if err != nil {
+		return nil, err
+	}
+	for prows.Next() {
+		var pid int64
+		var key string
+		if err := prows.Scan(&pid, &key); err != nil {
+			prows.Close()
+			return nil, err
+		}
+		if a := byID[pid]; a != nil {
+			a.PaidPeriods = append(a.PaidPeriods, key)
+		}
+	}
+	prows.Close()
+	return out, prows.Err()
 }
 
 // coveringAgreements returns the agreements that cover the given vehicle.
@@ -433,11 +675,10 @@ func coveringAgreements(agreements []models.FlatRatePeriod, vehicleID int64) []m
 // agreement. Covered vehicles contribute only their uncovered portion.
 func personRent(agreements []models.FlatRatePeriod, vehicles []models.Vehicle, cats map[int64]models.Category, from, to time.Time) (accrued, paid float64) {
 	for i := range agreements {
-		c := agreements[i].CostInRange(from, to)
-		accrued += c
-		if agreements[i].Paid {
-			paid += c
-		}
+		accrued += agreements[i].CostInRange(from, to)
+		// Paid is tracked per sub-period (year/month); the master Paid flag counts
+		// every sub-period as paid, preserving legacy behavior.
+		paid += float64(agreements[i].PaidCentsInRange(from, to)) / 100
 	}
 	for i := range vehicles {
 		v := &vehicles[i]

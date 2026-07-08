@@ -330,6 +330,7 @@
     const personName = (p) => (`${p.first_name || ''} ${p.last_name || ''}`).trim() || '(ohne Namen)';
     const catById = (id) => state.categories.find((c) => c.id === Number(id));
     const STATUS_LABEL = { reserved: 'reserviert', stored: 'eingelagert', collected: 'abgeholt', cancelled: 'storniert' };
+    const MONTH_NAMES = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
     const ROLE_LABEL = { admin: 'Administrator', editor: 'Bearbeiter', reader: 'Nur-Lesen' };
     const statusBadge = (s) => el('span', { class: 'badge badge-' + s }, STATUS_LABEL[s] || s);
 
@@ -585,12 +586,20 @@
             page.append(yc);
         }
 
-        // vehicles
-        const vh = el('div', { class: 'page-head' }, el('h3', {}, 'Gefährte (' + vehicles.length + ')'));
+        // vehicles — active first; archived (closed) tucked into a collapsible
+        // section so settled entries don't clutter the list.
+        const activeVeh = vehicles.filter((v) => !v.archived);
+        const archivedVeh = vehicles.filter((v) => v.archived);
+        const vh = el('div', { class: 'page-head' }, el('h3', {}, 'Gefährte (' + activeVeh.length + ')'));
         if (canManage()) vh.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => vehicleForm(null, id) }, '+ Gefährt'));
         page.append(vh);
-        if (!vehicles.length) page.append(el('p', { class: 'muted' }, 'Keine Gefährte.'));
-        else vehicles.forEach((v) => page.append(vehicleCard(v, { linkable: true, covered: coversAll || coveredVids.has(v.id) })));
+        if (!activeVeh.length) page.append(el('p', { class: 'muted' }, 'Keine aktiven Gefährte.'));
+        else activeVeh.forEach((v) => page.append(vehicleCard(v, { linkable: true, covered: coversAll || coveredVids.has(v.id) })));
+        if (archivedVeh.length) {
+            const det = el('details', { class: 'archive-section' }, el('summary', {}, 'Archiv (' + archivedVeh.length + ')'));
+            archivedVeh.forEach((v) => det.append(vehicleCard(v, { linkable: true, covered: coversAll || coveredVids.has(v.id) })));
+            page.append(det);
+        }
 
         // charges
         const ch = el('div', { class: 'page-head' }, el('h3', {}, 'Zusatzkosten'));
@@ -614,16 +623,21 @@
                 { label: 'Kosten absteigend', cmp: (a, b) => b.accrued_cost - a.accrued_cost },
             ],
             controls: (refresh, cs) => {
-                cs.status = ''; cs.person = '';
+                cs.status = ''; cs.person = ''; cs.showArchived = false;
                 const stSel = el('select', {}, el('option', { value: '' }, 'Alle Status'),
                     ...['stored', 'reserved', 'collected', 'cancelled'].map((s) => el('option', { value: s }, STATUS_LABEL[s])));
                 stSel.addEventListener('change', () => { cs.status = stSel.value; refresh(); });
                 const peSel = el('select', {}, el('option', { value: '' }, 'Alle Personen'),
                     ...state.persons.map((p) => el('option', { value: p.id }, personName(p))));
                 peSel.addEventListener('change', () => { cs.person = peSel.value; refresh(); });
-                return [stSel, peSel];
+                const arChk = el('input', { type: 'checkbox' });
+                arChk.addEventListener('change', () => { cs.showArchived = arChk.checked; refresh(); });
+                const arLabel = el('label', { class: 'toggle-inline' }, arChk, el('span', {}, 'Archiv'));
+                return [stSel, peSel, arLabel];
             },
-            extraFilter: (v, cs) => (!cs.status || v.status === cs.status) && (!cs.person || String(v.person_id) === cs.person),
+            // Hide archived (closed) vehicles unless the Archiv toggle is on.
+            extraFilter: (v, cs) => (cs.showArchived || !v.archived) &&
+                (!cs.status || v.status === cs.status) && (!cs.person || String(v.person_id) === cs.person),
             render: (v) => vehicleCard(v, { linkable: true }),
         });
     };
@@ -639,9 +653,11 @@
                 ` · seit ${fmtDate(v.start_date)}` + (v.end_date ? ` bis ${fmtDate(v.end_date)}` : '')),
             el('div', { class: 'card-meta', style: 'color:var(--text);font-weight:600;margin-top:.3rem' }, 'Aufgelaufen: ' + eur(v.accrued_cost)));
         const actions = el('div', { class: 'card-actions' },
-            canManage() && el('button', { class: 'btn btn-ghost btn-sm', onclick: () => vehicleForm(v) }, '✎'),
+            // Archived vehicles are read-only, so no inline edit; delete stays for
+            // genuine mistakes.
+            canManage() && !v.archived && el('button', { class: 'btn btn-ghost btn-sm', onclick: () => vehicleForm(v) }, '✎'),
             canManage() && el('button', { class: 'btn btn-ghost btn-sm', onclick: () => delVehicle(v) }, '🗑'));
-        return el('div', { class: 'card' },
+        return el('div', { class: 'card' + (v.archived ? ' is-archived' : '') },
             el('div', { class: 'card-row' }, main, actions),
             vehicleControls(v, covered));
     }
@@ -651,6 +667,15 @@
     // is shown; the payment slider still marks the uncovered portion as paid.
     function vehicleControls(v, covered = false) {
         const wrap = el('div', { class: 'controls-row' });
+        // Archived (closed) vehicles are read-only: show the settled state as
+        // badges and offer a one-tap reactivate instead of the live sliders.
+        if (v.archived) {
+            wrap.append(statusBadge(v.status));
+            wrap.append(el('span', { class: 'badge ' + (v.paid ? 'badge-active' : 'badge-ended') }, v.paid ? 'bezahlt' : 'offen'));
+            if (covered) wrap.append(el('span', { class: 'badge badge-cat', title: 'Zeitweise über eine Pauschale abgerechnet' }, 'in Pauschale'));
+            if (canManage()) wrap.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => reactivateVehicle(v) }, '↩ Reaktivieren'));
+            return wrap;
+        }
         wrap.append(statusSlider(v));
         if (canBill()) wrap.append(paidSlider(v));
         if (covered) wrap.append(el('span', { class: 'badge badge-cat', title: 'Zeitweise über eine Pauschale abgerechnet' }, 'in Pauschale'));
@@ -658,6 +683,10 @@
             wrap.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => duplicateVehicle(v) }, '↻ Erneut einstellen'));
         }
         return wrap;
+    }
+    async function reactivateVehicle(v) {
+        try { await api.post('/vehicles/' + v.id + '/reactivate'); toast('Reaktiviert', 'success'); render(); }
+        catch (e) { toast(e.message, 'error'); render(); }
     }
 
     // ---- flat-rate agreements (Pauschale-Einträge) ----
@@ -675,9 +704,67 @@
             canBill() ? el('div', { class: 'card-actions' },
                 el('button', { class: 'btn btn-ghost btn-sm', onclick: () => agreementForm(personId, vehicles, a) }, '✎'),
                 el('button', { class: 'btn btn-ghost btn-sm', onclick: () => delAgreement(a) }, '🗑')) : null));
-        if (canBill()) row.append(el('div', { class: 'controls-row' }, agreementPaidSlider(a)));
-        else row.append(el('span', { class: 'badge ' + (a.paid ? 'badge-active' : 'badge-ended') }, a.paid ? 'bezahlt' : 'offen'));
+        if (canBill()) row.append(agreementPayments(a));
+        else {
+            const partial = !a.paid && a.paid_periods && a.paid_periods.length;
+            row.append(el('span', { class: 'badge ' + (a.paid ? 'badge-active' : partial ? 'badge-cat' : 'badge-ended') },
+                a.paid ? 'bezahlt' : partial ? 'teilweise bezahlt' : 'offen'));
+        }
         return row;
+    }
+    // Payment controls for an agreement: a master "Alle" slider (bezahlt = all
+    // paid, offen = none) plus a collapsible per-period list (per year for yearly
+    // agreements, per month for monthly ones) so single periods can be settled.
+    function agreementPayments(a) {
+        const wrap = el('div', {});
+        wrap.append(el('div', { class: 'controls-row' },
+            el('span', { class: 'muted', style: 'font-size:.85rem' }, 'Alle Zeiträume'), agreementPaidSlider(a)));
+        const periods = agreementPeriods(a);
+        if (periods.length) {
+            const det = el('details', { class: 'period-payments' }, el('summary', {}, 'Zahlung je Zeitraum (' + periods.length + ')'));
+            const box = el('div', { class: 'period-list' });
+            for (const p of periods) {
+                box.append(el('div', { class: 'period-row' },
+                    el('span', { class: 'period-label' }, p.label), agreementPeriodSlider(a, p.key)));
+            }
+            det.append(box);
+            wrap.append(det);
+        }
+        return wrap;
+    }
+    // agreementPeriods lists the elapsed sub-periods (start → today or end),
+    // newest first, with keys matching the server format ("YYYY" / "YYYY-MM").
+    function agreementPeriods(a) {
+        const [sy, sm] = a.start_date.slice(0, 7).split('-').map(Number);
+        let [ey, em] = today().slice(0, 7).split('-').map(Number);
+        if (a.end_date) {
+            const [dy, dm] = a.end_date.slice(0, 7).split('-').map(Number);
+            if (dy < ey || (dy === ey && dm < em)) { ey = dy; em = dm; }
+        }
+        const out = [];
+        if (a.period === 'yearly') {
+            for (let y = sy; y <= ey; y++) out.push({ key: String(y), label: String(y) });
+        } else {
+            let y = sy, m = sm;
+            while (y < ey || (y === ey && m <= em)) {
+                out.push({ key: y + '-' + String(m).padStart(2, '0'), label: MONTH_NAMES[m - 1] + ' ' + y });
+                m++; if (m > 12) { m = 1; y++; }
+            }
+        }
+        return out.reverse();
+    }
+    const periodPaid = (a, key) => !!a.paid || (a.paid_periods || []).includes(key);
+    function agreementPeriodSlider(a, key) {
+        const paid = periodPaid(a, key);
+        const seg = el('div', { class: 'seg-mini pay', role: 'radiogroup', 'aria-label': 'Zahlstatus ' + key });
+        const set = async (val, e) => {
+            markActive(e.currentTarget);
+            try { await api.post('/agreements/' + a.id + '/period-paid', { period_key: key, paid: val }); toast(val ? 'bezahlt' : 'offen', 'success'); render(); }
+            catch (err) { toast(err.message, 'error'); render(); }
+        };
+        seg.append(el('button', { class: !paid ? 'active open' : '', type: 'button', role: 'radio', 'aria-checked': String(!paid), onclick: (e) => set(false, e) }, 'offen'));
+        seg.append(el('button', { class: paid ? 'active done' : '', type: 'button', role: 'radio', 'aria-checked': String(paid), onclick: (e) => set(true, e) }, 'bezahlt'));
+        return seg;
     }
     function agreementPaidSlider(a) {
         const seg = el('div', { class: 'seg-mini pay', role: 'radiogroup', 'aria-label': 'Zahlstatus Pauschale' });
@@ -697,6 +784,7 @@
     }
     async function agreementForm(personId, vehicles, existing) {
         const selected = new Set((existing && existing.vehicle_ids) || []);
+        const newRows = []; // inline-created devices: { cat, label, plate } inputs
         const data = await formModal({
             title: existing ? 'Pauschale bearbeiten' : 'Neue Pauschale',
             submitLabel: 'Speichern',
@@ -708,29 +796,50 @@
                 { name: 'note', label: 'Notiz (optional)', value: existing?.note },
             ],
             onRender: (body) => {
-                if (!vehicles.length) return;
+                // Existing vehicles: offer currently-stored/reserved ones, plus any
+                // already covered by this agreement (so editing never drops them).
                 const active = (v) => v.status === 'stored' || v.status === 'reserved';
-                // Only offer currently-stored/reserved vehicles, plus any already
-                // covered by this agreement (so editing never silently drops them).
                 const list = vehicles
                     .filter((v) => active(v) || selected.has(v.id))
                     .sort((a, b) => ((active(b) ? 1 : 0) - (active(a) ? 1 : 0)) || (new Date(b.start_date) - new Date(a.start_date)));
-                body.append(el('label', {}, 'Gefährte (keine Auswahl = alle)'));
-                const box = el('div', { class: 'agreement-vehicles' });
-                for (const v of list) {
-                    const cb = el('input', { type: 'checkbox' });
-                    if (selected.has(v.id)) cb.checked = true;
-                    cb.addEventListener('change', () => { cb.checked ? selected.add(v.id) : selected.delete(v.id); });
-                    const sub = [v.license_plate, v.category_name,
-                        'seit ' + fmtDate(v.start_date) + (v.end_date ? ' – ' + fmtDate(v.end_date) : ''),
-                        STATUS_LABEL[v.status] || v.status].filter(Boolean).join(' · ');
-                    box.append(el('label', { class: 'switch agreement-vehicle' }, cb, el('span', { class: 'track' }),
-                        el('span', {}, el('div', {}, esc(v.label || v.license_plate || v.category_name)), el('div', { class: 't-time' }, esc(sub)))));
+                if (list.length) {
+                    body.append(el('label', {}, 'Bestehende Gefährte (keine Auswahl = alle)'));
+                    const box = el('div', { class: 'agreement-vehicles' });
+                    for (const v of list) {
+                        const cb = el('input', { type: 'checkbox' });
+                        if (selected.has(v.id)) cb.checked = true;
+                        cb.addEventListener('change', () => { cb.checked ? selected.add(v.id) : selected.delete(v.id); });
+                        const sub = [v.license_plate, v.category_name,
+                            'seit ' + fmtDate(v.start_date) + (v.end_date ? ' – ' + fmtDate(v.end_date) : ''),
+                            STATUS_LABEL[v.status] || v.status].filter(Boolean).join(' · ');
+                        box.append(el('label', { class: 'switch agreement-vehicle' }, cb, el('span', { class: 'track' }),
+                            el('span', {}, el('div', {}, esc(v.label || v.license_plate || v.category_name)), el('div', { class: 't-time' }, esc(sub)))));
+                    }
+                    body.append(box);
                 }
-                body.append(box);
+                // Inline device creation: add new devices straight from a Tarif.
+                if (!state.categories.length) return;
+                body.append(el('label', {}, 'Neue Gefährte aus Tarif anlegen'));
+                const newBox = el('div', { class: 'new-vehicles' });
+                body.append(newBox);
+                const addRow = () => {
+                    const cat = el('select', {}, ...state.categories.map((c) => el('option', { value: c.id }, c.name)));
+                    const label = el('input', { type: 'text', placeholder: 'Bezeichnung' });
+                    const plate = el('input', { type: 'text', placeholder: 'Kennzeichen' });
+                    const entry = { cat, label, plate };
+                    const row = el('div', { class: 'new-vehicle-row' }, cat, label, plate,
+                        el('button', { type: 'button', class: 'btn btn-ghost btn-sm', title: 'Entfernen', onclick: () => { row.remove(); const i = newRows.indexOf(entry); if (i >= 0) newRows.splice(i, 1); } }, '✕'));
+                    newRows.push(entry);
+                    newBox.append(row);
+                };
+                body.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: addRow }, '+ Gefährt aus Tarif'));
+                body.append(el('div', { class: 'card-meta' }, 'Neue Gefährte werden angelegt (Preis aus dem Tarif) und von dieser Pauschale abgedeckt.'));
             },
         });
         if (!data) return;
+        const newVehicles = newRows
+            .map((e) => ({ category_id: Number(e.cat.value), label: e.label.value.trim(), license_plate: e.plate.value.trim() }))
+            .filter((n) => n.category_id > 0);
         const payload = {
             amount: data.amount === '' ? null : Number(data.amount),
             period: data.period,
@@ -738,6 +847,7 @@
             end_date: data.end_date === '' ? null : data.end_date,
             note: data.note,
             vehicle_ids: [...selected],
+            new_vehicles: newVehicles,
         };
         try {
             if (existing) await api.put('/agreements/' + existing.id, payload);
@@ -878,17 +988,24 @@
             el('div', { class: 'balance' }, el('strong', {}, 'Aufgelaufen'), el('strong', { class: 'amt' }, eur(v.accrued_cost))),
             v.notes ? el('div', { class: 'card-meta', style: 'margin-top:.5rem' }, esc(v.notes)) : null));
 
-        // status & payment sliders
-        if (canManage() || canBill()) {
-            const ctrl = el('div', { class: 'card' }, el('h3', {}, 'Status & Zahlung'), vehicleControls(v));
-            if (canManage() && v.status !== 'cancelled') {
-                ctrl.append(el('button', { class: 'btn btn-ghost btn-sm', style: 'margin-top:.7rem', onclick: () => changeStatus(v, 'cancelled') }, '✕ Stornieren'));
+        if (v.archived) {
+            page.append(el('div', { class: 'card is-archived' },
+                el('h3', {}, 'Archiviert'),
+                el('p', { class: 'muted' }, 'Dieses Gefährt ist abgeschlossen und schreibgeschützt. Zum Bearbeiten zuerst reaktivieren.'),
+                vehicleControls(v)));
+        } else {
+            // status & payment sliders
+            if (canManage() || canBill()) {
+                const ctrl = el('div', { class: 'card' }, el('h3', {}, 'Status & Zahlung'), vehicleControls(v));
+                if (canManage() && v.status !== 'cancelled') {
+                    ctrl.append(el('button', { class: 'btn btn-ghost btn-sm', style: 'margin-top:.7rem', onclick: () => changeStatus(v, 'cancelled') }, '✕ Stornieren'));
+                }
+                page.append(ctrl);
             }
-            page.append(ctrl);
-        }
-        if (canManage()) {
-            page.append(el('div', { class: 'page-head' }, el('h3', {}, 'Bearbeiten'),
-                el('button', { class: 'btn btn-ghost btn-sm', onclick: () => vehicleForm(v) }, '✎ Bearbeiten')));
+            if (canManage()) {
+                page.append(el('div', { class: 'page-head' }, el('h3', {}, 'Bearbeiten'),
+                    el('button', { class: 'btn btn-ghost btn-sm', onclick: () => vehicleForm(v) }, '✎ Bearbeiten')));
+            }
         }
 
         // photos
