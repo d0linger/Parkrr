@@ -202,9 +202,9 @@ textarea { resize: vertical; min-height: 72px; }
 .audit-change { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.35rem; font-size: 0.82rem; }
 .audit-field { font-weight: 600; color: var(--muted, #64748b); }
 .audit-field::after { content: ":"; }
-.audit-old { color: #dc2626; text-decoration: line-through; opacity: 0.85; word-break: break-word; }
+.audit-old { color: #dc2626; text-decoration: line-through; opacity: 0.85; overflow-wrap: break-word; }
 .audit-arrow { color: var(--muted, #64748b); }
-.audit-new { color: #0d9488; font-weight: 600; word-break: break-word; }
+.audit-new { color: #0d9488; font-weight: 600; overflow-wrap: break-word; }
 
 /* Skip-to-content link, visible only on keyboard focus. */
 .skip-link {
