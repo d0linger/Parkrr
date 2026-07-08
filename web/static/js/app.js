@@ -544,56 +544,44 @@
         // balance card
         const balCls = stats.balance > 0.005 ? 'amt-pos' : 'amt-zero';
         page.append(el('div', { class: 'card' },
-            el('div', { class: 'balance' }, el('span', {}, stats.has_flat_rate ? 'Pauschale' : 'Aufgelaufene Miete'), el('span', { class: 'amt' }, eur(stats.total_accrued))),
+            el('div', { class: 'balance' }, el('span', {}, 'Aufgelaufene Miete'), el('span', { class: 'amt' }, eur(stats.total_accrued))),
             el('div', { class: 'balance' }, el('span', {}, 'Zusatzkosten'), el('span', { class: 'amt' }, eur(stats.total_charges))),
             el('div', { class: 'balance' }, el('span', {}, 'Bezahlt (per Slider)'), el('span', { class: 'amt' }, '− ' + eur(stats.total_paid))),
             el('div', { class: 'balance' }, el('strong', {}, 'Offener Saldo'), el('strong', { class: 'amt ' + balCls }, eur(stats.balance)))));
 
-        // flat rate (Pauschale) card
-        if (canBill() || stats.has_flat_rate) {
+        // flat-rate agreements (Pauschalen)
+        const ags = stats.agreements || [];
+        const coveredVids = new Set();
+        let coversAll = false;
+        for (const a of ags) {
+            if (!a.vehicle_ids || !a.vehicle_ids.length) coversAll = true;
+            else a.vehicle_ids.forEach((vid) => coveredVids.add(vid));
+        }
+        if (canBill() || ags.length) {
             const frCard = el('div', { class: 'card' });
             frCard.append(el('div', { class: 'card-row' },
-                el('h3', { style: 'margin:0' }, 'Pauschale'),
-                canBill() ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => flatRateForm(id, stats) },
-                    stats.has_flat_rate ? '✎ Ändern' : '+ Einrichten') : null));
-            if (stats.has_flat_rate) {
-                const unit = stats.flat_rate_period === 'yearly' ? '/Jahr' : '/Monat';
-                frCard.append(el('div', { class: 'card-meta', style: 'margin:.4rem 0' },
-                    `${eur(stats.flat_rate)}${unit} · deckt alle Gefährte · seit ${fmtDate(stats.flat_rate_start)}` +
-                    (stats.flat_rate_end ? ` bis ${fmtDate(stats.flat_rate_end)}` : '') +
-                    ` · aufgelaufen ${eur(stats.flat_rate_accrued)}`));
-                frCard.append(el('div', { class: 'card-meta', style: 'margin-top:.2rem' }, 'Bezahlstatus je Jahr unter „Kosten pro Jahr".'));
-            } else {
-                frCard.append(el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Keine Pauschale – Abrechnung je Gefährt.'));
-            }
+                el('h3', { style: 'margin:0' }, 'Pauschalen'),
+                canBill() ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => agreementForm(id, vehicles) }, '+ Pauschale') : null));
+            if (!ags.length) frCard.append(el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Keine Pauschale – Abrechnung je Gefährt.'));
+            else ags.forEach((a) => frCard.append(agreementRow(id, a, vehicles)));
             page.append(frCard);
         }
 
         // monthly chart
-        const chartCard = el('div', { class: 'chart-card' }, el('h3', {}, (stats.has_flat_rate ? 'Pauschale pro Monat · ' : 'Aufgelaufene Miete pro Monat · ') + stats.year));
+        const chartCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Aufgelaufene Miete pro Monat · ' + stats.year));
         chartCard.append(chartBars(stats.monthly_accrued, MONTHS));
         page.append(chartCard);
 
-        // years — for a flat rate each year has its own open/paid slider
+        // years (informational, combined rent per year)
         if (stats.years.length) {
             const yc = el('div', { class: 'chart-card' }, el('h3', {}, 'Kosten pro Jahr'));
-            if (stats.has_flat_rate) {
-                for (const y of stats.years) {
-                    const row = el('div', { class: 'balance', style: 'align-items:center' },
-                        el('span', {}, String(y.year) + ' · ' + eur(y.cost)),
-                        canBill() ? flatYearPaidSlider(id, y.year, y.paid)
-                            : el('span', { class: 'badge ' + (y.paid ? 'badge-active' : 'badge-ended') }, y.paid ? 'bezahlt' : 'offen'));
-                    yc.append(row);
-                }
-            } else {
-                const max = Math.max(...stats.years.map((y) => y.cost), 1);
-                const bars = el('div', { class: 'bars' });
-                for (const y of stats.years) bars.append(el('div', { class: 'bar-row' },
-                    el('div', {}, String(y.year)),
-                    el('div', { class: 'bar-track' }, el('div', { class: 'bar-fill', style: `width:${(y.cost / max) * 100}%` })),
-                    el('div', { class: 'bar-val' }, eur(y.cost))));
-                yc.append(bars);
-            }
+            const max = Math.max(...stats.years.map((y) => y.cost), 1);
+            const bars = el('div', { class: 'bars' });
+            for (const y of stats.years) bars.append(el('div', { class: 'bar-row' },
+                el('div', {}, String(y.year)),
+                el('div', { class: 'bar-track' }, el('div', { class: 'bar-fill', style: `width:${(y.cost / max) * 100}%` })),
+                el('div', { class: 'bar-val' }, eur(y.cost))));
+            yc.append(bars);
             page.append(yc);
         }
 
@@ -602,7 +590,7 @@
         if (canManage()) vh.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => vehicleForm(null, id) }, '+ Gefährt'));
         page.append(vh);
         if (!vehicles.length) page.append(el('p', { class: 'muted' }, 'Keine Gefährte.'));
-        else vehicles.forEach((v) => page.append(vehicleCard(v, { linkable: true, hidePaid: stats.has_flat_rate })));
+        else vehicles.forEach((v) => page.append(vehicleCard(v, { linkable: true, covered: coversAll || coveredVids.has(v.id) })));
 
         // charges
         const ch = el('div', { class: 'page-head' }, el('h3', {}, 'Zusatzkosten'));
@@ -640,7 +628,7 @@
         });
     };
 
-    function vehicleCard(v, { linkable = true, hidePaid = false } = {}) {
+    function vehicleCard(v, { linkable = true, covered = false } = {}) {
         const title = v.label || v.license_plate || v.category_name;
         const rateUnit = v.billing_period === 'yearly' ? '/Jahr' : '/Monat';
         const main = el('div', { style: 'flex:1;' + (linkable ? 'cursor:pointer' : ''), onclick: linkable ? () => navigate('vehicles/' + v.id) : null },
@@ -649,68 +637,103 @@
                 v.photo_count ? el('span', { class: 'muted' }, '  📷 ' + v.photo_count) : null),
             el('div', { class: 'card-meta' }, `${eur(v.effective_rate)}${rateUnit}` + (v.cost_override != null ? ' (Sonderpreis)' : '') +
                 ` · seit ${fmtDate(v.start_date)}` + (v.end_date ? ` bis ${fmtDate(v.end_date)}` : '')),
-            // For a flat-rate person the per-vehicle accrued cost is not billed
-            // (the flat rate covers it), so showing it here would contradict the
-            // balance. Suppress it in that case.
-            hidePaid ? null
-                : el('div', { class: 'card-meta', style: 'color:var(--text);font-weight:600;margin-top:.3rem' }, 'Aufgelaufen: ' + eur(v.accrued_cost)));
+            el('div', { class: 'card-meta', style: 'color:var(--text);font-weight:600;margin-top:.3rem' }, 'Aufgelaufen: ' + eur(v.accrued_cost)));
         const actions = el('div', { class: 'card-actions' },
             canManage() && el('button', { class: 'btn btn-ghost btn-sm', onclick: () => vehicleForm(v) }, '✎'),
             canManage() && el('button', { class: 'btn btn-ghost btn-sm', onclick: () => delVehicle(v) }, '🗑'));
         return el('div', { class: 'card' },
             el('div', { class: 'card-row' }, main, actions),
-            vehicleControls(v, hidePaid));
+            vehicleControls(v, covered));
     }
 
     // Slider-based quick controls: status + payment, shown on card and detail.
-    // When hidePaid is set (person on a flat rate) the payment slider is replaced
-    // by a hint that the vehicle is covered by the flat rate.
-    function vehicleControls(v, hidePaid = false) {
+    // When the vehicle is covered by a flat-rate agreement an "in Pauschale" hint
+    // is shown; the payment slider still marks the uncovered portion as paid.
+    function vehicleControls(v, covered = false) {
         const wrap = el('div', { class: 'controls-row' });
         wrap.append(statusSlider(v));
-        if (hidePaid) wrap.append(el('span', { class: 'badge badge-cat', title: 'Kosten über die Pauschale abgerechnet' }, 'in Pauschale'));
-        else if (canBill()) wrap.append(paidSlider(v));
+        if (canBill()) wrap.append(paidSlider(v));
+        if (covered) wrap.append(el('span', { class: 'badge badge-cat', title: 'Zeitweise über eine Pauschale abgerechnet' }, 'in Pauschale'));
         if (canManage() && v.status === 'collected') {
             wrap.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => duplicateVehicle(v) }, '↻ Erneut einstellen'));
         }
         return wrap;
     }
 
-    // Per-year paid slider for the flat rate (Pauschale).
-    function flatYearPaidSlider(personId, year, paid) {
-        const seg = el('div', { class: 'seg-mini pay', role: 'radiogroup', 'aria-label': 'Zahlstatus ' + year });
+    // ---- flat-rate agreements (Pauschale-Einträge) ----
+    function agreementRow(personId, a, vehicles) {
+        const unit = a.period === 'yearly' ? '/Jahr' : '/Monat';
+        const covered = (a.vehicle_ids && a.vehicle_ids.length)
+            ? a.vehicle_ids.map((vid) => { const v = vehicles.find((x) => x.id === vid); return v ? (v.label || v.license_plate || v.category_name) : '#' + vid; }).join(', ')
+            : 'alle Gefährte';
+        const row = el('div', { class: 'card', style: 'margin-top:.5rem' });
+        row.append(el('div', { class: 'card-row' },
+            el('div', { style: 'flex:1' },
+                el('div', {}, el('strong', {}, eur(a.amount) + unit)),
+                el('div', { class: 'card-meta' }, fmtDate(a.start_date) + (a.end_date ? ' – ' + fmtDate(a.end_date) : ' – offen') + ' · ' + esc(covered)),
+                el('div', { class: 'card-meta' }, 'aufgelaufen ' + eur(a.accrued) + (a.note ? ' · ' + esc(a.note) : ''))),
+            canBill() ? el('div', { class: 'card-actions' },
+                el('button', { class: 'btn btn-ghost btn-sm', onclick: () => agreementForm(personId, vehicles, a) }, '✎'),
+                el('button', { class: 'btn btn-ghost btn-sm', onclick: () => delAgreement(a) }, '🗑')) : null));
+        if (canBill()) row.append(el('div', { class: 'controls-row' }, agreementPaidSlider(a)));
+        else row.append(el('span', { class: 'badge ' + (a.paid ? 'badge-active' : 'badge-ended') }, a.paid ? 'bezahlt' : 'offen'));
+        return row;
+    }
+    function agreementPaidSlider(a) {
+        const seg = el('div', { class: 'seg-mini pay', role: 'radiogroup', 'aria-label': 'Zahlstatus Pauschale' });
         const setPaid = async (val, e) => {
             markActive(e.currentTarget);
-            try { await api.post('/persons/' + personId + '/flatrate/paid', { year, paid: val }); toast(val ? year + ' bezahlt' : year + ' offen', 'success'); render(); }
+            try { await api.post('/agreements/' + a.id + '/paid', { paid: val }); toast(val ? 'bezahlt' : 'offen', 'success'); render(); }
             catch (err) { toast(err.message, 'error'); render(); }
         };
-        seg.append(el('button', { class: (!paid ? 'active open' : ''), type: 'button', role: 'radio', 'aria-checked': String(!paid), 'aria-label': 'offen', onclick: (e) => setPaid(false, e) }, 'offen'));
-        seg.append(el('button', { class: (paid ? 'active done' : ''), type: 'button', role: 'radio', 'aria-checked': String(paid), 'aria-label': 'bezahlt', onclick: (e) => setPaid(true, e) }, 'bezahlt'));
+        seg.append(el('button', { class: (!a.paid ? 'active open' : ''), type: 'button', role: 'radio', 'aria-checked': String(!a.paid), onclick: (e) => setPaid(false, e) }, 'offen'));
+        seg.append(el('button', { class: (a.paid ? 'active done' : ''), type: 'button', role: 'radio', 'aria-checked': String(a.paid), onclick: (e) => setPaid(true, e) }, 'bezahlt'));
         return seg;
     }
-
-    async function flatRateForm(personId, stats) {
+    async function delAgreement(a) {
+        if (!await confirmDialog('Pauschale löschen?', 'Der Pauschaleintrag wird entfernt.', 'Löschen')) return;
+        try { await api.del('/agreements/' + a.id); toast('Pauschale gelöscht', 'success'); render(); }
+        catch (e) { toast(e.message, 'error'); }
+    }
+    async function agreementForm(personId, vehicles, existing) {
+        const selected = new Set((existing && existing.vehicle_ids) || []);
         const data = await formModal({
-            title: 'Pauschale',
+            title: existing ? 'Pauschale bearbeiten' : 'Neue Pauschale',
             submitLabel: 'Speichern',
             fields: [
-                { name: 'enabled', label: 'Pauschale aktiv (statt Abrechnung je Gefährt)', type: 'checkbox', value: !!stats.has_flat_rate },
-                { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', min: 0, value: stats.flat_rate ?? '' },
-                { name: 'period', label: 'Zeitraum', type: 'select', value: stats.flat_rate_period || 'monthly', options: [{ value: 'monthly', label: 'pro Monat' }, { value: 'yearly', label: 'pro Jahr' }] },
-                { name: 'start_date', label: 'Gültig ab', type: 'date', value: stats.flat_rate_start ? stats.flat_rate_start.slice(0, 10) : today() },
-                { name: 'end_date', label: 'Gültig bis (optional)', type: 'date', value: stats.flat_rate_end ? stats.flat_rate_end.slice(0, 10) : '', help: 'Leer lassen für laufend.' },
+                { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', min: 0, required: true, value: existing?.amount ?? '' },
+                { name: 'period', label: 'Zeitraum', type: 'select', value: existing?.period || 'monthly', options: [{ value: 'monthly', label: 'pro Monat' }, { value: 'yearly', label: 'pro Jahr' }] },
+                { name: 'start_date', label: 'Gültig ab', type: 'date', required: true, value: existing?.start_date ? existing.start_date.slice(0, 10) : today() },
+                { name: 'end_date', label: 'Gültig bis (optional)', type: 'date', value: existing?.end_date ? existing.end_date.slice(0, 10) : '', help: 'Leer = laufend.' },
+                { name: 'note', label: 'Notiz (optional)', value: existing?.note },
             ],
+            onRender: (body) => {
+                if (!vehicles.length) return;
+                body.append(el('label', {}, 'Gefährte (keine Auswahl = alle)'));
+                const box = el('div', { class: 'agreement-vehicles' });
+                for (const v of vehicles) {
+                    const cb = el('input', { type: 'checkbox' });
+                    if (selected.has(v.id)) cb.checked = true;
+                    cb.addEventListener('change', () => { cb.checked ? selected.add(v.id) : selected.delete(v.id); });
+                    box.append(el('label', { class: 'switch' }, cb, el('span', { class: 'track' }), el('span', {}, esc(v.label || v.license_plate || v.category_name))));
+                }
+                body.append(box);
+            },
         });
         if (!data) return;
         const payload = {
-            enabled: data.enabled,
             amount: data.amount === '' ? null : Number(data.amount),
             period: data.period,
             start_date: data.start_date,
             end_date: data.end_date === '' ? null : data.end_date,
+            note: data.note,
+            vehicle_ids: [...selected],
         };
-        try { await api.put('/persons/' + personId + '/flatrate', payload); toast('Pauschale gespeichert', 'success'); render(); }
-        catch (e) { toast(e.message, 'error'); }
+        try {
+            if (existing) await api.put('/agreements/' + existing.id, payload);
+            else await api.post('/persons/' + personId + '/agreements', payload);
+            toast('Pauschale gespeichert', 'success'); render();
+        } catch (e) { toast(e.message, 'error'); }
     }
 
     const STATUS_FLOW = ['reserved', 'stored', 'collected'];

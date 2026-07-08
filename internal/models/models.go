@@ -176,6 +176,86 @@ func ProrateAmount(amount float64, period string, from, to time.Time) float64 {
 	return prorate(amount, period, from, to)
 }
 
+// FlatRatePeriod is a dated flat-rate agreement ("Pauschale-Eintrag"): one
+// agreed amount (monthly or yearly) that covers some or all of a person's
+// vehicles for a window, replacing per-vehicle billing for those vehicles while
+// it is active. Multiple agreements can exist over time.
+type FlatRatePeriod struct {
+	ID         int64      `json:"id"`
+	PersonID   int64      `json:"person_id"`
+	Amount     float64    `json:"amount"`
+	Period     string     `json:"period"` // monthly | yearly
+	StartDate  time.Time  `json:"start_date"`
+	EndDate    *time.Time `json:"end_date"` // nil = open-ended
+	Paid       bool       `json:"paid"`
+	Note       string     `json:"note"`
+	VehicleIDs []int64    `json:"vehicle_ids"` // empty = all of the person's vehicles
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+
+	// Derived (not stored).
+	Accrued float64 `json:"accrued"`
+}
+
+// Covers reports whether this agreement applies to the given vehicle. An empty
+// VehicleIDs set means "all of the person's vehicles".
+func (a *FlatRatePeriod) Covers(vehicleID int64) bool {
+	if len(a.VehicleIDs) == 0 {
+		return true
+	}
+	for _, id := range a.VehicleIDs {
+		if id == vehicleID {
+			return true
+		}
+	}
+	return false
+}
+
+// window returns the agreement's active interval intersected with [from, to).
+func (a *FlatRatePeriod) window(from, to time.Time) (time.Time, time.Time) {
+	s := maxTime(a.StartDate, from)
+	e := to
+	if a.EndDate != nil && a.EndDate.Before(e) {
+		e = *a.EndDate
+	}
+	return s, e
+}
+
+// CostInRange returns the agreement's prorated cost within [from, to),
+// constrained to its own window.
+func (a *FlatRatePeriod) CostInRange(from, to time.Time) float64 {
+	s, e := a.window(from, to)
+	if !e.After(s) {
+		return 0
+	}
+	return prorate(a.Amount, a.Period, s, e)
+}
+
+// AccruedAsOf returns the agreement cost accrued through asOf (inclusive).
+func (a *FlatRatePeriod) AccruedAsOf(asOf time.Time) float64 {
+	return a.CostInRange(a.StartDate, asOf.AddDate(0, 0, 1))
+}
+
+// VehicleUncoveredCost returns a vehicle's per-vehicle cost within [from, to)
+// EXCLUDING the time covered by any of the given agreements (which must be the
+// agreements that cover this vehicle and must not overlap each other). Because
+// proration is additive over disjoint calendar intervals, each covered window's
+// cost is simply subtracted from the full per-vehicle cost.
+func VehicleUncoveredCost(v *Vehicle, cat Category, from, to time.Time, covering []FlatRatePeriod) float64 {
+	total := v.CostInRange(cat, from, to)
+	for i := range covering {
+		s, e := covering[i].window(from, to)
+		if e.After(s) {
+			total -= v.CostInRange(cat, s, e)
+		}
+	}
+	if total < 0 {
+		total = 0
+	}
+	return total
+}
+
 // Category is a centrally-managed vehicle type with default pricing.
 type Category struct {
 	ID                 int64     `json:"id"`

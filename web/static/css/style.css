@@ -194,6 +194,9 @@ textarea { resize: vertical; min-height: 72px; }
 
 #passkey-login { margin-top: 0.5rem; }
 
+/* Flat-rate agreement: covered-vehicle checkbox list in the form. */
+.agreement-vehicles { display: flex; flex-direction: column; gap: 0.3rem; max-height: 11rem; overflow-y: auto; margin-top: 0.3rem; }
+
 /* Audit log: filters + per-field old/new change display. */
 .audit-filters input[type="search"] { width: 100%; }
 .audit-filter-row { display: flex; gap: 0.5rem; margin-top: 0.5rem; }

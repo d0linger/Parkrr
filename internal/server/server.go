@@ -68,8 +68,13 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("PUT /api/persons/{id}", editor(hf(h.UpdatePerson)))
 	mux.Handle("DELETE /api/persons/{id}", editor(hf(h.DeletePerson)))
 	mux.Handle("GET /api/persons/{id}/stats", authed(hf(h.PersonStats)))
-	mux.Handle("PUT /api/persons/{id}/flatrate", editor(hf(h.SetFlatRate)))
-	mux.Handle("POST /api/persons/{id}/flatrate/paid", editor(hf(h.SetFlatRatePaid)))
+
+	// --- Flat-rate agreements (Pauschale-Einträge) ---
+	mux.Handle("GET /api/persons/{id}/agreements", authed(hf(h.ListAgreements)))
+	mux.Handle("POST /api/persons/{id}/agreements", editor(hf(h.CreateAgreement)))
+	mux.Handle("PUT /api/agreements/{id}", editor(hf(h.UpdateAgreement)))
+	mux.Handle("DELETE /api/agreements/{id}", editor(hf(h.DeleteAgreement)))
+	mux.Handle("POST /api/agreements/{id}/paid", editor(hf(h.SetAgreementPaid)))
 
 	// --- Vehicles ---
 	mux.Handle("GET /api/vehicles", authed(hf(h.ListVehicles)))
