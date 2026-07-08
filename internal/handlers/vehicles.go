@@ -152,24 +152,29 @@ func (h *Handler) parseVehicleRequest(r *http.Request) (*parsedVehicle, error) {
 	}, nil
 }
 
-// resolveVehicleRate determines the rate to lock onto a vehicle: the explicit
-// rate if given, else the legacy cost override, else the current Tarif default
-// for the billing period (seeded once here so a later Tarif change never
-// re-prices this vehicle).
-func (h *Handler) resolveVehicleRate(ctx context.Context, req vehicleRequest) (float64, error) {
+// effectiveRate picks the rate to persist: the explicit rate, else the legacy
+// cost override, else the fallback. The fallback is the Tarif default on create
+// and the vehicle's *existing* rate on update, so an omitted rate never silently
+// re-prices an existing vehicle.
+func effectiveRate(req vehicleRequest, fallback float64) float64 {
 	if req.Rate != nil {
-		return *req.Rate, nil
+		return *req.Rate
 	}
 	if req.CostOverride != nil {
-		return *req.CostOverride, nil
+		return *req.CostOverride
 	}
+	return fallback
+}
+
+// categoryDefaultRate returns the current Tarif default for the billing period.
+func (h *Handler) categoryDefaultRate(ctx context.Context, categoryID int64, period string) (float64, error) {
 	var monthly, yearly float64
 	if err := h.Pool.QueryRow(ctx,
-		`SELECT default_monthly_cost, default_yearly_cost FROM categories WHERE id=$1`, req.CategoryID).
+		`SELECT default_monthly_cost, default_yearly_cost FROM categories WHERE id=$1`, categoryID).
 		Scan(&monthly, &yearly); err != nil {
 		return 0, err
 	}
-	if req.BillingPeriod == models.BillingYearly {
+	if period == models.BillingYearly {
 		return yearly, nil
 	}
 	return monthly, nil
@@ -182,11 +187,20 @@ func (h *Handler) CreateVehicle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	rate, err := h.resolveVehicleRate(r.Context(), pv.req)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "person or category does not exist")
-		return
+	var fallback float64
+	if pv.req.Rate == nil && pv.req.CostOverride == nil {
+		def, derr := h.categoryDefaultRate(r.Context(), pv.req.CategoryID, pv.req.BillingPeriod)
+		if derr != nil {
+			if errors.Is(derr, pgx.ErrNoRows) {
+				writeError(w, http.StatusBadRequest, "category does not exist")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "could not create vehicle")
+			return
+		}
+		fallback = def
 	}
+	rate := effectiveRate(pv.req, fallback)
 	var id int64
 	err = h.Pool.QueryRow(r.Context(),
 		`INSERT INTO vehicles (person_id, category_id, label, license_plate, notes,
@@ -223,16 +237,14 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var oldStatus string
+	var oldRate float64
 	if err := h.Pool.QueryRow(r.Context(),
-		`SELECT status FROM vehicles WHERE id=$1`, id).Scan(&oldStatus); err != nil {
+		`SELECT status, rate FROM vehicles WHERE id=$1`, id).Scan(&oldStatus, &oldRate); err != nil {
 		writeError(w, http.StatusNotFound, "vehicle not found")
 		return
 	}
-	rate, err := h.resolveVehicleRate(r.Context(), pv.req)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "person or category does not exist")
-		return
-	}
+	// Fallback is the existing rate, so an omitted rate keeps the locked price.
+	rate := effectiveRate(pv.req, oldRate)
 	ct, err := h.Pool.Exec(r.Context(),
 		`UPDATE vehicles SET person_id=$1, category_id=$2, label=$3, license_plate=$4,
 		        notes=$5, billing_period=$6, rate=$7, cost_override=$8, start_date=$9,

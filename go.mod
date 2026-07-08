@@ -2,7 +2,7 @@ module github.com/preining/parkrr
 
 go 1.26.0
 
-toolchain go1.26.4
+toolchain go1.26.5
 
 require (
 	github.com/go-webauthn/webauthn v0.17.4
