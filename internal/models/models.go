@@ -14,15 +14,14 @@ const (
 
 // Role enumerates user roles, from most to least privileged.
 const (
-	RoleAdmin      = "admin"      // full access incl. users, tariffs, roles
-	RoleManager    = "manager"    // manage persons, vehicles, reservations, photos
-	RoleAccounting = "accounting" // payments, charges, read everything
-	RoleReadonly   = "readonly"   // read-only access
+	RoleAdmin  = "admin"  // full access, including user management and the audit log
+	RoleEditor = "editor" // everything except user management and the audit log
+	RoleReader = "reader" // read-only access
 )
 
 // ValidRoles is the set of assignable roles.
 var ValidRoles = map[string]bool{
-	RoleAdmin: true, RoleManager: true, RoleAccounting: true, RoleReadonly: true,
+	RoleAdmin: true, RoleEditor: true, RoleReader: true,
 }
 
 // VehicleStatus enumerates the lifecycle states of a vehicle.

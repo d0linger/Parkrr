@@ -268,15 +268,15 @@ hardened more conservatively (it keeps the few capabilities its entrypoint needs
 
 ## 👥 Roles & permissions
 
-| Role | Read | People & vehicles | Extra charges | Tariffs, services, users, audit |
-| --- | :---: | :---: | :---: | :---: |
-| **Admin** | ✓ | ✓ | ✓ | ✓ |
-| **Site manager** (`manager`) | ✓ | ✓ | ✓ | – |
-| **Accounting** (`accounting`) | ✓ | – | ✓ | – |
-| **Read-only** (`readonly`) | ✓ | – | – | – |
+| Role | Read | People, vehicles, charges, tariffs, services | Users & audit log |
+| --- | :---: | :---: | :---: |
+| **Admin** | ✓ | ✓ | ✓ |
+| **Editor** (`editor`) | ✓ | ✓ | – |
+| **Reader** (`reader`) | ✓ | – | – |
 
-New users get the *Site manager* role by default. The last remaining admin
-cannot be demoted or deleted.
+Editors can do everything **except** user management and viewing the audit log.
+New users get the *Editor* role by default. The last remaining admin cannot be
+demoted or deleted.
 
 ---
 

@@ -45,7 +45,7 @@ type userRequest struct {
 func normalizeRole(role string) (string, bool) {
 	role = trim(role)
 	if role == "" {
-		role = models.RoleManager
+		role = models.RoleEditor
 	}
 	if !models.ValidRoles[role] {
 		return "", false

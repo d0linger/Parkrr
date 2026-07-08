@@ -104,8 +104,9 @@
     // permission helpers
     const isAdmin = () => !!(state.user && state.user.is_admin);
     const role = () => (state.user ? state.user.role : '');
-    const canManage = () => isAdmin() || role() === 'manager';
-    const canBill = () => isAdmin() || role() === 'manager' || role() === 'accounting';
+    // Editors may do everything except user management and the audit log.
+    const canManage = () => isAdmin() || role() === 'editor';
+    const canBill = () => isAdmin() || role() === 'editor';
 
     // ---------- theme ----------
     function initTheme() {
@@ -329,7 +330,7 @@
     const personName = (p) => (`${p.first_name || ''} ${p.last_name || ''}`).trim() || '(ohne Namen)';
     const catById = (id) => state.categories.find((c) => c.id === Number(id));
     const STATUS_LABEL = { reserved: 'reserviert', stored: 'eingelagert', collected: 'abgeholt', cancelled: 'storniert' };
-    const ROLE_LABEL = { admin: 'Administrator', manager: 'Standortleiter', accounting: 'Buchhaltung', readonly: 'Nur-Lesen' };
+    const ROLE_LABEL = { admin: 'Administrator', editor: 'Bearbeiter', reader: 'Nur-Lesen' };
     const statusBadge = (s) => el('span', { class: 'badge badge-' + s }, STATUS_LABEL[s] || s);
 
     async function refreshLookups() {
@@ -1083,7 +1084,7 @@
                 { name: 'username', label: 'Benutzername', required: !existing, value: existing?.username },
                 { name: 'email', label: 'E-Mail', type: 'email', value: existing?.email },
                 { name: 'password', label: existing ? 'Neues Passwort (optional)' : 'Passwort', type: 'password', required: !existing, minLength: 8, help: 'Mindestens 8 Zeichen.' },
-                { name: 'role', label: 'Rolle', type: 'select', value: existing?.role || 'manager', options: Object.entries(ROLE_LABEL).map(([v, l]) => ({ value: v, label: l })) },
+                { name: 'role', label: 'Rolle', type: 'select', value: existing?.role || 'editor', options: Object.entries(ROLE_LABEL).map(([v, l]) => ({ value: v, label: l })) },
             ],
         });
         if (!data) return;

@@ -32,8 +32,9 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	// Middleware shortcuts.
 	authed := authMgr.RequireAuth
 	admin := authMgr.RequireAdmin
-	manager := authMgr.RequireRole(models.RoleManager)
-	billing := authMgr.RequireRole(models.RoleManager, models.RoleAccounting)
+	// Editors may do everything except user management and the audit log
+	// (admins always satisfy RequireRole as well).
+	editor := authMgr.RequireRole(models.RoleEditor)
 	hf := func(f func(http.ResponseWriter, *http.Request)) http.Handler { return http.HandlerFunc(f) }
 
 	// --- Auth (public) ---
@@ -63,45 +64,45 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 
 	// --- Persons (read: any; write: manager/admin) ---
 	mux.Handle("GET /api/persons", authed(hf(h.ListPersons)))
-	mux.Handle("POST /api/persons", manager(hf(h.CreatePerson)))
-	mux.Handle("PUT /api/persons/{id}", manager(hf(h.UpdatePerson)))
-	mux.Handle("DELETE /api/persons/{id}", manager(hf(h.DeletePerson)))
+	mux.Handle("POST /api/persons", editor(hf(h.CreatePerson)))
+	mux.Handle("PUT /api/persons/{id}", editor(hf(h.UpdatePerson)))
+	mux.Handle("DELETE /api/persons/{id}", editor(hf(h.DeletePerson)))
 	mux.Handle("GET /api/persons/{id}/stats", authed(hf(h.PersonStats)))
-	mux.Handle("PUT /api/persons/{id}/flatrate", billing(hf(h.SetFlatRate)))
-	mux.Handle("POST /api/persons/{id}/flatrate/paid", billing(hf(h.SetFlatRatePaid)))
+	mux.Handle("PUT /api/persons/{id}/flatrate", editor(hf(h.SetFlatRate)))
+	mux.Handle("POST /api/persons/{id}/flatrate/paid", editor(hf(h.SetFlatRatePaid)))
 
 	// --- Vehicles ---
 	mux.Handle("GET /api/vehicles", authed(hf(h.ListVehicles)))
-	mux.Handle("POST /api/vehicles", manager(hf(h.CreateVehicle)))
-	mux.Handle("PUT /api/vehicles/{id}", manager(hf(h.UpdateVehicle)))
-	mux.Handle("DELETE /api/vehicles/{id}", manager(hf(h.DeleteVehicle)))
-	mux.Handle("POST /api/vehicles/{id}/status", manager(hf(h.ChangeVehicleStatus)))
-	mux.Handle("POST /api/vehicles/{id}/paid", billing(hf(h.MarkPaid)))
-	mux.Handle("POST /api/vehicles/{id}/duplicate", manager(hf(h.DuplicateVehicle)))
+	mux.Handle("POST /api/vehicles", editor(hf(h.CreateVehicle)))
+	mux.Handle("PUT /api/vehicles/{id}", editor(hf(h.UpdateVehicle)))
+	mux.Handle("DELETE /api/vehicles/{id}", editor(hf(h.DeleteVehicle)))
+	mux.Handle("POST /api/vehicles/{id}/status", editor(hf(h.ChangeVehicleStatus)))
+	mux.Handle("POST /api/vehicles/{id}/paid", editor(hf(h.MarkPaid)))
+	mux.Handle("POST /api/vehicles/{id}/duplicate", editor(hf(h.DuplicateVehicle)))
 	mux.Handle("GET /api/vehicles/{id}/history", authed(hf(h.VehicleHistory)))
 
 	// --- Vehicle photos ---
 	mux.Handle("GET /api/vehicles/{id}/photos", authed(hf(h.ListPhotos)))
-	mux.Handle("POST /api/vehicles/{id}/photos", manager(hf(h.UploadPhoto)))
+	mux.Handle("POST /api/vehicles/{id}/photos", editor(hf(h.UploadPhoto)))
 	mux.Handle("GET /api/photos/{id}", authed(hf(h.GetPhoto)))
-	mux.Handle("DELETE /api/photos/{id}", manager(hf(h.DeletePhoto)))
+	mux.Handle("DELETE /api/photos/{id}", editor(hf(h.DeletePhoto)))
 
 	// --- Categories (tariffs) ---
 	mux.Handle("GET /api/categories", authed(hf(h.ListCategories)))
-	mux.Handle("POST /api/categories", admin(hf(h.CreateCategory)))
-	mux.Handle("PUT /api/categories/{id}", admin(hf(h.UpdateCategory)))
-	mux.Handle("DELETE /api/categories/{id}", admin(hf(h.DeleteCategory)))
+	mux.Handle("POST /api/categories", editor(hf(h.CreateCategory)))
+	mux.Handle("PUT /api/categories/{id}", editor(hf(h.UpdateCategory)))
+	mux.Handle("DELETE /api/categories/{id}", editor(hf(h.DeleteCategory)))
 
 	// --- Service catalog ---
 	mux.Handle("GET /api/services", authed(hf(h.ListServiceTypes)))
-	mux.Handle("POST /api/services", admin(hf(h.CreateServiceType)))
-	mux.Handle("PUT /api/services/{id}", admin(hf(h.UpdateServiceType)))
-	mux.Handle("DELETE /api/services/{id}", admin(hf(h.DeleteServiceType)))
+	mux.Handle("POST /api/services", editor(hf(h.CreateServiceType)))
+	mux.Handle("PUT /api/services/{id}", editor(hf(h.UpdateServiceType)))
+	mux.Handle("DELETE /api/services/{id}", editor(hf(h.DeleteServiceType)))
 
 	// --- Charges ---
 	mux.Handle("GET /api/charges", authed(hf(h.ListCharges)))
-	mux.Handle("POST /api/charges", billing(hf(h.CreateCharge)))
-	mux.Handle("DELETE /api/charges/{id}", billing(hf(h.DeleteCharge)))
+	mux.Handle("POST /api/charges", editor(hf(h.CreateCharge)))
+	mux.Handle("DELETE /api/charges/{id}", editor(hf(h.DeleteCharge)))
 
 	// --- Stats ---
 	mux.Handle("GET /api/overview", authed(hf(h.Overview)))
