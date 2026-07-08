@@ -201,6 +201,9 @@ type FlatRatePeriod struct {
 
 	// Derived (not stored).
 	Accrued float64 `json:"accrued"`
+	// PeriodCosts maps each elapsed sub-period key to its accrued cost (euros),
+	// so the per-period payment list can show the amount beside each year/month.
+	PeriodCosts map[string]float64 `json:"period_costs,omitempty"`
 }
 
 // paidKeySet returns the set of sub-period keys explicitly marked paid.
@@ -281,6 +284,18 @@ func (a *FlatRatePeriod) ElapsedPeriodKeys(asOf time.Time) []string {
 		keys = append(keys, key)
 	})
 	return keys
+}
+
+// ElapsedPeriodCosts returns the accrued cost (euros) of each elapsed sub-period
+// from the agreement's start through asOf, keyed by sub-period key. The values
+// sum to the agreement's accrued total.
+func (a *FlatRatePeriod) ElapsedPeriodCosts(asOf time.Time) map[string]float64 {
+	out := map[string]float64{}
+	cents := toCents(a.Amount)
+	a.subPeriods(a.StartDate, asOf.AddDate(0, 0, 1), func(s, e, pStart, pEnd time.Time, key string) {
+		out[key] += float64(fractionCents(cents, days(s, e), days(pStart, pEnd))) / 100
+	})
+	return out
 }
 
 // Covers reports whether this agreement applies to the given vehicle. An empty

@@ -87,6 +87,7 @@ func (h *Handler) loadAgreements(ctx context.Context, personID int64, now time.T
 	}
 	for i := range out {
 		out[i].Accrued = round2(out[i].AccruedAsOf(now))
+		out[i].PeriodCosts = out[i].ElapsedPeriodCosts(now)
 	}
 	return out, nil
 }

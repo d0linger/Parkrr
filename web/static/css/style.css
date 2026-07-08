@@ -209,6 +209,7 @@ textarea { resize: vertical; min-height: 72px; }
 .period-list { display: flex; flex-direction: column; gap: 0.35rem; max-height: 14rem; overflow-y: auto; margin-top: 0.4rem; }
 .period-row { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .period-label { font-size: 0.9rem; }
+.period-amt { color: var(--text-muted); }
 
 /* Audit log: filters + per-field old/new change display. */
 .audit-filters input[type="search"] { width: 100%; }
