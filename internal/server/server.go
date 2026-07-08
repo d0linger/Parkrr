@@ -75,6 +75,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("PUT /api/agreements/{id}", editor(hf(h.UpdateAgreement)))
 	mux.Handle("DELETE /api/agreements/{id}", editor(hf(h.DeleteAgreement)))
 	mux.Handle("POST /api/agreements/{id}/paid", editor(hf(h.SetAgreementPaid)))
+	mux.Handle("POST /api/agreements/{id}/period-paid", editor(hf(h.SetAgreementPeriodPaid)))
 
 	// --- Vehicles ---
 	mux.Handle("GET /api/vehicles", authed(hf(h.ListVehicles)))
@@ -83,6 +84,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("DELETE /api/vehicles/{id}", editor(hf(h.DeleteVehicle)))
 	mux.Handle("POST /api/vehicles/{id}/status", editor(hf(h.ChangeVehicleStatus)))
 	mux.Handle("POST /api/vehicles/{id}/paid", editor(hf(h.MarkPaid)))
+	mux.Handle("POST /api/vehicles/{id}/reactivate", editor(hf(h.ReactivateVehicle)))
 	mux.Handle("POST /api/vehicles/{id}/duplicate", editor(hf(h.DuplicateVehicle)))
 	mux.Handle("GET /api/vehicles/{id}/history", authed(hf(h.VehicleHistory)))
 
