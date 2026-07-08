@@ -160,20 +160,53 @@ func agreementsConflict(a, b models.FlatRatePeriod) bool {
 
 // checkOverlap returns an error message if the candidate conflicts with an
 // existing agreement of the person (excludeID skips the row being updated).
-func (h *Handler) checkOverlap(ctx context.Context, personID, excludeID int64, cand models.FlatRatePeriod, now time.Time) string {
+func (h *Handler) checkOverlap(ctx context.Context, personID, excludeID int64, cand models.FlatRatePeriod, now time.Time) (string, error) {
 	existing, err := h.loadAgreements(ctx, personID, now)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	for i := range existing {
 		if existing[i].ID == excludeID {
 			continue
 		}
 		if agreementsConflict(cand, existing[i]) {
-			return "overlaps an existing agreement for one or more of the same vehicles"
+			return "overlaps an existing agreement for one or more of the same vehicles", nil
 		}
 	}
-	return ""
+	return "", nil
+}
+
+// vehiclesBelongTo reports whether every id in vids is a vehicle of personID.
+func (h *Handler) vehiclesBelongTo(ctx context.Context, personID int64, vids []int64) (bool, error) {
+	if len(vids) == 0 {
+		return true, nil
+	}
+	var n int
+	if err := h.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM vehicles WHERE id = ANY($1) AND person_id = $2`, vids, personID).Scan(&n); err != nil {
+		return false, err
+	}
+	return n == len(vids), nil
+}
+
+// validateAgreement checks vehicle ownership and time/vehicle overlap. Returns a
+// (clientMessage, httpStatus) to send, or ("", 0) when the candidate is valid.
+func (h *Handler) validateAgreement(ctx context.Context, personID, excludeID int64, cand models.FlatRatePeriod) (string, int) {
+	ok, err := h.vehiclesBelongTo(ctx, personID, cand.VehicleIDs)
+	if err != nil {
+		return "query failed", http.StatusInternalServerError
+	}
+	if !ok {
+		return "all covered vehicles must belong to this person", http.StatusBadRequest
+	}
+	msg, err := h.checkOverlap(ctx, personID, excludeID, cand, time.Now())
+	if err != nil {
+		return "query failed", http.StatusInternalServerError
+	}
+	if msg != "" {
+		return msg, http.StatusConflict
+	}
+	return "", 0
 }
 
 // CreateAgreement adds a flat-rate agreement to a person.
@@ -193,8 +226,8 @@ func (h *Handler) CreateAgreement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
-	if msg := h.checkOverlap(r.Context(), pid, 0, cand, time.Now()); msg != "" {
-		writeError(w, http.StatusConflict, msg)
+	if m, code := h.validateAgreement(r.Context(), pid, 0, cand); m != "" {
+		writeError(w, code, m)
 		return
 	}
 	if err := h.saveAgreement(r.Context(), 0, pid, cand); err != nil {
@@ -228,8 +261,8 @@ func (h *Handler) UpdateAgreement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
-	if msg := h.checkOverlap(r.Context(), pid, id, cand, time.Now()); msg != "" {
-		writeError(w, http.StatusConflict, msg)
+	if m, code := h.validateAgreement(r.Context(), pid, id, cand); m != "" {
+		writeError(w, code, m)
 		return
 	}
 	if err := h.saveAgreement(r.Context(), id, pid, cand); err != nil {
