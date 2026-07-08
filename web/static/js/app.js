@@ -673,7 +673,12 @@
             wrap.append(statusBadge(v.status));
             wrap.append(el('span', { class: 'badge ' + (v.paid ? 'badge-active' : 'badge-ended') }, v.paid ? 'bezahlt' : 'offen'));
             if (covered) wrap.append(el('span', { class: 'badge badge-cat', title: 'Zeitweise über eine Pauschale abgerechnet' }, 'in Pauschale'));
-            if (canManage()) wrap.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => reactivateVehicle(v) }, '↩ Reaktivieren'));
+            if (canManage()) {
+                // "Erneut einstellen" is safe on archived vehicles: it creates a new
+                // vehicle and never mutates this (read-only) record.
+                wrap.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => duplicateVehicle(v) }, '↻ Erneut einstellen'));
+                wrap.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => reactivateVehicle(v) }, '↩ Reaktivieren'));
+            }
             return wrap;
         }
         wrap.append(statusSlider(v));
