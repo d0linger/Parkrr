@@ -115,12 +115,22 @@ func (h *AuthHandler) PasskeyRegisterFinish(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "passkey registration expired, please retry")
 		return
 	}
+
+	// Throttle: avoid registration spamming.
+	key, ok := h.checkRateLimit(w, r, u.Username)
+	if !ok {
+		return
+	}
+
 	h.clearCeremony(w)
 	if err := h.WebAuthn.FinishRegistration(r.Context(), u, cer.Session, r, cer.Name); err != nil {
+		h.Limiter.RecordFailure(key)
 		slog.Warn("passkey registration failed", "user", u.Username, "err", err)
 		writeError(w, http.StatusBadRequest, "could not verify passkey")
 		return
 	}
+	h.Limiter.Reset(key)
+
 	h.audit(r, "create", "passkey", u.ID, u.Username+" registered a passkey")
 	writeJSON(w, http.StatusCreated, map[string]string{"status": "registered"})
 }
@@ -195,14 +205,24 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "passkey login expired, please retry")
 		return
 	}
+
+	// Throttle: usernameless login can be brute-forced by IP.
+	key, ok := h.checkRateLimit(w, r, ":passkey:")
+	if !ok {
+		return
+	}
+
 	h.clearCeremony(w)
 
 	uid, err := h.WebAuthn.FinishLogin(r.Context(), cer.Session, r)
 	if err != nil {
+		h.Limiter.RecordFailure(key)
 		slog.Warn("passkey login failed", "ip", h.Auth.ClientIP(r), "err", err)
 		writeError(w, http.StatusUnauthorized, "passkey login failed")
 		return
 	}
+	h.Limiter.Reset(key)
+
 	u, err := h.userByID(r.Context(), uid)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "passkey login failed")
