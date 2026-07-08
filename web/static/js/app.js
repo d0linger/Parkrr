@@ -709,13 +709,23 @@
             ],
             onRender: (body) => {
                 if (!vehicles.length) return;
+                const active = (v) => v.status === 'stored' || v.status === 'reserved';
+                // Only offer currently-stored/reserved vehicles, plus any already
+                // covered by this agreement (so editing never silently drops them).
+                const list = vehicles
+                    .filter((v) => active(v) || selected.has(v.id))
+                    .sort((a, b) => ((active(b) ? 1 : 0) - (active(a) ? 1 : 0)) || (new Date(b.start_date) - new Date(a.start_date)));
                 body.append(el('label', {}, 'Gefährte (keine Auswahl = alle)'));
                 const box = el('div', { class: 'agreement-vehicles' });
-                for (const v of vehicles) {
+                for (const v of list) {
                     const cb = el('input', { type: 'checkbox' });
                     if (selected.has(v.id)) cb.checked = true;
                     cb.addEventListener('change', () => { cb.checked ? selected.add(v.id) : selected.delete(v.id); });
-                    box.append(el('label', { class: 'switch' }, cb, el('span', { class: 'track' }), el('span', {}, esc(v.label || v.license_plate || v.category_name))));
+                    const sub = [v.license_plate, v.category_name,
+                        'seit ' + fmtDate(v.start_date) + (v.end_date ? ' – ' + fmtDate(v.end_date) : ''),
+                        STATUS_LABEL[v.status] || v.status].filter(Boolean).join(' · ');
+                    box.append(el('label', { class: 'switch agreement-vehicle' }, cb, el('span', { class: 'track' }),
+                        el('span', {}, el('div', {}, esc(v.label || v.license_plate || v.category_name)), el('div', { class: 't-time' }, esc(sub)))));
                 }
                 body.append(box);
             },
