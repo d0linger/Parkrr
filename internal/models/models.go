@@ -204,6 +204,9 @@ type FlatRatePeriod struct {
 
 	// Derived (not stored).
 	Accrued float64 `json:"accrued"`
+	// Settled is true when everything accrued so far is paid (whole periods, fixed
+	// partials or the master flag). An ended + settled agreement may archive.
+	Settled bool `json:"settled"`
 	// PeriodCosts maps each elapsed sub-period key to its accrued cost (euros),
 	// so the per-period payment list can show the amount beside each year/month.
 	PeriodCosts map[string]float64 `json:"period_costs,omitempty"`
@@ -229,6 +232,20 @@ func (a *FlatRatePeriod) ActiveAt(t time.Time) bool {
 		return false
 	}
 	return true
+}
+
+// Ended reports whether the agreement's coverage window has closed by asOf
+// (EndDate is exclusive; an open-ended agreement never ends).
+func (a *FlatRatePeriod) Ended(asOf time.Time) bool {
+	return a.EndDate != nil && !asOf.Before(*a.EndDate)
+}
+
+// SettledAsOf reports whether everything accrued through asOf has been paid — the
+// paid amount (whole periods + fixed partials + master flag) covers the accrued
+// cost. Used to decide when a finished Pauschale (and its vehicles) may archive.
+func (a *FlatRatePeriod) SettledAsOf(asOf time.Time) bool {
+	until := asOf.AddDate(0, 0, 1)
+	return a.PaidCentsInRange(a.StartDate, until) >= toCents(a.CostInRange(a.StartDate, until))
 }
 
 // PeriodKey returns the sub-period key that time t falls in for this agreement's

@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/preining/parkrr/internal/database"
+	"github.com/preining/parkrr/internal/handlers"
 )
 
 func writeJSONStatus(w http.ResponseWriter, status int, v any) {
@@ -115,19 +116,19 @@ func registerObservability(mux *http.ServeMux, pool *pgxpool.Pool, metricsToken 
 	}))
 }
 
-// StartFlatRateArchival runs a background loop that archives vehicles whose
-// Pauschale has ended, so an expired flat-rate agreement automatically tidies
-// its vehicles out of the active lists. It sweeps once at startup and hourly.
-func StartFlatRateArchival(pool *pgxpool.Pool, stop <-chan struct{}) {
+// startFlatRateArchival runs a background loop that archives vehicles whose
+// Pauschalen have all ended AND been fully paid, tidying finished-and-settled
+// agreements out of the active lists. It sweeps once at startup and hourly.
+func startFlatRateArchival(h *handlers.Handler, stop <-chan struct{}) {
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 	sweep := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if n, err := database.ArchiveExpiredFlatRateVehicles(ctx, pool); err != nil {
+		if n, err := h.ArchiveSettledExpiredVehicles(ctx); err != nil {
 			slog.Warn("flat-rate archival failed", "err", err)
 		} else if n > 0 {
-			slog.Info("archived vehicles of expired Pauschalen", "count", n)
+			slog.Info("archived vehicles of finished Pauschalen", "count", n)
 		}
 	}
 	sweep() // once at startup
