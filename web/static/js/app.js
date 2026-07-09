@@ -637,20 +637,31 @@
         });
     };
 
+    // coverage summarises a vehicle's flat-rate state for display:
+    //  - covered: ever covered by a Pauschale (drives which amount is "owed")
+    //  - active:  a Pauschale covers it today (drives the "in Pauschale" label)
+    //  - owed:    amount owed per vehicle (uncovered remainder, or full accrued)
+    //  - settled: covered and nothing owed per vehicle -> billed via the Pauschale
+    function coverage(v) {
+        const covered = !!v.flat_rate_covered;
+        const active = !!v.flat_rate_active;
+        const owed = covered ? (Number(v.uncovered_cost) || 0) : (Number(v.accrued_cost) || 0);
+        return { covered, active, owed, settled: covered && owed <= 0.005 };
+    }
+
     function vehicleCard(v, { linkable = true } = {}) {
         const title = v.label || v.license_plate || v.category_name;
         const rateUnit = v.billing_period === 'yearly' ? '/Jahr' : '/Monat';
-        const covered = !!v.flat_rate_covered;
-        const fullyCovered = covered && (Number(v.uncovered_cost) || 0) <= 0.005;
-        // When covered by a Pauschale the per-vehicle price/accrued figures aren't
-        // what's billed, so show them as handled by the Pauschale (partial
-        // coverage still shows the uncovered remainder).
+        const c = coverage(v);
+        // Show "über Pauschale" only when nothing is owed per vehicle. Once a
+        // Pauschale ends, per-vehicle billing resumes, so the rate + the owed
+        // remainder are shown again (an expired Pauschale is no longer "aktiv").
         const period = `seit ${fmtDate(v.start_date)}` + (v.end_date ? ` bis ${fmtDate(v.end_date)}` : '');
-        const rateLine = covered ? ('über Pauschale · ' + period) : (`${eur(v.effective_rate)}${rateUnit} · ` + period);
+        const rateLine = c.settled ? ('über Pauschale · ' + period) : (`${eur(v.effective_rate)}${rateUnit} · ` + period);
         let accruedLine;
-        if (fullyCovered) accruedLine = el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Abrechnung über Pauschale');
-        else if (covered) accruedLine = el('div', { class: 'card-meta', style: 'color:var(--text);font-weight:600;margin-top:.3rem' }, 'Aufgelaufen (Rest): ' + eur(v.uncovered_cost));
-        else accruedLine = el('div', { class: 'card-meta', style: 'color:var(--text);font-weight:600;margin-top:.3rem' }, 'Aufgelaufen: ' + eur(v.accrued_cost));
+        if (c.settled) accruedLine = el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Abrechnung über Pauschale');
+        else accruedLine = el('div', { class: 'card-meta', style: 'color:var(--text);font-weight:600;margin-top:.3rem' },
+            (c.covered ? 'Aufgelaufen (Rest): ' : 'Aufgelaufen: ') + eur(c.owed));
         const main = el('div', { style: 'flex:1;' + (linkable ? 'cursor:pointer' : ''), onclick: linkable ? () => navigate('vehicles/' + v.id) : null },
             el('h3', {}, esc(title)),
             el('div', { class: 'card-meta' }, el('span', { class: 'badge badge-cat' }, esc(v.category_name)), ' ', esc(v.person_name),
@@ -672,22 +683,19 @@
     // is shown; the payment slider still marks the uncovered portion as paid.
     function vehicleControls(v) {
         const wrap = el('div', { class: 'controls-row' });
-        const covered = !!v.flat_rate_covered;
-        // Fully covered = billed and paid entirely through the Pauschale (no
-        // uncovered remainder), so the per-vehicle paid marker is redundant.
-        const fullyCovered = covered && (Number(v.uncovered_cost) || 0) <= 0.005;
+        const c = coverage(v);
         const pauschaleBadge = (label, title) => el('span', { class: 'badge badge-cat', title }, label);
         // Archived (closed) vehicles are read-only: show the settled state as
         // badges and offer a one-tap reactivate instead of the live sliders.
         if (v.archived) {
             wrap.append(statusBadge(v.status));
-            // Fully covered => payment belongs to the Pauschale; otherwise show the
-            // per-vehicle paid state.
-            if (fullyCovered) {
+            // Nothing owed per vehicle => billed via the Pauschale; otherwise show
+            // the per-vehicle paid state.
+            if (c.settled) {
                 wrap.append(pauschaleBadge('über Pauschale abgerechnet', 'Zahlung erfolgt über die Pauschale'));
             } else {
                 wrap.append(el('span', { class: 'badge ' + (v.paid ? 'badge-active' : 'badge-ended') }, v.paid ? 'bezahlt' : 'offen'));
-                if (covered) wrap.append(pauschaleBadge('in Pauschale', 'Teilweise über eine Pauschale abgerechnet'));
+                if (c.active) wrap.append(pauschaleBadge('in Pauschale', 'Teilweise über eine Pauschale abgerechnet'));
             }
             if (canManage()) {
                 // "Erneut einstellen" is safe on archived vehicles: it creates a new
@@ -701,14 +709,16 @@
         // (reserved/stored/collected), independent of billing.
         wrap.append(statusSlider(v));
         if (canBill()) {
-            if (fullyCovered) {
-                // Payment belongs to the Pauschale; no per-vehicle paid slider.
+            if (c.settled) {
+                // Nothing owed per vehicle; payment belongs to the Pauschale.
                 wrap.append(pauschaleBadge('über Pauschale abgerechnet', 'Zahlung erfolgt über die Pauschale'));
             } else {
+                // A remainder is owed (e.g. the Pauschale has ended, or covers only
+                // part of the period) — settle it with the per-vehicle slider.
                 wrap.append(paidSlider(v));
-                if (covered) wrap.append(pauschaleBadge('in Pauschale', 'Teilweise über eine Pauschale abgerechnet – der Slider betrifft nur den Restbetrag'));
+                if (c.active) wrap.append(pauschaleBadge('in Pauschale', 'Teilweise über eine Pauschale abgerechnet – der Slider betrifft nur den Restbetrag'));
             }
-        } else if (covered) {
+        } else if (c.active || c.settled) {
             wrap.append(pauschaleBadge('in Pauschale', 'Über eine Pauschale abgerechnet'));
         }
         if (canManage() && v.status === 'collected') {
@@ -752,14 +762,19 @@
         wrap.append(el('div', { class: 'controls-row' },
             el('span', { class: 'muted', style: 'font-size:.85rem' }, 'Alle Zeiträume'), agreementPaidSlider(a)));
         const periods = agreementPeriods(a);
+        // Key of the period that is currently running (still accruing), so it can
+        // be marked "läuft" — here "bezahlt" means the whole period is prepaid.
+        const curKey = a.period === 'yearly' ? today().slice(0, 4) : today().slice(0, 7);
         if (periods.length) {
             const det = el('details', { class: 'period-payments' }, el('summary', {}, 'Zahlung je Zeitraum (' + periods.length + ')'));
             const box = el('div', { class: 'period-list' });
             for (const p of periods) {
                 const amt = a.period_costs ? a.period_costs[p.key] : null;
+                const running = p.key === curKey;
                 box.append(el('div', { class: 'period-row' },
                     el('span', { class: 'period-label' }, p.label,
-                        amt != null ? el('span', { class: 'period-amt' }, ' · ' + eur(amt)) : null),
+                        amt != null ? el('span', { class: 'period-amt' }, ' · ' + eur(amt)) : null,
+                        running ? el('span', { class: 'period-amt', title: '„bezahlt" markiert das ganze Jahr als im Voraus bezahlt' }, ' · läuft') : null),
                     agreementPeriodSlider(a, p.key)));
             }
             det.append(box);
@@ -817,9 +832,48 @@
         try { await api.del('/agreements/' + a.id); toast('Pauschale gelöscht', 'success'); render(); }
         catch (e) { toast(e.message, 'error'); }
     }
+    // Unified Pauschale dialog: edit the agreement terms AND manage its
+    // subordinate vehicles (add new from a Tarif, bind an existing one, edit
+    // type/label/plate, remove) in one place. Bound vehicles have no own price —
+    // they are billed via the Pauschale — so a row only needs Tarif/Bezeichnung/
+    // Kennzeichen. An empty list means the Pauschale covers all of the person's
+    // vehicles.
     async function agreementForm(personId, vehicles, existing) {
-        const selected = new Set((existing && existing.vehicle_ids) || []);
-        const newRows = []; // inline-created devices: { cat, label, plate } inputs
+        const rows = []; // { id|null, cat, label, plate, node }
+        const boundInitially = (existing && existing.vehicle_ids) || [];
+        let listBox, emptyNote, existSel;
+
+        // Vehicles that can still be bound: active, not archived, not already a row
+        // here, and not already covered by another Pauschale.
+        const bindable = () => vehicles.filter((v) => !v.archived
+            && (v.status === 'stored' || v.status === 'reserved')
+            && !v.flat_rate_covered
+            && !rows.some((r) => r.id === v.id));
+
+        const refreshControls = () => {
+            if (emptyNote) emptyNote.hidden = rows.length > 0;
+            if (!existSel) return;
+            const opts = bindable();
+            existSel.innerHTML = '';
+            existSel.append(el('option', { value: '' }, opts.length ? '+ vorhandenes Gefährt …' : 'keine weiteren Gefährte'));
+            for (const v of opts) existSel.append(el('option', { value: v.id }, v.label || v.license_plate || v.category_name));
+            existSel.disabled = !opts.length;
+        };
+
+        const addRow = (v) => {
+            const cat = el('select', {}, ...state.categories.map((c) => el('option', { value: c.id }, c.name)));
+            if (v && v.category_id) for (const o of cat.options) if (Number(o.value) === v.category_id) o.selected = true;
+            const label = el('input', { type: 'text', placeholder: 'Bezeichnung', value: (v && v.label) || '' });
+            const plate = el('input', { type: 'text', placeholder: 'Kennzeichen', value: (v && v.license_plate) || '' });
+            const entry = { id: v ? v.id : null, cat, label, plate };
+            entry.node = el('div', { class: 'new-vehicle-row' }, cat, label, plate,
+                el('button', { type: 'button', class: 'btn btn-ghost btn-sm', title: 'Entfernen',
+                    onclick: () => { entry.node.remove(); const i = rows.indexOf(entry); if (i >= 0) rows.splice(i, 1); refreshControls(); } }, '✕'));
+            rows.push(entry);
+            listBox.append(entry.node);
+            refreshControls();
+        };
+
         const data = await formModal({
             title: existing ? 'Pauschale bearbeiten' : 'Neue Pauschale',
             submitLabel: 'Speichern',
@@ -827,62 +881,49 @@
                 { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', min: 0, required: true, value: existing?.amount ?? '' },
                 { name: 'period', label: 'Zeitraum', type: 'select', value: existing?.period || 'monthly', options: [{ value: 'monthly', label: 'pro Monat' }, { value: 'yearly', label: 'pro Jahr' }] },
                 { name: 'start_date', label: 'Gültig ab', type: 'date', required: true, value: existing?.start_date ? existing.start_date.slice(0, 10) : today() },
-                { name: 'end_date', label: 'Gültig bis (optional)', type: 'date', value: existing?.end_date ? existing.end_date.slice(0, 10) : '', help: 'Leer = laufend.' },
+                { name: 'end_date', label: 'Gültig bis (optional)', type: 'date', value: existing?.end_date ? existing.end_date.slice(0, 10) : '', help: 'Leer = laufend. Läuft die Pauschale aus, werden die Gefährte automatisch archiviert.' },
                 { name: 'note', label: 'Notiz (optional)', value: existing?.note },
             ],
             onRender: (body) => {
-                // Existing vehicles: offer currently-stored/reserved ones, plus any
-                // already covered by this agreement (so editing never drops them).
-                const active = (v) => v.status === 'stored' || v.status === 'reserved';
-                const list = vehicles
-                    .filter((v) => active(v) || selected.has(v.id))
-                    .sort((a, b) => ((active(b) ? 1 : 0) - (active(a) ? 1 : 0)) || (new Date(b.start_date) - new Date(a.start_date)));
-                if (list.length) {
-                    body.append(el('label', {}, 'Bestehende Gefährte (keine Auswahl = alle)'));
-                    const box = el('div', { class: 'agreement-vehicles' });
-                    for (const v of list) {
-                        const cb = el('input', { type: 'checkbox' });
-                        if (selected.has(v.id)) cb.checked = true;
-                        cb.addEventListener('change', () => { cb.checked ? selected.add(v.id) : selected.delete(v.id); });
-                        const sub = [v.license_plate, v.category_name,
-                            'seit ' + fmtDate(v.start_date) + (v.end_date ? ' – ' + fmtDate(v.end_date) : ''),
-                            STATUS_LABEL[v.status] || v.status].filter(Boolean).join(' · ');
-                        box.append(el('label', { class: 'switch agreement-vehicle' }, cb, el('span', { class: 'track' }),
-                            el('span', {}, el('div', {}, esc(v.label || v.license_plate || v.category_name)), el('div', { class: 't-time' }, esc(sub)))));
-                    }
-                    body.append(box);
-                }
-                // Inline device creation: add new devices straight from a Tarif.
-                if (!state.categories.length) return;
-                body.append(el('label', {}, 'Neue Gefährte aus Tarif anlegen'));
-                const newBox = el('div', { class: 'new-vehicles' });
-                body.append(newBox);
-                const addRow = () => {
-                    const cat = el('select', {}, ...state.categories.map((c) => el('option', { value: c.id }, c.name)));
-                    const label = el('input', { type: 'text', placeholder: 'Bezeichnung' });
-                    const plate = el('input', { type: 'text', placeholder: 'Kennzeichen' });
-                    const entry = { cat, label, plate };
-                    const row = el('div', { class: 'new-vehicle-row' }, cat, label, plate,
-                        el('button', { type: 'button', class: 'btn btn-ghost btn-sm', title: 'Entfernen', onclick: () => { row.remove(); const i = newRows.indexOf(entry); if (i >= 0) newRows.splice(i, 1); } }, '✕'));
-                    newRows.push(entry);
-                    newBox.append(row);
-                };
-                body.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: addRow }, '+ Gefährt aus Tarif'));
-                body.append(el('div', { class: 'card-meta' }, 'Neue Gefährte werden angelegt (Preis aus dem Tarif) und von dieser Pauschale abgedeckt.'));
+                if (!state.categories.length) { body.append(el('div', { class: 'card-meta' }, 'Zuerst einen Tarif anlegen.')); return; }
+                body.append(el('label', {}, 'Gefährte dieser Pauschale'));
+                listBox = el('div', { class: 'new-vehicles' });
+                body.append(listBox);
+                emptyNote = el('div', { class: 'card-meta' }, 'Keine bestimmten Gefährte – die Pauschale deckt dann alle Gefährte der Person.');
+                body.append(emptyNote);
+                const controls = el('div', { class: 'controls-row' });
+                controls.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => addRow(null) }, '+ Neues Gefährt'));
+                existSel = el('select', {});
+                existSel.addEventListener('change', () => { const id = Number(existSel.value); if (id) { const v = vehicles.find((x) => x.id === id); if (v) addRow(v); } });
+                controls.append(existSel);
+                body.append(controls);
+                body.append(el('div', { class: 'card-meta' }, 'Neue Gefährte werden aus dem Tarif angelegt; alle gelisteten Gefährte werden über diese Pauschale abgerechnet.'));
+                // Prefill the already-bound vehicles as editable rows.
+                for (const vid of boundInitially) addRow(vehicles.find((x) => x.id === vid) || { id: vid, category_id: state.categories[0].id });
+                refreshControls();
             },
         });
         if (!data) return;
-        const newVehicles = newRows
-            .map((e) => ({ category_id: Number(e.cat.value), label: e.label.value.trim(), license_plate: e.plate.value.trim() }))
-            .filter((n) => n.category_id > 0);
+        const vehicleIDs = [];
+        const newVehicles = [];
+        const editVehicles = [];
+        for (const r of rows) {
+            const catId = Number(r.cat.value);
+            if (!catId) continue;
+            const label = r.label.value.trim();
+            const plate = r.plate.value.trim();
+            if (r.id) { vehicleIDs.push(r.id); editVehicles.push({ id: r.id, category_id: catId, label, license_plate: plate }); }
+            else newVehicles.push({ category_id: catId, label, license_plate: plate });
+        }
         const payload = {
             amount: data.amount === '' ? null : Number(data.amount),
             period: data.period,
             start_date: data.start_date,
             end_date: data.end_date === '' ? null : data.end_date,
             note: data.note,
-            vehicle_ids: [...selected],
+            vehicle_ids: vehicleIDs,
             new_vehicles: newVehicles,
+            edit_vehicles: editVehicles,
         };
         try {
             if (existing) await api.put('/agreements/' + existing.id, payload);
@@ -1008,6 +1049,7 @@
         ]);
         const v = vehicles.find((x) => x.id === id);
         if (!v) { page.innerHTML = ''; page.append(emptyState('▣', 'Gefährt nicht gefunden.')); return; }
+        const vc = coverage(v);
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' },
             el('button', { class: 'back-btn', onclick: () => navigate('vehicles') }, '‹'),
@@ -1020,11 +1062,11 @@
             el('div', { class: 'balance' }, el('span', {}, 'Preis'), el('span', { class: 'amt' }, eur(v.effective_rate) + (v.billing_period === 'yearly' ? ' /Jahr' : ' /Monat'))),
             el('div', { class: 'balance' }, el('span', {}, 'Zeitraum'), el('span', {}, fmtDate(v.start_date) + (v.end_date ? ' – ' + fmtDate(v.end_date) : ' – offen'))),
             v.reserved_from ? el('div', { class: 'balance' }, el('span', {}, 'Reservierung'), el('span', {}, fmtDate(v.reserved_from) + ' – ' + fmtDate(v.reserved_until))) : null,
-            v.flat_rate_covered ? el('div', { class: 'balance' }, el('span', {}, 'Pauschale'), el('span', {}, 'abgedeckt')) : null,
-            (v.flat_rate_covered && (Number(v.uncovered_cost) || 0) <= 0.005)
+            vc.covered ? el('div', { class: 'balance' }, el('span', {}, 'Pauschale'), el('span', {}, vc.active ? 'aktiv abgedeckt' : 'beendet')) : null,
+            vc.settled
                 ? el('div', { class: 'balance' }, el('strong', {}, 'Aufgelaufen'), el('strong', { class: 'amt', title: 'Abrechnung über Pauschale' }, 'über Pauschale'))
-                : el('div', { class: 'balance' }, el('strong', {}, v.flat_rate_covered ? 'Aufgelaufen (Rest)' : 'Aufgelaufen'),
-                    el('strong', { class: 'amt' }, eur(v.flat_rate_covered ? v.uncovered_cost : v.accrued_cost))),
+                : el('div', { class: 'balance' }, el('strong', {}, vc.covered ? 'Aufgelaufen (Rest)' : 'Aufgelaufen'),
+                    el('strong', { class: 'amt' }, eur(vc.owed))),
             v.notes ? el('div', { class: 'card-meta', style: 'margin-top:.5rem' }, esc(v.notes)) : null));
 
         if (v.archived) {

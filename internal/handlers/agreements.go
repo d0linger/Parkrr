@@ -119,9 +119,20 @@ type agreementRequest struct {
 	// vehicle records for the person, typed from a Tarif and stored from the
 	// agreement's start date, then covered by the agreement.
 	NewVehicles []newVehicleReq `json:"new_vehicles"`
+	// EditVehicles carries edits to already-bound vehicles made in the unified
+	// dialog (type/label/plate), so the Pauschale and its vehicles are managed in
+	// one place. Ignored for ids that do not belong to the person.
+	EditVehicles []editVehicleReq `json:"edit_vehicles"`
 }
 
 type newVehicleReq struct {
+	CategoryID   int64  `json:"category_id"`
+	Label        string `json:"label"`
+	LicensePlate string `json:"license_plate"`
+}
+
+type editVehicleReq struct {
+	ID           int64  `json:"id"`
 	CategoryID   int64  `json:"category_id"`
 	Label        string `json:"label"`
 	LicensePlate string `json:"license_plate"`
@@ -327,7 +338,7 @@ func (h *Handler) CreateAgreement(w http.ResponseWriter, r *http.Request) {
 	// Inline devices are created inside saveAgreement's transaction and covered,
 	// so a new-device-only Pauschale is scoped to them (not "all vehicles") and a
 	// failure never leaves orphaned vehicles behind.
-	if err := h.saveAgreement(r, 0, pid, cand, req.NewVehicles); err != nil {
+	if err := h.saveAgreement(r, 0, pid, cand, req.NewVehicles, req.EditVehicles); err != nil {
 		msg, code := agreementSaveError(err, "could not create agreement")
 		writeError(w, code, msg)
 		return
@@ -363,7 +374,7 @@ func (h *Handler) UpdateAgreement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, code, m)
 		return
 	}
-	if err := h.saveAgreement(r, id, pid, cand, req.NewVehicles); err != nil {
+	if err := h.saveAgreement(r, id, pid, cand, req.NewVehicles, req.EditVehicles); err != nil {
 		msg, code := agreementSaveError(err, "could not update agreement")
 		writeError(w, code, msg)
 		return
@@ -373,8 +384,10 @@ func (h *Handler) UpdateAgreement(w http.ResponseWriter, r *http.Request) {
 }
 
 // saveAgreement inserts (id==0) or updates an agreement and replaces its covered
-// vehicles, in one transaction.
-func (h *Handler) saveAgreement(r *http.Request, id, personID int64, a models.FlatRatePeriod, news []newVehicleReq) error {
+// vehicles, in one transaction. news creates inline devices; edits applies
+// type/label/plate changes to already-bound vehicles (managed from the same
+// dialog).
+func (h *Handler) saveAgreement(r *http.Request, id, personID int64, a models.FlatRatePeriod, news []newVehicleReq, edits []editVehicleReq) error {
 	ctx := r.Context()
 	tx, err := h.Pool.Begin(ctx)
 	if err != nil {
@@ -390,6 +403,19 @@ func (h *Handler) saveAgreement(r *http.Request, id, personID int64, a models.Fl
 	}
 	for _, c := range created {
 		a.VehicleIDs = append(a.VehicleIDs, c.id)
+	}
+	// Apply edits to already-bound vehicles (type/label/plate). Scoped to the
+	// person, so a foreign id is silently ignored. A bad Tarif fails the tx.
+	for _, ev := range edits {
+		if ev.ID <= 0 || ev.CategoryID <= 0 {
+			continue
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE vehicles SET category_id=$1, label=$2, license_plate=$3, updated_at=now()
+			 WHERE id=$4 AND person_id=$5`,
+			ev.CategoryID, trim(ev.Label), trim(ev.LicensePlate), ev.ID, personID); err != nil {
+			return err
+		}
 	}
 
 	if id == 0 {
@@ -664,14 +690,20 @@ func (h *Handler) loadAllAgreements(ctx context.Context) (map[int64][]models.Fla
 // (FlatRateCovered + UncoveredCost as of now) from the given per-person
 // agreements and category lookup, so the UI can show an "in Pauschale" marker
 // and defer payment to the agreement when a vehicle is fully covered.
-func setFlatRateCoverage(vehicles []models.Vehicle, cats map[int64]models.Category, agByPerson map[int64][]models.FlatRatePeriod, now time.Time) {
-	until := now.AddDate(0, 0, 1)
+func setFlatRateCoverage(vehicles []models.Vehicle, agByPerson map[int64][]models.FlatRatePeriod, now time.Time) {
 	for i := range vehicles {
 		v := &vehicles[i]
 		covering := coveringAgreements(agByPerson[v.PersonID], v.ID)
 		v.FlatRateCovered = len(covering) > 0
 		if v.FlatRateCovered {
-			v.UncoveredCost = round2(models.VehicleUncoveredCost(v, cats[v.CategoryID], time.Time{}, until, covering))
+			// Bound vehicles carry no individual cost — billed via the Pauschale.
+			v.UncoveredCost = 0
+			for j := range covering {
+				if covering[j].ActiveAt(now) {
+					v.FlatRateActive = true
+					break
+				}
+			}
 		}
 	}
 }
@@ -699,10 +731,15 @@ func personRent(agreements []models.FlatRatePeriod, vehicles []models.Vehicle, c
 	}
 	for i := range vehicles {
 		v := &vehicles[i]
-		u := models.VehicleUncoveredCost(v, cats[v.CategoryID], from, to, coveringAgreements(agreements, v.ID))
-		accrued += u
+		// A vehicle bound to a Pauschale has no individual cost — it is billed
+		// entirely through the agreement. Only standalone vehicles bill per-vehicle.
+		if len(coveringAgreements(agreements, v.ID)) > 0 {
+			continue
+		}
+		c := v.CostInRange(cats[v.CategoryID], from, to)
+		accrued += c
 		if v.Paid {
-			paid += u
+			paid += c
 		}
 	}
 	return accrued, paid

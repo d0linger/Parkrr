@@ -69,7 +69,6 @@ func (h *Handler) ListVehicles(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 	vehicles := []models.Vehicle{}
-	cats := map[int64]models.Category{}
 	for rows.Next() {
 		v, cat, err := scanVehicleRow(rows)
 		if err != nil {
@@ -77,7 +76,6 @@ func (h *Handler) ListVehicles(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		enrich(&v, cat, now)
-		cats[cat.ID] = cat
 		vehicles = append(vehicles, v)
 	}
 	if err := rows.Err(); err != nil {
@@ -93,7 +91,7 @@ func (h *Handler) ListVehicles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	setFlatRateCoverage(vehicles, cats, agByPerson, now)
+	setFlatRateCoverage(vehicles, agByPerson, now)
 	writeJSON(w, http.StatusOK, vehicles)
 }
 
