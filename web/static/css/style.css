@@ -344,6 +344,9 @@ textarea { resize: vertical; min-height: 72px; }
 
 .bars { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem; }
 .bar-row { display: grid; grid-template-columns: 3.5rem 1fr auto; align-items: center; gap: 0.6rem; }
+.status-row { display: grid; grid-template-columns: 7rem 1fr auto; align-items: center; gap: 0.6rem; }
+.status-name { display: flex; align-items: center; gap: 0.45rem; font-size: 0.85rem; color: var(--text-muted); white-space: nowrap; }
+.status-dot { width: 9px; height: 9px; border-radius: 3px; flex: 0 0 auto; }
 .bar-track { background: var(--bg-elev-2); border-radius: 999px; height: 12px; overflow: hidden; }
 .bar-fill { background: linear-gradient(90deg, var(--primary), var(--primary-hover)); height: 100%; border-radius: 999px; transition: width 0.9s cubic-bezier(0.22, 1, 0.36, 1); }
 @media (prefers-reduced-motion: reduce) { .bar-fill { transition: none; } }

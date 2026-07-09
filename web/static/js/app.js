@@ -419,6 +419,7 @@
     const personName = (p) => (`${p.first_name || ''} ${p.last_name || ''}`).trim() || '(ohne Namen)';
     const catById = (id) => state.categories.find((c) => c.id === Number(id));
     const STATUS_LABEL = { reserved: 'reserviert', stored: 'eingelagert', collected: 'abgeholt', cancelled: 'storniert' };
+    const STATUS_COLOR = { stored: 'var(--success)', reserved: 'var(--warning)', collected: 'var(--text-muted)', cancelled: 'var(--danger)' };
     const MONTH_NAMES = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
     const ROLE_LABEL = { admin: 'Administrator', editor: 'Bearbeiter', reader: 'Nur-Lesen' };
     const statusBadge = (s) => el('span', { class: 'badge badge-' + s }, STATUS_LABEL[s] || s);
@@ -571,10 +572,13 @@
         const maxS = Math.max(1, ...Object.values(sc));
         const bars = el('div', { class: 'bars' });
         for (const st of ['stored', 'reserved', 'collected', 'cancelled']) {
-            bars.append(el('div', { class: 'bar-row' },
-                statusBadge(st),
-                el('div', { class: 'bar-track' }, el('div', { class: 'bar-fill', style: `width:${((sc[st] || 0) / maxS) * 100}%` })),
-                el('div', { class: 'bar-val' }, String(sc[st] || 0))));
+            const n = sc[st] || 0;
+            const fill = el('div', { class: 'bar-fill', style: `background:${STATUS_COLOR[st]}` });
+            bars.append(el('div', { class: 'status-row' },
+                el('div', { class: 'status-name' }, el('span', { class: 'status-dot', style: `background:${STATUS_COLOR[st]}` }), STATUS_LABEL[st]),
+                el('div', { class: 'bar-track' }, fill),
+                el('div', { class: 'bar-val' }, String(n))));
+            requestAnimationFrame(() => { fill.style.width = ((n / maxS) * 100) + '%'; });
         }
         scCard.append(bars);
         page.append(scCard);
