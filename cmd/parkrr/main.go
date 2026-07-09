@@ -139,7 +139,6 @@ func run() error {
 	go server.StartSessionCleanup(authMgr, cleanupStop)
 	go server.StartAuditRetention(pool,
 		time.Duration(cfg.AuditRetentionDays)*24*time.Hour, cleanupStop)
-	go server.StartFlatRateArchival(pool, cleanupStop)
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,

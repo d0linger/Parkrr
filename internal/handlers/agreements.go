@@ -8,7 +8,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/preining/parkrr/internal/database"
 	"github.com/preining/parkrr/internal/models"
 )
 
@@ -102,6 +101,7 @@ func (h *Handler) loadAgreements(ctx context.Context, personID int64, now time.T
 	}
 	for i := range out {
 		out[i].Accrued = round2(out[i].AccruedAsOf(now))
+		out[i].Settled = out[i].SettledAsOf(now)
 		out[i].PeriodCosts = out[i].ElapsedPeriodCosts(now)
 	}
 	return out, nil
@@ -359,9 +359,9 @@ func (h *Handler) CreateAgreement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r, "create", "flatrate", pid, "Pauschale angelegt für "+h.personLabel(r, pid))
-	// Archive bound vehicles right away if the agreement is already expired
-	// (e.g. an end date in the past), rather than waiting for the periodic sweep.
-	_, _ = database.ArchiveExpiredFlatRateVehicles(r.Context(), h.Pool)
+	// Archive bound vehicles right away if the agreement is now finished and
+	// settled, rather than waiting for the periodic sweep.
+	_, _ = h.ArchiveSettledExpiredVehicles(r.Context())
 	h.writeAgreements(w, r, pid)
 }
 
@@ -398,7 +398,7 @@ func (h *Handler) UpdateAgreement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r, "update", "flatrate", id, "Pauschale geändert für "+h.personLabel(r, pid))
-	_, _ = database.ArchiveExpiredFlatRateVehicles(r.Context(), h.Pool)
+	_, _ = h.ArchiveSettledExpiredVehicles(r.Context())
 	h.writeAgreements(w, r, pid)
 }
 
@@ -540,6 +540,8 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 		state = "bezahlt"
 	}
 	h.audit(r, "update", "flatrate", id, "Pauschale "+h.personLabel(r, pid)+" "+state)
+	// Settling the last open period may finish the agreement -> archive vehicles.
+	_, _ = h.ArchiveSettledExpiredVehicles(r.Context())
 	h.writeAgreements(w, r, pid)
 }
 
@@ -637,6 +639,8 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 		state = "bezahlt"
 	}
 	h.audit(r, "update", "flatrate", id, "Pauschale "+h.personLabel(r, a.PersonID)+" "+key+": "+state)
+	// Settling the last open period may finish the agreement -> archive vehicles.
+	_, _ = h.ArchiveSettledExpiredVehicles(r.Context())
 	h.writeAgreements(w, r, a.PersonID)
 }
 
@@ -746,6 +750,69 @@ func coveringAgreements(agreements []models.FlatRatePeriod, vehicleID int64) []m
 		}
 	}
 	return out
+}
+
+// ArchiveSettledExpiredVehicles archives vehicles whose every covering Pauschale
+// has ended AND is fully paid, so a finished-and-settled agreement tidies its
+// vehicles out of the active lists. A vehicle bound to any still-running or
+// not-yet-settled agreement stays active; standalone vehicles are untouched.
+// Returns the number archived.
+func (h *Handler) ArchiveSettledExpiredVehicles(ctx context.Context) (int64, error) {
+	now := time.Now()
+	agByPerson, err := h.loadAllAgreements(ctx)
+	if err != nil {
+		return 0, err
+	}
+	done := map[int64]bool{} // agreement id -> ended && settled
+	for _, ags := range agByPerson {
+		for i := range ags {
+			done[ags[i].ID] = ags[i].Ended(now) && ags[i].SettledAsOf(now)
+		}
+	}
+	// Candidate vehicles: active vehicles of any person that has an agreement
+	// (covers explicit joins and person-wide agreements alike).
+	rows, err := h.Pool.Query(ctx,
+		`SELECT v.id, v.person_id FROM vehicles v
+		 WHERE v.archived = false
+		   AND EXISTS (SELECT 1 FROM flat_rate_periods p WHERE p.person_id = v.person_id)`)
+	if err != nil {
+		return 0, err
+	}
+	var toArchive []int64
+	for rows.Next() {
+		var vid, pid int64
+		if err := rows.Scan(&vid, &pid); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		covering := coveringAgreements(agByPerson[pid], vid)
+		if len(covering) == 0 {
+			continue // not bound to any agreement -> standalone
+		}
+		allDone := true
+		for i := range covering {
+			if !done[covering[i].ID] {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			toArchive = append(toArchive, vid)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(toArchive) == 0 {
+		return 0, nil
+	}
+	ct, err := h.Pool.Exec(ctx,
+		`UPDATE vehicles SET archived=true, updated_at=now() WHERE id = ANY($1) AND archived=false`, toArchive)
+	if err != nil {
+		return 0, err
+	}
+	return ct.RowsAffected(), nil
 }
 
 // personRent computes rent accrued and paid over [from, to) for a person from

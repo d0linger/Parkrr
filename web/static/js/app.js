@@ -570,10 +570,10 @@
             frCard.append(el('div', { class: 'card-row' },
                 el('h3', { style: 'margin:0' }, 'Pauschalen'),
                 canBill() ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => agreementForm(id, vehicles) }, '+ Pauschale') : null));
-            // Active first; ended Pauschalen collapse into an archive so finished
-            // agreements don't clutter the list. The end date is exclusive (matches
-            // the backend), so an agreement ending today is already ended.
-            const ended = (a) => a.end_date && a.end_date.slice(0, 10) <= today();
+            // A Pauschale only moves to the archive once it has ended AND is fully
+            // paid — an ended-but-unpaid agreement stays visible so the open payment
+            // isn't hidden. End date is exclusive (matches the backend).
+            const ended = (a) => a.settled && a.end_date && a.end_date.slice(0, 10) <= today();
             const activeAg = ags.filter((a) => !ended(a));
             const endedAg = ags.filter(ended);
             if (!ags.length) frCard.append(el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Keine Pauschale – Abrechnung je Gefährt.'));
@@ -585,24 +585,6 @@
                 frCard.append(det);
             }
             page.append(frCard);
-        }
-
-        // monthly chart
-        const chartCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Aufgelaufene Miete pro Monat · ' + stats.year));
-        chartCard.append(chartBars(stats.monthly_accrued, MONTHS));
-        page.append(chartCard);
-
-        // years (informational, combined rent per year)
-        if (stats.years.length) {
-            const yc = el('div', { class: 'chart-card' }, el('h3', {}, 'Kosten pro Jahr'));
-            const max = Math.max(...stats.years.map((y) => y.cost), 1);
-            const bars = el('div', { class: 'bars' });
-            for (const y of stats.years) bars.append(el('div', { class: 'bar-row' },
-                el('div', {}, String(y.year)),
-                el('div', { class: 'bar-track' }, el('div', { class: 'bar-fill', style: `width:${(y.cost / max) * 100}%` })),
-                el('div', { class: 'bar-val' }, eur(y.cost))));
-            yc.append(bars);
-            page.append(yc);
         }
 
         // Standalone vehicles only — vehicles bound to a Pauschale are shown nested
@@ -626,6 +608,22 @@
         if (canBill()) ch.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => chargeForm(id) }, '+ Position'));
         page.append(ch);
         page.append(financeList(charges));
+
+        // statistics at the bottom, below the actionable sections
+        const chartCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Aufgelaufene Miete pro Monat · ' + stats.year));
+        chartCard.append(chartBars(stats.monthly_accrued, MONTHS));
+        page.append(chartCard);
+        if (stats.years.length) {
+            const yc = el('div', { class: 'chart-card' }, el('h3', {}, 'Kosten pro Jahr'));
+            const max = Math.max(...stats.years.map((y) => y.cost), 1);
+            const bars = el('div', { class: 'bars' });
+            for (const y of stats.years) bars.append(el('div', { class: 'bar-row' },
+                el('div', {}, String(y.year)),
+                el('div', { class: 'bar-track' }, el('div', { class: 'bar-fill', style: `width:${(y.cost / max) * 100}%` })),
+                el('div', { class: 'bar-val' }, eur(y.cost))));
+            yc.append(bars);
+            page.append(yc);
+        }
     };
 
     // ================= VEHICLES =================

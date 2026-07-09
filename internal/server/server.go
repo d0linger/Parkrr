@@ -27,6 +27,9 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	h.CheckBreachedPasswords = checkBreachedPasswords
 	ah := handlers.NewAuthHandler(h, authMgr, wa, stop)
 
+	// Archive vehicles of finished-and-settled Pauschalen in the background.
+	go startFlatRateArchival(h, stop)
+
 	mux := http.NewServeMux()
 
 	// Middleware shortcuts.
