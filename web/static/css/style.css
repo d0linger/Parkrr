@@ -344,8 +344,9 @@ textarea { resize: vertical; min-height: 72px; }
 
 .bars { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem; }
 .bar-row { display: grid; grid-template-columns: 3.5rem 1fr auto; align-items: center; gap: 0.6rem; }
-.bar-track { background: var(--bg-elev-2); border-radius: 999px; height: 10px; overflow: hidden; }
-.bar-fill { background: var(--primary); height: 100%; border-radius: 999px; }
+.bar-track { background: var(--bg-elev-2); border-radius: 999px; height: 12px; overflow: hidden; }
+.bar-fill { background: linear-gradient(90deg, var(--primary), var(--primary-hover)); height: 100%; border-radius: 999px; transition: width 0.9s cubic-bezier(0.22, 1, 0.36, 1); }
+@media (prefers-reduced-motion: reduce) { .bar-fill { transition: none; } }
 .bar-val { font-variant-numeric: tabular-nums; font-size: 0.85rem; color: var(--text-muted); }
 
 /* ---------- Modal (native dialog) ---------- */
@@ -477,14 +478,26 @@ textarea { resize: vertical; min-height: 72px; }
 /* ---------- Charts ---------- */
 .chart-card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; margin-bottom: 0.75rem; }
 .chart-card h3 { margin: 0 0 0.6rem; font-size: 1rem; }
+.chart { position: relative; }
 .chart svg { width: 100%; height: auto; display: block; overflow: visible; }
-.chart .axis { stroke: var(--border); stroke-width: 1; }
-.chart .gridline { stroke: var(--border); stroke-width: 1; stroke-dasharray: 2 4; opacity: 0.5; }
-.chart .barc { fill: var(--primary); }
-.chart .barc2 { fill: var(--accent); }
 .chart .lbl { fill: var(--text-muted); font-size: 10px; }
-.chart .linec { fill: none; stroke: var(--primary); stroke-width: 2.5; stroke-linejoin: round; }
-.chart .dot { fill: var(--primary); }
+.chart .c-grid { stroke: var(--text-muted); stroke-width: 1; opacity: 0.14; }
+.chart .c-line { fill: none; stroke: var(--primary); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+.chart .c-endring { fill: var(--bg-elev); }
+.chart .c-enddot { fill: var(--primary-hover); }
+.chart .c-cross { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 3 3; opacity: 0; }
+.chart .c-focus { fill: var(--primary-hover); stroke: var(--bg-elev); stroke-width: 2; opacity: 0; }
+.chart .c-bar { transition: opacity 0.12s; cursor: pointer; }
+.chart .c-bar.dim { opacity: 0.4; }
+.chart .c-overlay { cursor: crosshair; }
+.c-tip {
+    position: absolute; pointer-events: none; z-index: 5; background: var(--bg);
+    color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 0.35rem 0.5rem; font-size: 0.76rem; line-height: 1.35; box-shadow: var(--shadow);
+    opacity: 0; transform: translate(-50%, -125%); transition: opacity 0.1s; white-space: nowrap;
+}
+.c-tip .k { color: var(--text-muted); display: block; font-size: 0.7rem; }
+.c-tip b { font-variant-numeric: tabular-nums; }
 .legend { display: flex; gap: 1rem; font-size: 0.8rem; color: var(--text-muted); margin-top: 0.4rem; }
 .legend .dotc { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
 

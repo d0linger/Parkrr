@@ -291,36 +291,125 @@
         return dlg;
     }
 
-    // ---------- charts (pure SVG) ----------
+    // ---------- charts (pure SVG, interactive) ----------
     const MONTHS = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
-    function chartBars(values, labels, cls = 'barc') {
-        const W = 340, H = 150, padX = 8, padTop = 12, padBot = 20;
-        const n = values.length, max = Math.max(1, ...values);
-        const gap = (W - 2 * padX) / n, bw = Math.min(24, gap * 0.6);
-        let s = `<line class="axis" x1="${padX}" y1="${H - padBot}" x2="${W - padX}" y2="${H - padBot}"/>`;
-        for (let i = 0; i < n; i++) {
-            const h = (values[i] / max) * (H - padTop - padBot);
-            const x = padX + i * gap + (gap - bw) / 2, y = H - padBot - h;
-            s += `<rect class="${cls}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0, h).toFixed(1)}" rx="2"/>`;
-            if (labels) s += `<text class="lbl" x="${(x + bw / 2).toFixed(1)}" y="${H - padBot + 12}" text-anchor="middle">${labels[i]}</text>`;
+    const REDUCE_MOTION = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const lastPositive = (vals) => { for (let i = vals.length - 1; i >= 0; i--) if (vals[i] > 0.0001) return i; return -1; };
+    const tipNames = (labels) => (labels && labels.length === 12 ? MONTH_NAMES : (labels || []));
+    const gid = () => 'c' + Math.random().toString(36).slice(2, 7);
+
+    // Shared hover tooltip positioned over the chart (viewBox coords -> pixels).
+    function chartTip(box, svg, W, H) {
+        const tip = el('div', { class: 'c-tip' });
+        box.append(tip);
+        return {
+            show: (vx, vy, html) => {
+                const r = svg.getBoundingClientRect();
+                tip.innerHTML = html;
+                tip.style.left = (vx / W * r.width) + 'px';
+                tip.style.top = (vy / H * r.height) + 'px';
+                tip.style.opacity = 1;
+            },
+            hide: () => { tip.style.opacity = 0; },
+        };
+    }
+
+    // Area/line chart with gradient fill, faint grid, hover crosshair + tooltip
+    // and an emphasized latest point. Values are money; future (0) months aren't
+    // drawn so the line stops at the latest activity.
+    function chartLine(values, labels) {
+        const W = 340, H = 160, pl = 8, pr = 8, pt = 16, pb = 22, n = values.length;
+        const max = Math.max(1, ...values) * 1.12, iw = W - pl - pr, ih = H - pt - pb;
+        const x = (i) => pl + (n <= 1 ? iw / 2 : i * iw / (n - 1));
+        const y = (v) => pt + ih - (v / max) * ih;
+        const hi = lastPositive(values), id = gid(), names = tipNames(labels);
+        let line = '', area = '';
+        if (hi >= 0) {
+            const pts = [];
+            for (let i = 0; i <= hi; i++) pts.push([x(i), y(values[i])]);
+            line = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
+            area = `${line} L ${x(hi).toFixed(1)} ${H - pb} L ${x(0).toFixed(1)} ${H - pb} Z`;
         }
+        let grid = '';
+        for (let r = 0; r <= 3; r++) { const gy = pt + ih * r / 3; grid += `<line class="c-grid" x1="${pl}" y1="${gy.toFixed(1)}" x2="${W - pr}" y2="${gy.toFixed(1)}"/>`; }
+        let lab = '';
+        if (labels) values.forEach((v, i) => { lab += `<text class="lbl" x="${x(i).toFixed(1)}" y="${H - pb + 13}" text-anchor="middle">${labels[i]}</text>`; });
+        let endMark = '';
+        if (hi >= 0) { const ex = x(hi), ey = y(values[hi]); endMark = `<circle class="c-endring" cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="5.5"/><circle class="c-enddot" cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="3.2"/>`; }
         const box = el('div', { class: 'chart' });
-        box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img">${s}</svg>`;
+        box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Verlauf">
+          <defs>
+            <linearGradient id="af-${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--primary-hover)" stop-opacity="0.30"/><stop offset="1" stop-color="var(--primary-hover)" stop-opacity="0"/></linearGradient>
+            <linearGradient id="as-${id}" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="var(--primary)"/><stop offset="1" stop-color="var(--primary-hover)"/></linearGradient>
+          </defs>
+          <g>${grid}</g>
+          ${area ? `<path d="${area}" fill="url(#af-${id})"/>` : ''}
+          ${line ? `<path class="c-line" style="stroke:url(#as-${id})" d="${line}"/>` : ''}
+          <g>${lab}</g>
+          <line class="c-cross" y1="${pt}" y2="${H - pb}"/>
+          <circle class="c-focus" r="4"/>
+          ${endMark}
+          <rect class="c-overlay" x="0" y="0" width="${W}" height="${H}" fill="transparent"/></svg>`;
+        const svg = box.querySelector('svg'), cross = box.querySelector('.c-cross'), focus = box.querySelector('.c-focus');
+        const tip = chartTip(box, svg, W, H);
+        if (hi >= 0 && !REDUCE_MOTION()) {
+            const el2 = box.querySelector('.c-line');
+            const len = el2.getTotalLength();
+            el2.style.strokeDasharray = len; el2.style.strokeDashoffset = len;
+            el2.getBoundingClientRect(); el2.style.transition = 'stroke-dashoffset .9s ease'; el2.style.strokeDashoffset = 0;
+        }
+        const overlay = svg.querySelector('.c-overlay');
+        const at = (ev) => {
+            if (hi < 0) return;
+            const r = svg.getBoundingClientRect(); const px = (ev.clientX - r.left) / r.width * W;
+            let i = Math.round((px - pl) / (iw / (n - 1 || 1))); i = Math.max(0, Math.min(hi, i));
+            const cx = x(i), cy = y(values[i]);
+            cross.setAttribute('x1', cx); cross.setAttribute('x2', cx); cross.style.opacity = 1;
+            focus.setAttribute('cx', cx); focus.setAttribute('cy', cy); focus.style.opacity = 1;
+            tip.show(cx, cy, `<span class="k">${names[i] || ''}</span><b>${eur(values[i])}</b>`);
+        };
+        const off = () => { cross.style.opacity = 0; focus.style.opacity = 0; tip.hide(); };
+        overlay.addEventListener('pointermove', at);
+        overlay.addEventListener('pointerdown', at);
+        overlay.addEventListener('pointerleave', off);
+        overlay.addEventListener('pointerup', off);
         return box;
     }
-    function chartLine(values, labels) {
-        const W = 340, H = 150, padX = 10, padTop = 12, padBot = 20;
-        const n = values.length, max = Math.max(1, ...values);
-        const step = (W - 2 * padX) / (n - 1 || 1);
-        const pts = values.map((v, i) => [padX + i * step, H - padBot - (v / max) * (H - padTop - padBot)]);
-        const path = pts.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
-        let dots = '';
-        pts.forEach((p, i) => {
-            dots += `<circle class="dot" cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.5"/>`;
-            if (labels) dots += `<text class="lbl" x="${p[0].toFixed(1)}" y="${H - padBot + 12}" text-anchor="middle">${labels[i]}</text>`;
-        });
+
+    // Vertical bars with rounded ends, gradient fill, a highlighted latest bar and
+    // per-bar hover tooltip.
+    function chartBars(values, labels, cls = 'barc') {
+        void cls;
+        const W = 340, H = 160, pl = 8, pr = 8, pt = 16, pb = 22, n = values.length;
+        const max = Math.max(1, ...values) * 1.15, iw = W - pl - pr, ih = H - pt - pb;
+        const gap = iw / n, bw = Math.min(24, gap * 0.62), hi = lastPositive(values), id = gid(), names = tipNames(labels);
+        let grid = '';
+        for (let r = 0; r <= 3; r++) { const gy = pt + ih * r / 3; grid += `<line class="c-grid" x1="${pl}" y1="${gy.toFixed(1)}" x2="${W - pr}" y2="${gy.toFixed(1)}"/>`; }
+        let bars = '', lab = '';
+        for (let i = 0; i < n; i++) {
+            const h = (values[i] / max) * ih, bx = pl + i * gap + (gap - bw) / 2, by = H - pb - h;
+            const on = i === hi;
+            bars += `<rect class="c-bar${on ? ' on' : ''}" data-i="${i}" x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0, h).toFixed(1)}" rx="4" fill="${on ? 'var(--accent)' : `url(#bf-${id})`}"/>`;
+            if (labels) lab += `<text class="lbl" x="${(bx + bw / 2).toFixed(1)}" y="${H - pb + 13}" text-anchor="middle">${labels[i]}</text>`;
+        }
         const box = el('div', { class: 'chart' });
-        box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img"><line class="axis" x1="${padX}" y1="${H - padBot}" x2="${W - padX}" y2="${H - padBot}"/><polyline class="linec" points="${path}"/>${dots}</svg>`;
+        box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Balken">
+          <defs><linearGradient id="bf-${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--primary-hover)"/><stop offset="1" stop-color="var(--primary)"/></linearGradient></defs>
+          <g>${grid}</g><g>${bars}</g><g>${lab}</g></svg>`;
+        const svg = box.querySelector('svg');
+        const tip = chartTip(box, svg, W, H);
+        const marks = svg.querySelectorAll('.c-bar');
+        marks.forEach((b) => {
+            const focus = () => {
+                const i = +b.dataset.i;
+                marks.forEach((o) => o.classList.toggle('dim', o !== b));
+                tip.show(+b.getAttribute('x') + +b.getAttribute('width') / 2, +b.getAttribute('y'),
+                    `<span class="k">${names[i] || ''}</span><b>${eur(values[i])}</b>`);
+            };
+            b.addEventListener('pointerenter', focus);
+            b.addEventListener('pointerdown', focus);
+        });
+        svg.addEventListener('pointerleave', () => { tip.hide(); marks.forEach((o) => o.classList.remove('dim')); });
         return box;
     }
 
