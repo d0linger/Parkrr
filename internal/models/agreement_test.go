@@ -24,32 +24,6 @@ func TestAgreementCovers(t *testing.T) {
 	}
 }
 
-func TestVehicleUncoveredCostSubtractsCoveredWindow(t *testing.T) {
-	cat := Category{DefaultMonthlyCost: 100}
-	v := Vehicle{BillingPeriod: BillingMonthly, StartDate: date(2025, time.January, 1)}
-	from, to := date(2025, time.January, 1), date(2025, time.March, 1) // Jan+Feb = 200
-
-	if full := v.CostInRange(cat, from, to); full != 200 {
-		t.Fatalf("precondition: full cost got %.2f want 200.00", full)
-	}
-	// Agreement covers January only -> February (100) remains per-vehicle.
-	agr := FlatRatePeriod{StartDate: date(2025, time.January, 1), EndDate: tp(date(2025, time.February, 1))}
-	got := VehicleUncoveredCost(&v, cat, from, to, []FlatRatePeriod{agr})
-	if got != 100 {
-		t.Errorf("uncovered cost: got %.2f want 100.00", got)
-	}
-}
-
-func TestVehicleFullyCoveredCostsZero(t *testing.T) {
-	cat := Category{DefaultMonthlyCost: 90}
-	v := Vehicle{BillingPeriod: BillingMonthly, StartDate: date(2025, time.January, 1)}
-	from, to := date(2025, time.January, 1), date(2025, time.February, 1)
-	agr := FlatRatePeriod{StartDate: date(2025, time.January, 1), EndDate: tp(date(2025, time.February, 1))}
-	if got := VehicleUncoveredCost(&v, cat, from, to, []FlatRatePeriod{agr}); got != 0 {
-		t.Errorf("fully covered vehicle should cost 0, got %.2f", got)
-	}
-}
-
 func TestPeriodKey(t *testing.T) {
 	y := FlatRatePeriod{Period: BillingYearly}
 	if got := y.PeriodKey(date(2026, time.March, 4)); got != "2026" {

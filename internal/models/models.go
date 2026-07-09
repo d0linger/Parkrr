@@ -350,25 +350,6 @@ func (a *FlatRatePeriod) AccruedAsOf(asOf time.Time) float64 {
 	return a.CostInRange(a.StartDate, asOf.AddDate(0, 0, 1))
 }
 
-// VehicleUncoveredCost returns a vehicle's per-vehicle cost within [from, to)
-// EXCLUDING the time covered by any of the given agreements (which must be the
-// agreements that cover this vehicle and must not overlap each other). Because
-// proration is additive over disjoint calendar intervals, each covered window's
-// cost is simply subtracted from the full per-vehicle cost.
-func VehicleUncoveredCost(v *Vehicle, cat Category, from, to time.Time, covering []FlatRatePeriod) float64 {
-	total := v.CostInRange(cat, from, to)
-	for i := range covering {
-		s, e := covering[i].window(from, to)
-		if e.After(s) {
-			total -= v.CostInRange(cat, s, e)
-		}
-	}
-	if total < 0 {
-		total = 0
-	}
-	return total
-}
-
 // Category is a centrally-managed vehicle type with default pricing.
 type Category struct {
 	ID                 int64     `json:"id"`

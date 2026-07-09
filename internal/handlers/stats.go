@@ -79,7 +79,7 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	}
 	resp.Agreements = agreements
 	resp.HasFlatRate = len(agreements) > 0
-	setFlatRateCoverage(resp.Vehicles, cats, map[int64][]models.FlatRatePeriod{id: agreements}, now)
+	setFlatRateCoverage(resp.Vehicles, map[int64][]models.FlatRatePeriod{id: agreements}, now)
 
 	// Rent = flat-rate agreements + per-vehicle cost for time not covered by an
 	// agreement. Covered vehicles contribute only their uncovered portion.

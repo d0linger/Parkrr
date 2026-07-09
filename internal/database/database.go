@@ -128,6 +128,28 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
+// ArchiveExpiredFlatRateVehicles archives vehicles that are bound to a flat-rate
+// agreement (Pauschale) but no longer have any currently-active one — i.e. every
+// agreement covering them has ended (end_date on or before today). Such vehicles
+// stop billing with the Pauschale, so they are moved out of the active lists.
+// Already-archived and standalone vehicles are untouched. Returns the count.
+func ArchiveExpiredFlatRateVehicles(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
+	ct, err := pool.Exec(ctx, `
+		UPDATE vehicles v SET archived = true, updated_at = now()
+		WHERE v.archived = false
+		  AND EXISTS (SELECT 1 FROM flat_rate_period_vehicles j WHERE j.vehicle_id = v.id)
+		  AND NOT EXISTS (
+			SELECT 1 FROM flat_rate_period_vehicles j
+			JOIN flat_rate_periods p ON p.id = j.period_id
+			WHERE j.vehicle_id = v.id
+			  AND (p.end_date IS NULL OR p.end_date > CURRENT_DATE)
+		  )`)
+	if err != nil {
+		return 0, err
+	}
+	return ct.RowsAffected(), nil
+}
+
 // PruneAuditLog deletes audit entries older than keep. It runs inside a
 // transaction that opts into the append-only guard's retention exception (see
 // migration 008), so this is the single sanctioned path for removing audit

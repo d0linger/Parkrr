@@ -664,16 +664,16 @@ func (h *Handler) loadAllAgreements(ctx context.Context) (map[int64][]models.Fla
 // (FlatRateCovered + UncoveredCost as of now) from the given per-person
 // agreements and category lookup, so the UI can show an "in Pauschale" marker
 // and defer payment to the agreement when a vehicle is fully covered.
-func setFlatRateCoverage(vehicles []models.Vehicle, cats map[int64]models.Category, agByPerson map[int64][]models.FlatRatePeriod, now time.Time) {
-	until := now.AddDate(0, 0, 1)
+func setFlatRateCoverage(vehicles []models.Vehicle, agByPerson map[int64][]models.FlatRatePeriod, now time.Time) {
 	for i := range vehicles {
 		v := &vehicles[i]
 		covering := coveringAgreements(agByPerson[v.PersonID], v.ID)
 		v.FlatRateCovered = len(covering) > 0
 		if v.FlatRateCovered {
-			v.UncoveredCost = round2(models.VehicleUncoveredCost(v, cats[v.CategoryID], time.Time{}, until, covering))
-			for i := range covering {
-				if covering[i].ActiveAt(now) {
+			// Bound vehicles carry no individual cost — billed via the Pauschale.
+			v.UncoveredCost = 0
+			for j := range covering {
+				if covering[j].ActiveAt(now) {
 					v.FlatRateActive = true
 					break
 				}
@@ -705,10 +705,15 @@ func personRent(agreements []models.FlatRatePeriod, vehicles []models.Vehicle, c
 	}
 	for i := range vehicles {
 		v := &vehicles[i]
-		u := models.VehicleUncoveredCost(v, cats[v.CategoryID], from, to, coveringAgreements(agreements, v.ID))
-		accrued += u
+		// A vehicle bound to a Pauschale has no individual cost — it is billed
+		// entirely through the agreement. Only standalone vehicles bill per-vehicle.
+		if len(coveringAgreements(agreements, v.ID)) > 0 {
+			continue
+		}
+		c := v.CostInRange(cats[v.CategoryID], from, to)
+		accrued += c
 		if v.Paid {
-			paid += u
+			paid += c
 		}
 	}
 	return accrued, paid

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -112,6 +113,32 @@ func registerObservability(mux *http.ServeMux, pool *pgxpool.Pool, metricsToken 
 		}
 		promHandler.ServeHTTP(w, r)
 	}))
+}
+
+// StartFlatRateArchival runs a background loop that archives vehicles whose
+// Pauschale has ended, so an expired flat-rate agreement automatically tidies
+// its vehicles out of the active lists. It sweeps once at startup and hourly.
+func StartFlatRateArchival(pool *pgxpool.Pool, stop <-chan struct{}) {
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+	sweep := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if n, err := database.ArchiveExpiredFlatRateVehicles(ctx, pool); err != nil {
+			slog.Warn("flat-rate archival failed", "err", err)
+		} else if n > 0 {
+			slog.Info("archived vehicles of expired Pauschalen", "count", n)
+		}
+	}
+	sweep() // once at startup
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			sweep()
+		}
+	}
 }
 
 // StartAuditRetention periodically prunes audit entries older than keep. It runs
