@@ -480,18 +480,56 @@ func (h *Handler) DeleteAgreement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+	// Optionally delete the covered vehicles too; otherwise they are only unbound
+	// (the join cascades) and fall back to individual billing.
+	deleteVehicles := r.URL.Query().Get("delete_vehicles") == "true"
 	var pid int64
 	_ = h.Pool.QueryRow(r.Context(), `SELECT person_id FROM flat_rate_periods WHERE id=$1`, id).Scan(&pid)
-	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM flat_rate_periods WHERE id=$1`, id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not delete agreement")
-		return
+
+	var affected int64
+	if deleteVehicles {
+		tx, err := h.Pool.Begin(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not delete agreement")
+			return
+		}
+		defer func() { _ = tx.Rollback(r.Context()) }()
+		// Delete only vehicles exclusive to this agreement (their join rows
+		// cascade). A vehicle shared with another agreement — possible for
+		// non-overlapping windows — is left intact and merely unbound here.
+		if _, err := tx.Exec(r.Context(),
+			`DELETE FROM vehicles WHERE id IN (SELECT vehicle_id FROM flat_rate_period_vehicles WHERE period_id=$1)
+			   AND id NOT IN (SELECT vehicle_id FROM flat_rate_period_vehicles WHERE period_id <> $1)`, id); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not delete vehicles")
+			return
+		}
+		ct, err := tx.Exec(r.Context(), `DELETE FROM flat_rate_periods WHERE id=$1`, id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not delete agreement")
+			return
+		}
+		if err := tx.Commit(r.Context()); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not delete agreement")
+			return
+		}
+		affected = ct.RowsAffected()
+	} else {
+		ct, err := h.Pool.Exec(r.Context(), `DELETE FROM flat_rate_periods WHERE id=$1`, id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not delete agreement")
+			return
+		}
+		affected = ct.RowsAffected()
 	}
-	if ct.RowsAffected() == 0 {
+	if affected == 0 {
 		writeError(w, http.StatusNotFound, "agreement not found")
 		return
 	}
-	h.audit(r, "delete", "flatrate", id, "Pauschale gelöscht für "+h.personLabel(r, pid))
+	msg := "Pauschale gelöscht für " + h.personLabel(r, pid)
+	if deleteVehicles {
+		msg = "Pauschale inkl. Gefährte gelöscht für " + h.personLabel(r, pid)
+	}
+	h.audit(r, "delete", "flatrate", id, msg)
 	h.writeAgreements(w, r, pid)
 }
 
