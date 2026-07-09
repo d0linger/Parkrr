@@ -749,7 +749,10 @@
                 el('button', { class: 'btn btn-ghost btn-sm', onclick: () => delAgreement(a) }, '🗑')) : null));
         if (canBill()) row.append(agreementPayments(a));
         else {
-            const partial = !a.paid && a.paid_periods && a.paid_periods.length;
+            // Partial when any sub-period is paid — a whole-period key OR a fixed
+            // Teilbetrag (paid_fixed).
+            const partial = !a.paid && (((a.paid_periods && a.paid_periods.length) ||
+                (a.paid_fixed && Object.keys(a.paid_fixed).length)));
             row.append(el('span', { class: 'badge ' + (a.paid ? 'badge-active' : partial ? 'badge-cat' : 'badge-ended') },
                 a.paid ? 'bezahlt' : partial ? 'teilweise bezahlt' : 'offen'));
         }
