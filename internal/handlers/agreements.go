@@ -681,22 +681,24 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// The key must be one of the agreement's elapsed sub-periods — checked before
+	// EITHER mutation path. On mark, a bad key would store a payment row that
+	// PaidCentsInRange never counts (money recorded, balance unchanged); on
+	// unmark, a bad key on a master-paid agreement would still materialize the
+	// elapsed rows and clear the master flag — state changed by garbage input.
+	valid := false
+	for _, k := range a.ElapsedPeriodKeys(time.Now()) {
+		if k == key {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		writeError(w, http.StatusBadRequest, "period_key does not match an elapsed period of this agreement")
+		return
+	}
+
 	if req.Paid {
-		// The key must be one of the agreement's elapsed sub-periods — otherwise
-		// the payment row would be stored but never counted by PaidCentsInRange
-		// (wrong granularity, outside the window, or malformed), silently
-		// recording money that never reduces the balance.
-		valid := false
-		for _, k := range a.ElapsedPeriodKeys(time.Now()) {
-			if k == key {
-				valid = true
-				break
-			}
-		}
-		if !valid {
-			writeError(w, http.StatusBadRequest, "period_key does not match an elapsed period of this agreement")
-			return
-		}
 		// amount NULL = whole period (prepaid); a value = fixed partial. Upsert so
 		// re-marking switches between the two.
 		if _, err := tx.Exec(r.Context(),

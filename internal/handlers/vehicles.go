@@ -589,12 +589,16 @@ func (h *Handler) writeVehicle(w http.ResponseWriter, ctx context.Context, id in
 	}
 	now := time.Now()
 	enrich(&v, cat, now)
-	if agByPerson, aerr := h.loadAllAgreements(ctx, v.PersonID); aerr == nil {
-		vs := []models.Vehicle{v}
-		setFlatRateCoverage(vs, agByPerson, now)
-		v = vs[0]
+	// Coverage must be accurate — a silent fallback would report a bound vehicle
+	// as uncovered (wrong paid-slider/amounts), so fail loudly instead.
+	agByPerson, err := h.loadAllAgreements(ctx, v.PersonID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load vehicle")
+		return
 	}
-	writeJSON(w, status, v)
+	vs := []models.Vehicle{v}
+	setFlatRateCoverage(vs, agByPerson, now)
+	writeJSON(w, status, vs[0])
 }
 
 // rowScanner unifies pgx.Row and pgx.Rows for scanning helpers.
