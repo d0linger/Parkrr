@@ -771,11 +771,13 @@
             for (const p of periods) {
                 const amt = a.period_costs ? a.period_costs[p.key] : null;
                 const running = p.key === curKey;
+                const fx = periodFixed(a, p.key);
                 box.append(el('div', { class: 'period-row' },
                     el('span', { class: 'period-label' }, p.label,
                         amt != null ? el('span', { class: 'period-amt' }, ' · ' + eur(amt)) : null,
-                        running ? el('span', { class: 'period-amt', title: '„bezahlt" markiert das ganze Jahr als im Voraus bezahlt' }, ' · läuft') : null),
-                    agreementPeriodSlider(a, p.key)));
+                        running ? el('span', { class: 'period-amt', title: '„bezahlt": ganze Periode im Voraus – oder Teilbetrag wählen' }, ' · läuft') : null,
+                        fx != null ? el('span', { class: 'period-amt', title: 'Teilbetrag bezahlt – Rest offen' }, ' · Teil ' + eur(fx)) : null),
+                    agreementPeriodSlider(a, p.key, running, amt)));
             }
             det.append(box);
             wrap.append(det);
@@ -803,17 +805,49 @@
         }
         return out.reverse();
     }
-    const periodPaid = (a, key) => !!a.paid || (a.paid_periods || []).includes(key);
-    function agreementPeriodSlider(a, key) {
+    const periodFixed = (a, key) => (a.paid_fixed && a.paid_fixed[key] != null) ? a.paid_fixed[key] : null;
+    const periodPaid = (a, key) => !!a.paid || (a.paid_periods || []).includes(key) || periodFixed(a, key) != null;
+    // For a still-running period, ask whether "bezahlt" means the whole period was
+    // prepaid or only a fixed Teilbetrag. Returns { amount } (null = whole) or null.
+    async function periodPayDialog(label, defAmt) {
+        const data = await formModal({
+            title: 'Zahlung ' + label,
+            submitLabel: 'Speichern',
+            fields: [
+                { name: 'mode', label: 'Art der Zahlung', type: 'select', value: 'full',
+                    options: [{ value: 'full', label: 'Ganze Pauschale (im Voraus)' }, { value: 'partial', label: 'Teilbetrag' }] },
+                { name: 'amount', label: 'Teilbetrag (€)', type: 'number', step: '0.01', min: 0, value: defAmt != null ? defAmt : '',
+                    help: 'Nur bei „Teilbetrag": bereits fälliger Betrag. Der Rest des Zeitraums bleibt offen.' },
+            ],
+        });
+        if (!data) return null;
+        if (data.mode === 'partial') return { amount: data.amount === '' ? 0 : Number(data.amount) };
+        return { amount: null };
+    }
+    function agreementPeriodSlider(a, key, running, defAmt) {
         const paid = periodPaid(a, key);
         const seg = el('div', { class: 'seg-mini pay', role: 'radiogroup', 'aria-label': 'Zahlstatus ' + key });
-        const set = async (val, e) => {
-            markActive(e.currentTarget);
-            try { await api.post('/agreements/' + a.id + '/period-paid', { period_key: key, paid: val }); toast(val ? 'bezahlt' : 'offen', 'success'); render(); }
-            catch (err) { toast(err.message, 'error'); render(); }
+        const post = async (val, amount) => {
+            try {
+                const body = { period_key: key, paid: val };
+                if (val && amount != null) body.amount = amount;
+                await api.post('/agreements/' + a.id + '/period-paid', body);
+                toast(val ? 'bezahlt' : 'offen', 'success'); render();
+            } catch (err) { toast(err.message, 'error'); render(); }
         };
-        seg.append(el('button', { class: !paid ? 'active open' : '', type: 'button', role: 'radio', 'aria-checked': String(!paid), onclick: (e) => set(false, e) }, 'offen'));
-        seg.append(el('button', { class: paid ? 'active done' : '', type: 'button', role: 'radio', 'aria-checked': String(paid), onclick: (e) => set(true, e) }, 'bezahlt'));
+        const onPaid = async (e) => {
+            markActive(e.currentTarget);
+            // Running period, not yet paid: offer whole (prepay) vs. Teilbetrag.
+            if (running && !paid) {
+                const choice = await periodPayDialog(key, defAmt);
+                if (!choice) { render(); return; } // cancelled -> reset optimistic state
+                await post(true, choice.amount);
+                return;
+            }
+            await post(true, null);
+        };
+        seg.append(el('button', { class: !paid ? 'active open' : '', type: 'button', role: 'radio', 'aria-checked': String(!paid), onclick: (e) => { markActive(e.currentTarget); post(false, null); } }, 'offen'));
+        seg.append(el('button', { class: paid ? 'active done' : '', type: 'button', role: 'radio', 'aria-checked': String(paid), onclick: onPaid }, 'bezahlt'));
         return seg;
     }
     function agreementPaidSlider(a) {

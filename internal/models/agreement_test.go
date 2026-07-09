@@ -94,6 +94,22 @@ func TestAgreementActiveAt(t *testing.T) {
 	}
 }
 
+// A fixed partial payment credits exactly that lump, not the prorated period.
+func TestPaidCentsFixedPartial(t *testing.T) {
+	a := FlatRatePeriod{Amount: 500, Period: BillingYearly, StartDate: date(2025, time.January, 1),
+		PaidFixed: map[string]float64{"2025": 260}}
+	from, to := date(2025, time.January, 1), date(2026, time.January, 1)
+	if cents := a.PaidCentsInRange(from, to); cents != 26000 {
+		t.Errorf("fixed partial cents got %d want 26000", cents)
+	}
+	// A whole-period key still credits the full period (500).
+	a2 := FlatRatePeriod{Amount: 500, Period: BillingYearly, StartDate: date(2025, time.January, 1),
+		PaidPeriods: []string{"2025"}}
+	if cents := a2.PaidCentsInRange(from, to); cents != 50000 {
+		t.Errorf("whole-period cents got %d want 50000", cents)
+	}
+}
+
 func TestElapsedPeriodKeys(t *testing.T) {
 	a := FlatRatePeriod{Period: BillingMonthly, StartDate: date(2025, time.January, 1)}
 	got := a.ElapsedPeriodKeys(date(2025, time.March, 15))

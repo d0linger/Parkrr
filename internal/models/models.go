@@ -191,10 +191,13 @@ type FlatRatePeriod struct {
 	Paid       bool       `json:"paid"`     // master flag: whole agreement paid
 	Note       string     `json:"note"`
 	VehicleIDs []int64    `json:"vehicle_ids"` // empty = all of the person's vehicles
-	// PaidPeriods lists the sub-period keys explicitly marked paid ("YYYY" for
-	// yearly, "YYYY-MM" for monthly). A sub-period is paid when Paid is set OR its
-	// key is in this list, so this only ever adds paid coverage on top of Paid.
+	// PaidPeriods lists the sub-period keys paid in full ("YYYY" for yearly,
+	// "YYYY-MM" for monthly) — the whole period is settled (prepaid). A sub-period
+	// is fully paid when Paid is set OR its key is in this list.
 	PaidPeriods []string `json:"paid_periods"`
+	// PaidFixed maps a sub-period key to a fixed partial amount ("Teilbetrag") in
+	// euros: only that amount is credited, the rest of the period stays open.
+	PaidFixed map[string]float64 `json:"paid_fixed,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -282,7 +285,13 @@ func (a *FlatRatePeriod) PaidCentsInRange(from, to time.Time) int64 {
 	var total int64
 	a.subPeriods(from, to, func(s, e, pStart, pEnd time.Time, key string) {
 		if a.Paid || paid[key] {
+			// Whole period paid (prepaid): credit the accrued portion, so a fully
+			// paid period always nets to zero.
 			total += fractionCents(cents, days(s, e), days(pStart, pEnd))
+		} else if fx, ok := a.PaidFixed[key]; ok {
+			// Fixed partial payment: credit the lump once (paid totals are computed
+			// over the full accrual range, so each fixed amount is counted once).
+			total += toCents(fx)
 		}
 	})
 	return total
