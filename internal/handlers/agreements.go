@@ -494,9 +494,12 @@ func (h *Handler) DeleteAgreement(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer func() { _ = tx.Rollback(r.Context()) }()
-		// Delete the explicitly covered vehicles first (their join rows cascade).
+		// Delete only vehicles exclusive to this agreement (their join rows
+		// cascade). A vehicle shared with another agreement — possible for
+		// non-overlapping windows — is left intact and merely unbound here.
 		if _, err := tx.Exec(r.Context(),
-			`DELETE FROM vehicles WHERE id IN (SELECT vehicle_id FROM flat_rate_period_vehicles WHERE period_id=$1)`, id); err != nil {
+			`DELETE FROM vehicles WHERE id IN (SELECT vehicle_id FROM flat_rate_period_vehicles WHERE period_id=$1)
+			   AND id NOT IN (SELECT vehicle_id FROM flat_rate_period_vehicles WHERE period_id <> $1)`, id); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not delete vehicles")
 			return
 		}
