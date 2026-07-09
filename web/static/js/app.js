@@ -415,10 +415,36 @@
 
     // ---------- shared render helpers ----------
     const emptyState = (icon, text) => el('div', { class: 'empty' }, el('span', { class: 'big' }, icon), text);
-    const stat = (value, label) => el('div', { class: 'stat' }, el('div', { class: 'value' }, esc(value)), el('div', { class: 'label' }, label));
+    // Line icons for stat tiles (inline SVG; CSP blocks external assets).
+    const STAT_ICONS = {
+        users: '<path d="M16 19a4 4 0 0 0-8 0"/><circle cx="12" cy="8" r="3.2"/>',
+        warehouse: '<path d="M3 9l9-5 9 5v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9z"/><path d="M9 20v-6h6v6"/>',
+        car: '<rect x="3" y="10" width="18" height="6" rx="2"/><circle cx="7.5" cy="18" r="1.6"/><circle cx="16.5" cy="18" r="1.6"/><path d="M6 10l1.5-3h9L18 10"/>',
+        tag: '<path d="M4 12V5h7l8 8-7 7-8-8z"/><circle cx="8.5" cy="8.5" r="1.2"/>',
+        trend: '<path d="M4 15l5-5 3 3 6-7"/><path d="M16 6h3v3"/>',
+        check: '<circle cx="12" cy="12" r="8.2"/><path d="M8.5 12.3l2.3 2.3 4.6-4.9"/>',
+        clock: '<circle cx="12" cy="12" r="8.2"/><path d="M12 7.5V12l3 2"/>',
+    };
+    function statIcon(key) {
+        const p = STAT_ICONS[key];
+        if (!p) return null;
+        const span = el('span', { class: 'stat-ic' });
+        span.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+        return span;
+    }
+    // A KPI tile: big tabular value + uppercase label, an optional muted icon, and
+    // an optional tone (teal/green/amber) that tints the value + a left accent bar.
+    const stat = (value, label, opts = {}) => {
+        const t = el('div', { class: 'stat' + (opts.tone ? ' tone-' + opts.tone : '') });
+        const ic = statIcon(opts.icon);
+        if (ic) t.append(ic);
+        t.append(el('div', { class: 'value' }, esc(value)), el('div', { class: 'label' }, label));
+        return t;
+    };
     const personName = (p) => (`${p.first_name || ''} ${p.last_name || ''}`).trim() || '(ohne Namen)';
     const catById = (id) => state.categories.find((c) => c.id === Number(id));
     const STATUS_LABEL = { reserved: 'reserviert', stored: 'eingelagert', collected: 'abgeholt', cancelled: 'storniert' };
+    const STATUS_COLOR = { stored: 'var(--success)', reserved: 'var(--warning)', collected: 'var(--text-muted)', cancelled: 'var(--danger)' };
     const MONTH_NAMES = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
     const ROLE_LABEL = { admin: 'Administrator', editor: 'Bearbeiter', reader: 'Nur-Lesen' };
     const statusBadge = (s) => el('span', { class: 'badge badge-' + s }, STATUS_LABEL[s] || s);
@@ -542,15 +568,15 @@
         page.innerHTML = '';
         page.append(el('div', { class: 'page-head' }, el('h2', {}, 'Übersicht')));
         page.append(el('div', { class: 'stat-grid' },
-            stat(ov.total_persons, 'Personen'),
-            stat(ov.active_vehicles, 'aktiv eingestellt'),
-            stat(ov.total_vehicles, 'Gefährte gesamt'),
-            stat(ov.total_categories, 'Tarife'),
+            stat(ov.total_persons, 'Personen', { icon: 'users' }),
+            stat(ov.active_vehicles, 'aktiv eingestellt', { icon: 'warehouse' }),
+            stat(ov.total_vehicles, 'Gefährte gesamt', { icon: 'car' }),
+            stat(ov.total_categories, 'Tarife', { icon: 'tag' }),
         ));
         page.append(el('div', { class: 'stat-grid' },
-            statWide(eur(ov.accrued_this_year), 'Umsatz ' + ov.year),
-            statWide(eur(ov.paid_total), 'Bezahlt (Slider)'),
-            statWide(eur(ov.outstanding_total), 'Offen gesamt'),
+            statWide(eur(ov.accrued_this_year), 'Umsatz ' + ov.year, { icon: 'trend', tone: 'teal' }),
+            statWide(eur(ov.paid_total), 'Bezahlt (Slider)', { icon: 'check', tone: 'green' }),
+            statWide(eur(ov.outstanding_total), 'Offen gesamt', { icon: 'clock', tone: 'amber' }),
         ));
 
         // Revenue chart
@@ -571,15 +597,18 @@
         const maxS = Math.max(1, ...Object.values(sc));
         const bars = el('div', { class: 'bars' });
         for (const st of ['stored', 'reserved', 'collected', 'cancelled']) {
-            bars.append(el('div', { class: 'bar-row' },
-                statusBadge(st),
-                el('div', { class: 'bar-track' }, el('div', { class: 'bar-fill', style: `width:${((sc[st] || 0) / maxS) * 100}%` })),
-                el('div', { class: 'bar-val' }, String(sc[st] || 0))));
+            const n = sc[st] || 0;
+            const fill = el('div', { class: 'bar-fill', style: `background:${STATUS_COLOR[st]}` });
+            bars.append(el('div', { class: 'status-row' },
+                el('div', { class: 'status-name' }, el('span', { class: 'status-dot', style: `background:${STATUS_COLOR[st]}` }), STATUS_LABEL[st]),
+                el('div', { class: 'bar-track' }, fill),
+                el('div', { class: 'bar-val' }, String(n))));
+            requestAnimationFrame(() => { fill.style.width = ((n / maxS) * 100) + '%'; });
         }
         scCard.append(bars);
         page.append(scCard);
     };
-    const statWide = (value, label) => el('div', { class: 'stat', style: 'grid-column: span 2;' }, el('div', { class: 'value' }, esc(value)), el('div', { class: 'label' }, label));
+    const statWide = (value, label, opts = {}) => { const t = stat(value, label, opts); t.style.gridColumn = 'span 2'; return t; };
 
     // ================= PERSONS =================
     routes.persons = async (page) => {
