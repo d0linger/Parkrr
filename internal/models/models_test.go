@@ -10,6 +10,8 @@ func date(y int, m time.Month, d int) time.Time {
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
 
+func tp(t time.Time) *time.Time { return &t }
+
 // exact compares to within a cent: with calendar-accurate proration a full
 // month/year bills exactly the configured amount.
 func exact(a, b float64) bool { return math.Abs(a-b) < 0.005 }

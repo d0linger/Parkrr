@@ -174,15 +174,14 @@ func createVehiclesTx(ctx context.Context, tx pgx.Tx, personID int64, period str
 		if nv.CategoryID <= 0 {
 			return nil, errNoCategory
 		}
-		var monthly, yearly float64
-		if err := tx.QueryRow(ctx,
-			`SELECT default_monthly_cost, default_yearly_cost FROM categories WHERE id=$1`, nv.CategoryID).
-			Scan(&monthly, &yearly); err != nil {
-			return nil, err // pgx.ErrNoRows -> mapped to a 400 by the caller
-		}
-		rate := monthly
-		if period == models.BillingYearly {
-			rate = yearly
+		// Same lookup CreateVehicle uses, run inside this transaction. Classify a
+		// missing Tarif here, at the source — the only place ErrNoRows means that.
+		rate, err := categoryDefaultRate(ctx, tx, nv.CategoryID, period)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, errNoCategory
+			}
+			return nil, err
 		}
 		label, plate := trim(nv.Label), trim(nv.LicensePlate)
 		var id int64
@@ -197,11 +196,16 @@ func createVehiclesTx(ctx context.Context, tx pgx.Tx, personID int64, period str
 	return out, nil
 }
 
-// agreementSaveError maps a saveAgreement failure to a client (message, status):
-// a missing Tarif for an inline device is a 400, everything else the fallback.
+// agreementSaveError maps a saveAgreement failure to a client (message, status).
+// errNoCategory is classified at its source (createVehiclesTx); a foreign-key
+// violation means the person or a covered vehicle vanished mid-save — telling
+// the user "tariff does not exist" for those would point at the wrong field.
 func agreementSaveError(err error, fallback string) (string, int) {
-	if errors.Is(err, errNoCategory) || errors.Is(err, pgx.ErrNoRows) || isForeignKeyViolation(err) {
+	if errors.Is(err, errNoCategory) {
 		return "tariff does not exist", http.StatusBadRequest
+	}
+	if isForeignKeyViolation(err) {
+		return "person or vehicle does not exist", http.StatusBadRequest
 	}
 	return fallback, http.StatusInternalServerError
 }
@@ -244,9 +248,9 @@ func (req *agreementRequest) parse() (models.FlatRatePeriod, string) {
 	return a, ""
 }
 
-// agreementsConflict reports whether a and b overlap in time AND share at least
-// one covered vehicle (empty VehicleIDs = all vehicles).
-func agreementsConflict(a, b models.FlatRatePeriod) bool {
+// agreementsOverlapInTime reports whether the two agreements' windows intersect
+// (end dates exclusive; nil = open-ended).
+func agreementsOverlapInTime(a, b models.FlatRatePeriod) bool {
 	aEnd, bEnd := farFuture, farFuture
 	if a.EndDate != nil {
 		aEnd = *a.EndDate
@@ -254,7 +258,13 @@ func agreementsConflict(a, b models.FlatRatePeriod) bool {
 	if b.EndDate != nil {
 		bEnd = *b.EndDate
 	}
-	if !a.StartDate.Before(bEnd) || !b.StartDate.Before(aEnd) {
+	return a.StartDate.Before(bEnd) && b.StartDate.Before(aEnd)
+}
+
+// agreementsConflict reports whether a and b overlap in time AND share at least
+// one covered vehicle (empty VehicleIDs = all vehicles).
+func agreementsConflict(a, b models.FlatRatePeriod) bool {
+	if !agreementsOverlapInTime(a, b) {
 		return false // disjoint in time
 	}
 	if len(a.VehicleIDs) == 0 || len(b.VehicleIDs) == 0 {
@@ -313,10 +323,23 @@ func (h *Handler) validateAgreement(ctx context.Context, personID, excludeID int
 	if !ok {
 		return "all covered vehicles must belong to this person", http.StatusBadRequest
 	}
-	// A new-devices-only agreement covers just those brand-new vehicles, which
-	// cannot overlap any existing agreement, so skip the overlap check (an empty
-	// VehicleIDs would otherwise be read as "covers all vehicles").
+	// A new-devices-only agreement covers just those brand-new vehicles, so it
+	// cannot clash with agreements listing specific existing vehicles — but a
+	// person-wide agreement (empty VehicleIDs) covers the new vehicles too, so a
+	// time overlap with one of those is still a conflict (double billing).
 	if len(cand.VehicleIDs) == 0 && hasNew {
+		existing, err := h.loadAgreements(ctx, personID, time.Now())
+		if err != nil {
+			return "query failed", http.StatusInternalServerError
+		}
+		for i := range existing {
+			if existing[i].ID == excludeID || len(existing[i].VehicleIDs) > 0 {
+				continue
+			}
+			if agreementsOverlapInTime(cand, existing[i]) {
+				return "overlaps an existing agreement for one or more of the same vehicles", http.StatusConflict
+			}
+		}
 		return "", 0
 	}
 	msg, err := h.checkOverlap(ctx, personID, excludeID, cand, time.Now())
@@ -361,7 +384,7 @@ func (h *Handler) CreateAgreement(w http.ResponseWriter, r *http.Request) {
 	h.audit(r, "create", "flatrate", pid, "Pauschale angelegt für "+h.personLabel(r, pid))
 	// Archive bound vehicles right away if the agreement is now finished and
 	// settled, rather than waiting for the periodic sweep.
-	_, _ = h.ArchiveSettledExpiredVehicles(r.Context())
+	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), pid)
 	h.writeAgreements(w, r, pid)
 }
 
@@ -398,7 +421,7 @@ func (h *Handler) UpdateAgreement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r, "update", "flatrate", id, "Pauschale geändert für "+h.personLabel(r, pid))
-	_, _ = h.ArchiveSettledExpiredVehicles(r.Context())
+	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), pid)
 	h.writeAgreements(w, r, pid)
 }
 
@@ -445,10 +468,27 @@ func (h *Handler) saveAgreement(r *http.Request, id, personID int64, a models.Fl
 			return err
 		}
 	} else {
+		// Changing the billing period (monthly<->yearly) invalidates existing
+		// per-period payment keys ("YYYY-MM" vs "YYYY"): they would linger but
+		// never be counted by PaidCentsInRange. Clear them so the payment state
+		// is visibly reset instead of silently uncounted.
+		var oldPeriod string
+		if err := tx.QueryRow(ctx,
+			`SELECT period FROM flat_rate_periods WHERE id=$1 FOR UPDATE`, id).Scan(&oldPeriod); err != nil {
+			return err
+		}
+		if oldPeriod != a.Period {
+			if _, err := tx.Exec(ctx, `DELETE FROM flat_rate_period_payments WHERE period_id=$1`, id); err != nil {
+				return err
+			}
+		}
+		// Deliberately does NOT touch paid: the master flag is managed only via
+		// the paid endpoints, and the edit form doesn't send it — writing it here
+		// would silently reset a paid agreement to offen on every edit.
 		if _, err := tx.Exec(ctx,
 			`UPDATE flat_rate_periods SET amount=$1, period=$2, start_date=$3, end_date=$4,
-			        paid=$5, note=$6, updated_at=now() WHERE id=$7`,
-			a.Amount, a.Period, a.StartDate, a.EndDate, a.Paid, a.Note, id); err != nil {
+			        note=$5, updated_at=now() WHERE id=$6`,
+			a.Amount, a.Period, a.StartDate, a.EndDate, a.Note, id); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM flat_rate_period_vehicles WHERE period_id=$1`, id); err != nil {
@@ -530,6 +570,10 @@ func (h *Handler) DeleteAgreement(w http.ResponseWriter, r *http.Request) {
 		msg = "Pauschale inkl. Gefährte gelöscht für " + h.personLabel(r, pid)
 	}
 	h.audit(r, "delete", "flatrate", id, msg)
+	// Coverage changed: kept vehicles may now be archive-eligible (or, no longer
+	// covered by a finished agreement, due to wake) — reconcile immediately like
+	// every other agreement mutation.
+	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), pid)
 	h.writeAgreements(w, r, pid)
 }
 
@@ -579,7 +623,7 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit(r, "update", "flatrate", id, "Pauschale "+h.personLabel(r, pid)+" "+state)
 	// Settling the last open period may finish the agreement -> archive vehicles.
-	_, _ = h.ArchiveSettledExpiredVehicles(r.Context())
+	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), pid)
 	h.writeAgreements(w, r, pid)
 }
 
@@ -637,6 +681,23 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// The key must be one of the agreement's elapsed sub-periods — checked before
+	// EITHER mutation path. On mark, a bad key would store a payment row that
+	// PaidCentsInRange never counts (money recorded, balance unchanged); on
+	// unmark, a bad key on a master-paid agreement would still materialize the
+	// elapsed rows and clear the master flag — state changed by garbage input.
+	valid := false
+	for _, k := range a.ElapsedPeriodKeys(time.Now()) {
+		if k == key {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		writeError(w, http.StatusBadRequest, "period_key does not match an elapsed period of this agreement")
+		return
+	}
+
 	if req.Paid {
 		// amount NULL = whole period (prepaid); a value = fixed partial. Upsert so
 		// re-marking switches between the two.
@@ -648,13 +709,12 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 		}
 	} else {
 		if a.Paid {
-			for _, k := range a.ElapsedPeriodKeys(time.Now()) {
-				if _, err := tx.Exec(r.Context(),
-					`INSERT INTO flat_rate_period_payments (period_id, period_key) VALUES ($1,$2)
-					 ON CONFLICT DO NOTHING`, id, k); err != nil {
-					writeError(w, http.StatusInternalServerError, "could not update payment")
-					return
-				}
+			if _, err := tx.Exec(r.Context(),
+				`INSERT INTO flat_rate_period_payments (period_id, period_key)
+				 SELECT $1, unnest($2::text[]) ON CONFLICT DO NOTHING`,
+				id, a.ElapsedPeriodKeys(time.Now())); err != nil {
+				writeError(w, http.StatusInternalServerError, "could not update payment")
+				return
 			}
 			if _, err := tx.Exec(r.Context(),
 				`UPDATE flat_rate_periods SET paid=false, updated_at=now() WHERE id=$1`, id); err != nil {
@@ -678,7 +738,7 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 	}
 	h.audit(r, "update", "flatrate", id, "Pauschale "+h.personLabel(r, a.PersonID)+" "+key+": "+state)
 	// Settling the last open period may finish the agreement -> archive vehicles.
-	_, _ = h.ArchiveSettledExpiredVehicles(r.Context())
+	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), a.PersonID)
 	h.writeAgreements(w, r, a.PersonID)
 }
 
@@ -691,15 +751,20 @@ func (h *Handler) writeAgreements(w http.ResponseWriter, r *http.Request, person
 	writeJSON(w, http.StatusOK, list)
 }
 
-// loadAllAgreements returns every agreement, grouped by person id.
-func (h *Handler) loadAllAgreements(ctx context.Context) (map[int64][]models.FlatRatePeriod, error) {
+// loadAllAgreements returns agreements grouped by person id — every person's
+// when personID is 0, or just that person's. The join tables are read scoped to
+// the loaded agreement ids, so a person-scoped call never scans other people's
+// join or payment rows.
+func (h *Handler) loadAllAgreements(ctx context.Context, personID int64) (map[int64][]models.FlatRatePeriod, error) {
 	rows, err := h.Pool.Query(ctx,
-		`SELECT id, person_id, amount, period, start_date, end_date, paid FROM flat_rate_periods`)
+		`SELECT id, person_id, amount, period, start_date, end_date, paid FROM flat_rate_periods
+		 WHERE $1 = 0 OR person_id = $1`, personID)
 	if err != nil {
 		return nil, err
 	}
 	out := map[int64][]models.FlatRatePeriod{}
 	byID := map[int64]*models.FlatRatePeriod{}
+	ids := []int64{}
 	for rows.Next() {
 		var a models.FlatRatePeriod
 		if err := rows.Scan(&a.ID, &a.PersonID, &a.Amount, &a.Period, &a.StartDate, &a.EndDate, &a.Paid); err != nil {
@@ -709,17 +774,22 @@ func (h *Handler) loadAllAgreements(ctx context.Context) (map[int64][]models.Fla
 		a.VehicleIDs = []int64{}
 		a.PaidPeriods = []string{}
 		out[a.PersonID] = append(out[a.PersonID], a)
+		ids = append(ids, a.ID)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if len(ids) == 0 {
+		return out, nil
 	}
 	for pid := range out {
 		for i := range out[pid] {
 			byID[out[pid][i].ID] = &out[pid][i]
 		}
 	}
-	vrows, err := h.Pool.Query(ctx, `SELECT period_id, vehicle_id FROM flat_rate_period_vehicles`)
+	vrows, err := h.Pool.Query(ctx,
+		`SELECT period_id, vehicle_id FROM flat_rate_period_vehicles WHERE period_id = ANY($1)`, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -737,7 +807,8 @@ func (h *Handler) loadAllAgreements(ctx context.Context) (map[int64][]models.Fla
 	if err := vrows.Err(); err != nil {
 		return nil, err
 	}
-	prows, err := h.Pool.Query(ctx, `SELECT period_id, period_key, amount FROM flat_rate_period_payments`)
+	prows, err := h.Pool.Query(ctx,
+		`SELECT period_id, period_key, amount FROM flat_rate_period_payments WHERE period_id = ANY($1)`, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -799,14 +870,19 @@ func coveringAgreements(agreements []models.FlatRatePeriod, vehicleID int64, veh
 	return out
 }
 
-// ArchiveSettledExpiredVehicles archives vehicles whose every covering Pauschale
-// has ended AND is fully paid, so a finished-and-settled agreement tidies its
-// vehicles out of the active lists. A vehicle bound to any still-running or
-// not-yet-settled agreement stays active; standalone vehicles are untouched.
-// Returns the number archived.
-func (h *Handler) ArchiveSettledExpiredVehicles(ctx context.Context) (int64, error) {
+// ArchiveSettledExpiredVehicles reconciles bound vehicles with their Pauschalen:
+// a vehicle whose every covering agreement has ended AND is fully paid is
+// archived (a finished-and-settled agreement tidies its vehicles away), and —
+// symmetrically — an archived vehicle bound to an agreement that is open again
+// (extended, or a payment taken back) is reactivated, unless it is physically
+// closed itself (cancelled, or collected+paid). That makes the sweep reversible:
+// an accidental "bezahlt" tap that archived the vehicles is undone by tapping
+// back to "offen". personID > 0 scopes the sweep to that person (the common
+// case after an agreement mutation); 0 sweeps everyone (background job).
+// Returns the number of vehicles archived.
+func (h *Handler) ArchiveSettledExpiredVehicles(ctx context.Context, personID int64) (int64, error) {
 	now := time.Now()
-	agByPerson, err := h.loadAllAgreements(ctx)
+	agByPerson, err := h.loadAllAgreements(ctx, personID)
 	if err != nil {
 		return 0, err
 	}
@@ -816,20 +892,22 @@ func (h *Handler) ArchiveSettledExpiredVehicles(ctx context.Context) (int64, err
 			done[ags[i].ID] = ags[i].Ended(now) && ags[i].SettledAsOf(now)
 		}
 	}
-	// Candidate vehicles: active vehicles of any person that has an agreement
-	// (covers explicit joins and person-wide agreements alike).
+	// Candidate vehicles: vehicles of any person that has an agreement (covers
+	// explicit joins and person-wide agreements alike).
 	rows, err := h.Pool.Query(ctx,
-		`SELECT v.id, v.person_id, v.start_date FROM vehicles v
-		 WHERE v.archived = false
-		   AND EXISTS (SELECT 1 FROM flat_rate_periods p WHERE p.person_id = v.person_id)`)
+		`SELECT v.id, v.person_id, v.start_date, v.archived, v.status, v.paid FROM vehicles v
+		 WHERE EXISTS (SELECT 1 FROM flat_rate_periods p WHERE p.person_id = v.person_id)
+		   AND ($1 = 0 OR v.person_id = $1)`, personID)
 	if err != nil {
 		return 0, err
 	}
-	var toArchive []int64
+	var toArchive, toWake []int64
 	for rows.Next() {
 		var vid, pid int64
 		var vstart time.Time
-		if err := rows.Scan(&vid, &pid, &vstart); err != nil {
+		var archived, paid bool
+		var status string
+		if err := rows.Scan(&vid, &pid, &vstart, &archived, &status, &paid); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -844,13 +922,22 @@ func (h *Handler) ArchiveSettledExpiredVehicles(ctx context.Context) (int64, err
 				break
 			}
 		}
-		if allDone {
+		closed := status == models.StatusCancelled || (status == models.StatusCollected && paid)
+		if allDone && !archived {
 			toArchive = append(toArchive, vid)
+		} else if !allDone && archived && !closed {
+			toWake = append(toWake, vid)
 		}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return 0, err
+	}
+	if len(toWake) > 0 {
+		if _, err := h.Pool.Exec(ctx,
+			`UPDATE vehicles SET archived=false, updated_at=now() WHERE id = ANY($1) AND archived=true`, toWake); err != nil {
+			return 0, err
+		}
 	}
 	if len(toArchive) == 0 {
 		return 0, nil
@@ -863,9 +950,11 @@ func (h *Handler) ArchiveSettledExpiredVehicles(ctx context.Context) (int64, err
 	return ct.RowsAffected(), nil
 }
 
-// personRent computes rent accrued and paid over [from, to) for a person from
-// their flat-rate agreements plus per-vehicle costs for time NOT covered by any
-// agreement. Covered vehicles contribute only their uncovered portion.
+// personRent computes rent accrued and paid over [from, to) for a person:
+// flat-rate agreements bill their amount, standalone vehicles bill per-vehicle,
+// and a vehicle bound to any Pauschale bills nothing itself (ownership model —
+// the agreement's flat amount is the only charge, regardless of how long each
+// bound vehicle is stored).
 func personRent(agreements []models.FlatRatePeriod, vehicles []models.Vehicle, cats map[int64]models.Category, from, to time.Time) (accrued, paid float64) {
 	for i := range agreements {
 		accrued += agreements[i].CostInRange(from, to)

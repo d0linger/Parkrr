@@ -144,39 +144,6 @@ type Person struct {
 	HasFlatRate bool `json:"has_flat_rate"`
 }
 
-// FlatRateActive reports whether this person is billed a flat rate.
-func (p *Person) FlatRateActive() bool {
-	return p.FlatRate != nil && *p.FlatRate > 0 && p.FlatRateStart != nil
-}
-
-// FlatRateInRange returns the flat-rate cost accrued within [from, to),
-// constrained to the flat-rate start/end window.
-func (p *Person) FlatRateInRange(from, to time.Time) float64 {
-	if !p.FlatRateActive() {
-		return 0
-	}
-	start := maxTime(*p.FlatRateStart, from)
-	end := to
-	if p.FlatRateEnd != nil && p.FlatRateEnd.Before(end) {
-		end = *p.FlatRateEnd
-	}
-	return ProrateAmount(*p.FlatRate, p.FlatRatePeriod, start, end)
-}
-
-// FlatRateAccruedAsOf returns the flat-rate cost accrued until asOf.
-func (p *Person) FlatRateAccruedAsOf(asOf time.Time) float64 {
-	if !p.FlatRateActive() {
-		return 0
-	}
-	return p.FlatRateInRange(*p.FlatRateStart, asOf.AddDate(0, 0, 1))
-}
-
-// ProrateAmount prorates a flat amount over [from, to) for the billing period,
-// using calendar-accurate proration (see prorate).
-func ProrateAmount(amount float64, period string, from, to time.Time) float64 {
-	return prorate(amount, period, from, to)
-}
-
 // FlatRatePeriod is a dated flat-rate agreement ("Pauschale-Eintrag"): one
 // agreed amount (monthly or yearly) that covers some or all of a person's
 // vehicles for a window, replacing per-vehicle billing for those vehicles while
@@ -423,12 +390,11 @@ type Vehicle struct {
 	IsActive      bool    `json:"is_active"`
 	PhotoCount    int     `json:"photo_count"`
 	// FlatRateCovered is true when at least one flat-rate agreement covers this
-	// vehicle (past or present). FlatRateActive is true only when such an
-	// agreement's window includes today — i.e. the vehicle is billed via the
-	// Pauschale right now (an expired Pauschale leaves Covered true but Active
-	// false, and per-vehicle billing resumes). UncoveredCost is the accrued cost
-	// (as of now) NOT covered by any agreement; when it is ~0 on a covered
-	// vehicle, nothing is owed per-vehicle and the paid marker is redundant.
+	// vehicle (bound = billed entirely via the Pauschale, never per-vehicle).
+	// FlatRateActive is true only when such an agreement's window includes today.
+	// UncoveredCost is what the vehicle owes individually: 0 for bound vehicles
+	// (ownership model — the Pauschale is the only charge), so the per-vehicle
+	// paid marker is redundant for them.
 	FlatRateCovered bool    `json:"flat_rate_covered"`
 	FlatRateActive  bool    `json:"flat_rate_active"`
 	UncoveredCost   float64 `json:"uncovered_cost"`

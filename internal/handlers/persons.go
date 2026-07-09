@@ -7,21 +7,28 @@ import (
 	"github.com/preining/parkrr/internal/models"
 )
 
-// personColumns is the shared column list for reading persons.
+// personColumns is the shared column list for reading persons. has_flat_rate is
+// derived live from the agreement records — the legacy persons.flat_rate_*
+// columns are frozen (no writer remains) and must not drive the badge.
 const personColumns = `id, first_name, last_name, email, phone, address, notes,
 	flat_rate, flat_rate_period, flat_rate_start, flat_rate_end, flat_rate_paid,
-	created_at, updated_at`
+	created_at, updated_at,
+	EXISTS(SELECT 1 FROM flat_rate_periods fp WHERE fp.person_id = persons.id)`
 
 func scanPerson(row rowScanner) (models.Person, error) {
 	var p models.Person
 	err := row.Scan(&p.ID, &p.FirstName, &p.LastName, &p.Email, &p.Phone, &p.Address,
 		&p.Notes, &p.FlatRate, &p.FlatRatePeriod, &p.FlatRateStart, &p.FlatRateEnd,
-		&p.FlatRatePaid, &p.CreatedAt, &p.UpdatedAt)
-	if err != nil {
-		return p, err
-	}
-	p.HasFlatRate = p.FlatRateActive()
-	return p, nil
+		&p.FlatRatePaid, &p.CreatedAt, &p.UpdatedAt, &p.HasFlatRate)
+	return p, err
+}
+
+// personLabel returns a person's display name for audit messages ("" on error).
+func (h *Handler) personLabel(r *http.Request, id int64) string {
+	var name string
+	_ = h.Pool.QueryRow(r.Context(),
+		`SELECT trim(first_name || ' ' || last_name) FROM persons WHERE id=$1`, id).Scan(&name)
+	return name
 }
 
 // getPerson loads a single person by id.
