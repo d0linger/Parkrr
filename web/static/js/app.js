@@ -581,14 +581,15 @@
             page.append(yc);
         }
 
-        // vehicles — active first; archived (closed) tucked into a collapsible
-        // section so settled entries don't clutter the list.
-        const activeVeh = vehicles.filter((v) => !v.archived);
-        const archivedVeh = vehicles.filter((v) => v.archived);
-        const vh = el('div', { class: 'page-head' }, el('h3', {}, 'Gefährte (' + activeVeh.length + ')'));
+        // Standalone vehicles only — vehicles bound to a Pauschale are shown nested
+        // under their Pauschale above, not here. Active first; archived collapsed.
+        const standalone = vehicles.filter((v) => !v.flat_rate_covered);
+        const activeVeh = standalone.filter((v) => !v.archived);
+        const archivedVeh = standalone.filter((v) => v.archived);
+        const vh = el('div', { class: 'page-head' }, el('h3', {}, 'Einzelne Gefährte (' + activeVeh.length + ')'));
         if (canManage()) vh.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => vehicleForm(null, id) }, '+ Gefährt'));
         page.append(vh);
-        if (!activeVeh.length) page.append(el('p', { class: 'muted' }, 'Keine aktiven Gefährte.'));
+        if (!activeVeh.length) page.append(el('p', { class: 'muted' }, 'Keine einzeln abgerechneten Gefährte.'));
         else activeVeh.forEach((v) => page.append(vehicleCard(v, { linkable: true })));
         if (archivedVeh.length) {
             const det = el('details', { class: 'archive-section' }, el('summary', {}, 'Archiv (' + archivedVeh.length + ')'));
@@ -751,6 +752,16 @@
             const partial = !a.paid && a.paid_periods && a.paid_periods.length;
             row.append(el('span', { class: 'badge ' + (a.paid ? 'badge-active' : partial ? 'badge-cat' : 'badge-ended') },
                 a.paid ? 'bezahlt' : partial ? 'teilweise bezahlt' : 'offen'));
+        }
+        // Subordinate vehicles nested under the Pauschale (they no longer appear in
+        // the separate Gefährte list). Empty vehicle_ids = covers all vehicles.
+        const sub = (a.vehicle_ids && a.vehicle_ids.length)
+            ? vehicles.filter((v) => a.vehicle_ids.includes(v.id))
+            : vehicles;
+        if (sub.length) {
+            const det = el('details', { class: 'archive-section', open: true }, el('summary', {}, 'Gefährte (' + sub.length + ')'));
+            sub.forEach((v) => det.append(vehicleCard(v, { linkable: true })));
+            row.append(det);
         }
         return row;
     }
