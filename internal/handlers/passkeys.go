@@ -110,6 +110,12 @@ func (h *AuthHandler) PasskeyRegisterFinish(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	u, _ := auth.UserFrom(r.Context())
+	// Throttle: cap repeated failed attestation verifications (CPU-heavy) per
+	// user, matching the TOTP-enable ceremony.
+	key, ok := h.checkRateLimit(w, r, u.Username)
+	if !ok {
+		return
+	}
 	cer, err := h.loadCeremony(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "passkey registration expired, please retry")
@@ -117,10 +123,12 @@ func (h *AuthHandler) PasskeyRegisterFinish(w http.ResponseWriter, r *http.Reque
 	}
 	h.clearCeremony(w)
 	if err := h.WebAuthn.FinishRegistration(r.Context(), u, cer.Session, r, cer.Name); err != nil {
+		h.Limiter.RecordFailure(key)
 		slog.Warn("passkey registration failed", "user", u.Username, "err", err)
 		writeError(w, http.StatusBadRequest, "could not verify passkey")
 		return
 	}
+	h.Limiter.Reset(key)
 	h.audit(r, "create", "passkey", u.ID, u.Username+" registered a passkey")
 	writeJSON(w, http.StatusCreated, map[string]string{"status": "registered"})
 }
@@ -231,7 +239,10 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 	}
 	u, err := h.userByID(r.Context(), uid)
 	if err != nil {
-		h.Limiter.RecordFailure(key)
+		// The assertion already verified cryptographically; a failure here is a
+		// DB/stale-credential issue, not a brute-force attempt, so it must not
+		// spend the IP's throttle budget — just log it.
+		slog.Warn("passkey login: user lookup failed after verification", "user_id", uid, "err", err)
 		writeError(w, http.StatusUnauthorized, "passkey login failed")
 		return
 	}
