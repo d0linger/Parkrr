@@ -1021,9 +1021,37 @@
         return seg;
     }
     async function delAgreement(a) {
-        if (!await confirmDialog('Pauschale löschen?', 'Der Pauschaleintrag wird entfernt.', 'Löschen')) return;
-        try { await api.del('/agreements/' + a.id); toast('Pauschale gelöscht', 'success'); render(); }
-        catch (e) { toast(e.message, 'error'); }
+        const count = (a.vehicle_ids || []).length;
+        let deleteVehicles = false;
+        if (count > 0) {
+            const choice = await agreementDeleteChoice(count);
+            if (!choice) return; // cancelled
+            deleteVehicles = choice === 'delete';
+        } else if (!await confirmDialog('Pauschale löschen?', 'Der Pauschaleintrag wird entfernt.', 'Löschen')) {
+            return;
+        }
+        try {
+            await api.del('/agreements/' + a.id + (deleteVehicles ? '?delete_vehicles=true' : ''));
+            toast(deleteVehicles ? 'Pauschale und Gefährte gelöscht' : 'Pauschale gelöscht', 'success'); render();
+        } catch (e) { toast(e.message, 'error'); }
+    }
+    // Ask what to do with a Pauschale's bound vehicles on delete: keep them (they
+    // become individually billed) or delete them too. Resolves 'keep' | 'delete' | null.
+    function agreementDeleteChoice(count) {
+        const g = (one, many) => (count === 1 ? one : many);
+        return new Promise((resolve) => {
+            let done = false;
+            const finish = (v) => { if (!done) { done = true; resolve(v); } };
+            const dlg = contentModal('Pauschale löschen?', (body, close) => {
+                body.append(el('p', { class: 'muted' }, `Der Pauschaleintrag wird entfernt. ${count} ${g('Gefährt ist', 'Gefährte sind')} zugeordnet.`));
+                const keep = el('button', { class: 'btn btn-ghost btn-block', style: 'margin-top:.7rem' }, 'Nur Pauschale löschen · Gefährte behalten');
+                const del = el('button', { class: 'btn btn-danger btn-block', style: 'margin-top:.5rem' }, `Pauschale und ${count} ${g('Gefährt', 'Gefährte')} löschen`);
+                keep.addEventListener('click', () => { finish('keep'); close(); });
+                del.addEventListener('click', () => { finish('delete'); close(); });
+                body.append(keep, del);
+            }, { closeLabel: 'Abbrechen' });
+            dlg.addEventListener('close', () => finish(null), { once: true });
+        });
     }
     // Unified Pauschale dialog: edit the agreement terms AND manage its
     // subordinate vehicles (add new from a Tarif, bind an existing one, edit
