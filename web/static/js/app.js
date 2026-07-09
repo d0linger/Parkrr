@@ -762,14 +762,19 @@
         wrap.append(el('div', { class: 'controls-row' },
             el('span', { class: 'muted', style: 'font-size:.85rem' }, 'Alle Zeiträume'), agreementPaidSlider(a)));
         const periods = agreementPeriods(a);
+        // Key of the period that is currently running (still accruing), so it can
+        // be marked "läuft" — here "bezahlt" means the whole period is prepaid.
+        const curKey = a.period === 'yearly' ? today().slice(0, 4) : today().slice(0, 7);
         if (periods.length) {
             const det = el('details', { class: 'period-payments' }, el('summary', {}, 'Zahlung je Zeitraum (' + periods.length + ')'));
             const box = el('div', { class: 'period-list' });
             for (const p of periods) {
                 const amt = a.period_costs ? a.period_costs[p.key] : null;
+                const running = p.key === curKey;
                 box.append(el('div', { class: 'period-row' },
                     el('span', { class: 'period-label' }, p.label,
-                        amt != null ? el('span', { class: 'period-amt' }, ' · ' + eur(amt)) : null),
+                        amt != null ? el('span', { class: 'period-amt' }, ' · ' + eur(amt)) : null,
+                        running ? el('span', { class: 'period-amt', title: '„bezahlt" markiert das ganze Jahr als im Voraus bezahlt' }, ' · läuft') : null),
                     agreementPeriodSlider(a, p.key)));
             }
             det.append(box);
@@ -827,9 +832,48 @@
         try { await api.del('/agreements/' + a.id); toast('Pauschale gelöscht', 'success'); render(); }
         catch (e) { toast(e.message, 'error'); }
     }
+    // Unified Pauschale dialog: edit the agreement terms AND manage its
+    // subordinate vehicles (add new from a Tarif, bind an existing one, edit
+    // type/label/plate, remove) in one place. Bound vehicles have no own price —
+    // they are billed via the Pauschale — so a row only needs Tarif/Bezeichnung/
+    // Kennzeichen. An empty list means the Pauschale covers all of the person's
+    // vehicles.
     async function agreementForm(personId, vehicles, existing) {
-        const selected = new Set((existing && existing.vehicle_ids) || []);
-        const newRows = []; // inline-created devices: { cat, label, plate } inputs
+        const rows = []; // { id|null, cat, label, plate, node }
+        const boundInitially = (existing && existing.vehicle_ids) || [];
+        let listBox, emptyNote, existSel;
+
+        // Vehicles that can still be bound: active, not archived, not already a row
+        // here, and not already covered by another Pauschale.
+        const bindable = () => vehicles.filter((v) => !v.archived
+            && (v.status === 'stored' || v.status === 'reserved')
+            && !v.flat_rate_covered
+            && !rows.some((r) => r.id === v.id));
+
+        const refreshControls = () => {
+            if (emptyNote) emptyNote.hidden = rows.length > 0;
+            if (!existSel) return;
+            const opts = bindable();
+            existSel.innerHTML = '';
+            existSel.append(el('option', { value: '' }, opts.length ? '+ vorhandenes Gefährt …' : 'keine weiteren Gefährte'));
+            for (const v of opts) existSel.append(el('option', { value: v.id }, v.label || v.license_plate || v.category_name));
+            existSel.disabled = !opts.length;
+        };
+
+        const addRow = (v) => {
+            const cat = el('select', {}, ...state.categories.map((c) => el('option', { value: c.id }, c.name)));
+            if (v && v.category_id) for (const o of cat.options) if (Number(o.value) === v.category_id) o.selected = true;
+            const label = el('input', { type: 'text', placeholder: 'Bezeichnung', value: (v && v.label) || '' });
+            const plate = el('input', { type: 'text', placeholder: 'Kennzeichen', value: (v && v.license_plate) || '' });
+            const entry = { id: v ? v.id : null, cat, label, plate };
+            entry.node = el('div', { class: 'new-vehicle-row' }, cat, label, plate,
+                el('button', { type: 'button', class: 'btn btn-ghost btn-sm', title: 'Entfernen',
+                    onclick: () => { entry.node.remove(); const i = rows.indexOf(entry); if (i >= 0) rows.splice(i, 1); refreshControls(); } }, '✕'));
+            rows.push(entry);
+            listBox.append(entry.node);
+            refreshControls();
+        };
+
         const data = await formModal({
             title: existing ? 'Pauschale bearbeiten' : 'Neue Pauschale',
             submitLabel: 'Speichern',
@@ -837,62 +881,49 @@
                 { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', min: 0, required: true, value: existing?.amount ?? '' },
                 { name: 'period', label: 'Zeitraum', type: 'select', value: existing?.period || 'monthly', options: [{ value: 'monthly', label: 'pro Monat' }, { value: 'yearly', label: 'pro Jahr' }] },
                 { name: 'start_date', label: 'Gültig ab', type: 'date', required: true, value: existing?.start_date ? existing.start_date.slice(0, 10) : today() },
-                { name: 'end_date', label: 'Gültig bis (optional)', type: 'date', value: existing?.end_date ? existing.end_date.slice(0, 10) : '', help: 'Leer = laufend.' },
+                { name: 'end_date', label: 'Gültig bis (optional)', type: 'date', value: existing?.end_date ? existing.end_date.slice(0, 10) : '', help: 'Leer = laufend. Läuft die Pauschale aus, werden die Gefährte automatisch archiviert.' },
                 { name: 'note', label: 'Notiz (optional)', value: existing?.note },
             ],
             onRender: (body) => {
-                // Existing vehicles: offer currently-stored/reserved ones, plus any
-                // already covered by this agreement (so editing never drops them).
-                const active = (v) => v.status === 'stored' || v.status === 'reserved';
-                const list = vehicles
-                    .filter((v) => active(v) || selected.has(v.id))
-                    .sort((a, b) => ((active(b) ? 1 : 0) - (active(a) ? 1 : 0)) || (new Date(b.start_date) - new Date(a.start_date)));
-                if (list.length) {
-                    body.append(el('label', {}, 'Bestehende Gefährte (keine Auswahl = alle)'));
-                    const box = el('div', { class: 'agreement-vehicles' });
-                    for (const v of list) {
-                        const cb = el('input', { type: 'checkbox' });
-                        if (selected.has(v.id)) cb.checked = true;
-                        cb.addEventListener('change', () => { cb.checked ? selected.add(v.id) : selected.delete(v.id); });
-                        const sub = [v.license_plate, v.category_name,
-                            'seit ' + fmtDate(v.start_date) + (v.end_date ? ' – ' + fmtDate(v.end_date) : ''),
-                            STATUS_LABEL[v.status] || v.status].filter(Boolean).join(' · ');
-                        box.append(el('label', { class: 'switch agreement-vehicle' }, cb, el('span', { class: 'track' }),
-                            el('span', {}, el('div', {}, esc(v.label || v.license_plate || v.category_name)), el('div', { class: 't-time' }, esc(sub)))));
-                    }
-                    body.append(box);
-                }
-                // Inline device creation: add new devices straight from a Tarif.
-                if (!state.categories.length) return;
-                body.append(el('label', {}, 'Neue Gefährte aus Tarif anlegen'));
-                const newBox = el('div', { class: 'new-vehicles' });
-                body.append(newBox);
-                const addRow = () => {
-                    const cat = el('select', {}, ...state.categories.map((c) => el('option', { value: c.id }, c.name)));
-                    const label = el('input', { type: 'text', placeholder: 'Bezeichnung' });
-                    const plate = el('input', { type: 'text', placeholder: 'Kennzeichen' });
-                    const entry = { cat, label, plate };
-                    const row = el('div', { class: 'new-vehicle-row' }, cat, label, plate,
-                        el('button', { type: 'button', class: 'btn btn-ghost btn-sm', title: 'Entfernen', onclick: () => { row.remove(); const i = newRows.indexOf(entry); if (i >= 0) newRows.splice(i, 1); } }, '✕'));
-                    newRows.push(entry);
-                    newBox.append(row);
-                };
-                body.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: addRow }, '+ Gefährt aus Tarif'));
-                body.append(el('div', { class: 'card-meta' }, 'Neue Gefährte werden angelegt (Preis aus dem Tarif) und von dieser Pauschale abgedeckt.'));
+                if (!state.categories.length) { body.append(el('div', { class: 'card-meta' }, 'Zuerst einen Tarif anlegen.')); return; }
+                body.append(el('label', {}, 'Gefährte dieser Pauschale'));
+                listBox = el('div', { class: 'new-vehicles' });
+                body.append(listBox);
+                emptyNote = el('div', { class: 'card-meta' }, 'Keine bestimmten Gefährte – die Pauschale deckt dann alle Gefährte der Person.');
+                body.append(emptyNote);
+                const controls = el('div', { class: 'controls-row' });
+                controls.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => addRow(null) }, '+ Neues Gefährt'));
+                existSel = el('select', {});
+                existSel.addEventListener('change', () => { const id = Number(existSel.value); if (id) { const v = vehicles.find((x) => x.id === id); if (v) addRow(v); } });
+                controls.append(existSel);
+                body.append(controls);
+                body.append(el('div', { class: 'card-meta' }, 'Neue Gefährte werden aus dem Tarif angelegt; alle gelisteten Gefährte werden über diese Pauschale abgerechnet.'));
+                // Prefill the already-bound vehicles as editable rows.
+                for (const vid of boundInitially) addRow(vehicles.find((x) => x.id === vid) || { id: vid, category_id: state.categories[0].id });
+                refreshControls();
             },
         });
         if (!data) return;
-        const newVehicles = newRows
-            .map((e) => ({ category_id: Number(e.cat.value), label: e.label.value.trim(), license_plate: e.plate.value.trim() }))
-            .filter((n) => n.category_id > 0);
+        const vehicleIDs = [];
+        const newVehicles = [];
+        const editVehicles = [];
+        for (const r of rows) {
+            const catId = Number(r.cat.value);
+            if (!catId) continue;
+            const label = r.label.value.trim();
+            const plate = r.plate.value.trim();
+            if (r.id) { vehicleIDs.push(r.id); editVehicles.push({ id: r.id, category_id: catId, label, license_plate: plate }); }
+            else newVehicles.push({ category_id: catId, label, license_plate: plate });
+        }
         const payload = {
             amount: data.amount === '' ? null : Number(data.amount),
             period: data.period,
             start_date: data.start_date,
             end_date: data.end_date === '' ? null : data.end_date,
             note: data.note,
-            vehicle_ids: [...selected],
+            vehicle_ids: vehicleIDs,
             new_vehicles: newVehicles,
+            edit_vehicles: editVehicles,
         };
         try {
             if (existing) await api.put('/agreements/' + existing.id, payload);
