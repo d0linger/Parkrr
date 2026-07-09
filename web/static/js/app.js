@@ -414,6 +414,18 @@
         for (let i = 0; i < rows; i++) wrap.append(el('div', { class: 'sk sk-card' }));
         return wrap;
     }
+    // Persistent <details>: remembers open/closed across re-renders (render()
+    // rebuilds the DOM), so toggling something that triggers a refresh no longer
+    // collapses an expanded dropdown. `key` must be stable for the same section.
+    const detailsState = new Map();
+    function persistDetails(key, cls, summaryText, defaultOpen) {
+        const open = detailsState.has(key) ? detailsState.get(key) : !!defaultOpen;
+        const det = el('details', { class: cls });
+        if (open) det.open = true;
+        det.append(el('summary', {}, summaryText));
+        det.addEventListener('toggle', () => detailsState.set(key, det.open));
+        return det;
+    }
     async function render() {
         const { name, id } = parseHash();
         const routeName = id != null && (name === 'persons' || name === 'vehicles') ? name.slice(0, -1) : name;
@@ -558,8 +570,20 @@
             frCard.append(el('div', { class: 'card-row' },
                 el('h3', { style: 'margin:0' }, 'Pauschalen'),
                 canBill() ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => agreementForm(id, vehicles) }, '+ Pauschale') : null));
+            // Active first; ended Pauschalen collapse into an archive so finished
+            // agreements don't clutter the list. The end date is exclusive (matches
+            // the backend), so an agreement ending today is already ended.
+            const ended = (a) => a.end_date && a.end_date.slice(0, 10) <= today();
+            const activeAg = ags.filter((a) => !ended(a));
+            const endedAg = ags.filter(ended);
             if (!ags.length) frCard.append(el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Keine Pauschale – Abrechnung je Gefährt.'));
-            else ags.forEach((a) => frCard.append(agreementRow(id, a, vehicles)));
+            else activeAg.forEach((a) => frCard.append(agreementRow(id, a, vehicles)));
+            if (activeAg.length === 0 && ags.length) frCard.append(el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Keine laufende Pauschale.'));
+            if (endedAg.length) {
+                const det = persistDetails('person-ag-archive', 'archive-section', 'Beendete Pauschalen (' + endedAg.length + ')', false);
+                endedAg.forEach((a) => det.append(agreementRow(id, a, vehicles)));
+                frCard.append(det);
+            }
             page.append(frCard);
         }
 
@@ -592,7 +616,7 @@
         if (!activeVeh.length) page.append(el('p', { class: 'muted' }, 'Keine einzeln abgerechneten Gefährte.'));
         else activeVeh.forEach((v) => page.append(vehicleCard(v, { linkable: true })));
         if (archivedVeh.length) {
-            const det = el('details', { class: 'archive-section' }, el('summary', {}, 'Archiv (' + archivedVeh.length + ')'));
+            const det = persistDetails('person-archive', 'archive-section', 'Archiv (' + archivedVeh.length + ')', false);
             archivedVeh.forEach((v) => det.append(vehicleCard(v, { linkable: true })));
             page.append(det);
         }
@@ -762,7 +786,7 @@
             ? vehicles.filter((v) => a.vehicle_ids.includes(v.id))
             : vehicles;
         if (sub.length) {
-            const det = el('details', { class: 'archive-section', open: true }, el('summary', {}, 'Gefährte (' + sub.length + ')'));
+            const det = persistDetails('ag-veh-' + a.id, 'archive-section', 'Gefährte (' + sub.length + ')', true);
             sub.forEach((v) => det.append(vehicleCard(v, { linkable: true })));
             row.append(det);
         }
@@ -780,7 +804,7 @@
         // be marked "läuft" — here "bezahlt" means the whole period is prepaid.
         const curKey = a.period === 'yearly' ? today().slice(0, 4) : today().slice(0, 7);
         if (periods.length) {
-            const det = el('details', { class: 'period-payments' }, el('summary', {}, 'Zahlung je Zeitraum (' + periods.length + ')'));
+            const det = persistDetails('ag-pay-' + a.id, 'period-payments', 'Zahlung je Zeitraum (' + periods.length + ')', false);
             const box = el('div', { class: 'period-list' });
             for (const p of periods) {
                 const amt = a.period_costs ? a.period_costs[p.key] : null;
@@ -823,14 +847,16 @@
     const periodPaid = (a, key) => !!a.paid || (a.paid_periods || []).includes(key) || periodFixed(a, key) != null;
     // For a still-running period, ask whether "bezahlt" means the whole period was
     // prepaid or only a fixed Teilbetrag. Returns { amount } (null = whole) or null.
-    async function periodPayDialog(label, defAmt) {
+    async function periodPayDialog(label, defAmt, current) {
+        const mode = current ? current.mode : 'full';
+        const amtVal = current && current.mode === 'partial' ? current.amount : (defAmt != null ? defAmt : '');
         const data = await formModal({
             title: 'Zahlung ' + label,
             submitLabel: 'Speichern',
             fields: [
-                { name: 'mode', label: 'Art der Zahlung', type: 'select', value: 'full',
+                { name: 'mode', label: 'Art der Zahlung', type: 'select', value: mode,
                     options: [{ value: 'full', label: 'Ganze Pauschale (im Voraus)' }, { value: 'partial', label: 'Teilbetrag' }] },
-                { name: 'amount', label: 'Teilbetrag (€)', type: 'number', step: '0.01', min: 0, value: defAmt != null ? defAmt : '',
+                { name: 'amount', label: 'Teilbetrag (€)', type: 'number', step: '0.01', min: 0, value: amtVal,
                     help: 'Nur bei „Teilbetrag": bereits fälliger Betrag. Der Rest des Zeitraums bleibt offen.' },
             ],
         });
@@ -851,9 +877,12 @@
         };
         const onPaid = async (e) => {
             markActive(e.currentTarget);
-            // Running period, not yet paid: offer whole (prepay) vs. Teilbetrag.
-            if (running && !paid) {
-                const choice = await periodPayDialog(key, defAmt);
+            const fixed = periodFixed(a, key);
+            // Offer / adjust whole-vs-Teilbetrag on a running period, or on any
+            // period that already carries a fixed Teilbetrag (so it can be edited).
+            if (running || fixed != null) {
+                const current = fixed != null ? { mode: 'partial', amount: fixed } : (paid ? { mode: 'full' } : null);
+                const choice = await periodPayDialog(key, defAmt, current);
                 if (!choice) { render(); return; } // cancelled -> reset optimistic state
                 await post(true, choice.amount);
                 return;
@@ -1143,8 +1172,15 @@
         if (canManage()) {
             const fileInput = el('input', { type: 'file', accept: 'image/jpeg,image/png', style: 'display:none' });
             fileInput.addEventListener('change', () => uploadPhoto(id, fileInput.files[0]));
-            const btn = el('button', { class: 'btn btn-primary btn-sm', onclick: () => fileInput.click() }, '+ Foto');
-            ph.append(btn, fileInput);
+            // Camera capture: on mobile the `capture` hint opens the rear camera
+            // directly; on desktop it falls back to the normal file picker. Keep the
+            // JPEG/PNG restriction the backend enforces (avoids HEIC/WEBP rejects).
+            const camInput = el('input', { type: 'file', accept: 'image/jpeg,image/png', capture: 'environment', style: 'display:none' });
+            camInput.addEventListener('change', () => uploadPhoto(id, camInput.files[0]));
+            ph.append(
+                el('button', { class: 'btn btn-primary btn-sm', onclick: () => fileInput.click() }, '+ Foto'),
+                el('button', { class: 'btn btn-ghost btn-sm', title: 'Mit Kamera aufnehmen', onclick: () => camInput.click() }, '📷 Kamera'),
+                fileInput, camInput);
         }
         photoCard.append(ph);
         if (!photos.length) photoCard.append(el('p', { class: 'muted' }, 'Keine Fotos.'));

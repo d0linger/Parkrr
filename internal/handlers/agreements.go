@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/preining/parkrr/internal/database"
 	"github.com/preining/parkrr/internal/models"
 )
 
@@ -358,6 +359,9 @@ func (h *Handler) CreateAgreement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r, "create", "flatrate", pid, "Pauschale angelegt für "+h.personLabel(r, pid))
+	// Archive bound vehicles right away if the agreement is already expired
+	// (e.g. an end date in the past), rather than waiting for the periodic sweep.
+	_, _ = database.ArchiveExpiredFlatRateVehicles(r.Context(), h.Pool)
 	h.writeAgreements(w, r, pid)
 }
 
@@ -394,6 +398,7 @@ func (h *Handler) UpdateAgreement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r, "update", "flatrate", id, "Pauschale geändert für "+h.personLabel(r, pid))
+	_, _ = database.ArchiveExpiredFlatRateVehicles(r.Context(), h.Pool)
 	h.writeAgreements(w, r, pid)
 }
 

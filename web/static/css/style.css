@@ -419,7 +419,7 @@ textarea { resize: vertical; min-height: 72px; }
 /* ---------- Archived (closed) vehicles ---------- */
 .card.is-archived { opacity: 0.72; border-style: dashed; }
 .card.is-archived h3 { font-weight: 600; }
-.archive-section { margin-top: 0.8rem; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev); }
+.archive-section { margin: 0.8rem 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev); }
 .archive-section > summary {
     cursor: pointer; padding: 0.7rem 0.9rem; font-weight: 600; color: var(--text-muted);
     list-style: none; user-select: none;
