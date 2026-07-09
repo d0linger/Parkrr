@@ -87,6 +87,7 @@ func (h *Handler) loadAgreements(ctx context.Context, personID int64, now time.T
 	}
 	for i := range out {
 		out[i].Accrued = round2(out[i].AccruedAsOf(now))
+		out[i].PeriodCosts = out[i].ElapsedPeriodCosts(now)
 	}
 	return out, nil
 }
@@ -657,6 +658,22 @@ func (h *Handler) loadAllAgreements(ctx context.Context) (map[int64][]models.Fla
 	}
 	prows.Close()
 	return out, prows.Err()
+}
+
+// setFlatRateCoverage fills each vehicle's derived flat-rate coverage fields
+// (FlatRateCovered + UncoveredCost as of now) from the given per-person
+// agreements and category lookup, so the UI can show an "in Pauschale" marker
+// and defer payment to the agreement when a vehicle is fully covered.
+func setFlatRateCoverage(vehicles []models.Vehicle, cats map[int64]models.Category, agByPerson map[int64][]models.FlatRatePeriod, now time.Time) {
+	until := now.AddDate(0, 0, 1)
+	for i := range vehicles {
+		v := &vehicles[i]
+		covering := coveringAgreements(agByPerson[v.PersonID], v.ID)
+		v.FlatRateCovered = len(covering) > 0
+		if v.FlatRateCovered {
+			v.UncoveredCost = round2(models.VehicleUncoveredCost(v, cats[v.CategoryID], time.Time{}, until, covering))
+		}
+	}
 }
 
 // coveringAgreements returns the agreements that cover the given vehicle.

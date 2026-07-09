@@ -84,6 +84,22 @@ func TestPaidCentsPerPeriod(t *testing.T) {
 	}
 }
 
+func TestElapsedPeriodCostsSumToAccrued(t *testing.T) {
+	a := FlatRatePeriod{Amount: 500, Period: BillingYearly, StartDate: date(2025, time.January, 1)}
+	asOf := date(2026, time.July, 9)
+	costs := a.ElapsedPeriodCosts(asOf)
+	if costs["2025"] != 500 {
+		t.Errorf("2025 full year got %.2f want 500.00", costs["2025"])
+	}
+	var sum float64
+	for _, c := range costs {
+		sum += c
+	}
+	if diff := sum - a.AccruedAsOf(asOf); diff > 0.005 || diff < -0.005 {
+		t.Errorf("period costs sum %.2f != accrued %.2f", sum, a.AccruedAsOf(asOf))
+	}
+}
+
 func TestElapsedPeriodKeys(t *testing.T) {
 	a := FlatRatePeriod{Period: BillingMonthly, StartDate: date(2025, time.January, 1)}
 	got := a.ElapsedPeriodKeys(date(2025, time.March, 15))
