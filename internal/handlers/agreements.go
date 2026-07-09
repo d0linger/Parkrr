@@ -726,7 +726,7 @@ func (h *Handler) loadAllAgreements(ctx context.Context) (map[int64][]models.Fla
 func setFlatRateCoverage(vehicles []models.Vehicle, agByPerson map[int64][]models.FlatRatePeriod, now time.Time) {
 	for i := range vehicles {
 		v := &vehicles[i]
-		covering := coveringAgreements(agByPerson[v.PersonID], v.ID)
+		covering := coveringAgreements(agByPerson[v.PersonID], v.ID, v.StartDate)
 		v.FlatRateCovered = len(covering) > 0
 		if v.FlatRateCovered {
 			// Bound vehicles carry no individual cost — billed via the Pauschale.
@@ -741,13 +741,22 @@ func setFlatRateCoverage(vehicles []models.Vehicle, agByPerson map[int64][]model
 	}
 }
 
-// coveringAgreements returns the agreements that cover the given vehicle.
-func coveringAgreements(agreements []models.FlatRatePeriod, vehicleID int64) []models.FlatRatePeriod {
+// coveringAgreements returns the agreements that cover the given vehicle. A
+// vehicle that started on or after an agreement's (exclusive) end date never
+// existed during that agreement, so it is not covered by it — this matters for
+// person-wide agreements (empty VehicleIDs), which would otherwise implicitly
+// "cover" vehicles created long after the agreement ended.
+func coveringAgreements(agreements []models.FlatRatePeriod, vehicleID int64, vehicleStart time.Time) []models.FlatRatePeriod {
 	var out []models.FlatRatePeriod
 	for i := range agreements {
-		if agreements[i].Covers(vehicleID) {
-			out = append(out, agreements[i])
+		a := &agreements[i]
+		if !a.Covers(vehicleID) {
+			continue
 		}
+		if a.EndDate != nil && !vehicleStart.Before(*a.EndDate) {
+			continue // vehicle started after this agreement had already ended
+		}
+		out = append(out, agreements[i])
 	}
 	return out
 }
@@ -772,7 +781,7 @@ func (h *Handler) ArchiveSettledExpiredVehicles(ctx context.Context) (int64, err
 	// Candidate vehicles: active vehicles of any person that has an agreement
 	// (covers explicit joins and person-wide agreements alike).
 	rows, err := h.Pool.Query(ctx,
-		`SELECT v.id, v.person_id FROM vehicles v
+		`SELECT v.id, v.person_id, v.start_date FROM vehicles v
 		 WHERE v.archived = false
 		   AND EXISTS (SELECT 1 FROM flat_rate_periods p WHERE p.person_id = v.person_id)`)
 	if err != nil {
@@ -781,11 +790,12 @@ func (h *Handler) ArchiveSettledExpiredVehicles(ctx context.Context) (int64, err
 	var toArchive []int64
 	for rows.Next() {
 		var vid, pid int64
-		if err := rows.Scan(&vid, &pid); err != nil {
+		var vstart time.Time
+		if err := rows.Scan(&vid, &pid, &vstart); err != nil {
 			rows.Close()
 			return 0, err
 		}
-		covering := coveringAgreements(agByPerson[pid], vid)
+		covering := coveringAgreements(agByPerson[pid], vid, vstart)
 		if len(covering) == 0 {
 			continue // not bound to any agreement -> standalone
 		}
@@ -829,7 +839,7 @@ func personRent(agreements []models.FlatRatePeriod, vehicles []models.Vehicle, c
 		v := &vehicles[i]
 		// A vehicle bound to a Pauschale has no individual cost — it is billed
 		// entirely through the agreement. Only standalone vehicles bill per-vehicle.
-		if len(coveringAgreements(agreements, v.ID)) > 0 {
+		if len(coveringAgreements(agreements, v.ID, v.StartDate)) > 0 {
 			continue
 		}
 		c := v.CostInRange(cats[v.CategoryID], from, to)
