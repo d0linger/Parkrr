@@ -53,10 +53,17 @@ func (h *Handler) ListVehicles(w http.ResponseWriter, r *http.Request) {
 		err  error
 	)
 	limit, offset := pageParams(r, 1000, 1000)
+	var personID int64 // 0 = unfiltered
 	if pid := r.URL.Query().Get("person_id"); pid != "" {
+		n, perr := strconv.ParseInt(pid, 10, 64)
+		if perr != nil || n <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid person_id")
+			return
+		}
+		personID = n
 		rows, err = h.Pool.Query(r.Context(),
 			vehicleSelect+` WHERE v.person_id = $1 ORDER BY v.start_date DESC, v.id DESC LIMIT $2 OFFSET $3`,
-			pid, limit, offset)
+			personID, limit, offset)
 	} else {
 		rows, err = h.Pool.Query(r.Context(),
 			vehicleSelect+` ORDER BY v.start_date DESC, v.id DESC LIMIT $1 OFFSET $2`, limit, offset)
@@ -86,7 +93,8 @@ func (h *Handler) ListVehicles(w http.ResponseWriter, r *http.Request) {
 
 	// Derive per-vehicle flat-rate coverage so the list can show "in Pauschale"
 	// and defer payment to the agreement where a vehicle is fully covered.
-	agByPerson, err := h.loadAllAgreements(r.Context())
+	// Scoped to the person when the request is filtered.
+	agByPerson, err := h.loadAllAgreements(r.Context(), personID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -199,10 +207,16 @@ func effectiveRate(req vehicleRequest, fallback float64) float64 {
 	return fallback
 }
 
+// rowQuerier is satisfied by both *pgxpool.Pool and pgx.Tx, so lookups can run
+// standalone or inside a caller's transaction.
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // categoryDefaultRate returns the current Tarif default for the billing period.
-func (h *Handler) categoryDefaultRate(ctx context.Context, categoryID int64, period string) (float64, error) {
+func categoryDefaultRate(ctx context.Context, q rowQuerier, categoryID int64, period string) (float64, error) {
 	var monthly, yearly float64
-	if err := h.Pool.QueryRow(ctx,
+	if err := q.QueryRow(ctx,
 		`SELECT default_monthly_cost, default_yearly_cost FROM categories WHERE id=$1`, categoryID).
 		Scan(&monthly, &yearly); err != nil {
 		return 0, err
@@ -222,7 +236,7 @@ func (h *Handler) CreateVehicle(w http.ResponseWriter, r *http.Request) {
 	}
 	var fallback float64
 	if pv.req.Rate == nil && pv.req.CostOverride == nil {
-		def, derr := h.categoryDefaultRate(r.Context(), pv.req.CategoryID, pv.req.BillingPeriod)
+		def, derr := categoryDefaultRate(r.Context(), h.Pool, pv.req.CategoryID, pv.req.BillingPeriod)
 		if derr != nil {
 			if errors.Is(derr, pgx.ErrNoRows) {
 				writeError(w, http.StatusBadRequest, "category does not exist")
@@ -307,6 +321,9 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 		h.recordStatus(r, id, oldStatus, pv.req.Status, "über Bearbeitung geändert")
 	}
 	h.audit(r, "update", "vehicle", id, "updated vehicle "+vehicleLabel(pv.req.Label, pv.req.LicensePlate))
+	// An edit can change status/paid-relevant state too — keep archival behavior
+	// consistent with the status-slider endpoint.
+	h.autoArchiveIfClosed(r, id)
 	h.writeVehicle(w, r.Context(), id, http.StatusOK)
 }
 
@@ -560,7 +577,9 @@ func (h *Handler) DuplicateVehicle(w http.ResponseWriter, r *http.Request) {
 	h.writeVehicle(w, r.Context(), newID, http.StatusCreated)
 }
 
-// writeVehicle re-reads a single vehicle with joins and writes it as JSON.
+// writeVehicle re-reads a single vehicle with joins and writes it as JSON,
+// including its flat-rate coverage fields so single-vehicle responses agree
+// with the list endpoints (paid-slider visibility depends on them).
 func (h *Handler) writeVehicle(w http.ResponseWriter, ctx context.Context, id int64, status int) {
 	row := h.Pool.QueryRow(ctx, vehicleSelect+` WHERE v.id = $1`, id)
 	v, cat, err := scanVehicleRow(row)
@@ -568,7 +587,13 @@ func (h *Handler) writeVehicle(w http.ResponseWriter, ctx context.Context, id in
 		writeError(w, http.StatusInternalServerError, "could not load vehicle")
 		return
 	}
-	enrich(&v, cat, time.Now())
+	now := time.Now()
+	enrich(&v, cat, now)
+	if agByPerson, aerr := h.loadAllAgreements(ctx, v.PersonID); aerr == nil {
+		vs := []models.Vehicle{v}
+		setFlatRateCoverage(vs, agByPerson, now)
+		v = vs[0]
+	}
 	writeJSON(w, status, v)
 }
 

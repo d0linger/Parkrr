@@ -125,7 +125,7 @@ func startFlatRateArchival(h *handlers.Handler, stop <-chan struct{}) {
 	sweep := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if n, err := h.ArchiveSettledExpiredVehicles(ctx); err != nil {
+		if n, err := h.ArchiveSettledExpiredVehicles(ctx, 0); err != nil {
 			slog.Warn("flat-rate archival failed", "err", err)
 		} else if n > 0 {
 			slog.Info("archived vehicles of finished Pauschalen", "count", n)

@@ -81,8 +81,8 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	resp.HasFlatRate = len(agreements) > 0
 	setFlatRateCoverage(resp.Vehicles, map[int64][]models.FlatRatePeriod{id: agreements}, now)
 
-	// Rent = flat-rate agreements + per-vehicle cost for time not covered by an
-	// agreement. Covered vehicles contribute only their uncovered portion.
+	// Rent = flat-rate agreements + per-vehicle cost of standalone vehicles.
+	// Vehicles bound to a Pauschale bill nothing individually (ownership model).
 	until := now.AddDate(0, 0, 1)
 	rentAccrued, rentPaid := personRent(agreements, vehicles, cats, time.Time{}, until)
 	resp.MonthlyAccrued = personMonthly(agreements, vehicles, cats, year, now)
@@ -176,7 +176,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 
 	// Rent per person = flat-rate agreements + per-vehicle cost for uncovered
 	// time. Aggregate across every person that has vehicles or agreements.
-	agByPerson, err := h.loadAllAgreements(ctx)
+	agByPerson, err := h.loadAllAgreements(ctx, 0)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return

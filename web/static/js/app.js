@@ -378,8 +378,7 @@
 
     // Vertical bars with rounded ends, gradient fill, a highlighted latest bar and
     // per-bar hover tooltip.
-    function chartBars(values, labels, cls = 'barc') {
-        void cls;
+    function chartBars(values, labels) {
         const W = 340, H = 160, pl = 8, pr = 8, pt = 16, pb = 22, n = values.length;
         const max = Math.max(1, ...values) * 1.15, iw = W - pl - pr, ih = H - pt - pb;
         const gap = iw / n, bw = Math.min(24, gap * 0.62), hi = lastPositive(values), id = gid(), names = tipNames(labels);
@@ -442,6 +441,7 @@
         return t;
     };
     const personName = (p) => (`${p.first_name || ''} ${p.last_name || ''}`).trim() || '(ohne Namen)';
+    const vehicleTitle = (v) => v.label || v.license_plate || v.category_name;
     const catById = (id) => state.categories.find((c) => c.id === Number(id));
     const STATUS_LABEL = { reserved: 'reserviert', stored: 'eingelagert', collected: 'abgeholt', cancelled: 'storniert' };
     const STATUS_COLOR = { stored: 'var(--success)', reserved: 'var(--warning)', collected: 'var(--text-muted)', cancelled: 'var(--danger)' };
@@ -587,7 +587,7 @@
 
         // Extra charges per month
         const pcCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Zusatzkosten pro Monat · ' + ov.year));
-        pcCard.append(chartBars(ov.charges_by_month, MONTHS, 'barc'));
+        pcCard.append(chartBars(ov.charges_by_month, MONTHS));
         pcCard.append(el('div', { class: 'legend' }, el('span', {}, el('span', { class: 'dotc', style: 'background:var(--primary)' }), 'Zusatzkosten')));
         page.append(pcCard);
 
@@ -698,7 +698,7 @@
             else activeAg.forEach((a) => frCard.append(agreementRow(id, a, vehicles)));
             if (activeAg.length === 0 && ags.length) frCard.append(el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Keine laufende Pauschale.'));
             if (endedAg.length) {
-                const det = persistDetails('person-ag-archive', 'archive-section', 'Beendete Pauschalen (' + endedAg.length + ')', false);
+                const det = persistDetails('person-ag-archive-' + id, 'archive-section', 'Beendete Pauschalen (' + endedAg.length + ')', false);
                 endedAg.forEach((a) => det.append(agreementRow(id, a, vehicles)));
                 frCard.append(det);
             }
@@ -716,7 +716,7 @@
         if (!activeVeh.length) page.append(el('p', { class: 'muted' }, 'Keine einzeln abgerechneten Gefährte.'));
         else activeVeh.forEach((v) => page.append(vehicleCard(v, { linkable: true })));
         if (archivedVeh.length) {
-            const det = persistDetails('person-archive', 'archive-section', 'Archiv (' + archivedVeh.length + ')', false);
+            const det = persistDetails('person-archive-' + id, 'archive-section', 'Archiv (' + archivedVeh.length + ')', false);
             archivedVeh.forEach((v) => det.append(vehicleCard(v, { linkable: true })));
             page.append(det);
         }
@@ -791,7 +791,7 @@
     }
 
     function vehicleCard(v, { linkable = true } = {}) {
-        const title = v.label || v.license_plate || v.category_name;
+        const title = vehicleTitle(v);
         const rateUnit = v.billing_period === 'yearly' ? '/Jahr' : '/Monat';
         const c = coverage(v);
         // Show "über Pauschale" only when nothing is owed per vehicle. Once a
@@ -876,7 +876,7 @@
     function agreementRow(personId, a, vehicles) {
         const unit = a.period === 'yearly' ? '/Jahr' : '/Monat';
         const covered = (a.vehicle_ids && a.vehicle_ids.length)
-            ? a.vehicle_ids.map((vid) => { const v = vehicles.find((x) => x.id === vid); return v ? (v.label || v.license_plate || v.category_name) : '#' + vid; }).join(', ')
+            ? a.vehicle_ids.map((vid) => { const v = vehicles.find((x) => x.id === vid); return v ? vehicleTitle(v) : '#' + vid; }).join(', ')
             : 'alle Gefährte';
         const row = el('div', { class: 'card', style: 'margin-top:.5rem' });
         row.append(el('div', { class: 'card-row' },
@@ -938,26 +938,18 @@
         }
         return wrap;
     }
-    // agreementPeriods lists the elapsed sub-periods (start → today or end),
-    // newest first, with keys matching the server format ("YYYY" / "YYYY-MM").
+    // agreementPeriods lists the elapsed sub-periods, newest first. The keys come
+    // straight from the backend (period_costs, keyed "YYYY" / "YYYY-MM") — the
+    // single source of truth for which periods exist — so the client can never
+    // render a payable period the server doesn't bill (e.g. the excluded month
+    // when an agreement ends exactly on a month's first day).
     function agreementPeriods(a) {
-        const [sy, sm] = a.start_date.slice(0, 7).split('-').map(Number);
-        let [ey, em] = today().slice(0, 7).split('-').map(Number);
-        if (a.end_date) {
-            const [dy, dm] = a.end_date.slice(0, 7).split('-').map(Number);
-            if (dy < ey || (dy === ey && dm < em)) { ey = dy; em = dm; }
-        }
-        const out = [];
-        if (a.period === 'yearly') {
-            for (let y = sy; y <= ey; y++) out.push({ key: String(y), label: String(y) });
-        } else {
-            let y = sy, m = sm;
-            while (y < ey || (y === ey && m <= em)) {
-                out.push({ key: y + '-' + String(m).padStart(2, '0'), label: MONTH_NAMES[m - 1] + ' ' + y });
-                m++; if (m > 12) { m = 1; y++; }
-            }
-        }
-        return out.reverse();
+        const keys = Object.keys(a.period_costs || {});
+        keys.sort().reverse(); // zero-padded keys: lexicographic = chronological
+        return keys.map((k) => ({
+            key: k,
+            label: a.period === 'yearly' ? k : MONTH_NAMES[Number(k.slice(5)) - 1] + ' ' + k.slice(0, 4),
+        }));
     }
     const periodFixed = (a, key) => (a.paid_fixed && a.paid_fixed[key] != null) ? a.paid_fixed[key] : null;
     const periodPaid = (a, key) => !!a.paid || (a.paid_periods || []).includes(key) || periodFixed(a, key) != null;
@@ -1077,7 +1069,7 @@
             const opts = bindable();
             existSel.innerHTML = '';
             existSel.append(el('option', { value: '' }, opts.length ? '+ vorhandenes Gefährt …' : 'keine weiteren Gefährte'));
-            for (const v of opts) existSel.append(el('option', { value: v.id }, v.label || v.license_plate || v.category_name));
+            for (const v of opts) existSel.append(el('option', { value: v.id }, vehicleTitle(v)));
             existSel.disabled = !opts.length;
         };
 
@@ -1274,7 +1266,7 @@
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' },
             el('button', { class: 'back-btn', onclick: () => navigate('vehicles') }, '‹'),
-            el('h2', { style: 'margin:0;flex:1' }, esc(v.label || v.license_plate || v.category_name)), statusBadge(v.status)));
+            el('h2', { style: 'margin:0;flex:1' }, esc(vehicleTitle(v))), statusBadge(v.status)));
 
         page.append(el('div', { class: 'card' },
             el('div', { class: 'balance' }, el('span', {}, 'Person'), el('span', {}, el('a', { href: '#/persons/' + v.person_id }, esc(v.person_name)))),
