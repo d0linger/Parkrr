@@ -570,9 +570,10 @@
             frCard.append(el('div', { class: 'card-row' },
                 el('h3', { style: 'margin:0' }, 'Pauschalen'),
                 canBill() ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => agreementForm(id, vehicles) }, '+ Pauschale') : null));
-            // Active first; ended Pauschalen (end date in the past) collapse into an
-            // archive so finished agreements don't clutter the list.
-            const ended = (a) => a.end_date && a.end_date.slice(0, 10) < today();
+            // Active first; ended Pauschalen collapse into an archive so finished
+            // agreements don't clutter the list. The end date is exclusive (matches
+            // the backend), so an agreement ending today is already ended.
+            const ended = (a) => a.end_date && a.end_date.slice(0, 10) <= today();
             const activeAg = ags.filter((a) => !ended(a));
             const endedAg = ags.filter(ended);
             if (!ags.length) frCard.append(el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Keine Pauschale – Abrechnung je Gefährt.'));
@@ -1172,8 +1173,9 @@
             const fileInput = el('input', { type: 'file', accept: 'image/jpeg,image/png', style: 'display:none' });
             fileInput.addEventListener('change', () => uploadPhoto(id, fileInput.files[0]));
             // Camera capture: on mobile the `capture` hint opens the rear camera
-            // directly; on desktop it falls back to the normal file picker.
-            const camInput = el('input', { type: 'file', accept: 'image/*', capture: 'environment', style: 'display:none' });
+            // directly; on desktop it falls back to the normal file picker. Keep the
+            // JPEG/PNG restriction the backend enforces (avoids HEIC/WEBP rejects).
+            const camInput = el('input', { type: 'file', accept: 'image/jpeg,image/png', capture: 'environment', style: 'display:none' });
             camInput.addEventListener('change', () => uploadPhoto(id, camInput.files[0]));
             ph.append(
                 el('button', { class: 'btn btn-primary btn-sm', onclick: () => fileInput.click() }, '+ Foto'),
