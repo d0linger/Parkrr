@@ -563,10 +563,23 @@
     }
 
     // ================= DASHBOARD =================
+    // Selected dashboard year; null = current year (server default). Kept across
+    // re-renders so slider toggles etc. don't reset the view.
+    let dashYear = null;
     routes.dashboard = async (page) => {
-        const ov = await api.get('/overview');
+        const ov = await api.get('/overview' + (dashYear ? '?year=' + dashYear : ''));
+        dashYear = ov.year;
         page.innerHTML = '';
-        page.append(el('div', { class: 'page-head' }, el('h2', {}, 'Übersicht')));
+        // Year switcher: browse past years; forward capped at the current year
+        // (future years would be all zeros).
+        const nowYear = new Date().getFullYear();
+        const yearSel = el('div', { class: 'pager', style: 'margin:0' },
+            el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Vorheriges Jahr', disabled: ov.year <= 2000,
+                onclick: () => { dashYear = ov.year - 1; render(); } }, '‹'),
+            el('span', { class: 'info' }, String(ov.year)),
+            el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Nächstes Jahr', disabled: ov.year >= nowYear,
+                onclick: () => { dashYear = ov.year + 1; render(); } }, '›'));
+        page.append(el('div', { class: 'page-head' }, el('h2', {}, 'Übersicht'), yearSel));
         page.append(el('div', { class: 'stat-grid' },
             stat(ov.total_persons, 'Personen', { icon: 'users' }),
             stat(ov.active_vehicles, 'aktiv eingestellt', { icon: 'warehouse' }),
