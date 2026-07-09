@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -14,6 +15,21 @@ import (
 
 	"github.com/preining/parkrr/internal/models"
 )
+
+// ErrWebAuthnInternal marks a backend/storage failure (credential load/save,
+// user lookup) — as opposed to a failed cryptographic verification. Handlers
+// must NOT count it as a brute-force attempt: transient DB errors should not
+// consume a client's rate-limit budget.
+var ErrWebAuthnInternal = errors.New("webauthn backend error")
+
+// internalErr tags a backend error as ErrWebAuthnInternal while preserving the
+// original for logging (errors.Is/As still see both).
+func internalErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	return errors.Join(ErrWebAuthnInternal, err)
+}
 
 // WebAuthnService implements passkey (WebAuthn) registration and login. It is
 // nil/disabled unless a Relying Party ID is configured.
@@ -101,14 +117,19 @@ func (s *WebAuthnService) BeginRegistration(ctx context.Context, u *models.User)
 func (s *WebAuthnService) FinishRegistration(ctx context.Context, u *models.User, sd webauthn.SessionData, r *http.Request, name string) error {
 	creds, err := s.loadCredentials(ctx, u.ID)
 	if err != nil {
-		return err
+		return internalErr(err)
 	}
 	wu := &webAuthnUser{id: u.ID, name: u.Username, creds: creds}
+	// Only the library step is a verification of attacker-supplied input; the
+	// surrounding load/save are backend operations.
 	cred, err := s.wa.FinishRegistration(wu, sd, r)
 	if err != nil {
 		return err
 	}
-	return s.saveCredential(ctx, u.ID, cred, name)
+	if err := s.saveCredential(ctx, u.ID, cred, name); err != nil {
+		return internalErr(err)
+	}
+	return nil
 }
 
 // BeginLogin starts a usernameless (discoverable) passkey login.
@@ -120,20 +141,30 @@ func (s *WebAuthnService) BeginLogin() (*protocol.CredentialAssertion, *webauthn
 // to. The sign counter is advanced to detect cloned authenticators.
 func (s *WebAuthnService) FinishLogin(ctx context.Context, sd webauthn.SessionData, r *http.Request) (int64, error) {
 	var uid int64
+	// handlerErr captures backend failures from the user-lookup callback so they
+	// can be distinguished from a genuine assertion-verification failure below.
+	var handlerErr error
 	handler := func(_, rawUserHandle []byte) (webauthn.User, error) {
 		uid = handleToID(rawUserHandle)
 		u, err := s.userByID(ctx, uid)
 		if err != nil {
+			handlerErr = err
 			return nil, err
 		}
 		creds, err := s.loadCredentials(ctx, uid)
 		if err != nil {
+			handlerErr = err
 			return nil, err
 		}
 		return &webAuthnUser{id: uid, name: u.Username, creds: creds}, nil
 	}
 	cred, err := s.wa.FinishDiscoverableLogin(handler, sd, r)
 	if err != nil {
+		if handlerErr != nil {
+			// A backend/lookup failure (or stale credential), not a forged
+			// assertion — don't let it count against the rate limit.
+			return 0, internalErr(handlerErr)
+		}
 		return 0, err
 	}
 	// The login already succeeded; a failed counter write must not fail it, but

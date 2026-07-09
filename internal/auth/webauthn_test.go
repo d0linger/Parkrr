@@ -1,6 +1,26 @@
 package auth
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
+
+func TestWebAuthnInternalErrClassification(t *testing.T) {
+	base := errors.New("db down")
+	wrapped := internalErr(base)
+	if !errors.Is(wrapped, ErrWebAuthnInternal) {
+		t.Error("internalErr should be classified as ErrWebAuthnInternal")
+	}
+	if !errors.Is(wrapped, base) {
+		t.Error("internalErr should preserve the original error for logging")
+	}
+	if errors.Is(errors.New("verification failed"), ErrWebAuthnInternal) {
+		t.Error("a plain (verification) error must not be classified as internal")
+	}
+	if internalErr(nil) != nil {
+		t.Error("internalErr(nil) should be nil")
+	}
+}
 
 func TestUserHandleRoundTrip(t *testing.T) {
 	for _, id := range []int64{1, 42, 1 << 20, 9223372036854775807} {

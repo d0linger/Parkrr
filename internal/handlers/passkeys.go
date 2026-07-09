@@ -123,6 +123,13 @@ func (h *AuthHandler) PasskeyRegisterFinish(w http.ResponseWriter, r *http.Reque
 	}
 	h.clearCeremony(w)
 	if err := h.WebAuthn.FinishRegistration(r.Context(), u, cer.Session, r, cer.Name); err != nil {
+		// Only a real verification failure counts toward the throttle; a backend
+		// error is transient and must not lock the user out.
+		if errors.Is(err, auth.ErrWebAuthnInternal) {
+			slog.Error("passkey registration backend error", "user", u.Username, "err", err)
+			writeError(w, http.StatusInternalServerError, "could not register passkey")
+			return
+		}
 		h.Limiter.RecordFailure(key)
 		slog.Warn("passkey registration failed", "user", u.Username, "err", err)
 		writeError(w, http.StatusBadRequest, "could not verify passkey")
@@ -232,6 +239,13 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 
 	uid, err := h.WebAuthn.FinishLogin(r.Context(), cer.Session, r)
 	if err != nil {
+		// A backend error is not a brute-force signal; don't spend the throttle
+		// budget on it and surface it as a server error.
+		if errors.Is(err, auth.ErrWebAuthnInternal) {
+			slog.Error("passkey login backend error", "ip", h.Auth.ClientIP(r), "err", err)
+			writeError(w, http.StatusInternalServerError, "passkey login failed")
+			return
+		}
 		h.Limiter.RecordFailure(key)
 		slog.Warn("passkey login failed", "ip", h.Auth.ClientIP(r), "err", err)
 		writeError(w, http.StatusUnauthorized, "passkey login failed")
