@@ -637,20 +637,31 @@
         });
     };
 
+    // coverage summarises a vehicle's flat-rate state for display:
+    //  - covered: ever covered by a Pauschale (drives which amount is "owed")
+    //  - active:  a Pauschale covers it today (drives the "in Pauschale" label)
+    //  - owed:    amount owed per vehicle (uncovered remainder, or full accrued)
+    //  - settled: covered and nothing owed per vehicle -> billed via the Pauschale
+    function coverage(v) {
+        const covered = !!v.flat_rate_covered;
+        const active = !!v.flat_rate_active;
+        const owed = covered ? (Number(v.uncovered_cost) || 0) : (Number(v.accrued_cost) || 0);
+        return { covered, active, owed, settled: covered && owed <= 0.005 };
+    }
+
     function vehicleCard(v, { linkable = true } = {}) {
         const title = v.label || v.license_plate || v.category_name;
         const rateUnit = v.billing_period === 'yearly' ? '/Jahr' : '/Monat';
-        const covered = !!v.flat_rate_covered;
-        const fullyCovered = covered && (Number(v.uncovered_cost) || 0) <= 0.005;
-        // When covered by a Pauschale the per-vehicle price/accrued figures aren't
-        // what's billed, so show them as handled by the Pauschale (partial
-        // coverage still shows the uncovered remainder).
+        const c = coverage(v);
+        // Show "über Pauschale" only when nothing is owed per vehicle. Once a
+        // Pauschale ends, per-vehicle billing resumes, so the rate + the owed
+        // remainder are shown again (an expired Pauschale is no longer "aktiv").
         const period = `seit ${fmtDate(v.start_date)}` + (v.end_date ? ` bis ${fmtDate(v.end_date)}` : '');
-        const rateLine = covered ? ('über Pauschale · ' + period) : (`${eur(v.effective_rate)}${rateUnit} · ` + period);
+        const rateLine = c.settled ? ('über Pauschale · ' + period) : (`${eur(v.effective_rate)}${rateUnit} · ` + period);
         let accruedLine;
-        if (fullyCovered) accruedLine = el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Abrechnung über Pauschale');
-        else if (covered) accruedLine = el('div', { class: 'card-meta', style: 'color:var(--text);font-weight:600;margin-top:.3rem' }, 'Aufgelaufen (Rest): ' + eur(v.uncovered_cost));
-        else accruedLine = el('div', { class: 'card-meta', style: 'color:var(--text);font-weight:600;margin-top:.3rem' }, 'Aufgelaufen: ' + eur(v.accrued_cost));
+        if (c.settled) accruedLine = el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Abrechnung über Pauschale');
+        else accruedLine = el('div', { class: 'card-meta', style: 'color:var(--text);font-weight:600;margin-top:.3rem' },
+            (c.covered ? 'Aufgelaufen (Rest): ' : 'Aufgelaufen: ') + eur(c.owed));
         const main = el('div', { style: 'flex:1;' + (linkable ? 'cursor:pointer' : ''), onclick: linkable ? () => navigate('vehicles/' + v.id) : null },
             el('h3', {}, esc(title)),
             el('div', { class: 'card-meta' }, el('span', { class: 'badge badge-cat' }, esc(v.category_name)), ' ', esc(v.person_name),
@@ -672,22 +683,19 @@
     // is shown; the payment slider still marks the uncovered portion as paid.
     function vehicleControls(v) {
         const wrap = el('div', { class: 'controls-row' });
-        const covered = !!v.flat_rate_covered;
-        // Fully covered = billed and paid entirely through the Pauschale (no
-        // uncovered remainder), so the per-vehicle paid marker is redundant.
-        const fullyCovered = covered && (Number(v.uncovered_cost) || 0) <= 0.005;
+        const c = coverage(v);
         const pauschaleBadge = (label, title) => el('span', { class: 'badge badge-cat', title }, label);
         // Archived (closed) vehicles are read-only: show the settled state as
         // badges and offer a one-tap reactivate instead of the live sliders.
         if (v.archived) {
             wrap.append(statusBadge(v.status));
-            // Fully covered => payment belongs to the Pauschale; otherwise show the
-            // per-vehicle paid state.
-            if (fullyCovered) {
+            // Nothing owed per vehicle => billed via the Pauschale; otherwise show
+            // the per-vehicle paid state.
+            if (c.settled) {
                 wrap.append(pauschaleBadge('über Pauschale abgerechnet', 'Zahlung erfolgt über die Pauschale'));
             } else {
                 wrap.append(el('span', { class: 'badge ' + (v.paid ? 'badge-active' : 'badge-ended') }, v.paid ? 'bezahlt' : 'offen'));
-                if (covered) wrap.append(pauschaleBadge('in Pauschale', 'Teilweise über eine Pauschale abgerechnet'));
+                if (c.active) wrap.append(pauschaleBadge('in Pauschale', 'Teilweise über eine Pauschale abgerechnet'));
             }
             if (canManage()) {
                 // "Erneut einstellen" is safe on archived vehicles: it creates a new
@@ -701,14 +709,16 @@
         // (reserved/stored/collected), independent of billing.
         wrap.append(statusSlider(v));
         if (canBill()) {
-            if (fullyCovered) {
-                // Payment belongs to the Pauschale; no per-vehicle paid slider.
+            if (c.settled) {
+                // Nothing owed per vehicle; payment belongs to the Pauschale.
                 wrap.append(pauschaleBadge('über Pauschale abgerechnet', 'Zahlung erfolgt über die Pauschale'));
             } else {
+                // A remainder is owed (e.g. the Pauschale has ended, or covers only
+                // part of the period) — settle it with the per-vehicle slider.
                 wrap.append(paidSlider(v));
-                if (covered) wrap.append(pauschaleBadge('in Pauschale', 'Teilweise über eine Pauschale abgerechnet – der Slider betrifft nur den Restbetrag'));
+                if (c.active) wrap.append(pauschaleBadge('in Pauschale', 'Teilweise über eine Pauschale abgerechnet – der Slider betrifft nur den Restbetrag'));
             }
-        } else if (covered) {
+        } else if (c.active || c.settled) {
             wrap.append(pauschaleBadge('in Pauschale', 'Über eine Pauschale abgerechnet'));
         }
         if (canManage() && v.status === 'collected') {
@@ -1008,6 +1018,7 @@
         ]);
         const v = vehicles.find((x) => x.id === id);
         if (!v) { page.innerHTML = ''; page.append(emptyState('▣', 'Gefährt nicht gefunden.')); return; }
+        const vc = coverage(v);
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' },
             el('button', { class: 'back-btn', onclick: () => navigate('vehicles') }, '‹'),
@@ -1020,11 +1031,11 @@
             el('div', { class: 'balance' }, el('span', {}, 'Preis'), el('span', { class: 'amt' }, eur(v.effective_rate) + (v.billing_period === 'yearly' ? ' /Jahr' : ' /Monat'))),
             el('div', { class: 'balance' }, el('span', {}, 'Zeitraum'), el('span', {}, fmtDate(v.start_date) + (v.end_date ? ' – ' + fmtDate(v.end_date) : ' – offen'))),
             v.reserved_from ? el('div', { class: 'balance' }, el('span', {}, 'Reservierung'), el('span', {}, fmtDate(v.reserved_from) + ' – ' + fmtDate(v.reserved_until))) : null,
-            v.flat_rate_covered ? el('div', { class: 'balance' }, el('span', {}, 'Pauschale'), el('span', {}, 'abgedeckt')) : null,
-            (v.flat_rate_covered && (Number(v.uncovered_cost) || 0) <= 0.005)
+            vc.covered ? el('div', { class: 'balance' }, el('span', {}, 'Pauschale'), el('span', {}, vc.active ? 'aktiv abgedeckt' : 'beendet')) : null,
+            vc.settled
                 ? el('div', { class: 'balance' }, el('strong', {}, 'Aufgelaufen'), el('strong', { class: 'amt', title: 'Abrechnung über Pauschale' }, 'über Pauschale'))
-                : el('div', { class: 'balance' }, el('strong', {}, v.flat_rate_covered ? 'Aufgelaufen (Rest)' : 'Aufgelaufen'),
-                    el('strong', { class: 'amt' }, eur(v.flat_rate_covered ? v.uncovered_cost : v.accrued_cost))),
+                : el('div', { class: 'balance' }, el('strong', {}, vc.covered ? 'Aufgelaufen (Rest)' : 'Aufgelaufen'),
+                    el('strong', { class: 'amt' }, eur(vc.owed))),
             v.notes ? el('div', { class: 'card-meta', style: 'margin-top:.5rem' }, esc(v.notes)) : null));
 
         if (v.archived) {

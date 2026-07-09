@@ -215,6 +215,19 @@ func (a *FlatRatePeriod) paidKeySet() map[string]bool {
 	return m
 }
 
+// ActiveAt reports whether the agreement's coverage window includes t, i.e.
+// StartDate <= t < EndDate (EndDate is exclusive; nil means open-ended). Once
+// the end date has passed the agreement no longer covers its vehicles.
+func (a *FlatRatePeriod) ActiveAt(t time.Time) bool {
+	if t.Before(a.StartDate) {
+		return false
+	}
+	if a.EndDate != nil && !t.Before(*a.EndDate) {
+		return false
+	}
+	return true
+}
+
 // PeriodKey returns the sub-period key that time t falls in for this agreement's
 // billing period: "YYYY" for yearly agreements, "YYYY-MM" for monthly ones.
 func (a *FlatRatePeriod) PeriodKey(t time.Time) string {
@@ -403,10 +416,14 @@ type Vehicle struct {
 	IsActive      bool    `json:"is_active"`
 	PhotoCount    int     `json:"photo_count"`
 	// FlatRateCovered is true when at least one flat-rate agreement covers this
-	// vehicle. UncoveredCost is the accrued cost (as of now) NOT covered by any
-	// agreement; when it is ~0 on a covered vehicle, payment is handled entirely
-	// by the Pauschale and the per-vehicle paid marker is redundant.
+	// vehicle (past or present). FlatRateActive is true only when such an
+	// agreement's window includes today — i.e. the vehicle is billed via the
+	// Pauschale right now (an expired Pauschale leaves Covered true but Active
+	// false, and per-vehicle billing resumes). UncoveredCost is the accrued cost
+	// (as of now) NOT covered by any agreement; when it is ~0 on a covered
+	// vehicle, nothing is owed per-vehicle and the paid marker is redundant.
 	FlatRateCovered bool    `json:"flat_rate_covered"`
+	FlatRateActive  bool    `json:"flat_rate_active"`
 	UncoveredCost   float64 `json:"uncovered_cost"`
 }
 

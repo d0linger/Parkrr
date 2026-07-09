@@ -672,6 +672,12 @@ func setFlatRateCoverage(vehicles []models.Vehicle, cats map[int64]models.Catego
 		v.FlatRateCovered = len(covering) > 0
 		if v.FlatRateCovered {
 			v.UncoveredCost = round2(models.VehicleUncoveredCost(v, cats[v.CategoryID], time.Time{}, until, covering))
+			for i := range covering {
+				if covering[i].ActiveAt(now) {
+					v.FlatRateActive = true
+					break
+				}
+			}
 		}
 	}
 }

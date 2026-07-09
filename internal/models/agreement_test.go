@@ -100,6 +100,26 @@ func TestElapsedPeriodCostsSumToAccrued(t *testing.T) {
 	}
 }
 
+func TestAgreementActiveAt(t *testing.T) {
+	a := FlatRatePeriod{StartDate: date(2025, time.January, 1), EndDate: tp(date(2026, time.January, 1))}
+	if !a.ActiveAt(date(2025, time.June, 1)) {
+		t.Error("should be active within the window")
+	}
+	if a.ActiveAt(date(2024, time.December, 31)) {
+		t.Error("should be inactive before the start")
+	}
+	if a.ActiveAt(date(2026, time.January, 1)) {
+		t.Error("end date is exclusive: should be inactive on the end date")
+	}
+	if a.ActiveAt(date(2026, time.July, 9)) {
+		t.Error("should be inactive after the window has ended")
+	}
+	open := FlatRatePeriod{StartDate: date(2025, time.January, 1)}
+	if !open.ActiveAt(date(2030, time.January, 1)) {
+		t.Error("open-ended agreement should stay active")
+	}
+}
+
 func TestElapsedPeriodKeys(t *testing.T) {
 	a := FlatRatePeriod{Period: BillingMonthly, StartDate: date(2025, time.January, 1)}
 	got := a.ElapsedPeriodKeys(date(2025, time.March, 15))
