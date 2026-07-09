@@ -168,9 +168,30 @@ func (h *AuthHandler) DeletePasskey(w http.ResponseWriter, r *http.Request) {
 
 // --- Login (public) ---
 
+// throttlePasskeyLogin enforces the shared login throttle on the usernameless
+// passkey login endpoints, keyed by client IP (there is no username to key on).
+// It mirrors the password-login lockout so repeated failed assertions — or a
+// locked-out client hammering the challenge endpoint — are rejected with a 429,
+// on top of the coarse global per-IP rate limit. Failures are recorded by
+// PasskeyLoginFinish; a successful login resets the counter.
+func (h *AuthHandler) throttlePasskeyLogin(w http.ResponseWriter, r *http.Request) (string, bool) {
+	ip := h.Auth.ClientIP(r)
+	key := "passkey|" + ip
+	if ok, wait := h.Limiter.Allowed(key); !ok {
+		w.Header().Set("Retry-After", formatSeconds(wait))
+		slog.Warn("passkey throttle active", "ip", ip, "path", r.URL.Path)
+		writeError(w, http.StatusTooManyRequests, "too many attempts, try again in "+formatMinutes(wait))
+		return key, false
+	}
+	return key, true
+}
+
 // PasskeyLoginBegin returns assertion options for a usernameless passkey login.
 func (h *AuthHandler) PasskeyLoginBegin(w http.ResponseWriter, r *http.Request) {
 	if !h.passkeysEnabled(w) {
+		return
+	}
+	if _, ok := h.throttlePasskeyLogin(w, r); !ok {
 		return
 	}
 	opts, sd, err := h.WebAuthn.BeginLogin()
@@ -190,6 +211,10 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 	if !h.passkeysEnabled(w) {
 		return
 	}
+	key, ok := h.throttlePasskeyLogin(w, r)
+	if !ok {
+		return
+	}
 	cer, err := h.loadCeremony(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "passkey login expired, please retry")
@@ -199,15 +224,18 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 
 	uid, err := h.WebAuthn.FinishLogin(r.Context(), cer.Session, r)
 	if err != nil {
+		h.Limiter.RecordFailure(key)
 		slog.Warn("passkey login failed", "ip", h.Auth.ClientIP(r), "err", err)
 		writeError(w, http.StatusUnauthorized, "passkey login failed")
 		return
 	}
 	u, err := h.userByID(r.Context(), uid)
 	if err != nil {
+		h.Limiter.RecordFailure(key)
 		writeError(w, http.StatusUnauthorized, "passkey login failed")
 		return
 	}
+	h.Limiter.Reset(key)
 	if err := h.Auth.CreateSession(r.Context(), w, r, uid); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create session")
 		return
