@@ -13,6 +13,19 @@ import (
 
 var farFuture = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
 
+// addPeriodPayment routes a loaded period-payment row onto an agreement: a NULL
+// amount is a whole-period (prepaid) payment, a set amount is a fixed partial.
+func addPeriodPayment(a *models.FlatRatePeriod, key string, amount *float64) {
+	if amount == nil {
+		a.PaidPeriods = append(a.PaidPeriods, key)
+		return
+	}
+	if a.PaidFixed == nil {
+		a.PaidFixed = map[string]float64{}
+	}
+	a.PaidFixed[key] = *amount
+}
+
 // loadAgreements returns a person's flat-rate agreements with their covered
 // vehicle ids and derived accrued cost (as of now), newest first.
 func (h *Handler) loadAgreements(ctx context.Context, personID int64, now time.Time) ([]models.FlatRatePeriod, error) {
@@ -65,19 +78,20 @@ func (h *Handler) loadAgreements(ctx context.Context, personID int64, now time.T
 			return nil, err
 		}
 		prows, err := h.Pool.Query(ctx,
-			`SELECT period_id, period_key FROM flat_rate_period_payments WHERE period_id = ANY($1)`, ids)
+			`SELECT period_id, period_key, amount FROM flat_rate_period_payments WHERE period_id = ANY($1)`, ids)
 		if err != nil {
 			return nil, err
 		}
 		for prows.Next() {
 			var pid int64
 			var key string
-			if err := prows.Scan(&pid, &key); err != nil {
+			var amount *float64
+			if err := prows.Scan(&pid, &key, &amount); err != nil {
 				prows.Close()
 				return nil, err
 			}
 			if a := byID[pid]; a != nil {
-				a.PaidPeriods = append(a.PaidPeriods, key)
+				addPeriodPayment(a, key, amount)
 			}
 		}
 		prows.Close()
@@ -527,6 +541,9 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 type agreementPeriodPaidRequest struct {
 	PeriodKey string `json:"period_key"`
 	Paid      bool   `json:"paid"`
+	// Amount, when set on a paid=true request, records a fixed partial payment
+	// ("Teilbetrag") for the period; nil means the whole period is paid (prepaid).
+	Amount *float64 `json:"amount"`
 }
 
 // SetAgreementPeriodPaid marks a single sub-period (a year "YYYY" or month
@@ -547,6 +564,10 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 	key := trim(req.PeriodKey)
 	if key == "" {
 		writeError(w, http.StatusBadRequest, "period_key is required")
+		return
+	}
+	if req.Amount != nil && *req.Amount < 0 {
+		writeError(w, http.StatusBadRequest, "amount must not be negative")
 		return
 	}
 	tx, err := h.Pool.Begin(r.Context())
@@ -572,9 +593,11 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 	}
 
 	if req.Paid {
+		// amount NULL = whole period (prepaid); a value = fixed partial. Upsert so
+		// re-marking switches between the two.
 		if _, err := tx.Exec(r.Context(),
-			`INSERT INTO flat_rate_period_payments (period_id, period_key) VALUES ($1,$2)
-			 ON CONFLICT DO NOTHING`, id, key); err != nil {
+			`INSERT INTO flat_rate_period_payments (period_id, period_key, amount) VALUES ($1,$2,$3)
+			 ON CONFLICT (period_id, period_key) DO UPDATE SET amount = EXCLUDED.amount`, id, key, req.Amount); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not update payment")
 			return
 		}
@@ -667,19 +690,20 @@ func (h *Handler) loadAllAgreements(ctx context.Context) (map[int64][]models.Fla
 	if err := vrows.Err(); err != nil {
 		return nil, err
 	}
-	prows, err := h.Pool.Query(ctx, `SELECT period_id, period_key FROM flat_rate_period_payments`)
+	prows, err := h.Pool.Query(ctx, `SELECT period_id, period_key, amount FROM flat_rate_period_payments`)
 	if err != nil {
 		return nil, err
 	}
 	for prows.Next() {
 		var pid int64
 		var key string
-		if err := prows.Scan(&pid, &key); err != nil {
+		var amount *float64
+		if err := prows.Scan(&pid, &key, &amount); err != nil {
 			prows.Close()
 			return nil, err
 		}
 		if a := byID[pid]; a != nil {
-			a.PaidPeriods = append(a.PaidPeriods, key)
+			addPeriodPayment(a, key, amount)
 		}
 	}
 	prows.Close()
