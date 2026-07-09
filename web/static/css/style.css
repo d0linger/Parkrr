@@ -317,7 +317,7 @@ textarea { resize: vertical; min-height: 72px; }
     border-radius: var(--radius); padding: 0.95rem 1rem 1.05rem;
     transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
 }
-.stat:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28); }
+.stat:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); box-shadow: var(--shadow); }
 .stat .value { font-size: 1.7rem; font-weight: 700; letter-spacing: -0.025em; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .stat .label { font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.07em; font-weight: 600; margin-top: 0.25rem; }
 .stat .stat-ic { position: absolute; top: 0.8rem; right: 0.85rem; color: var(--text-muted); opacity: 0.55; }
