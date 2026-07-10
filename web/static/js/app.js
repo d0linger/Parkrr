@@ -1545,22 +1545,22 @@
         page.append(seg);
 
         if (tariffTab === 'categories') {
-            if (isAdmin()) page.append(el('div', { style: 'text-align:right;margin-bottom:.5rem' }, el('button', { class: 'btn btn-primary btn-sm', onclick: () => categoryForm() }, '+ Tarif')));
+            if (canManage()) page.append(el('div', { style: 'text-align:right;margin-bottom:.5rem' }, el('button', { class: 'btn btn-primary btn-sm', onclick: () => categoryForm() }, '+ Tarif')));
             page.append(el('p', { class: 'muted', style: 'margin-top:-.3rem' }, 'Zentrale Gefährt-Typen mit Standardpreisen (beim Gefährt überschreibbar).'));
             for (const c of state.categories) {
                 page.append(el('div', { class: 'card' }, el('div', { class: 'card-row' },
                     el('div', {}, el('h3', {}, esc(c.name), ' ', c.rates_synced ? el('span', { class: 'badge badge-cat', title: 'Jahr = Monat × 12' }, '×12') : null), el('div', { class: 'card-meta' }, `${eur(c.default_monthly_cost)} / Monat · ${eur(c.default_yearly_cost)} / Jahr`)),
-                    isAdmin() && el('div', { class: 'card-actions' },
+                    canManage() && el('div', { class: 'card-actions' },
                         el('button', { class: 'btn btn-ghost btn-sm', title: 'Bearbeiten', onclick: () => categoryForm(c) }, icon('edit')),
                         el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: (e) => delCategory(c, e.currentTarget.closest('.card')) }, icon('trash'))))));
             }
         } else {
-            if (isAdmin()) page.append(el('div', { style: 'text-align:right;margin-bottom:.5rem' }, el('button', { class: 'btn btn-primary btn-sm', onclick: () => serviceForm() }, '+ Dienst')));
+            if (canManage()) page.append(el('div', { style: 'text-align:right;margin-bottom:.5rem' }, el('button', { class: 'btn btn-primary btn-sm', onclick: () => serviceForm() }, '+ Dienst')));
             page.append(el('p', { class: 'muted', style: 'margin-top:-.3rem' }, 'Katalog für Zusatzleistungen (Strom, Reinigung …).'));
             for (const s of state.services) {
                 page.append(el('div', { class: 'card' }, el('div', { class: 'card-row' },
                     el('div', {}, el('h3', {}, esc(s.name)), el('div', { class: 'card-meta' }, eur(s.default_amount))),
-                    isAdmin() && el('div', { class: 'card-actions' },
+                    canManage() && el('div', { class: 'card-actions' },
                         el('button', { class: 'btn btn-ghost btn-sm', title: 'Bearbeiten', onclick: () => serviceForm(s) }, icon('edit')),
                         el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: (e) => delService(s, e.currentTarget.closest('.card')) }, icon('trash'))))));
             }
