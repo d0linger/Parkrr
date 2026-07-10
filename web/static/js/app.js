@@ -570,7 +570,12 @@
         const det = el('details', { class: cls });
         if (open) det.open = true;
         det.append(el('summary', {}, summaryText));
-        det.addEventListener('toggle', () => detailsState.set(key, det.open));
+        det.addEventListener('toggle', () => {
+            detailsState.set(key, det.open);
+            // Sliders mounted while the section was closed had zero width and
+            // hid their thumb — measure them once the content is visible.
+            if (det.open) $$('.seg-mini', det).forEach(placeThumb);
+        });
         return det;
     }
     async function render() {
@@ -1205,17 +1210,21 @@
         th.style.width = act.offsetWidth + 'px';
         th.className = 'seg-thumb ' + THUMB_CLASSES.filter((c) => act.classList.contains(c)).join(' ');
     }
+    // Position the thumb without animating — used when a slider first becomes
+    // measurable (initial render, or a <details> section opening), so nothing
+    // visibly slides into place.
+    function placeThumb(seg) {
+        const th = seg.querySelector('.seg-thumb');
+        if (!th) return;
+        th.style.transition = 'none';
+        moveThumb(seg);
+        void th.offsetWidth;
+        th.style.transition = '';
+    }
     function segThumb(seg) {
-        const th = el('span', { class: 'seg-thumb', 'aria-hidden': 'true' });
-        seg.prepend(th);
-        // Position once the slider is laid out — without animating, so freshly
-        // rendered pages don't flash dozens of sliding pills.
-        requestAnimationFrame(() => {
-            th.style.transition = 'none';
-            moveThumb(seg);
-            void th.offsetWidth;
-            th.style.transition = '';
-        });
+        seg.prepend(el('span', { class: 'seg-thumb', 'aria-hidden': 'true' }));
+        // Position once the slider is laid out (offsetWidth is 0 before).
+        requestAnimationFrame(() => placeThumb(seg));
         return seg;
     }
     window.addEventListener('resize', () => $$('.seg-mini').forEach(moveThumb));
