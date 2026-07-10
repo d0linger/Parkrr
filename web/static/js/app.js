@@ -34,6 +34,38 @@
     const today = () => new Date().toISOString().slice(0, 10);
     const norm = (s) => String(s ?? '').toLowerCase();
 
+    // ---------- icons ----------
+    // Consistent stroke icons (inline SVG, themable via currentColor) instead
+    // of platform emojis, which render differently on every OS.
+    const ICONS = {
+        edit: '<path d="M4 20l1-4L16.5 4.5a2.1 2.1 0 0 1 3 3L8 19l-4 1Z"/><path d="M14.5 6.5l3 3"/>',
+        trash: '<path d="M4.5 7h15M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7M6.5 7l1 12a1.5 1.5 0 0 0 1.5 1.4h6a1.5 1.5 0 0 0 1.5-1.4l1-12"/><path d="M10 11v6M14 11v6"/>',
+        camera: '<path d="M4 8.5A1.5 1.5 0 0 1 5.5 7H8l1.4-2h5.2L16 7h2.5A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5v-9Z"/><circle cx="12" cy="13" r="3.4"/>',
+        redo: '<path d="M4 12a8 8 0 1 1 2.4 5.7"/><path d="M4 18v-5h5"/>',
+        undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v4"/>',
+        close: '<path d="M6 6l12 12M18 6 6 18"/>',
+        settings: '<path d="M6 4v7M6 15v5M12 4v3M12 11v9M18 4v11M18 19v1"/><circle cx="6" cy="13" r="1.8"/><circle cx="12" cy="9" r="1.8"/><circle cx="18" cy="17" r="1.8"/>',
+        users: '<circle cx="9" cy="8" r="3.4"/><path d="M3.5 20c.6-3.4 2.9-5.2 5.5-5.2s4.9 1.8 5.5 5.2"/><path d="M16 5.4a3.4 3.4 0 0 1 0 5.9M17.8 14.9c1.6.8 2.6 2.4 3 5.1"/>',
+        log: '<rect x="5" y="3.5" width="14" height="17" rx="2"/><path d="M9 8.5h6M9 12h6M9 15.5h4"/>',
+        theme: '<path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9Z"/>',
+        logout: '<path d="M9 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3M15 8l4 4-4 4M19 12H9"/>',
+    };
+    const icon = (name, size = 16) => {
+        const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        s.setAttribute('viewBox', '0 0 24 24');
+        s.setAttribute('width', size);
+        s.setAttribute('height', size);
+        s.setAttribute('fill', 'none');
+        s.setAttribute('stroke', 'currentColor');
+        s.setAttribute('stroke-width', '1.8');
+        s.setAttribute('stroke-linecap', 'round');
+        s.setAttribute('stroke-linejoin', 'round');
+        s.setAttribute('aria-hidden', 'true');
+        s.classList.add('ic-svg');
+        s.innerHTML = ICONS[name] || '';
+        return s;
+    };
+
     // ---------- i18n ----------
     // Central message catalogue. User-facing strings should be added here and
     // referenced via t('key'); this is the foundation for future localisation.
@@ -643,8 +675,8 @@
                         el('div', { class: 'card-meta' }, [p.email, p.phone].filter(Boolean).join(' · ') || 'keine Kontaktdaten')),
                     el('div', { class: 'card-actions' },
                         el('button', { class: 'btn btn-ghost btn-sm', onclick: () => navigate('persons/' + p.id) }, '›'),
-                        canManage() && el('button', { class: 'btn btn-ghost btn-sm', onclick: () => personForm(p) }, '✎'),
-                        canManage() && el('button', { class: 'btn btn-ghost btn-sm', onclick: () => delPerson(p) }, '🗑'),
+                        canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Bearbeiten', onclick: () => personForm(p) }, icon('edit')),
+                        canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: () => delPerson(p) }, icon('trash')),
                     ))),
         });
     };
@@ -819,14 +851,14 @@
         const main = el('div', { style: 'flex:1;' + (linkable ? 'cursor:pointer' : ''), onclick: linkable ? () => navigate('vehicles/' + v.id) : null },
             el('h3', {}, esc(title)),
             el('div', { class: 'card-meta' }, el('span', { class: 'badge badge-cat' }, esc(v.category_name)), ' ', esc(v.person_name),
-                v.photo_count ? el('span', { class: 'muted' }, '  📷 ' + v.photo_count) : null),
+                v.photo_count ? el('span', { class: 'muted' }, '  ', icon('camera', 13), ' ' + v.photo_count) : null),
             el('div', { class: 'card-meta' }, rateLine),
             accruedLine);
         const actions = el('div', { class: 'card-actions' },
             // Archived vehicles are read-only, so no inline edit; delete stays for
             // genuine mistakes.
-            canManage() && !v.archived && el('button', { class: 'btn btn-ghost btn-sm', onclick: () => vehicleForm(v) }, '✎'),
-            canManage() && el('button', { class: 'btn btn-ghost btn-sm', onclick: () => delVehicle(v) }, '🗑'));
+            canManage() && !v.archived && el('button', { class: 'btn btn-ghost btn-sm', title: 'Bearbeiten', onclick: () => vehicleForm(v) }, icon('edit')),
+            canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: () => delVehicle(v) }, icon('trash')));
         return el('div', { class: 'card' + (v.archived ? ' is-archived' : '') },
             el('div', { class: 'card-row' }, main, actions),
             vehicleControls(v));
@@ -854,8 +886,8 @@
             if (canManage()) {
                 // "Erneut einstellen" is safe on archived vehicles: it creates a new
                 // vehicle and never mutates this (read-only) record.
-                wrap.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => duplicateVehicle(v) }, '↻ Erneut einstellen'));
-                wrap.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => reactivateVehicle(v) }, '↩ Reaktivieren'));
+                wrap.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => duplicateVehicle(v) }, icon('redo'), ' Erneut einstellen'));
+                wrap.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => reactivateVehicle(v) }, icon('undo'), ' Reaktivieren'));
             }
             return wrap;
         }
@@ -876,7 +908,7 @@
             wrap.append(pauschaleBadge('in Pauschale', 'Über eine Pauschale abgerechnet'));
         }
         if (canManage() && v.status === 'collected') {
-            wrap.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => duplicateVehicle(v) }, '↻ Erneut einstellen'));
+            wrap.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => duplicateVehicle(v) }, icon('redo'), ' Erneut einstellen'));
         }
         return wrap;
     }
@@ -898,8 +930,8 @@
                 el('div', { class: 'card-meta' }, fmtDate(a.start_date) + (a.end_date ? ' – ' + fmtDate(a.end_date) : ' – offen') + ' · ' + esc(covered)),
                 el('div', { class: 'card-meta' }, 'aufgelaufen ' + eur(a.accrued) + (a.note ? ' · ' + esc(a.note) : ''))),
             canBill() ? el('div', { class: 'card-actions' },
-                el('button', { class: 'btn btn-ghost btn-sm', onclick: () => agreementForm(personId, vehicles, a) }, '✎'),
-                el('button', { class: 'btn btn-ghost btn-sm', onclick: () => delAgreement(a) }, '🗑')) : null));
+                el('button', { class: 'btn btn-ghost btn-sm', title: 'Bearbeiten', onclick: () => agreementForm(personId, vehicles, a) }, icon('edit')),
+                el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: () => delAgreement(a) }, icon('trash'))) : null));
         if (canBill()) row.append(agreementPayments(a));
         else {
             // Partial when any sub-period is paid — a whole-period key OR a fixed
@@ -1012,7 +1044,7 @@
         };
         seg.append(el('button', { class: !paid ? 'active open' : '', type: 'button', role: 'radio', 'aria-checked': String(!paid), onclick: (e) => { markActive(e.currentTarget); post(false, null); } }, 'offen'));
         seg.append(el('button', { class: paid ? 'active done' : '', type: 'button', role: 'radio', 'aria-checked': String(paid), onclick: onPaid }, 'bezahlt'));
-        return seg;
+        return segThumb(seg);
     }
     function agreementPaidSlider(a) {
         const seg = el('div', { class: 'seg-mini pay', role: 'radiogroup', 'aria-label': 'Zahlstatus Pauschale' });
@@ -1023,7 +1055,7 @@
         };
         seg.append(el('button', { class: (!a.paid ? 'active open' : ''), type: 'button', role: 'radio', 'aria-checked': String(!a.paid), onclick: (e) => setPaid(false, e) }, 'offen'));
         seg.append(el('button', { class: (a.paid ? 'active done' : ''), type: 'button', role: 'radio', 'aria-checked': String(a.paid), onclick: (e) => setPaid(true, e) }, 'bezahlt'));
-        return seg;
+        return segThumb(seg);
     }
     async function delAgreement(a) {
         const count = (a.vehicle_ids || []).length;
@@ -1094,7 +1126,7 @@
             const entry = { id: v ? v.id : null, cat, label, plate };
             entry.node = el('div', { class: 'new-vehicle-row' }, cat, label, plate,
                 el('button', { type: 'button', class: 'btn btn-ghost btn-sm', title: 'Entfernen',
-                    onclick: () => { entry.node.remove(); const i = rows.indexOf(entry); if (i >= 0) rows.splice(i, 1); refreshControls(); } }, '✕'));
+                    onclick: () => { entry.node.remove(); const i = rows.indexOf(entry); if (i >= 0) rows.splice(i, 1); refreshControls(); } }, icon('close', 14)));
             rows.push(entry);
             listBox.append(entry.node);
             refreshControls();
@@ -1158,6 +1190,36 @@
         } catch (e) { toast(e.message, 'error'); }
     }
 
+    // Sliding thumb for seg-mini sliders: a coloured pill that glides to the
+    // active segment instead of the colour jumping between buttons. The thumb
+    // carries the colour (via the active button's status class); buttons only
+    // switch their text colour.
+    const THUMB_CLASSES = ['st-reserved', 'st-stored', 'st-collected', 'st-cancelled', 'open', 'done'];
+    function moveThumb(seg) {
+        const th = seg.querySelector('.seg-thumb');
+        if (!th) return;
+        const act = seg.querySelector('button.active');
+        if (!act || !act.offsetWidth) { th.style.opacity = '0'; return; }
+        th.style.opacity = '1';
+        th.style.left = act.offsetLeft + 'px';
+        th.style.width = act.offsetWidth + 'px';
+        th.className = 'seg-thumb ' + THUMB_CLASSES.filter((c) => act.classList.contains(c)).join(' ');
+    }
+    function segThumb(seg) {
+        const th = el('span', { class: 'seg-thumb', 'aria-hidden': 'true' });
+        seg.prepend(th);
+        // Position once the slider is laid out — without animating, so freshly
+        // rendered pages don't flash dozens of sliding pills.
+        requestAnimationFrame(() => {
+            th.style.transition = 'none';
+            moveThumb(seg);
+            void th.offsetWidth;
+            th.style.transition = '';
+        });
+        return seg;
+    }
+    window.addEventListener('resize', () => $$('.seg-mini').forEach(moveThumb));
+
     const STATUS_FLOW = ['reserved', 'stored', 'collected'];
     function statusSlider(v) {
         if (!canManage()) return statusBadge(v.status);
@@ -1173,7 +1235,7 @@
         if (v.status === 'cancelled') {
             seg.prepend(el('button', { class: 'st-cancelled active', type: 'button', role: 'radio', 'aria-checked': 'true', disabled: true }, STATUS_LABEL.cancelled));
         }
-        return seg;
+        return segThumb(seg);
     }
     function paidSlider(v) {
         const seg = el('div', { class: 'seg-mini pay', role: 'radiogroup', 'aria-label': 'Zahlstatus' });
@@ -1181,14 +1243,16 @@
             onclick: (e) => { markActive(e.currentTarget); markPaid(v, false); } }, 'offen'));
         seg.append(el('button', { class: (v.paid ? 'active done' : ''), type: 'button', role: 'radio', 'aria-checked': String(v.paid), 'aria-label': 'Bezahlt',
             onclick: (e) => { markActive(e.currentTarget); markPaid(v, true); } }, 'bezahlt'));
-        return seg;
+        return segThumb(seg);
     }
     // Optimistic feedback: instantly reflect the picked segment before the API returns.
     function markActive(btn) {
         for (const sib of btn.parentElement.children) {
+            if (sib.tagName !== 'BUTTON') continue;
             sib.classList.toggle('active', sib === btn);
             if (sib.hasAttribute('aria-checked')) sib.setAttribute('aria-checked', String(sib === btn));
         }
+        moveThumb(btn.parentElement);
     }
     async function markPaid(v, paid) {
         if (v.paid === paid) return;
@@ -1305,13 +1369,13 @@
             if (canManage() || canBill()) {
                 const ctrl = el('div', { class: 'card' }, el('h3', {}, 'Status & Zahlung'), vehicleControls(v));
                 if (canManage() && v.status !== 'cancelled') {
-                    ctrl.append(el('button', { class: 'btn btn-ghost btn-sm', style: 'margin-top:.7rem', onclick: () => changeStatus(v, 'cancelled') }, '✕ Stornieren'));
+                    ctrl.append(el('button', { class: 'btn btn-ghost btn-sm', style: 'margin-top:.7rem', onclick: () => changeStatus(v, 'cancelled') }, icon('close', 14), ' Stornieren'));
                 }
                 page.append(ctrl);
             }
             if (canManage()) {
                 page.append(el('div', { class: 'page-head' }, el('h3', {}, 'Bearbeiten'),
-                    el('button', { class: 'btn btn-ghost btn-sm', onclick: () => vehicleForm(v) }, '✎ Bearbeiten')));
+                    el('button', { class: 'btn btn-ghost btn-sm', onclick: () => vehicleForm(v) }, icon('edit'), ' Bearbeiten')));
             }
         }
 
@@ -1328,7 +1392,7 @@
             camInput.addEventListener('change', () => uploadPhoto(id, camInput.files[0]));
             ph.append(
                 el('button', { class: 'btn btn-primary btn-sm', onclick: () => fileInput.click() }, '+ Foto'),
-                el('button', { class: 'btn btn-ghost btn-sm', title: 'Mit Kamera aufnehmen', onclick: () => camInput.click() }, '📷 Kamera'),
+                el('button', { class: 'btn btn-ghost btn-sm', title: 'Mit Kamera aufnehmen', onclick: () => camInput.click() }, icon('camera'), ' Kamera'),
                 fileInput, camInput);
         }
         photoCard.append(ph);
@@ -1338,7 +1402,7 @@
             for (const p of photos) {
                 const img = el('img', { src: '/api/photos/' + p.id, alt: esc(p.filename), loading: 'lazy', onclick: () => lightbox(p.id) });
                 const thumb = el('div', { class: 'photo-thumb' }, img);
-                if (canManage()) thumb.append(el('button', { class: 'del', title: 'Löschen', onclick: () => delPhoto(p, id) }, '✕'));
+                if (canManage()) thumb.append(el('button', { class: 'del', title: 'Löschen', onclick: () => delPhoto(p, id) }, icon('close', 12)));
                 grid.append(thumb);
             }
             photoCard.append(grid);
@@ -1424,7 +1488,7 @@
                 el('h3', {}, eur(it.total) + '  ', el('span', { class: 'muted', style: 'font-weight:400;font-size:.9rem' }, esc(it.description))),
                 el('div', { class: 'card-meta' }, esc(it.person_name) + ' · ' + fmtDate(it.charged_on) + (it.quantity !== 1 ? ` · ${it.quantity}×${eur(it.amount)}` : '') + (it.note ? ' · ' + esc(it.note) : ''))),
             canBill() && el('div', { class: 'card-actions' },
-                el('button', { class: 'btn btn-ghost btn-sm', onclick: () => delFinance(it) }, '🗑'))));
+                el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: () => delFinance(it) }, icon('trash')))));
     }
     function delFinance(it) {
         deleteWithUndo('Position löschen?', 'Der Eintrag wird entfernt.',
@@ -1476,8 +1540,8 @@
                 page.append(el('div', { class: 'card' }, el('div', { class: 'card-row' },
                     el('div', {}, el('h3', {}, esc(c.name), ' ', c.rates_synced ? el('span', { class: 'badge badge-cat', title: 'Jahr = Monat × 12' }, '×12') : null), el('div', { class: 'card-meta' }, `${eur(c.default_monthly_cost)} / Monat · ${eur(c.default_yearly_cost)} / Jahr`)),
                     isAdmin() && el('div', { class: 'card-actions' },
-                        el('button', { class: 'btn btn-ghost btn-sm', onclick: () => categoryForm(c) }, '✎'),
-                        el('button', { class: 'btn btn-ghost btn-sm', onclick: () => delCategory(c) }, '🗑')))));
+                        el('button', { class: 'btn btn-ghost btn-sm', title: 'Bearbeiten', onclick: () => categoryForm(c) }, icon('edit')),
+                        el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: () => delCategory(c) }, icon('trash'))))));
             }
         } else {
             if (isAdmin()) page.append(el('div', { style: 'text-align:right;margin-bottom:.5rem' }, el('button', { class: 'btn btn-primary btn-sm', onclick: () => serviceForm() }, '+ Dienst')));
@@ -1486,8 +1550,8 @@
                 page.append(el('div', { class: 'card' }, el('div', { class: 'card-row' },
                     el('div', {}, el('h3', {}, esc(s.name)), el('div', { class: 'card-meta' }, eur(s.default_amount))),
                     isAdmin() && el('div', { class: 'card-actions' },
-                        el('button', { class: 'btn btn-ghost btn-sm', onclick: () => serviceForm(s) }, '✎'),
-                        el('button', { class: 'btn btn-ghost btn-sm', onclick: () => delService(s) }, '🗑')))));
+                        el('button', { class: 'btn btn-ghost btn-sm', title: 'Bearbeiten', onclick: () => serviceForm(s) }, icon('edit')),
+                        el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: () => delService(s) }, icon('trash'))))));
             }
         }
     };
@@ -1549,8 +1613,8 @@
                     el('div', { class: 'card-meta' }, esc(u.email) || 'keine E-Mail')),
                 el('div', { class: 'card-actions' },
                     u.totp_enabled ? el('button', { class: 'btn btn-ghost btn-sm', title: '2FA zurücksetzen', onclick: () => resetUserMfa(u) }, '🔓') : null,
-                    el('button', { class: 'btn btn-ghost btn-sm', onclick: () => userForm(u) }, '✎'),
-                    u.id === state.user.id ? null : el('button', { class: 'btn btn-ghost btn-sm', onclick: () => delUser(u) }, '🗑')))),
+                    el('button', { class: 'btn btn-ghost btn-sm', title: 'Bearbeiten', onclick: () => userForm(u) }, icon('edit')),
+                    u.id === state.user.id ? null : el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: () => delUser(u) }, icon('trash'))))),
         });
     };
     async function resetUserMfa(u) {
@@ -1787,16 +1851,16 @@
         body.append(el('div', { class: 'sheet-user' },
             el('div', { class: 'name' }, esc(state.user.username)),
             el('div', { class: 'muted' }, ROLE_LABEL[state.user.role] || state.user.role)));
-        const item = (icon, label, fn, cls = '') => {
-            const b = el('button', { class: 'menu-item ' + cls }, el('span', { class: 'ic' }, icon), el('span', {}, label));
+        const item = (ic, label, fn, cls = '') => {
+            const b = el('button', { class: 'menu-item ' + cls }, el('span', { class: 'ic' }, icon(ic, 18)), el('span', {}, label));
             b.addEventListener('click', () => { dlg.close(); fn(); });
             return b;
         };
-        body.append(item('⚙', 'Einstellungen', () => navigate('settings')));
-        if (isAdmin()) body.append(item('👤', 'Benutzer', () => navigate('users')));
-        if (isAdmin()) body.append(item('🗒', 'Audit-Log', () => navigate('audit')));
-        body.append(item('◐', 'Design wechseln', () => toggleTheme()));
-        body.append(item('⎋', 'Abmelden', () => logout(), 'danger'));
+        body.append(item('settings', 'Einstellungen', () => navigate('settings')));
+        if (isAdmin()) body.append(item('users', 'Benutzer', () => navigate('users')));
+        if (isAdmin()) body.append(item('log', 'Audit-Log', () => navigate('audit')));
+        body.append(item('theme', 'Design wechseln', () => toggleTheme()));
+        body.append(item('logout', 'Abmelden', () => logout(), 'danger'));
         dlg.showModal();
     }
 
