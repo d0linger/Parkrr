@@ -448,7 +448,11 @@ textarea { resize: vertical; min-height: 72px; }
 .archive-section > summary::-webkit-details-marker { display: none; }
 .archive-section > summary::before { content: '▸ '; }
 .archive-section[open] > summary::before { content: '▾ '; }
-.archive-section > .card { margin: 0 0.6rem 0.6rem; }
+.archive-section > .card { margin: 0 0.5rem 0.5rem; padding: 0.75rem; }
+/* Nested cards (Pauschale/Archiv dropdowns) are much narrower than top-level
+   ones — compact the mini sliders so the three status pills fit on one line. */
+.archive-section .seg-mini { max-width: 100%; }
+.archive-section .seg-mini button { padding: 0.26rem 0.5rem; font-size: 0.72rem; }
 
 /* ---------- Segmented control ---------- */
 .segments { display: inline-flex; background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 999px; padding: 3px; margin-bottom: 1rem; }
