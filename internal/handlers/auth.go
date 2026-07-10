@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/preining/parkrr/internal/auth"
@@ -50,7 +51,9 @@ type loginRequest struct {
 // checkRateLimit blocks if the username+IP is currently throttled.
 func (h *AuthHandler) checkRateLimit(w http.ResponseWriter, r *http.Request, username string) (string, bool) {
 	ip := h.Auth.ClientIP(r)
-	key := username + "|" + ip
+	// Usernames are case-insensitive in the database; ensure the throttle
+	// key reflects this so variations in casing cannot bypass the lockout.
+	key := strings.ToLower(username) + "|" + ip
 	if ok, wait := h.Limiter.Allowed(key); !ok {
 		w.Header().Set("Retry-After", formatSeconds(wait))
 		slog.Warn("throttle active", "user", username, "ip", ip, "path", r.URL.Path)
