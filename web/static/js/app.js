@@ -194,15 +194,18 @@
     }
 
     // delete with an undo window (delayed server call)
-    async function deleteWithUndo(title, message, doDelete, onDone) {
+    async function deleteWithUndo(title, message, doDelete, onDone, node) {
         if (!await confirmDialog(title, message)) return;
         let cancelled = false;
+        // Optimistic: the entry disappears immediately; the API call only runs
+        // once the undo window has passed. Undo (or a failure) brings it back.
+        if (node) node.hidden = true;
         const timer = setTimeout(async () => {
             if (cancelled) return;
             try { await doDelete(); toast('Gelöscht', 'success'); onDone && onDone(); }
-            catch (e) { toast(e.message, 'error'); onDone && onDone(); }
+            catch (e) { toast(e.message, 'error'); if (node) node.hidden = false; onDone && onDone(); }
         }, 4500);
-        toastAction('Wird gelöscht …', 'Rückgängig', () => { cancelled = true; clearTimeout(timer); toast('Abgebrochen'); });
+        toastAction('Wird gelöscht …', 'Rückgängig', () => { cancelled = true; clearTimeout(timer); if (node) node.hidden = false; toast('Abgebrochen'); });
     }
 
     // ---------- form modal ----------
@@ -681,7 +684,7 @@
                     el('div', { class: 'card-actions' },
                         el('button', { class: 'btn btn-ghost btn-sm', onclick: () => navigate('persons/' + p.id) }, '›'),
                         canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Bearbeiten', onclick: () => personForm(p) }, icon('edit')),
-                        canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: () => delPerson(p) }, icon('trash')),
+                        canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: (e) => delPerson(p, e.currentTarget.closest('.card')) }, icon('trash')),
                     ))),
         });
     };
@@ -705,9 +708,9 @@
             toast('Person gespeichert', 'success'); render();
         } catch (e) { toast(e.message, 'error'); }
     }
-    function delPerson(p) {
+    function delPerson(p, node) {
         deleteWithUndo('Person löschen?', `„${personName(p)}“ und alle zugehörigen Gefährte werden gelöscht.`,
-            () => api.del('/persons/' + p.id), () => render());
+            () => api.del('/persons/' + p.id), () => render(), node);
     }
 
     // ---------- PERSON DETAIL ----------
@@ -863,7 +866,7 @@
             // Archived vehicles are read-only, so no inline edit; delete stays for
             // genuine mistakes.
             canManage() && !v.archived && el('button', { class: 'btn btn-ghost btn-sm', title: 'Bearbeiten', onclick: () => vehicleForm(v) }, icon('edit')),
-            canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: () => delVehicle(v) }, icon('trash')));
+            canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: (e) => delVehicle(v, e.currentTarget.closest('.card')) }, icon('trash')));
         return el('div', { class: 'card' + (v.archived ? ' is-archived' : '') },
             el('div', { class: 'card-row' }, main, actions),
             vehicleControls(v));
@@ -1335,9 +1338,9 @@
             toast('Gefährt gespeichert', 'success'); render();
         } catch (e) { toast(e.message, 'error'); }
     }
-    function delVehicle(v) {
+    function delVehicle(v, node) {
         deleteWithUndo('Gefährt löschen?', `„${v.label || v.category_name}“ wird gelöscht.`,
-            () => api.del('/vehicles/' + v.id), () => render());
+            () => api.del('/vehicles/' + v.id), () => render(), node);
     }
 
     // ---------- VEHICLE DETAIL ----------
@@ -1411,7 +1414,7 @@
             for (const p of photos) {
                 const img = el('img', { src: '/api/photos/' + p.id, alt: esc(p.filename), loading: 'lazy', onclick: () => lightbox(p.id) });
                 const thumb = el('div', { class: 'photo-thumb' }, img);
-                if (canManage()) thumb.append(el('button', { class: 'del', title: 'Löschen', onclick: () => delPhoto(p, id) }, icon('close', 12)));
+                if (canManage()) thumb.append(el('button', { class: 'del', title: 'Löschen', onclick: () => delPhoto(p, thumb) }, icon('close', 12)));
                 grid.append(thumb);
             }
             photoCard.append(grid);
@@ -1460,9 +1463,8 @@
         try { await api.upload('/vehicles/' + vehicleId + '/photos', fd); toast('Foto hochgeladen', 'success'); render(); }
         catch (e) { toast(e.message, 'error'); }
     }
-    function delPhoto(p, vehicleId) {
-        deleteWithUndo('Foto löschen?', 'Das Foto wird entfernt.', () => api.del('/photos/' + p.id), () => render());
-        void vehicleId;
+    function delPhoto(p, node) {
+        deleteWithUndo('Foto löschen?', 'Das Foto wird entfernt.', () => api.del('/photos/' + p.id), () => render(), node);
     }
     function lightbox(photoId) {
         const dlg = el('dialog', { class: 'lightbox' }, el('img', { src: '/api/photos/' + photoId, alt: '' }));
@@ -1497,11 +1499,11 @@
                 el('h3', {}, eur(it.total) + '  ', el('span', { class: 'muted', style: 'font-weight:400;font-size:.9rem' }, esc(it.description))),
                 el('div', { class: 'card-meta' }, esc(it.person_name) + ' · ' + fmtDate(it.charged_on) + (it.quantity !== 1 ? ` · ${it.quantity}×${eur(it.amount)}` : '') + (it.note ? ' · ' + esc(it.note) : ''))),
             canBill() && el('div', { class: 'card-actions' },
-                el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: () => delFinance(it) }, icon('trash')))));
+                el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: (e) => delFinance(it, e.currentTarget.closest('.card')) }, icon('trash')))));
     }
-    function delFinance(it) {
+    function delFinance(it, node) {
         deleteWithUndo('Position löschen?', 'Der Eintrag wird entfernt.',
-            () => api.del('/charges/' + it.id), () => render());
+            () => api.del('/charges/' + it.id), () => render(), node);
     }
 
     async function chargeForm(presetPerson) {
@@ -1550,7 +1552,7 @@
                     el('div', {}, el('h3', {}, esc(c.name), ' ', c.rates_synced ? el('span', { class: 'badge badge-cat', title: 'Jahr = Monat × 12' }, '×12') : null), el('div', { class: 'card-meta' }, `${eur(c.default_monthly_cost)} / Monat · ${eur(c.default_yearly_cost)} / Jahr`)),
                     isAdmin() && el('div', { class: 'card-actions' },
                         el('button', { class: 'btn btn-ghost btn-sm', title: 'Bearbeiten', onclick: () => categoryForm(c) }, icon('edit')),
-                        el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: () => delCategory(c) }, icon('trash'))))));
+                        el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: (e) => delCategory(c, e.currentTarget.closest('.card')) }, icon('trash'))))));
             }
         } else {
             if (isAdmin()) page.append(el('div', { style: 'text-align:right;margin-bottom:.5rem' }, el('button', { class: 'btn btn-primary btn-sm', onclick: () => serviceForm() }, '+ Dienst')));
@@ -1560,7 +1562,7 @@
                     el('div', {}, el('h3', {}, esc(s.name)), el('div', { class: 'card-meta' }, eur(s.default_amount))),
                     isAdmin() && el('div', { class: 'card-actions' },
                         el('button', { class: 'btn btn-ghost btn-sm', title: 'Bearbeiten', onclick: () => serviceForm(s) }, icon('edit')),
-                        el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: () => delService(s) }, icon('trash'))))));
+                        el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: (e) => delService(s, e.currentTarget.closest('.card')) }, icon('trash'))))));
             }
         }
     };
@@ -1591,7 +1593,7 @@
         try { existing ? await api.put('/categories/' + existing.id, payload) : await api.post('/categories', payload); toast('Tarif gespeichert', 'success'); render(); }
         catch (e) { toast(e.message, 'error'); }
     }
-    function delCategory(c) { deleteWithUndo('Tarif löschen?', `„${c.name}“ wird gelöscht.`, () => api.del('/categories/' + c.id), () => render()); }
+    function delCategory(c, node) { deleteWithUndo('Tarif löschen?', `„${c.name}“ wird gelöscht.`, () => api.del('/categories/' + c.id), () => render(), node); }
     async function serviceForm(existing) {
         const data = await formModal({
             title: existing ? 'Dienst bearbeiten' : 'Neuer Dienst',
@@ -1605,7 +1607,7 @@
         try { existing ? await api.put('/services/' + existing.id, payload) : await api.post('/services', payload); toast('Dienst gespeichert', 'success'); render(); }
         catch (e) { toast(e.message, 'error'); }
     }
-    function delService(s) { deleteWithUndo('Dienst löschen?', `„${s.name}“ wird gelöscht.`, () => api.del('/services/' + s.id), () => render()); }
+    function delService(s, node) { deleteWithUndo('Dienst löschen?', `„${s.name}“ wird gelöscht.`, () => api.del('/services/' + s.id), () => render(), node); }
 
     // ================= USERS (admin) =================
     routes.users = async (page) => {
@@ -1623,7 +1625,7 @@
                 el('div', { class: 'card-actions' },
                     u.totp_enabled ? el('button', { class: 'btn btn-ghost btn-sm', title: '2FA zurücksetzen', onclick: () => resetUserMfa(u) }, '🔓') : null,
                     el('button', { class: 'btn btn-ghost btn-sm', title: 'Bearbeiten', onclick: () => userForm(u) }, icon('edit')),
-                    u.id === state.user.id ? null : el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: () => delUser(u) }, icon('trash'))))),
+                    u.id === state.user.id ? null : el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: (e) => delUser(u, e.currentTarget.closest('.card')) }, icon('trash'))))),
         });
     };
     async function resetUserMfa(u) {
@@ -1646,7 +1648,7 @@
         try { existing ? await api.put('/users/' + existing.id, payload) : await api.post('/users', payload); toast('Benutzer gespeichert', 'success'); render(); }
         catch (e) { toast(e.message, 'error'); }
     }
-    function delUser(u) { deleteWithUndo('Benutzer löschen?', `„${u.username}“ wird gelöscht.`, () => api.del('/users/' + u.id), () => render()); }
+    function delUser(u, node) { deleteWithUndo('Benutzer löschen?', `„${u.username}“ wird gelöscht.`, () => api.del('/users/' + u.id), () => render(), node); }
 
     // ================= AUDIT (admin) =================
     const AUDIT_ACTIONS = { create: 'Erstellt', update: 'Geändert', delete: 'Gelöscht', login: 'Login', logout: 'Logout' };
