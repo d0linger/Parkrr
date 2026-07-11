@@ -154,8 +154,10 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if len(req.NewPassword) < 8 {
-		writeError(w, http.StatusBadRequest, "new password must be at least 8 characters")
+	// Enforce bcrypt's 72-byte limit to prevent silent truncation and
+	// mitigate DoS risks from extremely long password inputs.
+	if len(req.NewPassword) < 8 || len(req.NewPassword) > 72 {
+		writeError(w, http.StatusBadRequest, "new password must be between 8 and 72 characters")
 		return
 	}
 	if h.passwordBreached(r.Context(), req.NewPassword) {
