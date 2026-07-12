@@ -62,7 +62,7 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Username = trim(req.Username)
 	if req.Username == "" || !validPasswordLength(req.Password) {
-		writeError(w, http.StatusBadRequest, "username required and password must be between 8 and 72 characters")
+		writeError(w, http.StatusBadRequest, "username required and password must be between 8 and 72 bytes")
 		return
 	}
 	if h.passwordBreached(r.Context(), req.Password) {
@@ -123,6 +123,20 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate an optional password change up front, before any database
+	// work (an empty password means "keep the current one").
+	if req.Password != "" {
+		if !validPasswordLength(req.Password) {
+			writeError(w, http.StatusBadRequest, "password must be between 8 and 72 bytes")
+			return
+		}
+		if h.passwordBreached(r.Context(), req.Password) {
+			writeError(w, http.StatusBadRequest,
+				"this password has appeared in a known data breach; please choose another")
+			return
+		}
+	}
+
 	// Prevent demoting the last admin.
 	if role != models.RoleAdmin && h.isLastAdmin(r, id) {
 		writeError(w, http.StatusConflict, "cannot demote the last remaining admin")
@@ -136,15 +150,6 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 
 	isAdmin := role == models.RoleAdmin
 	if req.Password != "" {
-		if !validPasswordLength(req.Password) {
-			writeError(w, http.StatusBadRequest, "password must be between 8 and 72 characters")
-			return
-		}
-		if h.passwordBreached(r.Context(), req.Password) {
-			writeError(w, http.StatusBadRequest,
-				"this password has appeared in a known data breach; please choose another")
-			return
-		}
 		hash, err := auth.HashPassword(req.Password)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "could not hash password")

@@ -11,4 +11,4 @@
 ## 2026-07-12 - [Bcrypt Password Length Truncation and DoS Mitigation]
 *Vulnerability:* The application lacked a maximum length limit on passwords. Bcrypt silently truncates input at 72 bytes, meaning any characters beyond that are ignored for authentication, potentially misleading users about their password's strength. Furthermore, hashing extremely long strings can be used for Denial of Service (DoS) attacks.
 *Learning:* Always enforce a reasonable upper bound on password lengths at the validation layer when using bcrypt to ensure the entire password is used for hashing and to protect against computational resource exhaustion.
-*Prevention:* Validate that passwords are between 8 and 72 characters (bytes) before hashing.
+*Prevention:* Validate that passwords are between 8 and 72 bytes before hashing.

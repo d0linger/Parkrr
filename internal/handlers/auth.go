@@ -155,7 +155,7 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validPasswordLength(req.NewPassword) {
-		writeError(w, http.StatusBadRequest, "new password must be between 8 and 72 characters")
+		writeError(w, http.StatusBadRequest, "new password must be between 8 and 72 bytes")
 		return
 	}
 	if h.passwordBreached(r.Context(), req.NewPassword) {
