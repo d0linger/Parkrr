@@ -34,6 +34,19 @@ func New(pool *pgxpool.Pool) *Handler {
 	}
 }
 
+// Password length policy: bcrypt hashes only the first 72 bytes and x/crypto
+// rejects longer inputs outright (a 500 without this check), so cap what we
+// accept up front. len() counts bytes, matching bcrypt's limit.
+const (
+	minPasswordLen = 8
+	maxPasswordLen = 72
+)
+
+// validPasswordLength reports whether pw satisfies the length policy.
+func validPasswordLength(pw string) bool {
+	return len(pw) >= minPasswordLen && len(pw) <= maxPasswordLen
+}
+
 // passwordBreached reports whether a new password appears in a known breach.
 // It fails open: if the check is disabled or the HIBP API is unreachable, the
 // password is allowed (availability of password changes is not held hostage to
