@@ -49,44 +49,44 @@ var ValidStatuses = map[string]bool{
 // integers, so aggregating many months/years never accumulates binary
 // floating-point drift. money is stored as exact NUMERIC(12,2) in the database.
 func prorate(amount float64, period string, from, to time.Time) float64 {
-	if !to.After(from) {
-		return 0
-	}
 	cents := toCents(amount)
 	var total int64
-	if period == BillingYearly {
-		total = prorateByYear(cents, from, to)
-	} else {
-		total = prorateByMonth(cents, from, to)
-	}
+	walkSubPeriods(period, from, to, func(s, e, pStart, pEnd time.Time) {
+		total += fractionCents(cents, days(s, e), days(pStart, pEnd))
+	})
 	return float64(total) / 100
 }
 
-func prorateByYear(cents int64, from, to time.Time) int64 {
-	var total int64
-	for y := from.Year(); y <= to.Year(); y++ {
-		yStart := time.Date(y, 1, 1, 0, 0, 0, 0, time.UTC)
-		yEnd := time.Date(y+1, 1, 1, 0, 0, 0, 0, time.UTC)
-		s, e := maxTime(from, yStart), minTime(to, yEnd)
-		if e.After(s) {
-			total += fractionCents(cents, days(s, e), days(yStart, yEnd))
-		}
+// walkSubPeriods invokes fn for each calendar sub-period (month for monthly,
+// year for yearly) that [from, to) intersects, passing the intersected slice
+// [s, e) and the full sub-period bounds [pStart, pEnd). It is the single source
+// of truth for the calendar walk shared by prorate and FlatRatePeriod.subPeriods,
+// so per-period costs always sum to the prorated total.
+func walkSubPeriods(period string, from, to time.Time, fn func(s, e, pStart, pEnd time.Time)) {
+	if !to.After(from) {
+		return
 	}
-	return total
-}
-
-func prorateByMonth(cents int64, from, to time.Time) int64 {
-	var total int64
+	if period == BillingYearly {
+		for y := from.Year(); ; y++ {
+			pStart := time.Date(y, 1, 1, 0, 0, 0, 0, time.UTC)
+			pEnd := pStart.AddDate(1, 0, 0)
+			if s, e := maxTime(from, pStart), minTime(to, pEnd); e.After(s) {
+				fn(s, e, pStart, pEnd)
+			}
+			if !pEnd.Before(to) {
+				break
+			}
+		}
+		return
+	}
 	cur := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, time.UTC)
 	for cur.Before(to) {
-		mEnd := cur.AddDate(0, 1, 0)
-		s, e := maxTime(from, cur), minTime(to, mEnd)
-		if e.After(s) {
-			total += fractionCents(cents, days(s, e), days(cur, mEnd))
+		pEnd := cur.AddDate(0, 1, 0)
+		if s, e := maxTime(from, cur), minTime(to, pEnd); e.After(s) {
+			fn(s, e, cur, pEnd)
 		}
-		cur = mEnd
+		cur = pEnd
 	}
-	return total
 }
 
 func days(a, b time.Time) float64 { return b.Sub(a).Hours() / 24.0 }
@@ -231,32 +231,9 @@ func (a *FlatRatePeriod) PeriodKey(t time.Time) string {
 // fractionCents(toCents(Amount), days(s,e), days(pStart,pEnd)).
 func (a *FlatRatePeriod) subPeriods(from, to time.Time, fn func(s, e, pStart, pEnd time.Time, key string)) {
 	s, e := a.window(from, to)
-	if !e.After(s) {
-		return
-	}
-	if a.Period == BillingYearly {
-		for y := s.Year(); ; y++ {
-			pStart := time.Date(y, 1, 1, 0, 0, 0, 0, time.UTC)
-			pEnd := pStart.AddDate(1, 0, 0)
-			ss, ee := maxTime(s, pStart), minTime(e, pEnd)
-			if ee.After(ss) {
-				fn(ss, ee, pStart, pEnd, a.PeriodKey(pStart))
-			}
-			if !pEnd.Before(e) {
-				break
-			}
-		}
-		return
-	}
-	cur := time.Date(s.Year(), s.Month(), 1, 0, 0, 0, 0, time.UTC)
-	for cur.Before(e) {
-		pEnd := cur.AddDate(0, 1, 0)
-		ss, ee := maxTime(s, cur), minTime(e, pEnd)
-		if ee.After(ss) {
-			fn(ss, ee, cur, pEnd, a.PeriodKey(cur))
-		}
-		cur = pEnd
-	}
+	walkSubPeriods(a.Period, s, e, func(ss, ee, pStart, pEnd time.Time) {
+		fn(ss, ee, pStart, pEnd, a.PeriodKey(pStart))
+	})
 }
 
 // PaidCentsInRange returns, in integer cents, the portion of the agreement's
