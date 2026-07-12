@@ -29,6 +29,17 @@ type personStatsResponse struct {
 	HasFlatRate    bool                    `json:"has_flat_rate"`
 }
 
+// parseYearParam reads an optional ?year= query parameter, returning def when it
+// is absent or outside the supported 2000–2100 range.
+func parseYearParam(r *http.Request, def int) int {
+	if y := r.URL.Query().Get("year"); y != "" {
+		if n, err := strconv.Atoi(y); err == nil && n >= 2000 && n <= 2100 {
+			return n
+		}
+	}
+	return def
+}
+
 // PersonStats returns per-year and per-month cost statistics plus the open
 // balance for a single person. Accepts ?year= for the monthly breakdown.
 func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
@@ -51,12 +62,7 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	year := now.Year()
-	if y := r.URL.Query().Get("year"); y != "" {
-		if n, err := strconv.Atoi(y); err == nil && n >= 2000 && n <= 2100 {
-			year = n
-		}
-	}
+	year := parseYearParam(r, now.Year())
 
 	resp := personStatsResponse{
 		PersonID:      id,
@@ -150,12 +156,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	resp.Year = now.Year()
-	if y := r.URL.Query().Get("year"); y != "" {
-		if n, err := strconv.Atoi(y); err == nil && n >= 2000 && n <= 2100 {
-			resp.Year = n
-		}
-	}
+	resp.Year = parseYearParam(r, now.Year())
 	yearStart := time.Date(resp.Year, 1, 1, 0, 0, 0, 0, time.UTC)
 	yearEnd := time.Date(resp.Year+1, 1, 1, 0, 0, 0, 0, time.UTC)
 	until := now.AddDate(0, 0, 1)
