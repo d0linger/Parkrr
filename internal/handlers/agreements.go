@@ -28,6 +28,52 @@ func addPeriodPayment(a *models.FlatRatePeriod, key string, amount *float64) {
 
 // loadAgreements returns a person's flat-rate agreements with their covered
 // vehicle ids and derived accrued cost (as of now), newest first.
+// attachVehiclesAndPayments fills VehicleIDs and per-period payments for every
+// agreement in byID (keyed by the id set ids). Two batched queries, no N+1;
+// shared by loadAgreements and loadAllAgreements.
+func (h *Handler) attachVehiclesAndPayments(ctx context.Context,
+	byID map[int64]*models.FlatRatePeriod, ids []int64) error {
+
+	vrows, err := h.Pool.Query(ctx,
+		`SELECT period_id, vehicle_id FROM flat_rate_period_vehicles WHERE period_id = ANY($1)`, ids)
+	if err != nil {
+		return err
+	}
+	defer vrows.Close()
+	for vrows.Next() {
+		var pid, vid int64
+		if err := vrows.Scan(&pid, &vid); err != nil {
+			return err
+		}
+		if a := byID[pid]; a != nil {
+			a.VehicleIDs = append(a.VehicleIDs, vid)
+		}
+	}
+	if err := vrows.Err(); err != nil {
+		return err
+	}
+	vrows.Close()
+
+	prows, err := h.Pool.Query(ctx,
+		`SELECT period_id, period_key, amount FROM flat_rate_period_payments WHERE period_id = ANY($1)`, ids)
+	if err != nil {
+		return err
+	}
+	defer prows.Close()
+	for prows.Next() {
+		var pid int64
+		var key string
+		var amount *float64
+		if err := prows.Scan(&pid, &key, &amount); err != nil {
+			return err
+		}
+		if a := byID[pid]; a != nil {
+			addPeriodPayment(a, key, amount)
+		}
+	}
+	return prows.Err()
+}
+
 func (h *Handler) loadAgreements(ctx context.Context, personID int64, now time.Time) ([]models.FlatRatePeriod, error) {
 	rows, err := h.Pool.Query(ctx,
 		`SELECT id, person_id, amount, period, start_date, end_date, paid, note, created_at, updated_at
@@ -58,44 +104,7 @@ func (h *Handler) loadAgreements(ctx context.Context, personID int64, now time.T
 		for i := range out {
 			byID[out[i].ID] = &out[i]
 		}
-		vrows, err := h.Pool.Query(ctx,
-			`SELECT period_id, vehicle_id FROM flat_rate_period_vehicles WHERE period_id = ANY($1)`, ids)
-		if err != nil {
-			return nil, err
-		}
-		for vrows.Next() {
-			var pid, vid int64
-			if err := vrows.Scan(&pid, &vid); err != nil {
-				vrows.Close()
-				return nil, err
-			}
-			if a := byID[pid]; a != nil {
-				a.VehicleIDs = append(a.VehicleIDs, vid)
-			}
-		}
-		vrows.Close()
-		if err := vrows.Err(); err != nil {
-			return nil, err
-		}
-		prows, err := h.Pool.Query(ctx,
-			`SELECT period_id, period_key, amount FROM flat_rate_period_payments WHERE period_id = ANY($1)`, ids)
-		if err != nil {
-			return nil, err
-		}
-		for prows.Next() {
-			var pid int64
-			var key string
-			var amount *float64
-			if err := prows.Scan(&pid, &key, &amount); err != nil {
-				prows.Close()
-				return nil, err
-			}
-			if a := byID[pid]; a != nil {
-				addPeriodPayment(a, key, amount)
-			}
-		}
-		prows.Close()
-		if err := prows.Err(); err != nil {
+		if err := h.attachVehiclesAndPayments(ctx, byID, ids); err != nil {
 			return nil, err
 		}
 	}
@@ -788,44 +797,10 @@ func (h *Handler) loadAllAgreements(ctx context.Context, personID int64) (map[in
 			byID[out[pid][i].ID] = &out[pid][i]
 		}
 	}
-	vrows, err := h.Pool.Query(ctx,
-		`SELECT period_id, vehicle_id FROM flat_rate_period_vehicles WHERE period_id = ANY($1)`, ids)
-	if err != nil {
+	if err := h.attachVehiclesAndPayments(ctx, byID, ids); err != nil {
 		return nil, err
 	}
-	for vrows.Next() {
-		var pid, vid int64
-		if err := vrows.Scan(&pid, &vid); err != nil {
-			vrows.Close()
-			return nil, err
-		}
-		if a := byID[pid]; a != nil {
-			a.VehicleIDs = append(a.VehicleIDs, vid)
-		}
-	}
-	vrows.Close()
-	if err := vrows.Err(); err != nil {
-		return nil, err
-	}
-	prows, err := h.Pool.Query(ctx,
-		`SELECT period_id, period_key, amount FROM flat_rate_period_payments WHERE period_id = ANY($1)`, ids)
-	if err != nil {
-		return nil, err
-	}
-	for prows.Next() {
-		var pid int64
-		var key string
-		var amount *float64
-		if err := prows.Scan(&pid, &key, &amount); err != nil {
-			prows.Close()
-			return nil, err
-		}
-		if a := byID[pid]; a != nil {
-			addPeriodPayment(a, key, amount)
-		}
-	}
-	prows.Close()
-	return out, prows.Err()
+	return out, nil
 }
 
 // setFlatRateCoverage fills each vehicle's derived flat-rate coverage fields
