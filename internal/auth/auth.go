@@ -83,7 +83,10 @@ func hashToken(raw string) string {
 // trusted when the app is configured to run behind a trusted reverse proxy.
 func (m *Manager) ClientIP(r *http.Request) string {
 	if m.trustProxy {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// Join ALL X-Forwarded-For header lines: a client may send its own
+		// XFF and the proxy may append its hop as a separate header field, so
+		// Header.Get (first line only) would miss the proxy-added value.
+		if xff := strings.Join(r.Header.Values("X-Forwarded-For"), ","); xff != "" {
 			// Use the RIGHTMOST entry: that is the address our own trusted proxy
 			// appended. Everything to the left is client-supplied and forgeable,
 			// so keying the rate limiter off the leftmost hop would let an
