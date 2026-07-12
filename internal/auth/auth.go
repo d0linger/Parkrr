@@ -6,6 +6,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -83,7 +84,12 @@ func hashToken(raw string) string {
 func (m *Manager) ClientIP(r *http.Request) string {
 	if m.trustProxy {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			return strings.TrimSpace(strings.Split(xff, ",")[0])
+			// Use the RIGHTMOST entry: that is the address our own trusted proxy
+			// appended. Everything to the left is client-supplied and forgeable,
+			// so keying the rate limiter off the leftmost hop would let an
+			// attacker rotate X-Forwarded-For to dodge the lockout.
+			parts := strings.Split(xff, ",")
+			return strings.TrimSpace(parts[len(parts)-1])
 		}
 		if xr := r.Header.Get("X-Real-IP"); xr != "" {
 			return strings.TrimSpace(xr)
@@ -408,7 +414,8 @@ func (m *Manager) csrfOK(r *http.Request) bool {
 	if err != nil || c.Value == "" {
 		return false
 	}
-	return r.Header.Get(CSRFHeader) == c.Value
+	// Constant-time compare so the match doesn't leak via response timing.
+	return subtle.ConstantTimeCompare([]byte(r.Header.Get(CSRFHeader)), []byte(c.Value)) == 1
 }
 
 func isStateChanging(method string) bool {
