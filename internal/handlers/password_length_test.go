@@ -1,0 +1,66 @@
+package handlers
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+// Regression for the bcrypt 72-byte limit: over-long passwords must be
+// rejected with 400 by validation, not bubble up as a 500 from HashPassword
+// (x/crypto's bcrypt refuses inputs longer than 72 bytes).
+func TestPasswordLengthPolicy(t *testing.T) {
+	long := strings.Repeat("a", 73)
+
+	// The contract is a concrete 8-72 BYTES (bcrypt's input limit), asserted
+	// with literals on purpose so drifting constants would fail here.
+	for _, tc := range []struct {
+		pw string
+		ok bool
+	}{
+		{strings.Repeat("a", 7), false},
+		{strings.Repeat("a", 8), true},
+		{strings.Repeat("a", 72), true},
+		{long, false},
+		// len() counts bytes, not runes: 18 four-byte emoji (72 bytes) fit
+		// exactly, 19 (76 bytes) do not.
+		{strings.Repeat("\U0001F600", 18), true},
+		{strings.Repeat("\U0001F600", 19), false},
+	} {
+		if got := validPasswordLength(tc.pw); got != tc.ok {
+			t.Errorf("validPasswordLength(%d bytes) = %v, want %v", len(tc.pw), got, tc.ok)
+		}
+	}
+
+	// ChangePassword answers 400 before touching the rate limiter, HIBP or
+	// the database, so a zero-value handler suffices.
+	ah := &AuthHandler{Handler: &Handler{}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/change-password",
+		strings.NewReader(`{"current_password":"x","new_password":"`+long+`"}`))
+	ah.ChangePassword(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("ChangePassword with %d-byte password: expected 400, got %d", len(long), rec.Code)
+	}
+
+	// CreateUser validates length in the same guard as the username.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/users",
+		strings.NewReader(`{"username":"u","password":"`+long+`"}`))
+	(&Handler{}).CreateUser(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("CreateUser with %d-byte password: expected 400, got %d", len(long), rec.Code)
+	}
+
+	// UpdateUser validates an optional password change before the
+	// last-admin check or user SELECT hit the database.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/api/users/1",
+		strings.NewReader(`{"username":"u","role":"editor","password":"`+long+`"}`))
+	req.SetPathValue("id", "1")
+	(&Handler{}).UpdateUser(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("UpdateUser with %d-byte password: expected 400, got %d", len(long), rec.Code)
+	}
+}
