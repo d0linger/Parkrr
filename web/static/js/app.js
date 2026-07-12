@@ -1391,7 +1391,7 @@
         const vc = coverage(v);
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' },
-            el('button', { class: 'back-btn', onclick: () => navigate('vehicles') }, '‹'),
+            el('button', { class: 'back-btn', onclick: () => navigate('vehicles'), 'aria-label': 'Zurück' }, '‹'),
             el('h2', { style: 'margin:0;flex:1' }, esc(vehicleTitle(v))), statusBadge(v.status)));
 
         page.append(el('div', { class: 'card' },
