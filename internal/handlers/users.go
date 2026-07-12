@@ -61,8 +61,8 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Username = trim(req.Username)
-	if req.Username == "" || len(req.Password) < 8 {
-		writeError(w, http.StatusBadRequest, "username required and password must be at least 8 characters")
+	if req.Username == "" || len(req.Password) < 8 || len(req.Password) > 72 {
+		writeError(w, http.StatusBadRequest, "username required and password must be between 8 and 72 characters")
 		return
 	}
 	if h.passwordBreached(r.Context(), req.Password) {
@@ -136,8 +136,8 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 
 	isAdmin := role == models.RoleAdmin
 	if req.Password != "" {
-		if len(req.Password) < 8 {
-			writeError(w, http.StatusBadRequest, "password must be at least 8 characters")
+		if len(req.Password) < 8 || len(req.Password) > 72 {
+			writeError(w, http.StatusBadRequest, "password must be between 8 and 72 characters")
 			return
 		}
 		if h.passwordBreached(r.Context(), req.Password) {
