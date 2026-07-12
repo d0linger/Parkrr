@@ -28,6 +28,52 @@ func addPeriodPayment(a *models.FlatRatePeriod, key string, amount *float64) {
 
 // loadAgreements returns a person's flat-rate agreements with their covered
 // vehicle ids and derived accrued cost (as of now), newest first.
+// attachVehiclesAndPayments fills VehicleIDs and per-period payments for every
+// agreement in byID (keyed by the id set ids). Two batched queries, no N+1;
+// shared by loadAgreements and loadAllAgreements.
+func (h *Handler) attachVehiclesAndPayments(ctx context.Context,
+	byID map[int64]*models.FlatRatePeriod, ids []int64) error {
+
+	vrows, err := h.Pool.Query(ctx,
+		`SELECT period_id, vehicle_id FROM flat_rate_period_vehicles WHERE period_id = ANY($1)`, ids)
+	if err != nil {
+		return err
+	}
+	defer vrows.Close()
+	for vrows.Next() {
+		var pid, vid int64
+		if err := vrows.Scan(&pid, &vid); err != nil {
+			return err
+		}
+		if a := byID[pid]; a != nil {
+			a.VehicleIDs = append(a.VehicleIDs, vid)
+		}
+	}
+	if err := vrows.Err(); err != nil {
+		return err
+	}
+	vrows.Close()
+
+	prows, err := h.Pool.Query(ctx,
+		`SELECT period_id, period_key, amount FROM flat_rate_period_payments WHERE period_id = ANY($1)`, ids)
+	if err != nil {
+		return err
+	}
+	defer prows.Close()
+	for prows.Next() {
+		var pid int64
+		var key string
+		var amount *float64
+		if err := prows.Scan(&pid, &key, &amount); err != nil {
+			return err
+		}
+		if a := byID[pid]; a != nil {
+			addPeriodPayment(a, key, amount)
+		}
+	}
+	return prows.Err()
+}
+
 func (h *Handler) loadAgreements(ctx context.Context, personID int64, now time.Time) ([]models.FlatRatePeriod, error) {
 	rows, err := h.Pool.Query(ctx,
 		`SELECT id, person_id, amount, period, start_date, end_date, paid, note, created_at, updated_at
@@ -58,44 +104,7 @@ func (h *Handler) loadAgreements(ctx context.Context, personID int64, now time.T
 		for i := range out {
 			byID[out[i].ID] = &out[i]
 		}
-		vrows, err := h.Pool.Query(ctx,
-			`SELECT period_id, vehicle_id FROM flat_rate_period_vehicles WHERE period_id = ANY($1)`, ids)
-		if err != nil {
-			return nil, err
-		}
-		for vrows.Next() {
-			var pid, vid int64
-			if err := vrows.Scan(&pid, &vid); err != nil {
-				vrows.Close()
-				return nil, err
-			}
-			if a := byID[pid]; a != nil {
-				a.VehicleIDs = append(a.VehicleIDs, vid)
-			}
-		}
-		vrows.Close()
-		if err := vrows.Err(); err != nil {
-			return nil, err
-		}
-		prows, err := h.Pool.Query(ctx,
-			`SELECT period_id, period_key, amount FROM flat_rate_period_payments WHERE period_id = ANY($1)`, ids)
-		if err != nil {
-			return nil, err
-		}
-		for prows.Next() {
-			var pid int64
-			var key string
-			var amount *float64
-			if err := prows.Scan(&pid, &key, &amount); err != nil {
-				prows.Close()
-				return nil, err
-			}
-			if a := byID[pid]; a != nil {
-				addPeriodPayment(a, key, amount)
-			}
-		}
-		prows.Close()
-		if err := prows.Err(); err != nil {
+		if err := h.attachVehiclesAndPayments(ctx, byID, ids); err != nil {
 			return nil, err
 		}
 	}
@@ -359,33 +368,7 @@ func (h *Handler) CreateAgreement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	var req agreementRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	cand, msg := req.parse()
-	if msg != "" {
-		writeError(w, http.StatusBadRequest, msg)
-		return
-	}
-	if m, code := h.validateAgreement(r.Context(), pid, 0, cand, len(req.NewVehicles) > 0); m != "" {
-		writeError(w, code, m)
-		return
-	}
-	// Inline devices are created inside saveAgreement's transaction and covered,
-	// so a new-device-only Pauschale is scoped to them (not "all vehicles") and a
-	// failure never leaves orphaned vehicles behind.
-	if err := h.saveAgreement(r, 0, pid, cand, req.NewVehicles, req.EditVehicles); err != nil {
-		msg, code := agreementSaveError(err, "could not create agreement")
-		writeError(w, code, msg)
-		return
-	}
-	h.audit(r, "create", "flatrate", pid, "Pauschale angelegt für "+h.personLabel(r, pid))
-	// Archive bound vehicles right away if the agreement is now finished and
-	// settled, rather than waiting for the periodic sweep.
-	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), pid)
-	h.writeAgreements(w, r, pid)
+	h.persistAgreement(w, r, 0, pid)
 }
 
 // UpdateAgreement edits an existing agreement.
@@ -401,6 +384,15 @@ func (h *Handler) UpdateAgreement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "agreement not found")
 		return
 	}
+	h.persistAgreement(w, r, id, pid)
+}
+
+// persistAgreement runs the shared create/update pipeline: parse, validate,
+// save in one transaction, then audit and an immediate archive sweep. id==0
+// inserts (verb/audit wording and the failure message are derived from that);
+// everything else is identical between the two entry points.
+func (h *Handler) persistAgreement(w http.ResponseWriter, r *http.Request, id, pid int64) {
+	create := id == 0
 	var req agreementRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -415,12 +407,28 @@ func (h *Handler) UpdateAgreement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, code, m)
 		return
 	}
+	// Inline devices are created inside saveAgreement's transaction and covered,
+	// so a new-device-only Pauschale is scoped to them (not "all vehicles") and a
+	// failure never leaves orphaned vehicles behind.
+	failMsg := "could not update agreement"
+	if create {
+		failMsg = "could not create agreement"
+	}
 	if err := h.saveAgreement(r, id, pid, cand, req.NewVehicles, req.EditVehicles); err != nil {
-		msg, code := agreementSaveError(err, "could not update agreement")
+		msg, code := agreementSaveError(err, failMsg)
 		writeError(w, code, msg)
 		return
 	}
-	h.audit(r, "update", "flatrate", id, "Pauschale geändert für "+h.personLabel(r, pid))
+	// Audit entity_id mirrors the pre-refactor behavior: the person for a
+	// create (the new agreement id isn't surfaced here), the agreement id for
+	// an update.
+	verb, verbWord, auditID := "update", "geändert", id
+	if create {
+		verb, verbWord, auditID = "create", "angelegt", pid
+	}
+	h.audit(r, verb, "flatrate", auditID, "Pauschale "+verbWord+" für "+h.personLabel(r, pid))
+	// Archive bound vehicles right away if the agreement is now finished and
+	// settled, rather than waiting for the periodic sweep.
 	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), pid)
 	h.writeAgreements(w, r, pid)
 }
@@ -788,44 +796,10 @@ func (h *Handler) loadAllAgreements(ctx context.Context, personID int64) (map[in
 			byID[out[pid][i].ID] = &out[pid][i]
 		}
 	}
-	vrows, err := h.Pool.Query(ctx,
-		`SELECT period_id, vehicle_id FROM flat_rate_period_vehicles WHERE period_id = ANY($1)`, ids)
-	if err != nil {
+	if err := h.attachVehiclesAndPayments(ctx, byID, ids); err != nil {
 		return nil, err
 	}
-	for vrows.Next() {
-		var pid, vid int64
-		if err := vrows.Scan(&pid, &vid); err != nil {
-			vrows.Close()
-			return nil, err
-		}
-		if a := byID[pid]; a != nil {
-			a.VehicleIDs = append(a.VehicleIDs, vid)
-		}
-	}
-	vrows.Close()
-	if err := vrows.Err(); err != nil {
-		return nil, err
-	}
-	prows, err := h.Pool.Query(ctx,
-		`SELECT period_id, period_key, amount FROM flat_rate_period_payments WHERE period_id = ANY($1)`, ids)
-	if err != nil {
-		return nil, err
-	}
-	for prows.Next() {
-		var pid int64
-		var key string
-		var amount *float64
-		if err := prows.Scan(&pid, &key, &amount); err != nil {
-			prows.Close()
-			return nil, err
-		}
-		if a := byID[pid]; a != nil {
-			addPeriodPayment(a, key, amount)
-		}
-	}
-	prows.Close()
-	return out, prows.Err()
+	return out, nil
 }
 
 // setFlatRateCoverage fills each vehicle's derived flat-rate coverage fields

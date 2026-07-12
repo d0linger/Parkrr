@@ -19,6 +19,29 @@ const dateLayout = "2006-01-02"
 // vehicle. Archived vehicles are read-only; the client must reactivate first.
 const errArchived = "vehicle is archived – reactivate it first to make changes"
 
+// ensureVehicleWritable turns the "load-then-check" preamble shared by the
+// mutating vehicle handlers into one call: it writes 404 when the row was
+// missing (scanErr set) or 409 when the vehicle is archived (read-only), and
+// returns false in either case. Callers still fetch whatever other columns they
+// need alongside `archived` in the same query.
+func ensureVehicleWritable(w http.ResponseWriter, archived bool, scanErr error) bool {
+	if scanErr != nil {
+		// Only a genuinely absent row is a 404; any other scan failure (e.g. the
+		// database being unreachable) is a server error, not a "not found".
+		if errors.Is(scanErr, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "vehicle not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "query failed")
+		}
+		return false
+	}
+	if archived {
+		writeError(w, http.StatusConflict, errArchived)
+		return false
+	}
+	return true
+}
+
 // autoArchiveIfClosed archives a vehicle that has just become fully closed
 // (cancelled, or collected AND paid), so settled vehicles drop out of the
 // active lists automatically. It is a no-op for still-open or already-archived
@@ -286,13 +309,9 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 	var oldStatus string
 	var oldRate float64
 	var archived bool
-	if err := h.Pool.QueryRow(r.Context(),
-		`SELECT status, rate, archived FROM vehicles WHERE id=$1`, id).Scan(&oldStatus, &oldRate, &archived); err != nil {
-		writeError(w, http.StatusNotFound, "vehicle not found")
-		return
-	}
-	if archived {
-		writeError(w, http.StatusConflict, errArchived)
+	scanErr := h.Pool.QueryRow(r.Context(),
+		`SELECT status, rate, archived FROM vehicles WHERE id=$1`, id).Scan(&oldStatus, &oldRate, &archived)
+	if !ensureVehicleWritable(w, archived, scanErr) {
 		return
 	}
 	// Fallback is the existing rate, so an omitted rate keeps the locked price.
@@ -371,13 +390,9 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	var oldStatus string
 	var archived bool
-	if err := h.Pool.QueryRow(r.Context(),
-		`SELECT status, archived FROM vehicles WHERE id=$1`, id).Scan(&oldStatus, &archived); err != nil {
-		writeError(w, http.StatusNotFound, "vehicle not found")
-		return
-	}
-	if archived {
-		writeError(w, http.StatusConflict, errArchived)
+	scanErr := h.Pool.QueryRow(r.Context(),
+		`SELECT status, archived FROM vehicles WHERE id=$1`, id).Scan(&oldStatus, &archived)
+	if !ensureVehicleWritable(w, archived, scanErr) {
 		return
 	}
 	// When collecting, set the pickup/end date: use the caller-supplied date if
@@ -461,13 +476,9 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var archived bool
-	if err := h.Pool.QueryRow(r.Context(),
-		`SELECT archived FROM vehicles WHERE id=$1`, id).Scan(&archived); err != nil {
-		writeError(w, http.StatusNotFound, "vehicle not found")
-		return
-	}
-	if archived {
-		writeError(w, http.StatusConflict, errArchived)
+	scanErr := h.Pool.QueryRow(r.Context(),
+		`SELECT archived FROM vehicles WHERE id=$1`, id).Scan(&archived)
+	if !ensureVehicleWritable(w, archived, scanErr) {
 		return
 	}
 	if _, err := h.Pool.Exec(r.Context(),

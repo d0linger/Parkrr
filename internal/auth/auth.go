@@ -334,7 +334,12 @@ func (m *Manager) userFromRequest(ctx context.Context, r *http.Request) (*models
 		_, _ = m.pool.Exec(ctx, `DELETE FROM sessions WHERE token = $1`, tokenHash)
 		return nil, errors.New("session expired")
 	}
-	_, _ = m.pool.Exec(ctx, `UPDATE sessions SET last_seen = now() WHERE token = $1`, tokenHash)
+	// Touch last_seen at most once a minute: the WHERE guard lets Postgres skip
+	// the write entirely on a non-match (no dirty page / WAL), turning a
+	// per-request write into an occasional one.
+	_, _ = m.pool.Exec(ctx,
+		`UPDATE sessions SET last_seen = now()
+		 WHERE token = $1 AND last_seen < now() - interval '60 seconds'`, tokenHash)
 	return &u, nil
 }
 
