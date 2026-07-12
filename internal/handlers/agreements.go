@@ -419,7 +419,7 @@ func (h *Handler) persistAgreement(w http.ResponseWriter, r *http.Request, id, p
 		writeError(w, code, msg)
 		return
 	}
-	// Audit entity_id mirrors the pre-refactor behaviour: the person for a
+	// Audit entity_id mirrors the pre-refactor behavior: the person for a
 	// create (the new agreement id isn't surfaced here), the agreement id for
 	// an update.
 	verb, verbWord, auditID := "update", "geändert", id

@@ -26,7 +26,13 @@ const errArchived = "vehicle is archived – reactivate it first to make changes
 // need alongside `archived` in the same query.
 func ensureVehicleWritable(w http.ResponseWriter, archived bool, scanErr error) bool {
 	if scanErr != nil {
-		writeError(w, http.StatusNotFound, "vehicle not found")
+		// Only a genuinely absent row is a 404; any other scan failure (e.g. the
+		// database being unreachable) is a server error, not a "not found".
+		if errors.Is(scanErr, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "vehicle not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "query failed")
+		}
 		return false
 	}
 	if archived {

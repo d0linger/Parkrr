@@ -66,13 +66,18 @@ func walkSubPeriods(period string, from, to time.Time, fn func(s, e, pStart, pEn
 	if !to.After(from) {
 		return
 	}
+	// emit clips one sub-period [pStart, pEnd) to [from, to) and dispatches the
+	// overlap, so the two calendar loops share the intersection logic.
+	emit := func(pStart, pEnd time.Time) {
+		if s, e := maxTime(from, pStart), minTime(to, pEnd); e.After(s) {
+			fn(s, e, pStart, pEnd)
+		}
+	}
 	if period == BillingYearly {
 		for y := from.Year(); ; y++ {
 			pStart := time.Date(y, 1, 1, 0, 0, 0, 0, time.UTC)
 			pEnd := pStart.AddDate(1, 0, 0)
-			if s, e := maxTime(from, pStart), minTime(to, pEnd); e.After(s) {
-				fn(s, e, pStart, pEnd)
-			}
+			emit(pStart, pEnd)
 			if !pEnd.Before(to) {
 				break
 			}
@@ -82,9 +87,7 @@ func walkSubPeriods(period string, from, to time.Time, fn func(s, e, pStart, pEn
 	cur := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, time.UTC)
 	for cur.Before(to) {
 		pEnd := cur.AddDate(0, 1, 0)
-		if s, e := maxTime(from, cur), minTime(to, pEnd); e.After(s) {
-			fn(s, e, cur, pEnd)
-		}
+		emit(cur, pEnd)
 		cur = pEnd
 	}
 }
