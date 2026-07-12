@@ -244,7 +244,12 @@
                     continue;
                 }
                 const id = 'f_' + f.name;
-                body.append(el('label', { for: id }, f.label + (f.required ? ' *' : '')));
+                const errId = 'err_' + f.name;
+                const helpId = 'help_' + f.name;
+                // The required asterisk is decorative — aria-required carries the
+                // meaning, so hide the star from screen readers.
+                body.append(el('label', { for: id }, f.label,
+                    f.required ? el('span', { 'aria-hidden': 'true' }, ' *') : null));
                 let input;
                 if (f.type === 'select') {
                     input = el('select', { id, name: f.name });
@@ -266,9 +271,13 @@
                     // typing. Mobile still opens its native date UI on tap, and
                     // desktop shows the built-in calendar icon to click.
                 }
+                // Link the field to its error message + help text so a screen
+                // reader reads both when the field is focused, not just "invalid".
+                if (f.required) input.setAttribute('aria-required', 'true');
+                input.setAttribute('aria-describedby', f.help ? errId + ' ' + helpId : errId);
                 body.append(input);
-                body.append(el('div', { class: 'field-error', id: 'err_' + f.name, role: 'alert', hidden: true }));
-                if (f.help) body.append(el('div', { class: 'card-meta' }, f.help));
+                body.append(el('div', { class: 'field-error', id: errId, role: 'alert', hidden: true }));
+                if (f.help) body.append(el('div', { class: 'card-meta', id: helpId }, f.help));
             }
             const form = $('#modal-form');
             const cleanup = () => {
@@ -1224,8 +1233,35 @@
         void th.offsetWidth;
         th.style.transition = '';
     }
+    // Roving tabindex: a radiogroup is a single tab stop, so only the active
+    // option is Tab-reachable; arrow keys move between options. Keeps at least
+    // one enabled button tabbable even when the active one is disabled.
+    function segRoving(seg) {
+        const btns = Array.from(seg.querySelectorAll('button'));
+        const enabled = btns.filter((b) => !b.disabled);
+        if (!enabled.length) return;
+        const stop = enabled.find((b) => b.classList.contains('active')) || enabled[0];
+        btns.forEach((b) => { b.tabIndex = b === stop ? 0 : -1; });
+    }
+    function onSegKeydown(e) {
+        const dir = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1
+            : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1
+            : e.key === 'Home' ? 'first' : e.key === 'End' ? 'last' : 0;
+        if (!dir) return;
+        const list = Array.from(e.currentTarget.querySelectorAll('button')).filter((b) => !b.disabled);
+        const i = list.indexOf(document.activeElement);
+        if (i < 0 || list.length < 2) return;
+        e.preventDefault();
+        const j = dir === 'first' ? 0 : dir === 'last' ? list.length - 1
+            : (i + dir + list.length) % list.length;
+        // Move focus only; Space/Enter activates via the button's own onclick, so
+        // arrowing through statuses doesn't fire an API call per keypress.
+        list[j].focus();
+    }
     function segThumb(seg) {
         seg.prepend(el('span', { class: 'seg-thumb', 'aria-hidden': 'true' }));
+        segRoving(seg);
+        seg.addEventListener('keydown', onSegKeydown);
         // Position once the slider is laid out (offsetWidth is 0 before).
         requestAnimationFrame(() => placeThumb(seg));
         return seg;
@@ -1265,6 +1301,7 @@
             if (sib.hasAttribute('aria-checked')) sib.setAttribute('aria-checked', String(sib === btn));
         }
         moveThumb(btn.parentElement);
+        segRoving(btn.parentElement); // keep the single tab stop on the new selection
     }
     async function markPaid(v, paid) {
         if (v.paid === paid) return;
