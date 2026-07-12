@@ -368,33 +368,7 @@ func (h *Handler) CreateAgreement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	var req agreementRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	cand, msg := req.parse()
-	if msg != "" {
-		writeError(w, http.StatusBadRequest, msg)
-		return
-	}
-	if m, code := h.validateAgreement(r.Context(), pid, 0, cand, len(req.NewVehicles) > 0); m != "" {
-		writeError(w, code, m)
-		return
-	}
-	// Inline devices are created inside saveAgreement's transaction and covered,
-	// so a new-device-only Pauschale is scoped to them (not "all vehicles") and a
-	// failure never leaves orphaned vehicles behind.
-	if err := h.saveAgreement(r, 0, pid, cand, req.NewVehicles, req.EditVehicles); err != nil {
-		msg, code := agreementSaveError(err, "could not create agreement")
-		writeError(w, code, msg)
-		return
-	}
-	h.audit(r, "create", "flatrate", pid, "Pauschale angelegt für "+h.personLabel(r, pid))
-	// Archive bound vehicles right away if the agreement is now finished and
-	// settled, rather than waiting for the periodic sweep.
-	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), pid)
-	h.writeAgreements(w, r, pid)
+	h.persistAgreement(w, r, 0, pid)
 }
 
 // UpdateAgreement edits an existing agreement.
@@ -410,6 +384,15 @@ func (h *Handler) UpdateAgreement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "agreement not found")
 		return
 	}
+	h.persistAgreement(w, r, id, pid)
+}
+
+// persistAgreement runs the shared create/update pipeline: parse, validate,
+// save in one transaction, then audit and an immediate archive sweep. id==0
+// inserts (verb/audit wording and the failure message are derived from that);
+// everything else is identical between the two entry points.
+func (h *Handler) persistAgreement(w http.ResponseWriter, r *http.Request, id, pid int64) {
+	create := id == 0
 	var req agreementRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -424,12 +407,28 @@ func (h *Handler) UpdateAgreement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, code, m)
 		return
 	}
+	// Inline devices are created inside saveAgreement's transaction and covered,
+	// so a new-device-only Pauschale is scoped to them (not "all vehicles") and a
+	// failure never leaves orphaned vehicles behind.
+	failMsg := "could not update agreement"
+	if create {
+		failMsg = "could not create agreement"
+	}
 	if err := h.saveAgreement(r, id, pid, cand, req.NewVehicles, req.EditVehicles); err != nil {
-		msg, code := agreementSaveError(err, "could not update agreement")
+		msg, code := agreementSaveError(err, failMsg)
 		writeError(w, code, msg)
 		return
 	}
-	h.audit(r, "update", "flatrate", id, "Pauschale geändert für "+h.personLabel(r, pid))
+	// Audit entity_id mirrors the pre-refactor behaviour: the person for a
+	// create (the new agreement id isn't surfaced here), the agreement id for
+	// an update.
+	verb, verbWord, auditID := "update", "geändert", id
+	if create {
+		verb, verbWord, auditID = "create", "angelegt", pid
+	}
+	h.audit(r, verb, "flatrate", auditID, "Pauschale "+verbWord+" für "+h.personLabel(r, pid))
+	// Archive bound vehicles right away if the agreement is now finished and
+	// settled, rather than waiting for the periodic sweep.
 	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), pid)
 	h.writeAgreements(w, r, pid)
 }
