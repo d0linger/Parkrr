@@ -158,24 +158,27 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "new password must be between 8 and 72 bytes")
 		return
 	}
-	if h.passwordBreached(r.Context(), req.NewPassword) {
-		writeError(w, http.StatusBadRequest,
-			"this password has appeared in a known data breach; please choose another")
-		return
-	}
 
+	// Gate on the rate limiter and prove knowledge of the current password
+	// (cheap, local bcrypt) BEFORE spending an outbound HIBP breach lookup on
+	// the candidate password — otherwise the endpoint drives external requests
+	// from arbitrary input before any throttle applies.
 	key, ok := h.checkRateLimit(w, r, u.Username)
 	if !ok {
 		return
 	}
-
-	// Verify current password.
 	if _, err := h.Auth.Authenticate(r.Context(), u.Username, req.CurrentPassword); err != nil {
 		h.Limiter.RecordFailure(key)
 		writeError(w, http.StatusForbidden, "current password is incorrect")
 		return
 	}
 	h.Limiter.Reset(key)
+
+	if h.passwordBreached(r.Context(), req.NewPassword) {
+		writeError(w, http.StatusBadRequest,
+			"this password has appeared in a known data breach; please choose another")
+		return
+	}
 
 	hash, err := auth.HashPassword(req.NewPassword)
 	if err != nil {
