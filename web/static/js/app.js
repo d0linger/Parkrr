@@ -2001,12 +2001,42 @@
         if (!location.hash || location.hash === '#') location.hash = '#/dashboard';
         else render();
     }
+    const EYE_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
+    const EYE_OFF_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7c1.7 0 3.2.5 4.5 1.2M22 12s-3.6 7-10 7c-1.7 0-3.2-.5-4.5-1.2"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M3 3l18 18"/></svg>';
+    // Toggle password field visibility (login show/hide affix button).
+    function setPwVisible(vis) {
+        const inp = $('#login-password'); const btn = $('#login-pw-toggle');
+        if (!inp || !btn) return;
+        inp.type = vis ? 'text' : 'password';
+        btn.setAttribute('aria-pressed', String(vis));
+        btn.setAttribute('aria-label', vis ? 'Passwort verbergen' : 'Passwort anzeigen');
+        btn.innerHTML = vis ? EYE_OFF_SVG : EYE_SVG;
+    }
+    // Switch the 2FA field between an authenticator code and a backup code — same
+    // input, the backend accepts either; this just optimises keyboard + hints.
+    function setTotpMode(backup) {
+        const inp = $('#login-totp');
+        if (!inp) return;
+        inp.inputMode = backup ? 'text' : 'numeric';
+        inp.placeholder = backup ? 'ABCD-EFGH' : '123456';
+        inp.dataset.backup = backup ? '1' : '';
+        $('#login-totp-label').textContent = backup ? 'Backup-Code' : 'Zwei-Faktor-Code';
+        $('#login-backup-toggle').textContent = backup ? 'Stattdessen App-Code' : 'Backup-Code verwenden';
+        $('#login-totp-help').textContent = backup
+            ? 'Einmal-Code aus deiner Backup-Liste (Format ABCD-EFGH).'
+            : '6-stelliger Code aus der App – oder ein Backup-Code, falls kein Handy zur Hand.';
+    }
     function showLogin() {
         $('#app-view').hidden = true;
         $('#login-view').hidden = false;
         $('#login-totp-wrap').hidden = true;
+        $('#login-form').classList.remove('is-2fa');
+        setTotpMode(false);
+        setPwVisible(false);
         const pkBtn = $('#passkey-login');
-        if (pkBtn) pkBtn.hidden = !(state.capabilities.passkeys && webauthnSupported());
+        const showPk = !!(state.capabilities.passkeys && webauthnSupported());
+        if (pkBtn) pkBtn.hidden = !showPk;
+        const or = $('#login-or'); if (or) or.hidden = !showPk;
         $('#login-username').focus();
     }
     async function logout() {
@@ -2127,9 +2157,18 @@
             } catch (err) {
                 if (err.data && err.data.totp_required) {
                     $('#login-totp-wrap').hidden = false;
+                    $('#login-form').classList.add('is-2fa');
                     $('#login-totp').focus();
                     errEl.textContent = totp ? err.message : 'Bitte Zwei-Faktor-Code eingeben.';
                 } else {
+                    // A plain auth failure (not a 2FA prompt) — e.g. the user went
+                    // back and mistyped the password — so clear any stale 2FA step
+                    // rather than leaving a "Passwort korrekt" banner next to an
+                    // "invalid credentials" error.
+                    $('#login-totp-wrap').hidden = true;
+                    $('#login-form').classList.remove('is-2fa');
+                    $('#login-totp').value = '';
+                    setTotpMode(false);
                     errEl.textContent = err.message;
                 }
                 errEl.hidden = false;
@@ -2137,6 +2176,8 @@
         });
         const pkBtn = $('#passkey-login');
         if (pkBtn) pkBtn.addEventListener('click', passkeyLogin);
+        $('#login-pw-toggle').addEventListener('click', () => setPwVisible($('#login-password').type === 'password'));
+        $('#login-backup-toggle').addEventListener('click', () => setTotpMode($('#login-totp').dataset.backup !== '1'));
         $('#theme-btn').addEventListener('click', toggleTheme);
         $('#menu-btn').addEventListener('click', openMenu);
         $$('.tab').forEach((t) => t.addEventListener('click', () => navigate(t.dataset.route)));
