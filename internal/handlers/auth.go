@@ -72,6 +72,12 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Username = trim(req.Username)
+	// Reject over-long identifiers/credentials before any state lookup: caps
+	// the rate-limiter key size and avoids handing bcrypt an oversized input.
+	if !validUsernameLength(req.Username) || len(req.Password) > maxPasswordLen {
+		writeError(w, http.StatusUnauthorized, "invalid username or password")
+		return
+	}
 	key, ok := h.checkRateLimit(w, r, req.Username)
 	if !ok {
 		return
@@ -156,6 +162,12 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validPasswordLength(req.NewPassword) {
 		writeError(w, http.StatusBadRequest, "new password must be between 8 and 72 bytes")
+		return
+	}
+	// An over-long current password can't match (bcrypt caps at 72 bytes), so
+	// reject it up front rather than spending a bcrypt compare on it.
+	if len(req.CurrentPassword) > maxPasswordLen {
+		writeError(w, http.StatusForbidden, "current password is incorrect")
 		return
 	}
 

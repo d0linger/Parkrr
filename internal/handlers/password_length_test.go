@@ -64,3 +64,51 @@ func TestPasswordLengthPolicy(t *testing.T) {
 		t.Errorf("UpdateUser with %d-byte password: expected 400, got %d", len(long), rec.Code)
 	}
 }
+
+// Usernames are capped at 100 bytes; over-long ones are rejected before any
+// state lookup (they also bound the rate-limiter key size).
+func TestUsernameLengthPolicy(t *testing.T) {
+	long := strings.Repeat("a", 101)
+
+	for _, tc := range []struct {
+		name string
+		ok   bool
+	}{
+		{"", false},
+		{"a", true},
+		{strings.Repeat("a", 100), true},
+		{long, false},
+	} {
+		if got := validUsernameLength(tc.name); got != tc.ok {
+			t.Errorf("validUsernameLength(%d bytes) = %v, want %v", len(tc.name), got, tc.ok)
+		}
+	}
+
+	// Login rejects an over-long username with a generic 401 before any lookup.
+	ah := &AuthHandler{Handler: &Handler{}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login",
+		strings.NewReader(`{"username":"`+long+`","password":"password"}`))
+	ah.Login(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("Login with %d-byte username: expected 401, got %d", len(long), rec.Code)
+	}
+
+	// CreateUser and UpdateUser reject it with 400.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/users",
+		strings.NewReader(`{"username":"`+long+`","password":"password"}`))
+	(&Handler{}).CreateUser(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("CreateUser with %d-byte username: expected 400, got %d", len(long), rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/api/users/1",
+		strings.NewReader(`{"username":"`+long+`","role":"editor"}`))
+	req.SetPathValue("id", "1")
+	(&Handler{}).UpdateUser(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("UpdateUser with %d-byte username: expected 400, got %d", len(long), rec.Code)
+	}
+}
