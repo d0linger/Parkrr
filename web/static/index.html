@@ -33,9 +33,12 @@
             </div>
             <div id="login-totp-wrap" hidden>
                 <p id="login-step-ok" class="step-ok" role="status">✓ Passwort korrekt · jetzt der Zwei-Faktor-Code</p>
-                <label for="login-totp" id="login-totp-label">Zwei-Faktor-Code</label>
-                <input id="login-totp" name="totp" type="text" inputmode="numeric" autocomplete="one-time-code"
-                       maxlength="9" placeholder="123456" aria-describedby="login-totp-help">
+                <label id="login-totp-label" for="login-otp-0">Zwei-Faktor-Code</label>
+                <!-- App-Code: six single-digit slots (auto-advance, paste-aware); built by JS. -->
+                <div id="login-otp" class="otp-group" role="group" aria-labelledby="login-totp-label"></div>
+                <!-- Backup-Code: one grouped field, shown when the user switches modes. -->
+                <input id="login-backup" name="totp" type="text" inputmode="text" autocomplete="one-time-code"
+                       maxlength="20" placeholder="ABCD-EFGH" aria-describedby="login-totp-help" hidden>
                 <button type="button" id="login-backup-toggle" class="linkbtn">Backup-Code verwenden</button>
                 <p id="login-totp-help" class="field-hint">6-stelliger Code aus der App – oder ein Backup-Code, falls kein Handy zur Hand.</p>
             </div>
@@ -105,11 +108,12 @@
         </form>
     </dialog>
 
-    <!-- Confirmation dialog -->
-    <dialog id="confirm" class="modal modal-sm" aria-labelledby="confirm-title">
-        <header class="modal-header">
+    <!-- Confirmation dialog (destructive actions: danger header with a warning icon). -->
+    <dialog id="confirm" class="modal modal-sm modal-danger" aria-labelledby="confirm-title">
+        <div class="confirm-head">
+            <span class="confirm-ic" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 22 20H2L12 3.5Z"/><path d="M12 10v4M12 17.3v.2"/></svg></span>
             <h2 id="confirm-title">Bestätigen</h2>
-        </header>
+        </div>
         <div id="confirm-body" class="modal-body"></div>
         <footer class="modal-footer">
             <button type="button" class="btn btn-ghost" id="confirm-cancel">Abbrechen</button>
