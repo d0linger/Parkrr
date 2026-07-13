@@ -1241,7 +1241,8 @@
             let done = false;
             const finish = (v) => { if (!done) { done = true; resolve(v); } };
             const dlg = contentModal('Pauschale löschen?', (body, close) => {
-                body.append(el('p', { class: 'muted' }, `Der Pauschaleintrag wird entfernt. ${count} ${g('Gefährt ist', 'Gefährte sind')} zugeordnet.`));
+                body.append(el('p', { class: 'danger-note' }, icon('alert', 16),
+                    el('span', {}, `Der Pauschaleintrag wird entfernt. ${count} ${g('Gefährt ist', 'Gefährte sind')} zugeordnet.`)));
                 const keep = el('button', { class: 'btn btn-ghost btn-block', style: 'margin-top:.7rem' }, 'Nur Pauschale löschen · Gefährte behalten');
                 const del = el('button', { class: 'btn btn-danger btn-block', style: 'margin-top:.5rem' }, `Pauschale und ${count} ${g('Gefährt', 'Gefährte')} löschen`);
                 keep.addEventListener('click', () => { finish('keep'); close(); });
