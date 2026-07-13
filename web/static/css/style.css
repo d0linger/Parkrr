@@ -431,6 +431,23 @@ textarea { resize: vertical; min-height: 72px; }
 .yoy { display: block; font-size: 0.7rem; font-variant-numeric: tabular-nums; margin-top: 1px; }
 .yoy.up { color: var(--primary-hover); }
 .yoy.down, .yoy.flat { color: var(--text-muted); }
+/* Inline YoY delta inside a KPI tile value (dashboard Umsatz). */
+.stat .value .yoy { display: inline; font-size: 0.72rem; margin-top: 0; }
+
+/* Dashboard: "Top offene Salden" action list. */
+.owe-card { background: var(--card-bg); border: 1px solid var(--card-border); box-shadow: var(--card-shadow); border-radius: var(--radius); overflow: hidden; margin-bottom: 0.75rem; }
+.owe-head { display: flex; align-items: baseline; justify-content: space-between; padding: 0.7rem 0.9rem 0.4rem; }
+.owe-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; width: 100%;
+    background: none; border: none; border-top: 1px solid var(--border); color: var(--text);
+    font-family: inherit; font-size: 0.9rem; text-align: left; padding: 0.6rem 0.9rem; cursor: pointer;
+}
+.owe-row:hover { background: var(--bg-elev-2); }
+.owe-row:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.owe-nm { display: flex; align-items: center; gap: 0.55rem; }
+.owe-rank { width: 20px; height: 20px; border-radius: 50%; background: var(--bg-elev-2); color: var(--text-muted); font-size: 0.72rem; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; flex: none; font-variant-numeric: tabular-nums; }
+.owe-amt { display: flex; align-items: center; gap: 0.4rem; font-variant-numeric: tabular-nums; font-weight: 700; color: var(--accent); }
+.owe-chev { color: var(--text-muted); font-weight: 400; }
 
 /* ---------- Modal (native dialog) ---------- */
 .modal {

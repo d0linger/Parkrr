@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -121,6 +122,7 @@ type overviewResponse struct {
 	ActiveVehicles   int            `json:"active_vehicles"`
 	TotalCategories  int            `json:"total_categories"`
 	AccruedThisYear  float64        `json:"accrued_this_year"`
+	AccruedPrevYear  float64        `json:"accrued_prev_year"` // same window one year earlier, for a YoY delta
 	AccruedTotal     float64        `json:"accrued_total"`
 	PaidTotal        float64        `json:"paid_total"`
 	OutstandingTotal float64        `json:"outstanding_total"`
@@ -128,6 +130,16 @@ type overviewResponse struct {
 	StatusCounts     map[string]int `json:"status_counts"`
 	RevenueByMonth   []float64      `json:"revenue_by_month"`
 	ChargesByMonth   []float64      `json:"charges_by_month"`
+	// TopOutstanding lists the persons with the largest open balance, so the
+	// dashboard can point straight at who to follow up with.
+	TopOutstanding []personOutstanding `json:"top_outstanding"`
+}
+
+// personOutstanding is one entry in the dashboard's "top open balances" list.
+type personOutstanding struct {
+	PersonID    int64   `json:"person_id"`
+	Name        string  `json:"name"`
+	Outstanding float64 `json:"outstanding"`
 }
 
 // Overview returns aggregate statistics for the dashboard. Accepts ?year=.
@@ -157,11 +169,34 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 	resp.Year = parseYearParam(r, now.Year())
+	resp.TopOutstanding = []personOutstanding{}
 	yearStart := time.Date(resp.Year, 1, 1, 0, 0, 0, 0, time.UTC)
 	yearEnd := time.Date(resp.Year+1, 1, 1, 0, 0, 0, 0, time.UTC)
 	until := now.AddDate(0, 0, 1)
 	if yearEnd.After(until) {
 		yearEnd = until
+	}
+	// Prior-year window of the same length (year-to-date vs same period last
+	// year for the current year; full year vs full year for a past one).
+	prevStart := yearStart.AddDate(-1, 0, 0)
+	prevEnd := prevStart.Add(yearEnd.Sub(yearStart))
+
+	// Per-person charge sums (all + paid), reused for both the totals and the
+	// per-person open balance. person_id is required on every charge.
+	chargesByPerson := h.chargeSumsByPerson(ctx, `SELECT person_id, COALESCE(sum(amount*quantity),0) FROM charges GROUP BY person_id`)
+	paidChargesByPerson := h.chargeSumsByPerson(ctx,
+		`SELECT c.person_id, COALESCE(sum(c.amount*c.quantity),0)
+		 FROM charges c JOIN vehicles v ON v.id = c.vehicle_id WHERE v.paid GROUP BY c.person_id`)
+	personNames := map[int64]string{}
+	if rows, nerr := h.Pool.Query(ctx, `SELECT id, trim(first_name || ' ' || last_name) FROM persons`); nerr == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var pid int64
+			var name string
+			if rows.Scan(&pid, &name) == nil {
+				personNames[pid] = name
+			}
+		}
 	}
 
 	resp.TotalVehicles = len(vehicles)
@@ -189,6 +224,10 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	for pid := range agByPerson {
 		personIDs[pid] = struct{}{}
 	}
+	// A person can owe money on charges alone (no vehicles/agreements).
+	for pid := range chargesByPerson {
+		personIDs[pid] = struct{}{}
+	}
 	resp.RevenueByMonth = make([]float64, 12)
 	var paidRent float64
 	for pid := range personIDs {
@@ -198,28 +237,71 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		paidRent += tPaid
 		yAcc, _ := personRent(ag, vs, cats, yearStart, yearEnd)
 		resp.AccruedThisYear += yAcc
+		pAcc, _ := personRent(ag, vs, cats, prevStart, prevEnd)
+		resp.AccruedPrevYear += pAcc
 		pm := personMonthly(ag, vs, cats, resp.Year, now)
 		for m := range resp.RevenueByMonth {
 			resp.RevenueByMonth[m] = round2(resp.RevenueByMonth[m] + pm[m])
 		}
+		// Open balance per person = (accrued rent + charges) − (paid rent + paid
+		// charges), mirroring the person page's balance.
+		owed := (tAcc + chargesByPerson[pid]) - (tPaid + paidChargesByPerson[pid])
+		if owed > 0.005 {
+			name := personNames[pid]
+			if name == "" {
+				name = "Person"
+			}
+			resp.TopOutstanding = append(resp.TopOutstanding, personOutstanding{
+				PersonID: pid, Name: name, Outstanding: round2(owed),
+			})
+		}
 	}
 	resp.AccruedTotal = round2(resp.AccruedTotal)
 	resp.AccruedThisYear = round2(resp.AccruedThisYear)
+	resp.AccruedPrevYear = round2(resp.AccruedPrevYear)
+
+	// Largest open balances first, capped so the dashboard stays a summary.
+	sort.Slice(resp.TopOutstanding, func(i, j int) bool {
+		return resp.TopOutstanding[i].Outstanding > resp.TopOutstanding[j].Outstanding
+	})
+	if len(resp.TopOutstanding) > 5 {
+		resp.TopOutstanding = resp.TopOutstanding[:5]
+	}
 
 	resp.ChargesByMonth = h.sumByMonth(ctx, resp.Year,
 		`SELECT extract(month from charged_on)::int, COALESCE(sum(amount*quantity),0)
 		 FROM charges WHERE extract(year from charged_on)=$1 GROUP BY 1`)
 
-	// Paid / outstanding are derived from the per-vehicle paid slider.
+	// Totals reuse the per-person charge maps (no extra global queries).
 	var totalCharges, paidCharges float64
-	_ = h.Pool.QueryRow(ctx, `SELECT COALESCE(sum(amount*quantity),0) FROM charges`).Scan(&totalCharges)
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT COALESCE(sum(c.amount*c.quantity),0)
-		 FROM charges c JOIN vehicles v ON v.id = c.vehicle_id WHERE v.paid`).Scan(&paidCharges)
+	for _, v := range chargesByPerson {
+		totalCharges += v
+	}
+	for _, v := range paidChargesByPerson {
+		paidCharges += v
+	}
 	resp.PaidTotal = round2(paidRent + paidCharges)
 	resp.OutstandingTotal = round2(resp.AccruedTotal + totalCharges - resp.PaidTotal)
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// chargeSumsByPerson runs a "person_id -> sum" charge query into a map.
+func (h *Handler) chargeSumsByPerson(ctx context.Context, query string) map[int64]float64 {
+	out := map[int64]float64{}
+	rows, err := h.Pool.Query(ctx, query)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var pid int64
+		var sum float64
+		if rows.Scan(&pid, &sum) == nil {
+			out[pid] = sum
+		}
+	}
+	return out
 }
 
 // sumByMonth runs a "month -> sum" query for a year and returns a 12-slot slice

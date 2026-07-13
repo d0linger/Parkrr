@@ -638,17 +638,56 @@
             el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Nächstes Jahr', disabled: ov.year >= nowYear,
                 onclick: () => { dashYear = ov.year + 1; render(); } }, '›'));
         page.append(el('div', { class: 'page-head' }, el('h2', {}, 'Übersicht'), yearSel));
+
+        // Empty state for a fresh install: no persons yet -> onboard instead of
+        // showing a wall of zeros and empty charts.
+        if (ov.total_persons === 0) {
+            const empty = el('div', { class: 'empty' },
+                el('span', { class: 'big' }, '👋'),
+                el('div', {}, 'Noch keine Daten. Lege deine erste Person an, dann füllt sich die Übersicht.'));
+            if (canManage()) empty.append(el('button', { class: 'btn btn-primary', style: 'margin-top:1rem', onclick: () => navigate('persons') }, '+ Erste Person'));
+            page.append(empty);
+            return;
+        }
+
+        // Money first — "Offen gesamt" is the operator's lead metric. The
+        // Umsatz tile carries a year-over-year delta vs the same period last year.
+        const umsatz = statWide(eur(ov.accrued_this_year), 'Umsatz ' + ov.year, { icon: 'trend', tone: 'teal' });
+        const prev = ov.accrued_prev_year;
+        if (prev != null && prev > 0) {
+            const pct = Math.round(((ov.accrued_this_year - prev) / prev) * 100);
+            const cls = pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat';
+            const txt = pct > 0 ? '▲ +' + pct + ' %' : pct < 0 ? '▼ ' + Math.abs(pct) + ' %' : '± 0 %';
+            umsatz.querySelector('.value').append(el('span', { class: 'yoy ' + cls, title: 'ggü. ' + (ov.year - 1) }, ' ' + txt));
+            umsatz.querySelector('.label').textContent = 'Umsatz ' + ov.year + ' · ggü. ' + (ov.year - 1);
+        }
+        page.append(el('div', { class: 'stat-grid' },
+            statWide(eur(ov.outstanding_total), 'Offen gesamt', { icon: 'clock', tone: 'amber' }),
+            umsatz,
+            statWide(eur(ov.paid_total), 'Bezahlt', { icon: 'check', tone: 'green' }),
+        ));
         page.append(el('div', { class: 'stat-grid' },
             stat(ov.total_persons, 'Personen', { icon: 'users' }),
             stat(ov.active_vehicles, 'aktiv eingestellt', { icon: 'warehouse' }),
             stat(ov.total_vehicles, 'Gefährte gesamt', { icon: 'car' }),
             stat(ov.total_categories, 'Tarife', { icon: 'tag' }),
         ));
-        page.append(el('div', { class: 'stat-grid' },
-            statWide(eur(ov.accrued_this_year), 'Umsatz ' + ov.year, { icon: 'trend', tone: 'teal' }),
-            statWide(eur(ov.paid_total), 'Bezahlt (Slider)', { icon: 'check', tone: 'green' }),
-            statWide(eur(ov.outstanding_total), 'Offen gesamt', { icon: 'clock', tone: 'amber' }),
-        ));
+
+        // Top open balances — turns the "Offen gesamt" number into an action
+        // list: who to follow up with, one tap to their page.
+        if (ov.top_outstanding && ov.top_outstanding.length) {
+            const oweCard = el('div', { class: 'owe-card' });
+            oweCard.append(el('div', { class: 'owe-head' },
+                el('span', { class: 'sec-eyebrow' }, 'Top offene Salden'),
+                el('span', { class: 'muted', style: 'font-size:.75rem' }, eur(ov.outstanding_total) + ' gesamt')));
+            ov.top_outstanding.forEach((o, i) => {
+                oweCard.append(el('button', { class: 'owe-row', onclick: () => navigate('persons/' + o.person_id),
+                    'aria-label': o.name + ' öffnen · ' + eur(o.outstanding) + ' offen' },
+                    el('span', { class: 'owe-nm' }, el('span', { class: 'owe-rank' }, i + 1), esc(o.name)),
+                    el('span', { class: 'owe-amt' }, eur(o.outstanding), el('span', { class: 'owe-chev' }, '›'))));
+            });
+            page.append(oweCard);
+        }
 
         // Revenue chart
         const revCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Umsatz pro Monat · ' + ov.year));
