@@ -238,12 +238,16 @@
     // save: optional async (data) => Promise. When given, formModal awaits it on
     // submit — showing a "Speichern…" busy button, keeping the modal open, and
     // surfacing a thrown error inline (with retry) instead of closing first.
-    function formModal({ title, fields, submitLabel = 'Speichern', onRender = null, save = null }) {
+    function formModal({ title, fields, submitLabel = 'Speichern', onRender = null, save = null, danger = null }) {
         return new Promise((resolve) => {
             const dlg = $('#modal');
             $('#modal-title').textContent = title;
             $('#modal-submit').textContent = submitLabel;
             $('#modal-submit').style.display = '';
+            // Destructive forms turn the confirm button red; reset on every (re)open
+            // so a prior danger form never leaves the shared button red.
+            $('#modal-submit').classList.toggle('btn-danger', !!danger);
+            $('#modal-submit').classList.toggle('btn-primary', !danger);
             $('#modal-submit').disabled = false; // a prior form (e.g. onRender gating) may have disabled it
             $('#modal')._canClose = null; // never inherit a prior gated contentModal's close guard
             $('#modal-cancel').disabled = false; $('#modal-close').disabled = false; // clear a prior busy state
@@ -253,6 +257,7 @@
             // Async-save error banner (used only when `save` is provided).
             const formErr = el('p', { class: 'form-error', id: 'modal-form-error', role: 'alert', hidden: true });
             body.append(formErr);
+            if (danger) body.append(el('p', { class: 'danger-note' }, icon('alert', 16), el('span', {}, danger)));
             for (const f of fields) {
                 if (f.type === 'checkbox') {
                     const input = el('input', { type: 'checkbox', id: 'f_' + f.name, name: f.name });
@@ -2147,6 +2152,7 @@
     async function disable2FA() {
         await formModal({
             title: '2FA deaktivieren', submitLabel: 'Deaktivieren',
+            danger: 'Der zweite Faktor wird entfernt – dein Konto ist danach nur noch per Passwort geschützt.',
             fields: [{ name: 'password', label: 'Passwort zur Bestätigung', type: 'password', required: true }],
             save: async (data) => {
                 await api.post('/auth/2fa/disable', { password: data.password });
@@ -2157,7 +2163,8 @@
     async function regenerateRecoveryCodes() {
         const data = await formModal({
             title: 'Recovery-Codes neu generieren', submitLabel: 'Generieren',
-            fields: [{ name: 'password', label: 'Passwort zur Bestätigung', type: 'password', required: true, help: 'Alle bisherigen Recovery-Codes werden ungültig.' }],
+            danger: 'Alle bisherigen Recovery-Codes werden sofort ungültig.',
+            fields: [{ name: 'password', label: 'Passwort zur Bestätigung', type: 'password', required: true }],
         });
         if (!data) return;
         try {
