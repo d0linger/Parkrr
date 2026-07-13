@@ -53,6 +53,9 @@
         car: '<path d="M4 16v-3.2c0-.6.2-1.2.6-1.7l2-2.6c.4-.5 1-.8 1.6-.8h6.4c.7 0 1.3.3 1.7.9l1.9 2.5c.4.5.6 1.1.6 1.7V16"/><circle cx="7.5" cy="17" r="1.8"/><circle cx="16.5" cy="17" r="1.8"/><path d="M3 16h18"/>',
         shield: '<path d="M12 3l7 3v6c0 4-3 6.5-7 8-4-1.5-7-4-7-8V6l7-3Z"/><path d="M9 12l2 2 4-4"/>',
         unlock: '<rect x="4.5" y="10.5" width="15" height="9" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 7.5-1.5"/>',
+        alert: '<path d="M12 3.5 22 20H2L12 3.5Z"/><path d="M12 10v4M12 17.3v.2"/>',
+        key: '<circle cx="7.6" cy="15.4" r="4"/><path d="M10.4 12.6 20 3M16.5 6.5l2.5 2.5M14 9l2 2"/>',
+        power: '<path d="M12 4v8"/><path d="M7.4 6.8a7 7 0 1 0 9.2 0"/>',
     };
     const icon = (name, size = 16) => {
         const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -748,21 +751,17 @@
             page.append(oweCard);
         }
 
-        // Charts flow into two desktop columns (>=900px) to use the width:
-        // revenue full-width on top, charges + status side by side below.
-        const charts = el('div', { class: 'dash-charts' });
-
         // Revenue chart
         const revCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Umsatz pro Monat · ' + ov.year));
         revCard.append(chartLine(ov.revenue_by_month, MONTHS));
         revCard.append(el('div', { class: 'legend' }, el('span', {}, el('span', { class: 'dotc', style: 'background:var(--primary)' }), 'Aufgelaufene Miete')));
-        charts.append(revCard);
+        page.append(revCard);
 
         // Extra charges per month
         const pcCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Zusatzkosten pro Monat · ' + ov.year));
         pcCard.append(chartBars(ov.charges_by_month, MONTHS));
         pcCard.append(el('div', { class: 'legend' }, el('span', {}, el('span', { class: 'dotc', style: 'background:var(--primary)' }), 'Zusatzkosten')));
-        charts.append(pcCard);
+        page.append(pcCard);
 
         // Status distribution
         const sc = ov.status_counts || {};
@@ -779,8 +778,7 @@
             requestAnimationFrame(() => { fill.style.width = ((n / maxS) * 100) + '%'; });
         }
         scCard.append(bars);
-        charts.append(scCard);
-        page.append(charts);
+        page.append(scCard);
     };
     const statWide = (value, label, opts = {}) => { const t = stat(value, label, opts); t.style.gridColumn = 'span 2'; return t; };
 
@@ -1911,18 +1909,58 @@
             el('div', { class: 'balance' }, el('span', {}, 'Rolle'), el('span', {}, ROLE_LABEL[state.user.role] || state.user.role)),
             el('button', { class: 'btn btn-ghost btn-block', style: 'margin-top:.7rem', onclick: changePasswordForm }, 'Passwort ändern')));
 
-        // 2FA
-        const twoFA = el('div', { class: 'card' }, el('h3', {}, 'Zwei-Faktor-Authentifizierung'));
+        // 2FA — header (icon + title + status badge), then body per state.
+        const twoFA = el('div', { class: 'card tf' });
+        const tfHead = (badge) => el('div', { class: 'tf-head' },
+            el('span', { class: 'tf-head-ic' }, icon('shield', 22)),
+            el('h3', {}, 'Zwei-Faktor'), badge);
         if (state.user.totp_enabled) {
             let remaining = null;
             try { remaining = (await api.get('/auth/2fa/backup-codes')).remaining; } catch { /* ignore */ }
-            twoFA.append(el('p', { class: 'muted' }, '🔐 2FA ist aktiv.' + (remaining != null ? ` · ${remaining} Recovery-Codes übrig` : '')));
-            if (remaining != null && remaining <= 2) twoFA.append(el('p', { class: 'form-error' }, 'Wenige Recovery-Codes übrig – bitte neu generieren.'));
-            twoFA.append(el('button', { class: 'btn btn-ghost btn-block', style: 'margin-bottom:.5rem', onclick: regenerateRecoveryCodes }, 'Recovery-Codes neu generieren'));
-            twoFA.append(el('button', { class: 'btn btn-danger btn-block', onclick: disable2FA }, '2FA deaktivieren'));
+            const low = remaining != null && remaining <= 2;
+            twoFA.append(tfHead(el('span', { class: 'badge badge-stored tf-status' }, '✓ Aktiv')));
+            twoFA.append(el('p', { class: 'tf-desc' }, 'Beim Anmelden brauchst du zusätzlich den 6-stelligen Code deiner Authenticator-App (oder einen Wiederherstellungscode).'));
+
+            // Recovery-codes summary row
+            twoFA.append(el('div', { class: 'tf-item' },
+                el('span', { class: 'tf-item-ic' }, icon('key', 18)),
+                el('div', { class: 'tf-item-txt' },
+                    el('div', { class: 'tf-item-title' }, 'Wiederherstellungscodes'),
+                    el('div', { class: 'tf-item-sub' }, 'Ersatzcodes für den Notfall')),
+                el('span', { class: 'badge ' + (low ? 'badge-ended' : 'badge-cat') },
+                    remaining != null ? `${remaining} übrig` : '–')));
+            if (low) twoFA.append(el('p', { class: 'form-error', style: 'margin:.2rem 0 0' }, 'Wenige Codes übrig – bitte neu erstellen.'));
+
+            // Inline regenerate: confirm password, then create new codes
+            const regenPw = el('input', { id: 'tf-regen-pw', type: 'password', autocomplete: 'current-password' });
+            const regenBtn = el('button', { class: 'btn btn-primary btn-block' }, 'Neue Codes erstellen');
+            regenBtn.addEventListener('click', async () => {
+                if (!regenPw.value) { toast('Bitte Passwort eingeben', 'error'); regenPw.focus(); return; }
+                regenBtn.disabled = true;
+                try {
+                    const res = await api.post('/auth/2fa/backup-codes/regenerate', { password: regenPw.value });
+                    regenPw.value = '';
+                    toast('Neue Recovery-Codes erstellt', 'success');
+                    showBackupCodes(res.backup_codes || []);
+                } catch (e) { toast(e.message, 'error'); regenBtn.disabled = false; }
+            });
+            twoFA.append(el('div', { class: 'tf-action' },
+                el('label', { class: 'tf-action-label', for: 'tf-regen-pw' }, 'Passwort bestätigen, um neue Codes zu erstellen'),
+                el('div', { class: 'input-affix' }, regenPw, pwToggleBtn(regenPw)),
+                regenBtn));
+
+            // Danger zone
+            twoFA.append(el('div', { class: 'tf-danger-label' }, icon('alert', 13), 'Gefahrenzone'));
+            twoFA.append(el('button', { type: 'button', class: 'tf-danger-row', onclick: disable2FA },
+                el('span', { class: 'tf-item-ic' }, icon('power', 18)),
+                el('div', { class: 'tf-item-txt' },
+                    el('div', { class: 'tf-item-title' }, '2FA deaktivieren'),
+                    el('div', { class: 'tf-item-sub' }, 'Entfernt den zweiten Faktor von deinem Konto')),
+                el('span', { class: 'tf-chev', 'aria-hidden': 'true' }, '›')));
         } else {
-            twoFA.append(el('p', { class: 'muted' }, 'Schütze dein Konto mit einer Authenticator-App.'),
-                el('button', { class: 'btn btn-primary btn-block', onclick: setup2FA }, '2FA einrichten'));
+            twoFA.append(tfHead(el('span', { class: 'badge badge-cat tf-status' }, 'Inaktiv')));
+            twoFA.append(el('p', { class: 'tf-desc' }, 'Schütze dein Konto mit einer Authenticator-App: beim Anmelden ist dann zusätzlich ein 6-stelliger Code nötig.'));
+            twoFA.append(el('button', { class: 'btn btn-primary btn-block', onclick: setup2FA }, '2FA einrichten'));
         }
         page.append(twoFA);
 
@@ -2016,7 +2054,7 @@
     function showBackupCodes(codes) {
         let chk; // acknowledgement checkbox — gates every dismissal path
         contentModal('Backup-Codes', (body, close) => {
-            body.append(el('p', { class: 'backup-warn' }, '⚠️ Wird nur jetzt angezeigt – sichere die Codes, bevor du fortfährst.'));
+            body.append(el('p', { class: 'backup-warn' }, icon('alert', 15), el('span', {}, 'Wird nur jetzt angezeigt – sichere die Codes, bevor du fortfährst.')));
             body.append(el('p', { class: 'muted' }, 'Jeder Einmal-Code funktioniert einmal, falls du keinen Authenticator zur Hand hast.'));
             const grid = el('div', { class: 'backup-codes' });
             for (const c of codes) grid.append(el('code', {}, c));
