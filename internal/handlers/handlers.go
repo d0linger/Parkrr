@@ -38,9 +38,17 @@ func New(pool *pgxpool.Pool) *Handler {
 // rejects longer inputs outright (a 500 without this check), so cap what we
 // accept up front. len() counts bytes, matching bcrypt's limit.
 const (
+	maxUsernameLen = 100
 	minPasswordLen = 8
 	maxPasswordLen = 72
 )
+
+// validUsernameLength reports whether s is a non-empty username within the
+// length cap. Bounding it protects the rate limiter (which keys on the
+// username) from memory pressure via over-long keys.
+func validUsernameLength(s string) bool {
+	return len(s) > 0 && len(s) <= maxUsernameLen
+}
 
 // validPasswordLength reports whether pw satisfies the length policy.
 func validPasswordLength(pw string) bool {
