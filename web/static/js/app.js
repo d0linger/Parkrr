@@ -2254,9 +2254,23 @@
         const slots = $$('.otp-slot', g);
         slots.forEach((s, i) => {
             s.addEventListener('input', () => {
-                s.value = s.value.replace(/\D/g, '').slice(0, 1);
-                s.classList.toggle('is-filled', !!s.value);
-                if (s.value && i < 5) slots[i + 1].focus();
+                const digits = s.value.replace(/\D/g, '');
+                if (digits.length > 1) {
+                    // Multi-digit input (one-time-code autofill / IME) lands in one
+                    // slot: spread it across this and the following slots instead of
+                    // dropping all but the first digit.
+                    [...digits].forEach((c, k) => {
+                        const t = slots[i + k];
+                        if (!t) return;
+                        t.value = c;
+                        t.classList.add('is-filled');
+                    });
+                    (slots.slice(i).find((t) => !t.value) || slots[slots.length - 1]).focus();
+                    return;
+                }
+                s.value = digits;
+                s.classList.toggle('is-filled', !!digits);
+                if (digits && i < 5) slots[i + 1].focus();
             });
             s.addEventListener('keydown', (e) => {
                 if (e.key === 'Backspace' && !s.value && i > 0) { e.preventDefault(); slots[i - 1].focus(); }

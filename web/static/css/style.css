@@ -242,7 +242,7 @@ textarea { resize: vertical; min-height: 72px; }
 .otp-group { display: flex; gap: 0.5rem; margin: 0.1rem 0 0.2rem; }
 .otp-group[hidden] { display: none; }
 .otp-slot {
-    width: 100%; aspect-ratio: 1 / 1.15; padding: 0; text-align: center;
+    flex: 1 1 0; min-width: 0; aspect-ratio: 1 / 1.15; padding: 0; text-align: center;
     font-size: 1.35rem; font-weight: 700; font-variant-numeric: tabular-nums;
     font-family: inherit;
 }
