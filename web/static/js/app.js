@@ -1943,11 +1943,17 @@
                     el('div', { class: 'input-affix' }, regenPw, pwToggleBtn(regenPw)),
                     regenBtn));
             twoFA.append(regenPanel);
+            regenPanel.inert = true; // collapsed panel: keep its controls out of the tab order
+            let regenFocusTimer = null;
             recToggle.addEventListener('click', () => {
                 const open = recToggle.getAttribute('aria-expanded') === 'true';
                 recToggle.setAttribute('aria-expanded', String(!open));
                 regenPanel.classList.toggle('open', !open);
-                if (!open) setTimeout(() => regenPw.focus(), 160);
+                regenPanel.inert = open; // interactive only while expanded
+                clearTimeout(regenFocusTimer);
+                if (!open) regenFocusTimer = setTimeout(() => {
+                    if (recToggle.getAttribute('aria-expanded') === 'true') regenPw.focus();
+                }, 160);
             });
             regenBtn.addEventListener('click', async () => {
                 if (!regenPw.value) { toast('Bitte Passwort eingeben', 'error'); regenPw.focus(); return; }
