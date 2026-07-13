@@ -334,12 +334,19 @@
         $('#modal-cancel').style.display = hideCancel ? 'none' : '';
         const body = $('#modal-body');
         body.innerHTML = '';
-        // Consulted by the shared backdrop-click handler.
+        // Consulted by the shared backdrop-click handler. Set fresh on every modal
+        // open (contentModal here, formModal to null), so it is never stale while a
+        // dialog is actually open.
         dlg._canClose = canClose;
         function onDismiss() { if (!canClose || canClose()) dlg.close(); }
         function onCancel(e) { if (canClose && !canClose()) e.preventDefault(); } // Escape
         function onClosed() {
-            dlg._canClose = null;
+            // Detach only THIS invocation's own listeners (per-invocation closures),
+            // so a stale close event can neither remove the active modal's listeners
+            // nor clobber its guard. The dialog's close event is async and can fire
+            // after a newer modal has opened on the same element (e.g. setup2FA
+            // closes then synchronously opens showBackupCodes); leaving _canClose
+            // untouched keeps that newer modal's gate intact.
             $('#modal-cancel').removeEventListener('click', onDismiss);
             $('#modal-close').removeEventListener('click', onDismiss);
             dlg.removeEventListener('cancel', onCancel);
@@ -1977,10 +1984,10 @@
             body.append(grid);
             const text = codes.join('\n');
             const row = el('div', { style: 'display:flex;gap:.5rem;margin-top:.9rem' });
-            row.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => copyToClipboard(text, 'Kopiert') }, 'Kopieren'));
-            row.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => downloadText('parkrr-backup-codes.txt', text) }, 'Herunterladen'));
+            row.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => copyToClipboard(text, 'Kopiert') }, 'Kopieren'));
+            row.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => downloadText('parkrr-backup-codes.txt', text) }, 'Herunterladen'));
             body.append(row);
-            const done = el('button', { class: 'btn btn-primary btn-block', style: 'margin-top:.9rem', disabled: true, onclick: () => { close(); render(); } }, 'Erledigt');
+            const done = el('button', { type: 'button', class: 'btn btn-primary btn-block', style: 'margin-top:.9rem', disabled: true, onclick: () => { close(); render(); } }, 'Erledigt');
             chk = el('input', { type: 'checkbox', id: 'bc-saved' });
             chk.addEventListener('change', () => { done.disabled = !chk.checked; });
             body.append(el('label', { class: 'ack-check', for: 'bc-saved' }, chk, el('span', {}, 'Ich habe die Codes sicher gespeichert.')));
