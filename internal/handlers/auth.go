@@ -72,6 +72,13 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Username = trim(req.Username)
+	// Validate lengths early to mitigate DoS (bcrypt resource exhaustion)
+	// and rate-limiter memory pressure from over-long keys.
+	if !validUsernameLength(req.Username) || len(req.Password) > maxPasswordLen {
+		writeError(w, http.StatusUnauthorized, "invalid username or password")
+		return
+	}
+
 	key, ok := h.checkRateLimit(w, r, req.Username)
 	if !ok {
 		return
@@ -156,6 +163,10 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validPasswordLength(req.NewPassword) {
 		writeError(w, http.StatusBadRequest, "new password must be between 8 and 72 bytes")
+		return
+	}
+	if len(req.CurrentPassword) > maxPasswordLen {
+		writeError(w, http.StatusForbidden, "current password is incorrect")
 		return
 	}
 
