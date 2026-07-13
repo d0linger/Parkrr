@@ -56,6 +56,7 @@
         alert: '<path d="M12 3.5 22 20H2L12 3.5Z"/><path d="M12 10v4M12 17.3v.2"/>',
         key: '<circle cx="7.6" cy="15.4" r="4"/><path d="M10.4 12.6 20 3M16.5 6.5l2.5 2.5M14 9l2 2"/>',
         power: '<path d="M12 4v8"/><path d="M7.4 6.8a7 7 0 1 0 9.2 0"/>',
+        chevron: '<path d="M9 6l6 6-6 6"/>',
     };
     const icon = (name, size = 16) => {
         const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -1921,19 +1922,39 @@
             twoFA.append(tfHead(el('span', { class: 'badge badge-stored tf-status' }, '✓ Aktiv')));
             twoFA.append(el('p', { class: 'tf-desc' }, 'Beim Anmelden brauchst du zusätzlich den 6-stelligen Code deiner Authenticator-App (oder einen Wiederherstellungscode).'));
 
-            // Recovery-codes summary row
-            twoFA.append(el('div', { class: 'tf-item' },
+            // Recovery-codes row: click to reveal the regenerate panel below
+            const recToggle = el('button', { type: 'button', class: 'tf-item tf-toggle', 'aria-expanded': 'false', 'aria-controls': 'tf-regen-panel' },
                 el('span', { class: 'tf-item-ic' }, icon('key', 18)),
                 el('div', { class: 'tf-item-txt' },
                     el('div', { class: 'tf-item-title' }, 'Wiederherstellungscodes'),
                     el('div', { class: 'tf-item-sub' }, 'Ersatzcodes für den Notfall')),
                 el('span', { class: 'badge ' + (low ? 'badge-ended' : 'badge-cat') },
-                    remaining != null ? `${remaining} übrig` : '–')));
-            if (low) twoFA.append(el('p', { class: 'form-error', style: 'margin:.2rem 0 0' }, 'Wenige Codes übrig – bitte neu erstellen.'));
+                    remaining != null ? `${remaining} übrig` : '–'),
+                el('span', { class: 'tf-chev', 'aria-hidden': 'true' }, icon('chevron', 18)));
+            twoFA.append(recToggle);
+            if (low) twoFA.append(el('p', { class: 'form-error', style: 'margin:.4rem 0 0' }, 'Wenige Codes übrig – bitte neu erstellen.'));
 
-            // Inline regenerate: confirm password, then create new codes
+            // Collapsible regenerate panel: confirm password, then create new codes
             const regenPw = el('input', { id: 'tf-regen-pw', type: 'password', autocomplete: 'current-password' });
             const regenBtn = el('button', { class: 'btn btn-primary btn-block' }, 'Neue Codes erstellen');
+            const regenPanel = el('div', { class: 'tf-panel', id: 'tf-regen-panel', role: 'region', 'aria-label': 'Neue Codes erstellen' },
+                el('div', { class: 'tf-action' },
+                    el('label', { class: 'tf-action-label', for: 'tf-regen-pw' }, 'Passwort bestätigen ', el('span', { class: 'req', 'aria-hidden': 'true' }, '*')),
+                    el('div', { class: 'input-affix' }, regenPw, pwToggleBtn(regenPw)),
+                    regenBtn));
+            twoFA.append(regenPanel);
+            regenPanel.inert = true; // collapsed panel: keep its controls out of the tab order
+            let regenFocusTimer = null;
+            recToggle.addEventListener('click', () => {
+                const open = recToggle.getAttribute('aria-expanded') === 'true';
+                recToggle.setAttribute('aria-expanded', String(!open));
+                regenPanel.classList.toggle('open', !open);
+                regenPanel.inert = open; // interactive only while expanded
+                clearTimeout(regenFocusTimer);
+                if (!open) regenFocusTimer = setTimeout(() => {
+                    if (recToggle.getAttribute('aria-expanded') === 'true') regenPw.focus();
+                }, 160);
+            });
             regenBtn.addEventListener('click', async () => {
                 if (!regenPw.value) { toast('Bitte Passwort eingeben', 'error'); regenPw.focus(); return; }
                 regenBtn.disabled = true;
@@ -1944,10 +1965,6 @@
                     showBackupCodes(res.backup_codes || []);
                 } catch (e) { toast(e.message, 'error'); regenBtn.disabled = false; }
             });
-            twoFA.append(el('div', { class: 'tf-action' },
-                el('label', { class: 'tf-action-label', for: 'tf-regen-pw' }, 'Passwort bestätigen, um neue Codes zu erstellen'),
-                el('div', { class: 'input-affix' }, regenPw, pwToggleBtn(regenPw)),
-                regenBtn));
 
             // Danger zone
             twoFA.append(el('div', { class: 'tf-danger-label' }, icon('alert', 13), 'Gefahrenzone'));
@@ -1956,7 +1973,7 @@
                 el('div', { class: 'tf-item-txt' },
                     el('div', { class: 'tf-item-title' }, '2FA deaktivieren'),
                     el('div', { class: 'tf-item-sub' }, 'Entfernt den zweiten Faktor von deinem Konto')),
-                el('span', { class: 'tf-chev', 'aria-hidden': 'true' }, '›')));
+                el('span', { class: 'tf-chev', 'aria-hidden': 'true' }, icon('chevron', 18))));
         } else {
             twoFA.append(tfHead(el('span', { class: 'badge badge-cat tf-status' }, 'Inaktiv')));
             twoFA.append(el('p', { class: 'tf-desc' }, 'Schütze dein Konto mit einer Authenticator-App: beim Anmelden ist dann zusätzlich ein 6-stelliger Code nötig.'));
