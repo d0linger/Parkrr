@@ -638,17 +638,56 @@
             el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Nächstes Jahr', disabled: ov.year >= nowYear,
                 onclick: () => { dashYear = ov.year + 1; render(); } }, '›'));
         page.append(el('div', { class: 'page-head' }, el('h2', {}, 'Übersicht'), yearSel));
+
+        // Empty state for a fresh install: no persons yet -> onboard instead of
+        // showing a wall of zeros and empty charts.
+        if (ov.total_persons === 0) {
+            const empty = el('div', { class: 'empty' },
+                el('span', { class: 'big' }, '👋'),
+                el('div', {}, 'Noch keine Daten. Lege deine erste Person an, dann füllt sich die Übersicht.'));
+            if (canManage()) empty.append(el('button', { class: 'btn btn-primary', style: 'margin-top:1rem', onclick: () => navigate('persons') }, '+ Erste Person'));
+            page.append(empty);
+            return;
+        }
+
+        // Money first — "Offen gesamt" is the operator's lead metric. The
+        // Umsatz tile carries a year-over-year delta vs the same period last year.
+        const umsatz = statWide(eur(ov.accrued_this_year), 'Umsatz ' + ov.year, { icon: 'trend', tone: 'teal' });
+        const prev = ov.accrued_prev_year;
+        if (prev != null && prev > 0) {
+            const pct = Math.round(((ov.accrued_this_year - prev) / prev) * 100);
+            const cls = pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat';
+            const txt = pct > 0 ? '▲ +' + pct + ' %' : pct < 0 ? '▼ ' + Math.abs(pct) + ' %' : '± 0 %';
+            umsatz.querySelector('.value').append(el('span', { class: 'yoy ' + cls, title: 'ggü. ' + (ov.year - 1) }, ' ' + txt));
+            umsatz.querySelector('.label').textContent = 'Umsatz ' + ov.year + ' · ggü. ' + (ov.year - 1);
+        }
+        page.append(el('div', { class: 'stat-grid' },
+            statWide(eur(ov.outstanding_total), 'Offen gesamt', { icon: 'clock', tone: 'amber' }),
+            umsatz,
+            statWide(eur(ov.paid_total), 'Bezahlt', { icon: 'check', tone: 'green' }),
+        ));
         page.append(el('div', { class: 'stat-grid' },
             stat(ov.total_persons, 'Personen', { icon: 'users' }),
             stat(ov.active_vehicles, 'aktiv eingestellt', { icon: 'warehouse' }),
             stat(ov.total_vehicles, 'Gefährte gesamt', { icon: 'car' }),
             stat(ov.total_categories, 'Tarife', { icon: 'tag' }),
         ));
-        page.append(el('div', { class: 'stat-grid' },
-            statWide(eur(ov.accrued_this_year), 'Umsatz ' + ov.year, { icon: 'trend', tone: 'teal' }),
-            statWide(eur(ov.paid_total), 'Bezahlt (Slider)', { icon: 'check', tone: 'green' }),
-            statWide(eur(ov.outstanding_total), 'Offen gesamt', { icon: 'clock', tone: 'amber' }),
-        ));
+
+        // Top open balances — turns the "Offen gesamt" number into an action
+        // list: who to follow up with, one tap to their page.
+        if (ov.top_outstanding && ov.top_outstanding.length) {
+            const oweCard = el('div', { class: 'owe-card' });
+            oweCard.append(el('div', { class: 'owe-head' },
+                el('span', { class: 'sec-eyebrow' }, 'Top offene Salden'),
+                el('span', { class: 'muted', style: 'font-size:.75rem' }, eur(ov.outstanding_total) + ' gesamt')));
+            ov.top_outstanding.forEach((o, i) => {
+                oweCard.append(el('button', { class: 'owe-row', onclick: () => navigate('persons/' + o.person_id),
+                    'aria-label': o.name + ' öffnen · ' + eur(o.outstanding) + ' offen' },
+                    el('span', { class: 'owe-nm' }, el('span', { class: 'owe-rank' }, i + 1), esc(o.name)),
+                    el('span', { class: 'owe-amt' }, eur(o.outstanding), el('span', { class: 'owe-chev' }, '›'))));
+            });
+            page.append(oweCard);
+        }
 
         // Revenue chart
         const revCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Umsatz pro Monat · ' + ov.year));
@@ -743,28 +782,36 @@
             el('button', { class: 'back-btn', onclick: () => navigate('persons'), 'aria-label': 'Zurück' }, '‹'),
             el('h2', { style: 'margin:0' }, stats.person_name || 'Person')));
 
-        // balance card
-        const balCls = stats.balance > 0.005 ? 'amt-pos' : 'amt-zero';
+        // Balance card: lead with the one number the user came for (the open
+        // balance) as a hero, then the derivation as a quiet breakdown.
+        const owed = stats.balance > 0.005;
         page.append(el('div', { class: 'card' },
-            el('div', { class: 'balance' }, el('span', {}, 'Aufgelaufene Miete'), el('span', { class: 'amt' }, eur(stats.total_accrued))),
-            el('div', { class: 'balance' }, el('span', {}, 'Zusatzkosten'), el('span', { class: 'amt' }, eur(stats.total_charges))),
-            el('div', { class: 'balance' }, el('span', {}, 'Bezahlt (per Slider)'), el('span', { class: 'amt' }, '− ' + eur(stats.total_paid))),
-            el('div', { class: 'balance' }, el('strong', {}, 'Offener Saldo'), el('strong', { class: 'amt ' + balCls }, eur(stats.balance)))));
+            el('div', { class: 'bal-hero-label' }, 'Offener Saldo'),
+            el('div', { class: 'bal-hero-num ' + (owed ? 'is-owed' : 'is-clear') }, eur(stats.balance)),
+            el('div', { class: 'bal-hero-sub' }, 'Stand heute · Miete + Zusatzkosten − Bezahlt'),
+            el('div', { class: 'bal-breakdown' },
+                el('div', { class: 'bal-row' }, el('span', {}, 'Aufgelaufene Miete'), el('span', { class: 'v' }, eur(stats.total_accrued))),
+                el('div', { class: 'bal-row' }, el('span', {}, 'Zusatzkosten'), el('span', { class: 'v' }, eur(stats.total_charges))),
+                el('div', { class: 'bal-row is-paid' }, el('span', {}, 'Bezahlt'), el('span', { class: 'v' }, '− ' + eur(stats.total_paid))))));
 
         // flat-rate agreements (Pauschalen). Per-vehicle coverage badges/payment
         // come from the backend (v.flat_rate_covered / v.uncovered_cost).
         const ags = stats.agreements || [];
         if (canBill() || ags.length) {
-            const frCard = el('div', { class: 'card' });
-            frCard.append(el('div', { class: 'card-row' },
-                el('h3', { style: 'margin:0' }, 'Pauschalen'),
-                canBill() ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => agreementForm(id, vehicles) }, '+ Pauschale') : null));
             // A Pauschale only moves to the archive once it has ended AND is fully
             // paid — an ended-but-unpaid agreement stays visible so the open payment
             // isn't hidden. End date is exclusive (matches the backend).
             const ended = (a) => a.settled && a.end_date && a.end_date.slice(0, 10) <= today();
             const activeAg = ags.filter((a) => !ended(a));
             const endedAg = ags.filter(ended);
+            const frCard = el('div', { class: 'card' });
+            // Badge counts the rows actually shown here (active); ended ones sit in
+            // their own "Beendete Pauschalen" section with its own count.
+            frCard.append(el('div', { class: 'card-row', style: 'align-items:baseline' },
+                el('div', { class: 'sec-group' },
+                    el('h3', { class: 'sec-eyebrow' }, 'Pauschalen'),
+                    activeAg.length ? el('span', { class: 'sec-count' }, activeAg.length) : null),
+                canBill() ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => agreementForm(id, vehicles) }, '+ Pauschale') : null));
             if (!ags.length) frCard.append(el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Keine Pauschale – Abrechnung je Gefährt.'));
             else activeAg.forEach((a) => frCard.append(agreementRow(id, a, vehicles)));
             if (activeAg.length === 0 && ags.length) frCard.append(el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Keine laufende Pauschale.'));
@@ -781,7 +828,9 @@
         const standalone = vehicles.filter((v) => !v.flat_rate_covered);
         const activeVeh = standalone.filter((v) => !v.archived);
         const archivedVeh = standalone.filter((v) => v.archived);
-        const vh = el('div', { class: 'page-head' }, el('h3', {}, 'Einzelne Gefährte (' + activeVeh.length + ')'));
+        const vh = el('div', { class: 'page-head section-head' },
+            el('div', { class: 'sec-group' }, el('h3', { class: 'sec-eyebrow' }, 'Einzelne Gefährte'),
+                activeVeh.length ? el('span', { class: 'sec-count' }, activeVeh.length) : null));
         if (canManage()) vh.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => vehicleForm(null, id) }, '+ Gefährt'));
         page.append(vh);
         if (!activeVeh.length) page.append(el('p', { class: 'muted' }, 'Keine einzeln abgerechneten Gefährte.'));
@@ -793,7 +842,9 @@
         }
 
         // charges
-        const ch = el('div', { class: 'page-head' }, el('h3', {}, 'Zusatzkosten'));
+        const ch = el('div', { class: 'page-head section-head' },
+            el('div', { class: 'sec-group' }, el('h3', { class: 'sec-eyebrow' }, 'Zusatzkosten'),
+                charges.length ? el('span', { class: 'sec-count' }, charges.length) : null));
         if (canBill()) ch.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => chargeForm(id) }, '+ Position'));
         page.append(ch);
         page.append(financeList(charges));
@@ -805,11 +856,25 @@
         if (stats.years.length) {
             const yc = el('div', { class: 'chart-card' }, el('h3', {}, 'Kosten pro Jahr'));
             const max = Math.max(...stats.years.map((y) => y.cost), 1);
+            // Look up each year's predecessor to show a year-over-year delta.
+            const byYear = {};
+            stats.years.forEach((y) => { byYear[y.year] = y.cost; });
             const bars = el('div', { class: 'bars' });
-            for (const y of stats.years) bars.append(el('div', { class: 'bar-row' },
-                el('div', {}, String(y.year)),
-                el('div', { class: 'bar-track' }, el('div', { class: 'bar-fill', style: `width:${(y.cost / max) * 100}%` })),
-                el('div', { class: 'bar-val' }, eur(y.cost))));
+            for (const y of stats.years) {
+                const prior = byYear[y.year - 1];
+                let yoy = null, yoyCls = '';
+                if (prior != null && prior > 0) {
+                    const pct = Math.round(((y.cost - prior) / prior) * 100);
+                    if (pct > 0) { yoy = '▲ +' + pct + ' %'; yoyCls = 'up'; }
+                    else if (pct < 0) { yoy = '▼ ' + Math.abs(pct) + ' %'; yoyCls = 'down'; }
+                    else { yoy = '± 0 %'; yoyCls = 'flat'; }
+                }
+                bars.append(el('div', { class: 'bar-row' },
+                    el('div', {}, String(y.year)),
+                    el('div', { class: 'bar-track' }, el('div', { class: 'bar-fill', style: `width:${(y.cost / max) * 100}%` })),
+                    el('div', { class: 'bar-val' }, eur(y.cost),
+                        yoy ? el('span', { class: 'yoy ' + yoyCls, title: 'Veränderung gegenüber ' + (y.year - 1) }, yoy) : null)));
+            }
             yc.append(bars);
             page.append(yc);
         }
@@ -949,24 +1014,32 @@
         const covered = (a.vehicle_ids && a.vehicle_ids.length)
             ? a.vehicle_ids.map((vid) => { const v = vehicles.find((x) => x.id === vid); return v ? vehicleTitle(v) : '#' + vid; }).join(', ')
             : 'alle Gefährte';
+        // Lead with the question the user has ("paid? how much open?"): a status
+        // chip + the accrued amount up front; the contract config becomes a quiet
+        // meta line. partial = some periods/fixed amounts paid but not the whole.
+        const partial = !a.paid && (((a.paid_periods && a.paid_periods.length)) ||
+            (a.paid_fixed && Object.keys(a.paid_fixed).length));
+        const stLabel = a.paid ? 'Bezahlt' : partial ? 'Teilweise bezahlt' : 'Offen';
+        const stCls = a.paid ? 'badge-active' : partial ? 'badge-cat' : 'badge-ended';
+        const nCov = (a.vehicle_ids && a.vehicle_ids.length) ? a.vehicle_ids.length + ' Gefährte' : 'alle Gefährte';
+        const config = eur(a.amount) + unit + ' · '
+            + fmtDate(a.start_date) + (a.end_date ? ' – ' + fmtDate(a.end_date) : ' – offen')
+            + ' · ' + esc(covered) + (a.note ? ' · ' + esc(a.note) : '');
         const row = el('div', { class: 'card', style: 'margin-top:.5rem' });
         row.append(el('div', { class: 'card-row' },
             el('div', { style: 'flex:1' },
-                el('div', {}, el('strong', {}, eur(a.amount) + unit)),
-                el('div', { class: 'card-meta' }, fmtDate(a.start_date) + (a.end_date ? ' – ' + fmtDate(a.end_date) : ' – offen') + ' · ' + esc(covered)),
-                el('div', { class: 'card-meta' }, 'aufgelaufen ' + eur(a.accrued) + (a.note ? ' · ' + esc(a.note) : ''))),
+                el('div', { class: 'ag-status-row' },
+                    el('span', { class: 'badge ' + stCls }, stLabel),
+                    el('span', { class: 'badge badge-cat' }, nCov)),
+                el('div', { class: 'ag-accrued' + (a.paid ? '' : ' is-open') },
+                    eur(a.accrued), el('span', { class: 'unit' }, ' aufgelaufen')),
+                el('div', { class: 'card-meta' }, config)),
             canBill() ? el('div', { class: 'card-actions' },
                 el('button', { class: 'btn btn-ghost btn-sm', title: 'Pauschale ab ' + fmtDate(a.start_date) + ' bearbeiten', 'aria-label': 'Pauschale ab ' + fmtDate(a.start_date) + ' bearbeiten', onclick: () => agreementForm(personId, vehicles, a) }, icon('edit')),
                 el('button', { class: 'btn btn-ghost btn-sm', title: 'Pauschale ab ' + fmtDate(a.start_date) + ' löschen', 'aria-label': 'Pauschale ab ' + fmtDate(a.start_date) + ' löschen', onclick: () => delAgreement(a) }, icon('trash'))) : null));
+        // Readers already see the status via the ag-status-row chip above; only
+        // billers get the interactive payment controls.
         if (canBill()) row.append(agreementPayments(a));
-        else {
-            // Partial when any sub-period is paid — a whole-period key OR a fixed
-            // Teilbetrag (paid_fixed).
-            const partial = !a.paid && (((a.paid_periods && a.paid_periods.length) ||
-                (a.paid_fixed && Object.keys(a.paid_fixed).length)));
-            row.append(el('span', { class: 'badge ' + (a.paid ? 'badge-active' : partial ? 'badge-cat' : 'badge-ended') },
-                a.paid ? 'bezahlt' : partial ? 'teilweise bezahlt' : 'offen'));
-        }
         // Subordinate vehicles nested under the Pauschale (they no longer appear in
         // the separate Gefährte list). Empty vehicle_ids = covers all vehicles.
         const sub = (a.vehicle_ids && a.vehicle_ids.length)

@@ -426,7 +426,28 @@ textarea { resize: vertical; min-height: 72px; }
 .bar-track { background: var(--bg-elev-2); border-radius: 999px; height: 12px; overflow: hidden; }
 .bar-fill { background: linear-gradient(90deg, var(--primary), var(--primary-hover)); height: 100%; border-radius: 999px; transition: width 0.9s cubic-bezier(0.22, 1, 0.36, 1); }
 @media (prefers-reduced-motion: reduce) { .bar-fill { transition: none; } }
-.bar-val { font-variant-numeric: tabular-nums; font-size: 0.85rem; color: var(--text-muted); }
+.bar-val { font-variant-numeric: tabular-nums; font-size: 0.85rem; color: var(--text-muted); text-align: right; }
+/* Year-over-year delta on the per-person "Kosten pro Jahr" chart. */
+.yoy { display: block; font-size: 0.7rem; font-variant-numeric: tabular-nums; margin-top: 1px; }
+.yoy.up { color: var(--primary-hover); }
+.yoy.down, .yoy.flat { color: var(--text-muted); }
+/* Inline YoY delta inside a KPI tile value (dashboard Umsatz). */
+.stat .value .yoy { display: inline; font-size: 0.72rem; margin-top: 0; }
+
+/* Dashboard: "Top offene Salden" action list. */
+.owe-card { background: var(--card-bg); border: 1px solid var(--card-border); box-shadow: var(--card-shadow); border-radius: var(--radius); overflow: hidden; margin-bottom: 0.75rem; }
+.owe-head { display: flex; align-items: baseline; justify-content: space-between; padding: 0.7rem 0.9rem 0.4rem; }
+.owe-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; width: 100%;
+    background: none; border: none; border-top: 1px solid var(--border); color: var(--text);
+    font-family: inherit; font-size: 0.9rem; text-align: left; padding: 0.6rem 0.9rem; cursor: pointer;
+}
+.owe-row:hover { background: var(--bg-elev-2); }
+.owe-row:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.owe-nm { display: flex; align-items: center; gap: 0.55rem; }
+.owe-rank { width: 20px; height: 20px; border-radius: 50%; background: var(--bg-elev-2); color: var(--text-muted); font-size: 0.72rem; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; flex: none; font-variant-numeric: tabular-nums; }
+.owe-amt { display: flex; align-items: center; gap: 0.4rem; font-variant-numeric: tabular-nums; font-weight: 700; color: var(--accent); }
+.owe-chev { color: var(--text-muted); font-weight: 400; }
 
 /* ---------- Modal (native dialog) ---------- */
 .modal {
@@ -603,6 +624,32 @@ textarea { resize: vertical; min-height: 72px; }
 .balance .amt { font-variant-numeric: tabular-nums; font-weight: 600; }
 .amt-pos { color: var(--danger-hover); }
 .amt-zero { color: var(--success); }
+
+/* ---------- Balance card: hero saldo + breakdown ---------- */
+.bal-hero-label { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-muted); }
+.bal-hero-num {
+    font-size: 2.5rem; font-weight: 800; letter-spacing: -0.03em; line-height: 1.05;
+    font-variant-numeric: tabular-nums; margin-top: 0.1rem;
+}
+.bal-hero-num.is-owed { color: var(--accent); }
+.bal-hero-num.is-clear { color: var(--success); }
+.bal-hero-sub { font-size: 0.76rem; color: var(--text-muted); margin-top: 0.15rem; }
+.bal-breakdown { margin-top: 0.9rem; padding-top: 0.7rem; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 0.3rem; }
+.bal-row { display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--text-muted); }
+.bal-row .v { font-variant-numeric: tabular-nums; }
+.bal-row.is-paid .v { color: var(--success); }
+
+/* ---------- Pauschale card: status-forward header ---------- */
+.ag-status-row { display: flex; gap: 0.35rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.45rem; }
+.ag-accrued { font-weight: 800; font-size: 1.1rem; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.ag-accrued.is-open { color: var(--accent); }
+.ag-accrued .unit { font-size: 0.74rem; font-weight: 600; color: var(--text-muted); letter-spacing: 0; }
+
+/* ---------- Section rhythm: eyebrow section headers ---------- */
+.section-head { margin-top: 1.6rem; margin-bottom: 0.7rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--border); align-items: baseline; }
+.sec-eyebrow { margin: 0; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--primary-hover); }
+.sec-group { display: flex; align-items: baseline; gap: 0.5rem; }
+.sec-count { background: var(--bg-elev-2); color: var(--text-muted); font-size: 0.72rem; font-weight: 700; padding: 0.1rem 0.45rem; border-radius: 999px; font-variant-numeric: tabular-nums; }
 
 /* ---------- Charts ---------- */
 .chart-card { background: var(--card-bg); border: 1px solid var(--card-border); box-shadow: var(--card-shadow); border-radius: var(--radius); padding: 1rem; margin-bottom: 0.75rem; }
