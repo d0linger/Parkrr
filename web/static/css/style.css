@@ -248,15 +248,25 @@ textarea { resize: vertical; min-height: 72px; }
 }
 .otp-slot.is-filled { border-color: var(--primary-hover); }
 
-/* Users: expandable card with a separated danger zone. */
-.u-head { display: flex; align-items: center; gap: 0.6rem; text-align: left; background: transparent; border: none; padding: 0; }
-.u-name { margin: 0; font-size: 1rem; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; flex: 1; }
-.u-panel-inner { padding-top: 0.85rem; }
-.u-email { margin-bottom: 0.6rem; }
+/* Users: expandable card — avatar header, inline password reset, danger zone. */
+.u-head { display: flex; align-items: center; gap: 0.65rem; text-align: left; background: transparent; border: none; padding: 0; }
+.u-avatar {
+    width: 36px; height: 36px; border-radius: 50%; flex: none;
+    background: var(--primary-soft); color: var(--primary-hover);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 0.95rem; text-transform: uppercase;
+}
+.u-namewrap { flex: 1; min-width: 0; }
+.u-name { margin: 0; font-size: 1rem; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.u-sub { font-size: 0.78rem; color: var(--text-muted); margin-top: 0.1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.u-panel-inner { padding-top: 0.9rem; }
 .u-pw-label { margin-top: 0; }
-.u-edit { margin-top: 0.5rem; }
+.u-pw-row { display: flex; gap: 0.5rem; align-items: stretch; }
+.u-pw-row .input-affix { flex: 1; min-width: 0; }
+.u-pw-row > .btn { flex: none; }
+.u-edit { margin-top: 0.55rem; }
 .u-dz-actions { display: flex; gap: 0.5rem; margin-top: 0.55rem; flex-wrap: wrap; }
-.u-dz-actions .btn { flex: 1 1 auto; }
+.u-dz-actions .btn { flex: 0 1 auto; }
 
 /* Flat-rate agreement: covered-vehicle checkbox list in the form. */
 .agreement-vehicles { display: flex; flex-direction: column; gap: 0.3rem; max-height: 11rem; overflow-y: auto; margin-top: 0.3rem; }
