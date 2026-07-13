@@ -426,7 +426,11 @@ textarea { resize: vertical; min-height: 72px; }
 .bar-track { background: var(--bg-elev-2); border-radius: 999px; height: 12px; overflow: hidden; }
 .bar-fill { background: linear-gradient(90deg, var(--primary), var(--primary-hover)); height: 100%; border-radius: 999px; transition: width 0.9s cubic-bezier(0.22, 1, 0.36, 1); }
 @media (prefers-reduced-motion: reduce) { .bar-fill { transition: none; } }
-.bar-val { font-variant-numeric: tabular-nums; font-size: 0.85rem; color: var(--text-muted); }
+.bar-val { font-variant-numeric: tabular-nums; font-size: 0.85rem; color: var(--text-muted); text-align: right; }
+/* Year-over-year delta on the per-person "Kosten pro Jahr" chart. */
+.yoy { display: block; font-size: 0.7rem; font-variant-numeric: tabular-nums; margin-top: 1px; }
+.yoy.up { color: var(--primary-hover); }
+.yoy.down, .yoy.flat { color: var(--text-muted); }
 
 /* ---------- Modal (native dialog) ---------- */
 .modal {

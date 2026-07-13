@@ -815,11 +815,25 @@
         if (stats.years.length) {
             const yc = el('div', { class: 'chart-card' }, el('h3', {}, 'Kosten pro Jahr'));
             const max = Math.max(...stats.years.map((y) => y.cost), 1);
+            // Look up each year's predecessor to show a year-over-year delta.
+            const byYear = {};
+            stats.years.forEach((y) => { byYear[y.year] = y.cost; });
             const bars = el('div', { class: 'bars' });
-            for (const y of stats.years) bars.append(el('div', { class: 'bar-row' },
-                el('div', {}, String(y.year)),
-                el('div', { class: 'bar-track' }, el('div', { class: 'bar-fill', style: `width:${(y.cost / max) * 100}%` })),
-                el('div', { class: 'bar-val' }, eur(y.cost))));
+            for (const y of stats.years) {
+                const prior = byYear[y.year - 1];
+                let yoy = null, yoyCls = '';
+                if (prior != null && prior > 0) {
+                    const pct = Math.round(((y.cost - prior) / prior) * 100);
+                    if (pct > 0) { yoy = '▲ +' + pct + ' %'; yoyCls = 'up'; }
+                    else if (pct < 0) { yoy = '▼ ' + Math.abs(pct) + ' %'; yoyCls = 'down'; }
+                    else { yoy = '± 0 %'; yoyCls = 'flat'; }
+                }
+                bars.append(el('div', { class: 'bar-row' },
+                    el('div', {}, String(y.year)),
+                    el('div', { class: 'bar-track' }, el('div', { class: 'bar-fill', style: `width:${(y.cost / max) * 100}%` })),
+                    el('div', { class: 'bar-val' }, eur(y.cost),
+                        yoy ? el('span', { class: 'yoy ' + yoyCls, title: 'Veränderung gegenüber ' + (y.year - 1) }, yoy) : null)));
+            }
             yc.append(bars);
             page.append(yc);
         }
