@@ -798,18 +798,20 @@
         // come from the backend (v.flat_rate_covered / v.uncovered_cost).
         const ags = stats.agreements || [];
         if (canBill() || ags.length) {
-            const frCard = el('div', { class: 'card' });
-            frCard.append(el('div', { class: 'card-row', style: 'align-items:baseline' },
-                el('div', { class: 'sec-group' },
-                    el('h3', { class: 'sec-eyebrow' }, 'Pauschalen'),
-                    ags.length ? el('span', { class: 'sec-count' }, ags.length) : null),
-                canBill() ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => agreementForm(id, vehicles) }, '+ Pauschale') : null));
             // A Pauschale only moves to the archive once it has ended AND is fully
             // paid — an ended-but-unpaid agreement stays visible so the open payment
             // isn't hidden. End date is exclusive (matches the backend).
             const ended = (a) => a.settled && a.end_date && a.end_date.slice(0, 10) <= today();
             const activeAg = ags.filter((a) => !ended(a));
             const endedAg = ags.filter(ended);
+            const frCard = el('div', { class: 'card' });
+            // Badge counts the rows actually shown here (active); ended ones sit in
+            // their own "Beendete Pauschalen" section with its own count.
+            frCard.append(el('div', { class: 'card-row', style: 'align-items:baseline' },
+                el('div', { class: 'sec-group' },
+                    el('h3', { class: 'sec-eyebrow' }, 'Pauschalen'),
+                    activeAg.length ? el('span', { class: 'sec-count' }, activeAg.length) : null),
+                canBill() ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => agreementForm(id, vehicles) }, '+ Pauschale') : null));
             if (!ags.length) frCard.append(el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Keine Pauschale – Abrechnung je Gefährt.'));
             else activeAg.forEach((a) => frCard.append(agreementRow(id, a, vehicles)));
             if (activeAg.length === 0 && ags.length) frCard.append(el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Keine laufende Pauschale.'));
@@ -828,7 +830,7 @@
         const archivedVeh = standalone.filter((v) => v.archived);
         const vh = el('div', { class: 'page-head section-head' },
             el('div', { class: 'sec-group' }, el('h3', { class: 'sec-eyebrow' }, 'Einzelne Gefährte'),
-                el('span', { class: 'sec-count' }, activeVeh.length)));
+                activeVeh.length ? el('span', { class: 'sec-count' }, activeVeh.length) : null));
         if (canManage()) vh.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => vehicleForm(null, id) }, '+ Gefährt'));
         page.append(vh);
         if (!activeVeh.length) page.append(el('p', { class: 'muted' }, 'Keine einzeln abgerechneten Gefährte.'));
@@ -1035,15 +1037,9 @@
             canBill() ? el('div', { class: 'card-actions' },
                 el('button', { class: 'btn btn-ghost btn-sm', title: 'Pauschale ab ' + fmtDate(a.start_date) + ' bearbeiten', 'aria-label': 'Pauschale ab ' + fmtDate(a.start_date) + ' bearbeiten', onclick: () => agreementForm(personId, vehicles, a) }, icon('edit')),
                 el('button', { class: 'btn btn-ghost btn-sm', title: 'Pauschale ab ' + fmtDate(a.start_date) + ' löschen', 'aria-label': 'Pauschale ab ' + fmtDate(a.start_date) + ' löschen', onclick: () => delAgreement(a) }, icon('trash'))) : null));
+        // Readers already see the status via the ag-status-row chip above; only
+        // billers get the interactive payment controls.
         if (canBill()) row.append(agreementPayments(a));
-        else {
-            // Partial when any sub-period is paid — a whole-period key OR a fixed
-            // Teilbetrag (paid_fixed).
-            const partial = !a.paid && (((a.paid_periods && a.paid_periods.length) ||
-                (a.paid_fixed && Object.keys(a.paid_fixed).length)));
-            row.append(el('span', { class: 'badge ' + (a.paid ? 'badge-active' : partial ? 'badge-cat' : 'badge-ended') },
-                a.paid ? 'bezahlt' : partial ? 'teilweise bezahlt' : 'offen'));
-        }
         // Subordinate vehicles nested under the Pauschale (they no longer appear in
         // the separate Gefährte list). Empty vehicle_ids = covers all vehicles.
         const sub = (a.vehicle_ids && a.vehicle_ids.length)

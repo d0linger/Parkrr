@@ -183,10 +183,18 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 
 	// Per-person charge sums (all + paid), reused for both the totals and the
 	// per-person open balance. person_id is required on every charge.
-	chargesByPerson := h.chargeSumsByPerson(ctx, `SELECT person_id, COALESCE(sum(amount*quantity),0) FROM charges GROUP BY person_id`)
-	paidChargesByPerson := h.chargeSumsByPerson(ctx,
+	chargesByPerson, err := h.chargeSumsByPerson(ctx, `SELECT person_id, COALESCE(sum(amount*quantity),0) FROM charges GROUP BY person_id`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	paidChargesByPerson, err := h.chargeSumsByPerson(ctx,
 		`SELECT c.person_id, COALESCE(sum(c.amount*c.quantity),0)
 		 FROM charges c JOIN vehicles v ON v.id = c.vehicle_id WHERE v.paid GROUP BY c.person_id`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 	personNames := map[int64]string{}
 	if rows, nerr := h.Pool.Query(ctx, `SELECT id, trim(first_name || ' ' || last_name) FROM persons`); nerr == nil {
 		defer rows.Close()
@@ -286,22 +294,25 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// chargeSumsByPerson runs a "person_id -> sum" charge query into a map.
-func (h *Handler) chargeSumsByPerson(ctx context.Context, query string) map[int64]float64 {
+// chargeSumsByPerson runs a "person_id -> sum" charge query into a map. Errors
+// are propagated rather than swallowed, so the dashboard never reports partial
+// money figures as if they were complete.
+func (h *Handler) chargeSumsByPerson(ctx context.Context, query string) (map[int64]float64, error) {
 	out := map[int64]float64{}
 	rows, err := h.Pool.Query(ctx, query)
 	if err != nil {
-		return out
+		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var pid int64
 		var sum float64
-		if rows.Scan(&pid, &sum) == nil {
-			out[pid] = sum
+		if err := rows.Scan(&pid, &sum); err != nil {
+			return nil, err
 		}
+		out[pid] = sum
 	}
-	return out
+	return out, rows.Err()
 }
 
 // sumByMonth runs a "month -> sum" query for a year and returns a 12-slot slice
