@@ -456,15 +456,6 @@ textarea { resize: vertical; min-height: 72px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spin { animation-duration: 1.5s; } }
 
-/* Dashboard charts: single column on mobile, two columns from ~900px
-   (revenue full-width on top, charges + status side by side below). */
-.dash-charts { display: grid; gap: 0.75rem; }
-@media (min-width: 900px) {
-    .dash-charts { grid-template-columns: 1fr 1fr; }
-    .dash-charts > .chart-card { margin-bottom: 0; }
-    .dash-charts > .chart-card:first-child { grid-column: 1 / -1; }
-}
-
 .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 1rem; }
 .chip {
     background: var(--bg-elev); border: 1px solid var(--border); color: var(--text-muted);
@@ -814,6 +805,7 @@ textarea { resize: vertical; min-height: 72px; }
     color: var(--warning); border-radius: var(--radius-sm);
     padding: 0.5rem 0.6rem; font-size: 0.82rem; font-weight: 600; margin: 0 0 0.2rem;
 }
+.backup-warn svg { flex: none; margin-top: 1px; }
 .ack-check { display: flex; align-items: flex-start; gap: 0.55rem; margin-top: 0.9rem; font-size: 0.88rem; cursor: pointer; }
 .ack-check input { width: auto; margin: 0.15rem 0 0; accent-color: var(--primary); flex: none; }
 

@@ -53,6 +53,7 @@
         car: '<path d="M4 16v-3.2c0-.6.2-1.2.6-1.7l2-2.6c.4-.5 1-.8 1.6-.8h6.4c.7 0 1.3.3 1.7.9l1.9 2.5c.4.5.6 1.1.6 1.7V16"/><circle cx="7.5" cy="17" r="1.8"/><circle cx="16.5" cy="17" r="1.8"/><path d="M3 16h18"/>',
         shield: '<path d="M12 3l7 3v6c0 4-3 6.5-7 8-4-1.5-7-4-7-8V6l7-3Z"/><path d="M9 12l2 2 4-4"/>',
         unlock: '<rect x="4.5" y="10.5" width="15" height="9" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 7.5-1.5"/>',
+        alert: '<path d="M12 3.5 22 20H2L12 3.5Z"/><path d="M12 10v4M12 17.3v.2"/>',
     };
     const icon = (name, size = 16) => {
         const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -748,21 +749,17 @@
             page.append(oweCard);
         }
 
-        // Charts flow into two desktop columns (>=900px) to use the width:
-        // revenue full-width on top, charges + status side by side below.
-        const charts = el('div', { class: 'dash-charts' });
-
         // Revenue chart
         const revCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Umsatz pro Monat · ' + ov.year));
         revCard.append(chartLine(ov.revenue_by_month, MONTHS));
         revCard.append(el('div', { class: 'legend' }, el('span', {}, el('span', { class: 'dotc', style: 'background:var(--primary)' }), 'Aufgelaufene Miete')));
-        charts.append(revCard);
+        page.append(revCard);
 
         // Extra charges per month
         const pcCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Zusatzkosten pro Monat · ' + ov.year));
         pcCard.append(chartBars(ov.charges_by_month, MONTHS));
         pcCard.append(el('div', { class: 'legend' }, el('span', {}, el('span', { class: 'dotc', style: 'background:var(--primary)' }), 'Zusatzkosten')));
-        charts.append(pcCard);
+        page.append(pcCard);
 
         // Status distribution
         const sc = ov.status_counts || {};
@@ -779,8 +776,7 @@
             requestAnimationFrame(() => { fill.style.width = ((n / maxS) * 100) + '%'; });
         }
         scCard.append(bars);
-        charts.append(scCard);
-        page.append(charts);
+        page.append(scCard);
     };
     const statWide = (value, label, opts = {}) => { const t = stat(value, label, opts); t.style.gridColumn = 'span 2'; return t; };
 
@@ -1916,7 +1912,8 @@
         if (state.user.totp_enabled) {
             let remaining = null;
             try { remaining = (await api.get('/auth/2fa/backup-codes')).remaining; } catch { /* ignore */ }
-            twoFA.append(el('p', { class: 'muted' }, '🔐 2FA ist aktiv.' + (remaining != null ? ` · ${remaining} Recovery-Codes übrig` : '')));
+            twoFA.append(el('p', { class: 'muted', style: 'display:flex;align-items:center;gap:.35rem' },
+                icon('shield', 15), '2FA ist aktiv.' + (remaining != null ? ` · ${remaining} Recovery-Codes übrig` : '')));
             if (remaining != null && remaining <= 2) twoFA.append(el('p', { class: 'form-error' }, 'Wenige Recovery-Codes übrig – bitte neu generieren.'));
             twoFA.append(el('button', { class: 'btn btn-ghost btn-block', style: 'margin-bottom:.5rem', onclick: regenerateRecoveryCodes }, 'Recovery-Codes neu generieren'));
             twoFA.append(el('button', { class: 'btn btn-danger btn-block', onclick: disable2FA }, '2FA deaktivieren'));
@@ -2016,7 +2013,7 @@
     function showBackupCodes(codes) {
         let chk; // acknowledgement checkbox — gates every dismissal path
         contentModal('Backup-Codes', (body, close) => {
-            body.append(el('p', { class: 'backup-warn' }, '⚠️ Wird nur jetzt angezeigt – sichere die Codes, bevor du fortfährst.'));
+            body.append(el('p', { class: 'backup-warn' }, icon('alert', 15), el('span', {}, 'Wird nur jetzt angezeigt – sichere die Codes, bevor du fortfährst.')));
             body.append(el('p', { class: 'muted' }, 'Jeder Einmal-Code funktioniert einmal, falls du keinen Authenticator zur Hand hast.'));
             const grid = el('div', { class: 'backup-codes' });
             for (const c of codes) grid.append(el('code', {}, c));
