@@ -809,6 +809,44 @@ textarea { resize: vertical; min-height: 72px; }
 .ack-check { display: flex; align-items: flex-start; gap: 0.55rem; margin-top: 0.9rem; font-size: 0.88rem; cursor: pointer; }
 .ack-check input { width: auto; margin: 0.15rem 0 0; accent-color: var(--primary); flex: none; }
 
+/* 2FA settings card: header, inset status rows, inline regenerate, danger zone. */
+.tf-head { display: flex; align-items: center; gap: 0.55rem; margin-bottom: 0.5rem; }
+.tf-head-ic { display: flex; color: var(--primary-hover); flex: none; }
+.tf-head h3 { margin: 0; flex: 1; }
+.tf-status { flex: none; }
+.tf-desc { color: var(--text-muted); font-size: 0.85rem; margin: 0 0 0.85rem; }
+.tf-item {
+    display: flex; align-items: center; gap: 0.6rem;
+    background: var(--bg-elev-2); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 0.6rem 0.7rem;
+}
+.tf-item-ic { display: flex; color: var(--text-muted); flex: none; }
+.tf-item-txt { flex: 1; min-width: 0; }
+.tf-item-title { font-weight: 600; font-size: 0.9rem; }
+.tf-item-sub { color: var(--text-muted); font-size: 0.78rem; margin-top: 0.05rem; }
+.tf-item .badge { flex: none; }
+.tf-action { margin-top: 0.85rem; }
+.tf-action-label { display: block; font-size: 0.82rem; font-weight: 600; color: var(--text-muted); margin-bottom: 0.35rem; }
+.tf-action .input-affix { margin-bottom: 0.55rem; }
+.tf-danger-label {
+    display: flex; align-items: center; gap: 0.3rem;
+    color: var(--danger); font-size: 0.7rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.07em;
+    margin-top: 1rem; padding-top: 0.85rem; border-top: 1px dashed var(--border);
+}
+.tf-danger-label svg { flex: none; }
+.tf-danger-row {
+    display: flex; align-items: center; gap: 0.6rem; width: 100%;
+    margin-top: 0.5rem; padding: 0.6rem 0.7rem; text-align: left;
+    background: rgba(239, 68, 87, 0.08); border: 1px solid rgba(239, 68, 87, 0.32);
+    border-radius: var(--radius-sm); color: var(--text); cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+.tf-danger-row:hover { background: rgba(239, 68, 87, 0.14); border-color: rgba(239, 68, 87, 0.5); }
+.tf-danger-row:focus-visible { outline: 2px solid var(--danger); outline-offset: 2px; }
+.tf-danger-row .tf-item-ic, .tf-danger-row .tf-item-title { color: var(--danger-hover); }
+.tf-chev { margin-left: auto; color: var(--text-muted); font-size: 1.35rem; line-height: 1; flex: none; }
+
 /* 2FA setup: numbered steps + copyable secret. */
 .setup-step { display: flex; gap: 0.55rem; align-items: flex-start; margin-bottom: 0.6rem; }
 .setup-step .step-n {
