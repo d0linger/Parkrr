@@ -233,6 +233,7 @@
             $('#modal-title').textContent = title;
             $('#modal-submit').textContent = submitLabel;
             $('#modal-submit').style.display = '';
+            $('#modal-submit').disabled = false; // a prior form (e.g. onRender gating) may have disabled it
             $('#modal-cancel').style.display = '';
             const body = $('#modal-body');
             body.innerHTML = '';
@@ -275,7 +276,9 @@
                 // reader reads both when the field is focused, not just "invalid".
                 if (f.required) input.setAttribute('aria-required', 'true');
                 input.setAttribute('aria-describedby', f.help ? errId + ' ' + helpId : errId);
-                body.append(input);
+                // Password fields get a show/hide affix toggle to catch typos.
+                if (f.type === 'password') body.append(el('div', { class: 'input-affix' }, input, pwToggleBtn(input)));
+                else body.append(input);
                 body.append(el('div', { class: 'field-error', id: errId, role: 'alert', hidden: true }));
                 if (f.help) body.append(el('div', { class: 'card-meta', id: helpId }, f.help));
             }
@@ -1896,7 +1899,23 @@
             fields: [
                 { name: 'current_password', label: 'Aktuelles Passwort', type: 'password', required: true },
                 { name: 'new_password', label: 'Neues Passwort', type: 'password', required: true, minLength: 8, help: 'Mindestens 8 Zeichen.' },
+                { name: 'confirm_password', label: 'Neues Passwort bestätigen', type: 'password', required: true },
             ],
+            // Live-check that both new-password entries match; block submit on a
+            // mismatch so a typo can't set an unknown password (lockout).
+            onRender: (body) => {
+                const np = body.querySelector('#f_new_password');
+                const cp = body.querySelector('#f_confirm_password');
+                const err = body.querySelector('#err_confirm_password');
+                const check = () => {
+                    const mismatch = cp.value.length > 0 && np.value !== cp.value;
+                    if (err) { err.textContent = mismatch ? 'Passwörter stimmen nicht überein' : ''; err.hidden = !mismatch; }
+                    cp.setAttribute('aria-invalid', mismatch ? 'true' : 'false');
+                    $('#modal-submit').disabled = mismatch;
+                };
+                np.addEventListener('input', check);
+                cp.addEventListener('input', check);
+            },
         });
         if (!data) return;
         try { await api.post('/auth/change-password', { current_password: data.current_password, new_password: data.new_password }); toast('Passwort geändert', 'success'); }
@@ -1906,10 +1925,14 @@
         let info;
         try { info = await api.post('/auth/2fa/setup'); } catch (e) { toast(e.message, 'error'); return; }
         contentModal('2FA einrichten', (body, close) => {
-            body.append(el('p', { class: 'muted' }, 'Scanne den Code mit deiner Authenticator-App und gib danach den 6-stelligen Code ein.'));
-            body.append(el('div', { class: 'qr-box' }, el('img', { src: info.qr, alt: 'QR-Code' })));
-            body.append(el('div', { class: 'secret' }, info.secret));
-            body.append(el('label', { for: 'totp-enable' }, 'Bestätigungscode'));
+            body.append(el('div', { class: 'setup-step' }, el('span', { class: 'step-n' }, '1'),
+                el('div', {}, el('div', {}, 'In der Authenticator-App scannen'),
+                    el('div', { class: 'field-hint' }, 'oder das Secret manuell eintragen'))));
+            body.append(el('div', { class: 'qr-box' }, el('img', { src: info.qr, alt: 'QR-Code für die Authenticator-App' })));
+            body.append(el('div', { class: 'secret secret-copy' }, el('span', {}, info.secret),
+                el('button', { type: 'button', class: 'linkbtn', onclick: () => { if (navigator.clipboard) navigator.clipboard.writeText(info.secret); toast('Secret kopiert', 'success'); } }, 'Kopieren')));
+            body.append(el('div', { class: 'setup-step', style: 'margin-top:.9rem' }, el('span', { class: 'step-n' }, '2'),
+                el('label', { for: 'totp-enable', style: 'margin:0' }, '6-stelligen Code aus der App eingeben')));
             const inp = el('input', { id: 'totp-enable', type: 'text', inputmode: 'numeric', maxlength: 6, placeholder: '123456' });
             body.append(inp);
             const btn = el('button', { class: 'btn btn-primary btn-block', style: 'margin-top:.8rem' }, 'Aktivieren');
@@ -1925,10 +1948,13 @@
             body.append(btn);
         });
     }
-    // Show one-time backup/recovery codes once, with copy & download.
+    // Show one-time backup/recovery codes once, with copy & download. "Erledigt"
+    // is gated behind an explicit acknowledgement so the codes — shown only now —
+    // can't be dismissed by an accidental tap.
     function showBackupCodes(codes) {
         contentModal('Backup-Codes', (body, close) => {
-            body.append(el('p', { class: 'muted' }, 'Bewahre diese Einmal-Codes sicher auf. Jeder Code funktioniert einmal, falls du keinen Authenticator zur Hand hast. Sie werden nur jetzt angezeigt.'));
+            body.append(el('p', { class: 'backup-warn' }, '⚠️ Wird nur jetzt angezeigt – sichere die Codes, bevor du fortfährst.'));
+            body.append(el('p', { class: 'muted' }, 'Jeder Einmal-Code funktioniert einmal, falls du keinen Authenticator zur Hand hast.'));
             const grid = el('div', { class: 'backup-codes' });
             for (const c of codes) grid.append(el('code', {}, c));
             body.append(grid);
@@ -1937,7 +1963,10 @@
             row.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => { navigator.clipboard && navigator.clipboard.writeText(text); toast('Kopiert', 'success'); } }, 'Kopieren'));
             row.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => downloadText('parkrr-backup-codes.txt', text) }, 'Herunterladen'));
             body.append(row);
-            const done = el('button', { class: 'btn btn-primary btn-block', style: 'margin-top:.9rem', onclick: () => { close(); render(); } }, 'Erledigt');
+            const done = el('button', { class: 'btn btn-primary btn-block', style: 'margin-top:.9rem', disabled: true, onclick: () => { close(); render(); } }, 'Erledigt');
+            const chk = el('input', { type: 'checkbox', id: 'bc-saved' });
+            chk.addEventListener('change', () => { done.disabled = !chk.checked; });
+            body.append(el('label', { class: 'ack-check', for: 'bc-saved' }, chk, el('span', {}, 'Ich habe die Codes sicher gespeichert.')));
             body.append(done);
         });
     }
@@ -2003,6 +2032,20 @@
     }
     const EYE_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
     const EYE_OFF_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7c1.7 0 3.2.5 4.5 1.2M22 12s-3.6 7-10 7c-1.7 0-3.2-.5-4.5-1.2"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M3 3l18 18"/></svg>';
+    // A show/hide eye button bound to a password input, for reuse across the
+    // login card and any modal password field.
+    function pwToggleBtn(input) {
+        const btn = el('button', { type: 'button', class: 'affix-btn', 'aria-label': 'Passwort anzeigen', 'aria-pressed': 'false' });
+        btn.innerHTML = EYE_SVG;
+        btn.addEventListener('click', () => {
+            const vis = input.type === 'password';
+            input.type = vis ? 'text' : 'password';
+            btn.setAttribute('aria-pressed', String(vis));
+            btn.setAttribute('aria-label', vis ? 'Passwort verbergen' : 'Passwort anzeigen');
+            btn.innerHTML = vis ? EYE_OFF_SVG : EYE_SVG;
+        });
+        return btn;
+    }
     // Toggle password field visibility (login show/hide affix button).
     function setPwVisible(vis) {
         const inp = $('#login-password'); const btn = $('#login-pw-toggle');
