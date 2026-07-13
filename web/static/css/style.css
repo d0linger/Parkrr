@@ -441,7 +441,29 @@ textarea { resize: vertical; min-height: 72px; }
 .badge-cat { background: var(--bg-elev-2); color: var(--text-muted); }
 
 .empty { text-align: center; color: var(--text-muted); padding: 3rem 1rem; }
-.empty .big { font-size: 2.5rem; display: block; margin-bottom: 0.5rem; opacity: 0.6; }
+.empty .big { display: flex; justify-content: center; margin-bottom: 0.7rem; opacity: 0.55; }
+.empty .big svg { width: 44px; height: 44px; }
+/* Badge that pairs a small icon with text (e.g. the "2FA" shield badge). */
+.badge-ic { display: inline-flex; align-items: center; gap: 0.25rem; }
+.badge-ic svg { width: 12px; height: 12px; }
+
+/* Inline spinner for busy buttons (e.g. formModal's "Speichern…" state). */
+.spin {
+    display: inline-block; width: 0.85em; height: 0.85em; vertical-align: -0.1em;
+    border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation-duration: 1.5s; } }
+
+/* Dashboard charts: single column on mobile, two columns from ~900px
+   (revenue full-width on top, charges + status side by side below). */
+.dash-charts { display: grid; gap: 0.75rem; }
+@media (min-width: 900px) {
+    .dash-charts { grid-template-columns: 1fr 1fr; }
+    .dash-charts > .chart-card { margin-bottom: 0; }
+    .dash-charts > .chart-card:first-child { grid-column: 1 / -1; }
+}
 
 .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 1rem; }
 .chip {
