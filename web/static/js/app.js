@@ -743,21 +743,27 @@
             el('button', { class: 'back-btn', onclick: () => navigate('persons'), 'aria-label': 'Zurück' }, '‹'),
             el('h2', { style: 'margin:0' }, stats.person_name || 'Person')));
 
-        // balance card
-        const balCls = stats.balance > 0.005 ? 'amt-pos' : 'amt-zero';
+        // Balance card: lead with the one number the user came for (the open
+        // balance) as a hero, then the derivation as a quiet breakdown.
+        const owed = stats.balance > 0.005;
         page.append(el('div', { class: 'card' },
-            el('div', { class: 'balance' }, el('span', {}, 'Aufgelaufene Miete'), el('span', { class: 'amt' }, eur(stats.total_accrued))),
-            el('div', { class: 'balance' }, el('span', {}, 'Zusatzkosten'), el('span', { class: 'amt' }, eur(stats.total_charges))),
-            el('div', { class: 'balance' }, el('span', {}, 'Bezahlt (per Slider)'), el('span', { class: 'amt' }, '− ' + eur(stats.total_paid))),
-            el('div', { class: 'balance' }, el('strong', {}, 'Offener Saldo'), el('strong', { class: 'amt ' + balCls }, eur(stats.balance)))));
+            el('div', { class: 'bal-hero-label' }, 'Offener Saldo'),
+            el('div', { class: 'bal-hero-num ' + (owed ? 'is-owed' : 'is-clear') }, eur(stats.balance)),
+            el('div', { class: 'bal-hero-sub' }, 'Stand heute · Miete + Zusatzkosten − Bezahlt'),
+            el('div', { class: 'bal-breakdown' },
+                el('div', { class: 'bal-row' }, el('span', {}, 'Aufgelaufene Miete'), el('span', { class: 'v' }, eur(stats.total_accrued))),
+                el('div', { class: 'bal-row' }, el('span', {}, 'Zusatzkosten'), el('span', { class: 'v' }, eur(stats.total_charges))),
+                el('div', { class: 'bal-row is-paid' }, el('span', {}, 'Bezahlt'), el('span', { class: 'v' }, '− ' + eur(stats.total_paid))))));
 
         // flat-rate agreements (Pauschalen). Per-vehicle coverage badges/payment
         // come from the backend (v.flat_rate_covered / v.uncovered_cost).
         const ags = stats.agreements || [];
         if (canBill() || ags.length) {
             const frCard = el('div', { class: 'card' });
-            frCard.append(el('div', { class: 'card-row' },
-                el('h3', { style: 'margin:0' }, 'Pauschalen'),
+            frCard.append(el('div', { class: 'card-row', style: 'align-items:baseline' },
+                el('div', { class: 'sec-group' },
+                    el('h3', { class: 'sec-eyebrow' }, 'Pauschalen'),
+                    ags.length ? el('span', { class: 'sec-count' }, ags.length) : null),
                 canBill() ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => agreementForm(id, vehicles) }, '+ Pauschale') : null));
             // A Pauschale only moves to the archive once it has ended AND is fully
             // paid — an ended-but-unpaid agreement stays visible so the open payment
@@ -781,7 +787,9 @@
         const standalone = vehicles.filter((v) => !v.flat_rate_covered);
         const activeVeh = standalone.filter((v) => !v.archived);
         const archivedVeh = standalone.filter((v) => v.archived);
-        const vh = el('div', { class: 'page-head' }, el('h3', {}, 'Einzelne Gefährte (' + activeVeh.length + ')'));
+        const vh = el('div', { class: 'page-head section-head' },
+            el('div', { class: 'sec-group' }, el('h3', { class: 'sec-eyebrow' }, 'Einzelne Gefährte'),
+                el('span', { class: 'sec-count' }, activeVeh.length)));
         if (canManage()) vh.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => vehicleForm(null, id) }, '+ Gefährt'));
         page.append(vh);
         if (!activeVeh.length) page.append(el('p', { class: 'muted' }, 'Keine einzeln abgerechneten Gefährte.'));
@@ -793,7 +801,9 @@
         }
 
         // charges
-        const ch = el('div', { class: 'page-head' }, el('h3', {}, 'Zusatzkosten'));
+        const ch = el('div', { class: 'page-head section-head' },
+            el('div', { class: 'sec-group' }, el('h3', { class: 'sec-eyebrow' }, 'Zusatzkosten'),
+                charges.length ? el('span', { class: 'sec-count' }, charges.length) : null));
         if (canBill()) ch.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => chargeForm(id) }, '+ Position'));
         page.append(ch);
         page.append(financeList(charges));
@@ -949,12 +959,26 @@
         const covered = (a.vehicle_ids && a.vehicle_ids.length)
             ? a.vehicle_ids.map((vid) => { const v = vehicles.find((x) => x.id === vid); return v ? vehicleTitle(v) : '#' + vid; }).join(', ')
             : 'alle Gefährte';
+        // Lead with the question the user has ("paid? how much open?"): a status
+        // chip + the accrued amount up front; the contract config becomes a quiet
+        // meta line. partial = some periods/fixed amounts paid but not the whole.
+        const partial = !a.paid && (((a.paid_periods && a.paid_periods.length)) ||
+            (a.paid_fixed && Object.keys(a.paid_fixed).length));
+        const stLabel = a.paid ? 'Bezahlt' : partial ? 'Teilweise bezahlt' : 'Offen';
+        const stCls = a.paid ? 'badge-active' : partial ? 'badge-cat' : 'badge-ended';
+        const nCov = (a.vehicle_ids && a.vehicle_ids.length) ? a.vehicle_ids.length + ' Gefährte' : 'alle Gefährte';
+        const config = eur(a.amount) + unit + ' · '
+            + fmtDate(a.start_date) + (a.end_date ? ' – ' + fmtDate(a.end_date) : ' – offen')
+            + ' · ' + esc(covered) + (a.note ? ' · ' + esc(a.note) : '');
         const row = el('div', { class: 'card', style: 'margin-top:.5rem' });
         row.append(el('div', { class: 'card-row' },
             el('div', { style: 'flex:1' },
-                el('div', {}, el('strong', {}, eur(a.amount) + unit)),
-                el('div', { class: 'card-meta' }, fmtDate(a.start_date) + (a.end_date ? ' – ' + fmtDate(a.end_date) : ' – offen') + ' · ' + esc(covered)),
-                el('div', { class: 'card-meta' }, 'aufgelaufen ' + eur(a.accrued) + (a.note ? ' · ' + esc(a.note) : ''))),
+                el('div', { class: 'ag-status-row' },
+                    el('span', { class: 'badge ' + stCls }, stLabel),
+                    el('span', { class: 'badge badge-cat' }, nCov)),
+                el('div', { class: 'ag-accrued' + (a.paid ? '' : ' is-open') },
+                    eur(a.accrued), el('span', { class: 'unit' }, ' aufgelaufen')),
+                el('div', { class: 'card-meta' }, config)),
             canBill() ? el('div', { class: 'card-actions' },
                 el('button', { class: 'btn btn-ghost btn-sm', title: 'Pauschale ab ' + fmtDate(a.start_date) + ' bearbeiten', 'aria-label': 'Pauschale ab ' + fmtDate(a.start_date) + ' bearbeiten', onclick: () => agreementForm(personId, vehicles, a) }, icon('edit')),
                 el('button', { class: 'btn btn-ghost btn-sm', title: 'Pauschale ab ' + fmtDate(a.start_date) + ' löschen', 'aria-label': 'Pauschale ab ' + fmtDate(a.start_date) + ' löschen', onclick: () => delAgreement(a) }, icon('trash'))) : null));
