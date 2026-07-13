@@ -234,6 +234,7 @@
             $('#modal-submit').textContent = submitLabel;
             $('#modal-submit').style.display = '';
             $('#modal-submit').disabled = false; // a prior form (e.g. onRender gating) may have disabled it
+            $('#modal')._canClose = null; // never inherit a prior gated contentModal's close guard
             $('#modal-cancel').style.display = '';
             const body = $('#modal-body');
             body.innerHTML = '';
@@ -322,18 +323,33 @@
     }
 
     // custom content modal (no form fields)
-    function contentModal(title, buildBody, { closeLabel = 'Schließen' } = {}) {
+    // canClose: optional predicate; while it returns false the dialog cannot be
+    // dismissed (cancel/close buttons, Escape, backdrop) — used to force an
+    // acknowledgement before one-time content (e.g. backup codes) disappears.
+    function contentModal(title, buildBody, { closeLabel = 'Schließen', canClose = null, hideCancel = false } = {}) {
         const dlg = $('#modal');
         $('#modal-title').textContent = title;
         $('#modal-submit').style.display = 'none';
         $('#modal-cancel').textContent = closeLabel;
-        $('#modal-cancel').style.display = '';
+        $('#modal-cancel').style.display = hideCancel ? 'none' : '';
         const body = $('#modal-body');
         body.innerHTML = '';
+        // Consulted by the shared backdrop-click handler.
+        dlg._canClose = canClose;
+        function onDismiss() { if (!canClose || canClose()) dlg.close(); }
+        function onCancel(e) { if (canClose && !canClose()) e.preventDefault(); } // Escape
+        function onClosed() {
+            dlg._canClose = null;
+            $('#modal-cancel').removeEventListener('click', onDismiss);
+            $('#modal-close').removeEventListener('click', onDismiss);
+            dlg.removeEventListener('cancel', onCancel);
+            dlg.removeEventListener('close', onClosed);
+        }
         buildBody(body, () => dlg.close());
-        const close = () => { $('#modal-cancel').removeEventListener('click', close); $('#modal-close').removeEventListener('click', close); dlg.close(); };
-        $('#modal-cancel').addEventListener('click', close);
-        $('#modal-close').addEventListener('click', close);
+        $('#modal-cancel').addEventListener('click', onDismiss);
+        $('#modal-close').addEventListener('click', onDismiss);
+        dlg.addEventListener('cancel', onCancel);
+        dlg.addEventListener('close', onClosed);
         dlg.showModal();
         return dlg;
     }
@@ -1930,7 +1946,7 @@
                     el('div', { class: 'field-hint' }, 'oder das Secret manuell eintragen'))));
             body.append(el('div', { class: 'qr-box' }, el('img', { src: info.qr, alt: 'QR-Code für die Authenticator-App' })));
             body.append(el('div', { class: 'secret secret-copy' }, el('span', {}, info.secret),
-                el('button', { type: 'button', class: 'linkbtn', onclick: () => { if (navigator.clipboard) navigator.clipboard.writeText(info.secret); toast('Secret kopiert', 'success'); } }, 'Kopieren')));
+                el('button', { type: 'button', class: 'linkbtn', onclick: () => copyToClipboard(info.secret, 'Secret kopiert') }, 'Kopieren')));
             body.append(el('div', { class: 'setup-step', style: 'margin-top:.9rem' }, el('span', { class: 'step-n' }, '2'),
                 el('label', { for: 'totp-enable', style: 'margin:0' }, '6-stelligen Code aus der App eingeben')));
             const inp = el('input', { id: 'totp-enable', type: 'text', inputmode: 'numeric', maxlength: 6, placeholder: '123456' });
@@ -1952,6 +1968,7 @@
     // is gated behind an explicit acknowledgement so the codes — shown only now —
     // can't be dismissed by an accidental tap.
     function showBackupCodes(codes) {
+        let chk; // acknowledgement checkbox — gates every dismissal path
         contentModal('Backup-Codes', (body, close) => {
             body.append(el('p', { class: 'backup-warn' }, '⚠️ Wird nur jetzt angezeigt – sichere die Codes, bevor du fortfährst.'));
             body.append(el('p', { class: 'muted' }, 'Jeder Einmal-Code funktioniert einmal, falls du keinen Authenticator zur Hand hast.'));
@@ -1960,19 +1977,27 @@
             body.append(grid);
             const text = codes.join('\n');
             const row = el('div', { style: 'display:flex;gap:.5rem;margin-top:.9rem' });
-            row.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => { navigator.clipboard && navigator.clipboard.writeText(text); toast('Kopiert', 'success'); } }, 'Kopieren'));
+            row.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => copyToClipboard(text, 'Kopiert') }, 'Kopieren'));
             row.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => downloadText('parkrr-backup-codes.txt', text) }, 'Herunterladen'));
             body.append(row);
             const done = el('button', { class: 'btn btn-primary btn-block', style: 'margin-top:.9rem', disabled: true, onclick: () => { close(); render(); } }, 'Erledigt');
-            const chk = el('input', { type: 'checkbox', id: 'bc-saved' });
+            chk = el('input', { type: 'checkbox', id: 'bc-saved' });
             chk.addEventListener('change', () => { done.disabled = !chk.checked; });
             body.append(el('label', { class: 'ack-check', for: 'bc-saved' }, chk, el('span', {}, 'Ich habe die Codes sicher gespeichert.')));
             body.append(done);
-        });
+        }, { canClose: () => !!(chk && chk.checked), hideCancel: true });
     }
     function downloadText(filename, text) {
         const a = el('a', { href: 'data:text/plain;charset=utf-8,' + encodeURIComponent(text), download: filename });
         document.body.append(a); a.click(); a.remove();
+    }
+    // Copy to the clipboard, reporting success only once the write resolves and
+    // an error when the API is unavailable or the write is rejected.
+    function copyToClipboard(text, okMsg) {
+        if (!navigator.clipboard) { toast('Kopieren wird hier nicht unterstützt', 'error'); return; }
+        navigator.clipboard.writeText(text)
+            .then(() => toast(okMsg, 'success'))
+            .catch(() => toast('Kopieren fehlgeschlagen', 'error'));
     }
     async function disable2FA() {
         const data = await formModal({ title: '2FA deaktivieren', submitLabel: 'Deaktivieren', fields: [{ name: 'password', label: 'Passwort zur Bestätigung', type: 'password', required: true }] });
@@ -2225,7 +2250,11 @@
         $('#menu-btn').addEventListener('click', openMenu);
         $$('.tab').forEach((t) => t.addEventListener('click', () => navigate(t.dataset.route)));
         for (const id of ['#modal', '#confirm', '#menu']) {
-            $(id).addEventListener('click', (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
+            $(id).addEventListener('click', (e) => {
+                if (e.target !== e.currentTarget) return;
+                const guard = e.currentTarget._canClose; // a gated contentModal blocks backdrop dismissal
+                if (!guard || guard()) e.currentTarget.close();
+            });
         }
         window.addEventListener('hashchange', () => { if (state.user) render(); });
     }
