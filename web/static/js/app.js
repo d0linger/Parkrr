@@ -2161,6 +2161,14 @@
                     $('#login-totp').focus();
                     errEl.textContent = totp ? err.message : 'Bitte Zwei-Faktor-Code eingeben.';
                 } else {
+                    // A plain auth failure (not a 2FA prompt) — e.g. the user went
+                    // back and mistyped the password — so clear any stale 2FA step
+                    // rather than leaving a "Passwort korrekt" banner next to an
+                    // "invalid credentials" error.
+                    $('#login-totp-wrap').hidden = true;
+                    $('#login-form').classList.remove('is-2fa');
+                    $('#login-totp').value = '';
+                    setTotpMode(false);
                     errEl.textContent = err.message;
                 }
                 errEl.hidden = false;
