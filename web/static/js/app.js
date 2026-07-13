@@ -244,7 +244,12 @@
                     continue;
                 }
                 const id = 'f_' + f.name;
-                body.append(el('label', { for: id }, f.label + (f.required ? ' *' : '')));
+                const errId = 'err_' + f.name;
+                const helpId = 'help_' + f.name;
+                // The required asterisk is decorative — aria-required carries the
+                // meaning, so hide the star from screen readers.
+                body.append(el('label', { for: id }, f.label,
+                    f.required ? el('span', { 'aria-hidden': 'true' }, ' *') : null));
                 let input;
                 if (f.type === 'select') {
                     input = el('select', { id, name: f.name });
@@ -266,9 +271,13 @@
                     // typing. Mobile still opens its native date UI on tap, and
                     // desktop shows the built-in calendar icon to click.
                 }
+                // Link the field to its error message + help text so a screen
+                // reader reads both when the field is focused, not just "invalid".
+                if (f.required) input.setAttribute('aria-required', 'true');
+                input.setAttribute('aria-describedby', f.help ? errId + ' ' + helpId : errId);
                 body.append(input);
-                body.append(el('div', { class: 'field-error', id: 'err_' + f.name, role: 'alert', hidden: true }));
-                if (f.help) body.append(el('div', { class: 'card-meta' }, f.help));
+                body.append(el('div', { class: 'field-error', id: errId, role: 'alert', hidden: true }));
+                if (f.help) body.append(el('div', { class: 'card-meta', id: helpId }, f.help));
             }
             const form = $('#modal-form');
             const cleanup = () => {
@@ -594,12 +603,21 @@
         page.innerHTML = '';
         page.append(skeleton());
         const fn = routes[routeName] || routes.dashboard;
-        try { await fn(page, id); window.scrollTo(0, 0); }
+        try { await fn(page, id); window.scrollTo(0, 0); syncPageTitle(page); }
         catch (err) {
             page.innerHTML = '';
             page.append(el('div', { class: 'empty' }, 'Fehler: ' + err.message));
+            syncPageTitle(page);
             if (err.status === 401) logout();
         }
+    }
+    // Mirror each route's leading heading into the visually-hidden page-level h1
+    // so screen-reader heading navigation has a root. Layout is untouched.
+    function syncPageTitle(page) {
+        const h1 = $('#page-title');
+        if (!h1) return;
+        const lead = page.querySelector('.page-head h2, .page-head h3, .detail-head h2');
+        h1.textContent = lead ? lead.textContent.trim() : 'Parkrr';
     }
 
     // ================= DASHBOARD =================
@@ -682,9 +700,9 @@
                         el('h3', {}, personName(p), ' ', p.has_flat_rate ? el('span', { class: 'badge badge-active', title: 'Pauschale' }, 'Pauschale') : null),
                         el('div', { class: 'card-meta' }, [p.email, p.phone].filter(Boolean).join(' · ') || 'keine Kontaktdaten')),
                     el('div', { class: 'card-actions' },
-                        el('button', { class: 'btn btn-ghost btn-sm', onclick: () => navigate('persons/' + p.id) }, '›'),
-                        canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Bearbeiten', onclick: () => personForm(p) }, icon('edit')),
-                        canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: (e) => delPerson(p, e.currentTarget.closest('.card')) }, icon('trash')),
+                        el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': personName(p) + ' öffnen', onclick: () => navigate('persons/' + p.id) }, '›'),
+                        canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' bearbeiten', 'aria-label': personName(p) + ' bearbeiten', onclick: () => personForm(p) }, icon('edit')),
+                        canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' löschen', 'aria-label': personName(p) + ' löschen', onclick: (e) => delPerson(p, e.currentTarget.closest('.card')) }, icon('trash')),
                     ))),
         });
     };
@@ -865,8 +883,8 @@
         const actions = el('div', { class: 'card-actions' },
             // Archived vehicles are read-only, so no inline edit; delete stays for
             // genuine mistakes.
-            canManage() && !v.archived && el('button', { class: 'btn btn-ghost btn-sm', title: 'Bearbeiten', onclick: () => vehicleForm(v) }, icon('edit')),
-            canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: (e) => delVehicle(v, e.currentTarget.closest('.card')) }, icon('trash')));
+            canManage() && !v.archived && el('button', { class: 'btn btn-ghost btn-sm', title: title + ' bearbeiten', 'aria-label': title + ' bearbeiten', onclick: () => vehicleForm(v) }, icon('edit')),
+            canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: title + ' löschen', 'aria-label': title + ' löschen', onclick: (e) => delVehicle(v, e.currentTarget.closest('.card')) }, icon('trash')));
         return el('div', { class: 'card' + (v.archived ? ' is-archived' : '') },
             el('div', { class: 'card-row' }, main, actions),
             vehicleControls(v));
@@ -938,8 +956,8 @@
                 el('div', { class: 'card-meta' }, fmtDate(a.start_date) + (a.end_date ? ' – ' + fmtDate(a.end_date) : ' – offen') + ' · ' + esc(covered)),
                 el('div', { class: 'card-meta' }, 'aufgelaufen ' + eur(a.accrued) + (a.note ? ' · ' + esc(a.note) : ''))),
             canBill() ? el('div', { class: 'card-actions' },
-                el('button', { class: 'btn btn-ghost btn-sm', title: 'Bearbeiten', onclick: () => agreementForm(personId, vehicles, a) }, icon('edit')),
-                el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: () => delAgreement(a) }, icon('trash'))) : null));
+                el('button', { class: 'btn btn-ghost btn-sm', title: 'Pauschale ab ' + fmtDate(a.start_date) + ' bearbeiten', 'aria-label': 'Pauschale ab ' + fmtDate(a.start_date) + ' bearbeiten', onclick: () => agreementForm(personId, vehicles, a) }, icon('edit')),
+                el('button', { class: 'btn btn-ghost btn-sm', title: 'Pauschale ab ' + fmtDate(a.start_date) + ' löschen', 'aria-label': 'Pauschale ab ' + fmtDate(a.start_date) + ' löschen', onclick: () => delAgreement(a) }, icon('trash'))) : null));
         if (canBill()) row.append(agreementPayments(a));
         else {
             // Partial when any sub-period is paid — a whole-period key OR a fixed
@@ -1224,8 +1242,35 @@
         void th.offsetWidth;
         th.style.transition = '';
     }
+    // Roving tabindex: a radiogroup is a single tab stop, so only the active
+    // option is Tab-reachable; arrow keys move between options. Keeps at least
+    // one enabled button tabbable even when the active one is disabled.
+    function segRoving(seg) {
+        const btns = Array.from(seg.querySelectorAll('button'));
+        const enabled = btns.filter((b) => !b.disabled);
+        if (!enabled.length) return;
+        const stop = enabled.find((b) => b.classList.contains('active')) || enabled[0];
+        btns.forEach((b) => { b.tabIndex = b === stop ? 0 : -1; });
+    }
+    function onSegKeydown(e) {
+        const dir = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1
+            : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1
+            : e.key === 'Home' ? 'first' : e.key === 'End' ? 'last' : 0;
+        if (!dir) return;
+        const list = Array.from(e.currentTarget.querySelectorAll('button')).filter((b) => !b.disabled);
+        const i = list.indexOf(document.activeElement);
+        if (i < 0 || list.length < 2) return;
+        e.preventDefault();
+        const j = dir === 'first' ? 0 : dir === 'last' ? list.length - 1
+            : (i + dir + list.length) % list.length;
+        // Move focus only; Space/Enter activates via the button's own onclick, so
+        // arrowing through statuses doesn't fire an API call per keypress.
+        list[j].focus();
+    }
     function segThumb(seg) {
         seg.prepend(el('span', { class: 'seg-thumb', 'aria-hidden': 'true' }));
+        segRoving(seg);
+        seg.addEventListener('keydown', onSegKeydown);
         // Position once the slider is laid out (offsetWidth is 0 before).
         requestAnimationFrame(() => placeThumb(seg));
         return seg;
@@ -1265,6 +1310,7 @@
             if (sib.hasAttribute('aria-checked')) sib.setAttribute('aria-checked', String(sib === btn));
         }
         moveThumb(btn.parentElement);
+        segRoving(btn.parentElement); // keep the single tab stop on the new selection
     }
     async function markPaid(v, paid) {
         if (v.paid === paid) return;
@@ -1354,7 +1400,7 @@
         const vc = coverage(v);
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' },
-            el('button', { class: 'back-btn', onclick: () => navigate('vehicles') }, '‹'),
+            el('button', { class: 'back-btn', onclick: () => navigate('vehicles'), 'aria-label': 'Zurück' }, '‹'),
             el('h2', { style: 'margin:0;flex:1' }, esc(vehicleTitle(v))), statusBadge(v.status)));
 
         page.append(el('div', { class: 'card' },
@@ -1414,7 +1460,7 @@
             for (const p of photos) {
                 const img = el('img', { src: '/api/photos/' + p.id, alt: esc(p.filename), loading: 'lazy', onclick: () => lightbox(p.id) });
                 const thumb = el('div', { class: 'photo-thumb' }, img);
-                if (canManage()) thumb.append(el('button', { class: 'del', title: 'Löschen', onclick: () => delPhoto(p, thumb) }, icon('close', 12)));
+                if (canManage()) thumb.append(el('button', { class: 'del', title: (p.filename || 'Foto') + ' löschen', 'aria-label': (p.filename || 'Foto') + ' löschen', onclick: () => delPhoto(p, thumb) }, icon('close', 12)));
                 grid.append(thumb);
             }
             photoCard.append(grid);
@@ -1499,7 +1545,7 @@
                 el('h3', {}, eur(it.total) + '  ', el('span', { class: 'muted', style: 'font-weight:400;font-size:.9rem' }, esc(it.description))),
                 el('div', { class: 'card-meta' }, esc(it.person_name) + ' · ' + fmtDate(it.charged_on) + (it.quantity !== 1 ? ` · ${it.quantity}×${eur(it.amount)}` : '') + (it.note ? ' · ' + esc(it.note) : ''))),
             canBill() && el('div', { class: 'card-actions' },
-                el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: (e) => delFinance(it, e.currentTarget.closest('.card')) }, icon('trash')))));
+                el('button', { class: 'btn btn-ghost btn-sm', title: (it.description || 'Position') + ' löschen', 'aria-label': (it.description || 'Position') + ' löschen', onclick: (e) => delFinance(it, e.currentTarget.closest('.card')) }, icon('trash')))));
     }
     function delFinance(it, node) {
         deleteWithUndo('Position löschen?', 'Der Eintrag wird entfernt.',
@@ -1551,8 +1597,8 @@
                 page.append(el('div', { class: 'card' }, el('div', { class: 'card-row' },
                     el('div', {}, el('h3', {}, esc(c.name), ' ', c.rates_synced ? el('span', { class: 'badge badge-cat', title: 'Jahr = Monat × 12' }, '×12') : null), el('div', { class: 'card-meta' }, `${eur(c.default_monthly_cost)} / Monat · ${eur(c.default_yearly_cost)} / Jahr`)),
                     canManage() && el('div', { class: 'card-actions' },
-                        el('button', { class: 'btn btn-ghost btn-sm', title: 'Bearbeiten', onclick: () => categoryForm(c) }, icon('edit')),
-                        el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: (e) => delCategory(c, e.currentTarget.closest('.card')) }, icon('trash'))))));
+                        el('button', { class: 'btn btn-ghost btn-sm', title: c.name + ' bearbeiten', 'aria-label': c.name + ' bearbeiten', onclick: () => categoryForm(c) }, icon('edit')),
+                        el('button', { class: 'btn btn-ghost btn-sm', title: c.name + ' löschen', 'aria-label': c.name + ' löschen', onclick: (e) => delCategory(c, e.currentTarget.closest('.card')) }, icon('trash'))))));
             }
         } else {
             if (canManage()) page.append(el('div', { style: 'text-align:right;margin-bottom:.5rem' }, el('button', { class: 'btn btn-primary btn-sm', onclick: () => serviceForm() }, '+ Dienst')));
@@ -1561,8 +1607,8 @@
                 page.append(el('div', { class: 'card' }, el('div', { class: 'card-row' },
                     el('div', {}, el('h3', {}, esc(s.name)), el('div', { class: 'card-meta' }, eur(s.default_amount))),
                     canManage() && el('div', { class: 'card-actions' },
-                        el('button', { class: 'btn btn-ghost btn-sm', title: 'Bearbeiten', onclick: () => serviceForm(s) }, icon('edit')),
-                        el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: (e) => delService(s, e.currentTarget.closest('.card')) }, icon('trash'))))));
+                        el('button', { class: 'btn btn-ghost btn-sm', title: s.name + ' bearbeiten', 'aria-label': s.name + ' bearbeiten', onclick: () => serviceForm(s) }, icon('edit')),
+                        el('button', { class: 'btn btn-ghost btn-sm', title: s.name + ' löschen', 'aria-label': s.name + ' löschen', onclick: (e) => delService(s, e.currentTarget.closest('.card')) }, icon('trash'))))));
             }
         }
     };
@@ -1623,9 +1669,9 @@
                     u.totp_enabled ? el('span', { class: 'badge badge-stored', title: '2FA aktiv' }, '🔐') : null),
                     el('div', { class: 'card-meta' }, esc(u.email) || 'keine E-Mail')),
                 el('div', { class: 'card-actions' },
-                    u.totp_enabled ? el('button', { class: 'btn btn-ghost btn-sm', title: '2FA zurücksetzen', onclick: () => resetUserMfa(u) }, '🔓') : null,
-                    el('button', { class: 'btn btn-ghost btn-sm', title: 'Bearbeiten', onclick: () => userForm(u) }, icon('edit')),
-                    u.id === state.user.id ? null : el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: (e) => delUser(u, e.currentTarget.closest('.card')) }, icon('trash'))))),
+                    u.totp_enabled ? el('button', { class: 'btn btn-ghost btn-sm', title: '2FA von ' + u.username + ' zurücksetzen', 'aria-label': '2FA von ' + u.username + ' zurücksetzen', onclick: () => resetUserMfa(u) }, '🔓') : null,
+                    el('button', { class: 'btn btn-ghost btn-sm', title: u.username + ' bearbeiten', 'aria-label': u.username + ' bearbeiten', onclick: () => userForm(u) }, icon('edit')),
+                    u.id === state.user.id ? null : el('button', { class: 'btn btn-ghost btn-sm', title: u.username + ' löschen', 'aria-label': u.username + ' löschen', onclick: (e) => delUser(u, e.currentTarget.closest('.card')) }, icon('trash'))))),
         });
     };
     async function resetUserMfa(u) {

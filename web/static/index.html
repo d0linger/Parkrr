@@ -52,6 +52,9 @@
             </div>
         </header>
 
+        <!-- Visually-hidden page-level heading; text is kept in sync per route so
+             screen-reader heading navigation has an h1 root (pages start at h2). -->
+        <h1 id="page-title" class="sr-only">Parkrr</h1>
         <main id="page" class="page" aria-live="polite"></main>
 
         <nav class="tabbar" aria-label="Hauptnavigation">
@@ -79,7 +82,7 @@
     </dialog>
 
     <!-- Generic modal dialog (modern <dialog> element) -->
-    <dialog id="modal" class="modal">
+    <dialog id="modal" class="modal" aria-labelledby="modal-title">
         <form method="dialog" id="modal-form">
             <header class="modal-header">
                 <h2 id="modal-title">Titel</h2>
@@ -94,7 +97,7 @@
     </dialog>
 
     <!-- Confirmation dialog -->
-    <dialog id="confirm" class="modal modal-sm">
+    <dialog id="confirm" class="modal modal-sm" aria-labelledby="confirm-title">
         <header class="modal-header">
             <h2 id="confirm-title">Bestätigen</h2>
         </header>
