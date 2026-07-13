@@ -111,4 +111,15 @@ func TestUsernameLengthPolicy(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("UpdateUser with %d-byte username: expected 400, got %d", len(long), rec.Code)
 	}
+
+	// ChangePassword rejects an over-long current password with 403 up front
+	// (bcrypt caps at 72 bytes, so it could never match) — before hitting the
+	// rate limiter or an authentication attempt.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/change-password",
+		strings.NewReader(`{"current_password":"`+long+`","new_password":"newpassword1"}`))
+	ah.ChangePassword(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("ChangePassword with %d-byte current password: expected 403, got %d", len(long), rec.Code)
+	}
 }
