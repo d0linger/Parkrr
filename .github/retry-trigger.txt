@@ -1,0 +1,3 @@
+Workflow retry trigger - rerun failed CodeQL job
+Timestamp: 2026-07-13T13:21:12Z
+Job ID: 86826253712
