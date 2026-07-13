@@ -785,3 +785,21 @@ textarea { resize: vertical; min-height: 72px; }
     border: 1px solid var(--border); border-radius: 8px;
     padding: 0.5rem; text-align: center; letter-spacing: 0.06em; font-size: 0.95rem;
 }
+/* One-time warning + "I saved them" acknowledgement gate. */
+.backup-warn {
+    display: flex; gap: 0.4rem; align-items: flex-start;
+    background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35);
+    color: var(--warning); border-radius: var(--radius-sm);
+    padding: 0.5rem 0.6rem; font-size: 0.82rem; font-weight: 600; margin: 0 0 0.2rem;
+}
+.ack-check { display: flex; align-items: flex-start; gap: 0.55rem; margin-top: 0.9rem; font-size: 0.88rem; cursor: pointer; }
+.ack-check input { width: auto; margin: 0.15rem 0 0; accent-color: var(--primary); flex: none; }
+
+/* 2FA setup: numbered steps + copyable secret. */
+.setup-step { display: flex; gap: 0.55rem; align-items: flex-start; margin-bottom: 0.6rem; }
+.setup-step .step-n {
+    width: 20px; height: 20px; border-radius: 50%; background: var(--primary-soft);
+    color: var(--primary-hover); font-size: 0.72rem; font-weight: 800; flex: none; margin-top: 1px;
+    display: flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums;
+}
+.secret-copy { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
