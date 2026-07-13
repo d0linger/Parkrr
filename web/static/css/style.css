@@ -238,6 +238,26 @@ textarea { resize: vertical; min-height: 72px; }
 
 #passkey-login { margin-top: 0.5rem; }
 
+/* 2FA app-code: six single-digit slots. Backup-code stays a single field. */
+.otp-group { display: flex; gap: 0.5rem; margin: 0.1rem 0 0.2rem; }
+.otp-group[hidden] { display: none; }
+.otp-slot {
+    width: 100%; aspect-ratio: 1 / 1.15; padding: 0; text-align: center;
+    font-size: 1.35rem; font-weight: 700; font-variant-numeric: tabular-nums;
+    font-family: inherit;
+}
+.otp-slot.is-filled { border-color: var(--primary-hover); }
+
+/* Users: expandable card with a separated danger zone. */
+.u-head { display: flex; align-items: center; gap: 0.6rem; text-align: left; background: transparent; border: none; padding: 0; }
+.u-name { margin: 0; font-size: 1rem; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; flex: 1; }
+.u-panel-inner { padding-top: 0.85rem; }
+.u-email { margin-bottom: 0.6rem; }
+.u-pw-label { margin-top: 0; }
+.u-edit { margin-top: 0.5rem; }
+.u-dz-actions { display: flex; gap: 0.5rem; margin-top: 0.55rem; flex-wrap: wrap; }
+.u-dz-actions .btn { flex: 1 1 auto; }
+
 /* Flat-rate agreement: covered-vehicle checkbox list in the form. */
 .agreement-vehicles { display: flex; flex-direction: column; gap: 0.3rem; max-height: 11rem; overflow-y: auto; margin-top: 0.3rem; }
 

@@ -1799,16 +1799,59 @@
             onAdd: () => userForm(), items: users,
             searchText: (u) => norm([u.username, u.email, ROLE_LABEL[u.role]].join(' ')),
             sorts: [{ label: 'Name A–Z', cmp: (a, b) => a.username.localeCompare(b.username) }],
-            render: (u) => el('div', { class: 'card' }, el('div', { class: 'card-row' },
-                el('div', {}, el('h3', {}, esc(u.username), ' ', el('span', { class: 'badge badge-role' }, ROLE_LABEL[u.role] || u.role),
-                    u.totp_enabled ? el('span', { class: 'badge badge-stored badge-ic', title: '2FA aktiv', 'aria-label': '2FA aktiv' }, icon('shield', 12), '2FA') : null),
-                    el('div', { class: 'card-meta' }, esc(u.email) || 'keine E-Mail')),
-                el('div', { class: 'card-actions' },
-                    u.totp_enabled ? el('button', { class: 'btn btn-ghost btn-sm', title: '2FA von ' + u.username + ' zurücksetzen', 'aria-label': '2FA von ' + u.username + ' zurücksetzen', onclick: () => resetUserMfa(u) }, icon('unlock')) : null,
-                    el('button', { class: 'btn btn-ghost btn-sm', title: u.username + ' bearbeiten', 'aria-label': u.username + ' bearbeiten', onclick: () => userForm(u) }, icon('edit')),
-                    u.id === state.user.id ? null : el('button', { class: 'btn btn-ghost btn-sm', title: u.username + ' löschen', 'aria-label': u.username + ' löschen', onclick: (e) => delUser(u, e.currentTarget.closest('.card')) }, icon('trash'))))),
+            render: (u) => userCard(u),
         });
     };
+    // Expandable user card: name + role/2FA badges in the header; the panel holds a
+    // quick password reset, a full edit, and a clearly separated "Gefahrenzone" for
+    // the destructive actions (2FA reset, delete) so they can't be mis-tapped.
+    function userCard(u) {
+        const pid = 'u-panel-' + u.id;
+        const isSelf = u.id === state.user.id;
+        const head = el('button', { type: 'button', class: 'u-head tf-toggle', 'aria-expanded': 'false', 'aria-controls': pid },
+            el('h3', { class: 'u-name' }, esc(u.username), ' ',
+                el('span', { class: 'badge badge-role' }, ROLE_LABEL[u.role] || u.role),
+                u.totp_enabled ? el('span', { class: 'badge badge-stored badge-ic', title: '2FA aktiv', 'aria-label': '2FA aktiv' }, icon('shield', 12), '2FA') : null),
+            el('span', { class: 'tf-chev', 'aria-hidden': 'true' }, icon('chevron', 18)));
+
+        // Inline quick password reset (keeps username/email/role untouched).
+        const pw = el('input', { type: 'password', id: 'setpw-' + u.id, autocomplete: 'new-password' });
+        const setBtn = el('button', { class: 'btn btn-primary btn-block' }, 'Passwort setzen');
+        setBtn.addEventListener('click', async () => {
+            if (pw.value.length < 8) { toast('Passwort: mindestens 8 Zeichen', 'error'); pw.focus(); return; }
+            setBtn.disabled = true;
+            try {
+                await api.put('/users/' + u.id, { username: u.username, email: u.email, role: u.role, password: pw.value });
+                pw.value = ''; toast('Passwort gesetzt', 'success');
+            } catch (e) { toast(e.message, 'error'); }
+            setBtn.disabled = false;
+        });
+
+        const dz = el('div', { class: 'u-dz-actions' });
+        if (u.totp_enabled) dz.append(el('button', { class: 'btn btn-ghost', onclick: () => resetUserMfa(u) }, icon('unlock', 15), ' 2FA zurücksetzen'));
+        if (!isSelf) dz.append(el('button', { class: 'btn btn-danger', onclick: (e) => delUser(u, e.currentTarget.closest('.card')) }, icon('trash', 15), ' Benutzer löschen'));
+        const hasDanger = u.totp_enabled || !isSelf;
+
+        const panel = el('div', { class: 'tf-panel', id: pid },
+            el('div', { class: 'u-panel-inner' },
+                el('div', { class: 'card-meta u-email' }, esc(u.email) || 'keine E-Mail'),
+                el('label', { class: 'u-pw-label', for: 'setpw-' + u.id }, 'Neues Passwort'),
+                el('div', { class: 'input-affix' }, pw, pwToggleBtn(pw)),
+                setBtn,
+                el('button', { class: 'btn btn-ghost btn-block u-edit', onclick: () => userForm(u) }, icon('edit', 15), ' Name, E-Mail, Rolle'),
+                hasDanger ? el('div', { class: 'tf-danger-label' }, icon('alert', 13), 'Gefahrenzone') : null,
+                hasDanger ? dz : null));
+
+        const card = el('div', { class: 'card u-card' }, head, panel);
+        panel.inert = true; // collapsed panel: keep its controls out of the tab order
+        head.addEventListener('click', () => {
+            const open = head.getAttribute('aria-expanded') === 'true';
+            head.setAttribute('aria-expanded', String(!open));
+            panel.classList.toggle('open', !open);
+            panel.inert = open;
+        });
+        return card;
+    }
     async function resetUserMfa(u) {
         if (!await confirmDialog('2FA zurücksetzen?', `Für „${u.username}" wird die Zwei-Faktor-Authentifizierung deaktiviert und alle Recovery-Codes gelöscht. Der Benutzer kann sich dann ohne 2FA anmelden und es neu einrichten.`, 'Zurücksetzen')) return;
         try { await api.post('/users/' + u.id + '/reset-2fa'); toast('2FA zurückgesetzt', 'success'); render(); }
@@ -2185,19 +2228,65 @@
         btn.setAttribute('aria-label', vis ? 'Passwort verbergen' : 'Passwort anzeigen');
         btn.innerHTML = vis ? EYE_OFF_SVG : EYE_SVG;
     }
-    // Switch the 2FA field between an authenticator code and a backup code — same
-    // input, the backend accepts either; this just optimises keyboard + hints.
+    // 2FA entry: the app code uses six single-digit slots (clearer, auto-advancing,
+    // paste-aware); the backup code a single grouped field. Both feed the same login
+    // submit via getTotpValue(), so the auth path is unchanged — the backend accepts
+    // either.
+    let totpBackupMode = false;
+    function buildOtp() {
+        const g = $('#login-otp');
+        if (!g || g.children.length) return; // build once
+        for (let i = 0; i < 6; i++) {
+            g.append(el('input', {
+                class: 'otp-slot', id: 'login-otp-' + i, type: 'text', inputmode: 'numeric',
+                maxlength: 1, 'aria-label': `Ziffer ${i + 1} von 6`,
+                autocomplete: i === 0 ? 'one-time-code' : 'off',
+            }));
+        }
+        const slots = $$('.otp-slot', g);
+        slots.forEach((s, i) => {
+            s.addEventListener('input', () => {
+                s.value = s.value.replace(/\D/g, '').slice(0, 1);
+                s.classList.toggle('is-filled', !!s.value);
+                if (s.value && i < 5) slots[i + 1].focus();
+            });
+            s.addEventListener('keydown', (e) => {
+                if (e.key === 'Backspace' && !s.value && i > 0) { e.preventDefault(); slots[i - 1].focus(); }
+            });
+            s.addEventListener('paste', (e) => {
+                e.preventDefault();
+                const d = (e.clipboardData.getData('text') || '').replace(/\D/g, '').slice(0, 6);
+                if (!d) return;
+                [...d].forEach((c, k) => { if (slots[k]) { slots[k].value = c; slots[k].classList.add('is-filled'); } });
+                (slots[Math.min(d.length, 5)] || slots[5]).focus();
+            });
+        });
+    }
+    const otpValue = () => $$('.otp-slot').map((s) => s.value).join('');
+    const getTotpValue = () => (totpBackupMode ? $('#login-backup').value.trim() : otpValue());
+    function clearTotp() {
+        const bk = $('#login-backup'); if (bk) bk.value = '';
+        $$('.otp-slot').forEach((s) => { s.value = ''; s.classList.remove('is-filled'); });
+    }
+    function focusTotp() {
+        if (totpBackupMode) { const bk = $('#login-backup'); if (bk) bk.focus(); }
+        else { const s = $('.otp-slot'); if (s) s.focus(); }
+    }
+    // Switch between the app-code slots and the single backup-code field.
     function setTotpMode(backup) {
-        const inp = $('#login-totp');
-        if (!inp) return;
-        inp.inputMode = backup ? 'text' : 'numeric';
-        inp.placeholder = backup ? 'ABCD-EFGH' : '123456';
-        inp.dataset.backup = backup ? '1' : '';
-        $('#login-totp-label').textContent = backup ? 'Backup-Code' : 'Zwei-Faktor-Code';
+        totpBackupMode = !!backup;
+        const otp = $('#login-otp'), bk = $('#login-backup');
+        if (!otp || !bk) return;
+        otp.hidden = backup;
+        bk.hidden = !backup;
+        const label = $('#login-totp-label');
+        label.setAttribute('for', backup ? 'login-backup' : 'login-otp-0');
+        label.textContent = backup ? 'Backup-Code' : 'Zwei-Faktor-Code';
         $('#login-backup-toggle').textContent = backup ? 'Stattdessen App-Code' : 'Backup-Code verwenden';
         $('#login-totp-help').textContent = backup
             ? 'Einmal-Code aus deiner Backup-Liste (Format ABCD-EFGH).'
             : '6-stelliger Code aus der App – oder ein Backup-Code, falls kein Handy zur Hand.';
+        clearTotp();
     }
     function showLogin() {
         $('#app-view').hidden = true;
@@ -2321,17 +2410,17 @@
             e.preventDefault();
             const errEl = $('#login-error'); errEl.hidden = true;
             const body = { username: $('#login-username').value, password: $('#login-password').value };
-            const totp = $('#login-totp').value.trim();
+            const totp = getTotpValue();
             if (totp) body.totp_code = totp;
             try {
                 state.user = await api.post('/auth/login', body);
-                $('#login-password').value = ''; $('#login-totp').value = '';
+                $('#login-password').value = ''; clearTotp();
                 showApp();
             } catch (err) {
                 if (err.data && err.data.totp_required) {
                     $('#login-totp-wrap').hidden = false;
                     $('#login-form').classList.add('is-2fa');
-                    $('#login-totp').focus();
+                    focusTotp();
                     errEl.textContent = totp ? err.message : 'Bitte Zwei-Faktor-Code eingeben.';
                 } else {
                     // A plain auth failure (not a 2FA prompt) — e.g. the user went
@@ -2340,8 +2429,7 @@
                     // "invalid credentials" error.
                     $('#login-totp-wrap').hidden = true;
                     $('#login-form').classList.remove('is-2fa');
-                    $('#login-totp').value = '';
-                    setTotpMode(false);
+                    setTotpMode(false); // resets to app-code mode and clears the slots
                     errEl.textContent = err.message;
                 }
                 errEl.hidden = false;
@@ -2349,8 +2437,9 @@
         });
         const pkBtn = $('#passkey-login');
         if (pkBtn) pkBtn.addEventListener('click', passkeyLogin);
+        buildOtp();
         $('#login-pw-toggle').addEventListener('click', () => setPwVisible($('#login-password').type === 'password'));
-        $('#login-backup-toggle').addEventListener('click', () => setTotpMode($('#login-totp').dataset.backup !== '1'));
+        $('#login-backup-toggle').addEventListener('click', () => setTotpMode(!totpBackupMode));
         $('#theme-btn').addEventListener('click', toggleTheme);
         $('#menu-btn').addEventListener('click', openMenu);
         $$('.tab').forEach((t) => t.addEventListener('click', () => navigate(t.dataset.route)));

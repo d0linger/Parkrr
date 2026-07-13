@@ -33,9 +33,12 @@
             </div>
             <div id="login-totp-wrap" hidden>
                 <p id="login-step-ok" class="step-ok" role="status">✓ Passwort korrekt · jetzt der Zwei-Faktor-Code</p>
-                <label for="login-totp" id="login-totp-label">Zwei-Faktor-Code</label>
-                <input id="login-totp" name="totp" type="text" inputmode="numeric" autocomplete="one-time-code"
-                       maxlength="9" placeholder="123456" aria-describedby="login-totp-help">
+                <label id="login-totp-label" for="login-otp-0">Zwei-Faktor-Code</label>
+                <!-- App-Code: six single-digit slots (auto-advance, paste-aware); built by JS. -->
+                <div id="login-otp" class="otp-group" role="group" aria-labelledby="login-totp-label"></div>
+                <!-- Backup-Code: one grouped field, shown when the user switches modes. -->
+                <input id="login-backup" name="totp" type="text" inputmode="text" autocomplete="one-time-code"
+                       maxlength="20" placeholder="ABCD-EFGH" aria-describedby="login-totp-help" hidden>
                 <button type="button" id="login-backup-toggle" class="linkbtn">Backup-Code verwenden</button>
                 <p id="login-totp-help" class="field-hint">6-stelliger Code aus der App – oder ein Backup-Code, falls kein Handy zur Hand.</p>
             </div>
