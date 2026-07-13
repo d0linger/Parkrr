@@ -49,6 +49,10 @@
         log: '<rect x="5" y="3.5" width="14" height="17" rx="2"/><path d="M9 8.5h6M9 12h6M9 15.5h4"/>',
         theme: '<path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9Z"/>',
         logout: '<path d="M9 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3M15 8l4 4-4 4M19 12H9"/>',
+        box: '<path d="M3 8l9-5 9 5v8l-9 5-9-5V8Z"/><path d="M3 8l9 5 9-5M12 13v8"/>',
+        car: '<path d="M4 16v-3.2c0-.6.2-1.2.6-1.7l2-2.6c.4-.5 1-.8 1.6-.8h6.4c.7 0 1.3.3 1.7.9l1.9 2.5c.4.5.6 1.1.6 1.7V16"/><circle cx="7.5" cy="17" r="1.8"/><circle cx="16.5" cy="17" r="1.8"/><path d="M3 16h18"/>',
+        shield: '<path d="M12 3l7 3v6c0 4-3 6.5-7 8-4-1.5-7-4-7-8V6l7-3Z"/><path d="M9 12l2 2 4-4"/>',
+        unlock: '<rect x="4.5" y="10.5" width="15" height="9" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 7.5-1.5"/>',
     };
     const icon = (name, size = 16) => {
         const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -227,7 +231,10 @@
         return '';
     }
 
-    function formModal({ title, fields, submitLabel = 'Speichern', onRender = null }) {
+    // save: optional async (data) => Promise. When given, formModal awaits it on
+    // submit — showing a "Speichern…" busy button, keeping the modal open, and
+    // surfacing a thrown error inline (with retry) instead of closing first.
+    function formModal({ title, fields, submitLabel = 'Speichern', onRender = null, save = null }) {
         return new Promise((resolve) => {
             const dlg = $('#modal');
             $('#modal-title').textContent = title;
@@ -235,9 +242,13 @@
             $('#modal-submit').style.display = '';
             $('#modal-submit').disabled = false; // a prior form (e.g. onRender gating) may have disabled it
             $('#modal')._canClose = null; // never inherit a prior gated contentModal's close guard
+            $('#modal-cancel').disabled = false; $('#modal-close').disabled = false; // clear a prior busy state
             $('#modal-cancel').style.display = '';
             const body = $('#modal-body');
             body.innerHTML = '';
+            // Async-save error banner (used only when `save` is provided).
+            const formErr = el('p', { class: 'form-error', id: 'modal-form-error', role: 'alert', hidden: true });
+            body.append(formErr);
             for (const f of fields) {
                 if (f.type === 'checkbox') {
                     const input = el('input', { type: 'checkbox', id: 'f_' + f.name, name: f.name });
@@ -290,7 +301,17 @@
                 $('#modal-close').removeEventListener('click', onCancel);
             };
             const onCancel = () => { cleanup(); dlg.close(); resolve(null); };
-            const onSubmit = (e) => {
+            // Toggle the modal's busy state while an async save is in flight.
+            const setPending = (on) => {
+                const submit = $('#modal-submit');
+                submit.disabled = on;
+                submit.setAttribute('aria-busy', on ? 'true' : 'false');
+                if (on) submit.innerHTML = '<span class="spin" aria-hidden="true"></span> ' + esc(submitLabel) + '…';
+                else submit.textContent = submitLabel;
+                $('#modal-cancel').disabled = on;
+                $('#modal-close').disabled = on;
+            };
+            const onSubmit = async (e) => {
                 e.preventDefault();
                 const data = {};
                 let firstInvalid = null;
@@ -309,7 +330,18 @@
                     }
                 }
                 if (firstInvalid) { firstInvalid.focus(); return; }
-                cleanup(); dlg.close(); resolve(data);
+                if (!save) { cleanup(); dlg.close(); resolve(data); return; }
+                // Async save: keep the modal open, show progress, surface errors inline.
+                formErr.hidden = true;
+                setPending(true);
+                try {
+                    await save(data);
+                    cleanup(); dlg.close(); resolve(data);
+                } catch (err) {
+                    formErr.textContent = err.message || 'Speichern fehlgeschlagen';
+                    formErr.hidden = false;
+                    setPending(false);
+                }
             };
             form.addEventListener('submit', onSubmit);
             $('#modal-cancel').addEventListener('click', onCancel);
@@ -483,7 +515,8 @@
     }
 
     // ---------- shared render helpers ----------
-    const emptyState = (icon, text) => el('div', { class: 'empty' }, el('span', { class: 'big' }, icon), text);
+    // Empty-state illustration: a large muted stroke icon (by ICONS name) + text.
+    const emptyState = (iconName, text) => el('div', { class: 'empty' }, el('span', { class: 'big' }, icon(iconName, 44)), text);
     // Line icons for stat tiles (inline SVG; CSP blocks external assets).
     const STAT_ICONS = {
         users: '<path d="M16 19a4 4 0 0 0-8 0"/><circle cx="12" cy="8" r="3.2"/>',
@@ -564,7 +597,7 @@
             const start = (pageNum - 1) * pageSize;
             const slice = items.slice(start, start + pageSize);
             listEl.innerHTML = '';
-            if (!slice.length) listEl.append(emptyState(opts.emptyIcon || '∅', opts.emptyText || 'Keine Einträge.'));
+            if (!slice.length) listEl.append(emptyState(opts.emptyIcon || 'box', opts.emptyText || 'Keine Einträge.'));
             else slice.forEach((it) => listEl.append(opts.render(it)));
             pagerEl.innerHTML = '';
             if (total > pageSize) {
@@ -669,7 +702,7 @@
         // showing a wall of zeros and empty charts.
         if (ov.total_persons === 0) {
             const empty = el('div', { class: 'empty' },
-                el('span', { class: 'big' }, '👋'),
+                el('span', { class: 'big' }, icon('users', 44)),
                 el('div', {}, 'Noch keine Daten. Lege deine erste Person an, dann füllt sich die Übersicht.'));
             if (canManage()) empty.append(el('button', { class: 'btn btn-primary', style: 'margin-top:1rem', onclick: () => navigate('persons') }, '+ Erste Person'));
             page.append(empty);
@@ -715,17 +748,21 @@
             page.append(oweCard);
         }
 
+        // Charts flow into two desktop columns (>=900px) to use the width:
+        // revenue full-width on top, charges + status side by side below.
+        const charts = el('div', { class: 'dash-charts' });
+
         // Revenue chart
         const revCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Umsatz pro Monat · ' + ov.year));
         revCard.append(chartLine(ov.revenue_by_month, MONTHS));
         revCard.append(el('div', { class: 'legend' }, el('span', {}, el('span', { class: 'dotc', style: 'background:var(--primary)' }), 'Aufgelaufene Miete')));
-        page.append(revCard);
+        charts.append(revCard);
 
         // Extra charges per month
         const pcCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Zusatzkosten pro Monat · ' + ov.year));
         pcCard.append(chartBars(ov.charges_by_month, MONTHS));
         pcCard.append(el('div', { class: 'legend' }, el('span', {}, el('span', { class: 'dotc', style: 'background:var(--primary)' }), 'Zusatzkosten')));
-        page.append(pcCard);
+        charts.append(pcCard);
 
         // Status distribution
         const sc = ov.status_counts || {};
@@ -742,7 +779,8 @@
             requestAnimationFrame(() => { fill.style.width = ((n / maxS) * 100) + '%'; });
         }
         scCard.append(bars);
-        page.append(scCard);
+        charts.append(scCard);
+        page.append(charts);
     };
     const statWide = (value, label, opts = {}) => { const t = stat(value, label, opts); t.style.gridColumn = 'span 2'; return t; };
 
@@ -750,7 +788,7 @@
     routes.persons = async (page) => {
         await refreshLookups();
         mountList(page, {
-            title: 'Personen', emptyIcon: '☺', emptyText: 'Noch keine Personen.',
+            title: 'Personen', emptyIcon: 'users', emptyText: 'Noch keine Personen.',
             onAdd: canManage() ? () => personForm() : null,
             items: state.persons,
             searchText: (p) => norm(personName(p) + ' ' + p.email + ' ' + p.phone),
@@ -773,7 +811,7 @@
     };
 
     async function personForm(existing) {
-        const data = await formModal({
+        await formModal({
             title: existing ? 'Person bearbeiten' : 'Neue Person',
             fields: [
                 { name: 'first_name', label: 'Vorname', value: existing?.first_name },
@@ -783,13 +821,12 @@
                 { name: 'address', label: 'Adresse', type: 'textarea', value: existing?.address },
                 { name: 'notes', label: 'Notizen', type: 'textarea', value: existing?.notes },
             ],
+            save: async (data) => {
+                if (existing) await api.put('/persons/' + existing.id, data);
+                else await api.post('/persons', data);
+                toast('Person gespeichert', 'success'); render();
+            },
         });
-        if (!data) return;
-        try {
-            if (existing) await api.put('/persons/' + existing.id, data);
-            else await api.post('/persons', data);
-            toast('Person gespeichert', 'success'); render();
-        } catch (e) { toast(e.message, 'error'); }
     }
     function delPerson(p, node) {
         deleteWithUndo('Person löschen?', `„${personName(p)}“ und alle zugehörigen Gefährte werden gelöscht.`,
@@ -911,7 +948,7 @@
         await refreshLookups();
         const vehicles = await api.get('/vehicles');
         mountList(page, {
-            title: 'Gefährte', emptyIcon: '▣', emptyText: 'Keine Gefährte in dieser Ansicht.',
+            title: 'Gefährte', emptyIcon: 'car', emptyText: 'Keine Gefährte in dieser Ansicht.',
             onAdd: canManage() ? () => vehicleForm() : null,
             items: vehicles,
             searchText: (v) => norm([v.label, v.license_plate, v.category_name, v.person_name].join(' ')),
@@ -1440,7 +1477,7 @@
         const initCat = existing?.category_id ?? state.categories[0].id;
         const initPeriod = existing?.billing_period || 'monthly';
         const initRate = existing?.rate ?? catDefault(initCat, initPeriod);
-        const data = await formModal({
+        await formModal({
             title: existing ? 'Gefährt bearbeiten' : 'Neues Gefährt',
             fields: [
                 { name: 'person_id', label: 'Person', type: 'select', required: true, value: existing?.person_id ?? presetPerson ?? state.persons[0].id, options: state.persons.map((p) => ({ value: p.id, label: personName(p) })) },
@@ -1463,25 +1500,24 @@
                 catInp.addEventListener('change', sync);
                 perInp.addEventListener('change', sync);
             },
+            save: async (data) => {
+                const payload = {
+                    person_id: Number(data.person_id), category_id: Number(data.category_id),
+                    label: data.label, license_plate: data.license_plate, notes: data.notes, billing_period: data.billing_period,
+                    rate: data.rate === '' ? null : Number(data.rate),
+                    start_date: data.start_date,
+                    // Abholdatum (end_date) is editable here so it can be corrected
+                    // retroactively; status/reservation stay slider-managed.
+                    status: existing?.status || 'stored',
+                    end_date: data.end_date === '' ? null : data.end_date,
+                    reserved_from: existing?.reserved_from ? existing.reserved_from.slice(0, 10) : null,
+                    reserved_until: existing?.reserved_until ? existing.reserved_until.slice(0, 10) : null,
+                };
+                if (existing) await api.put('/vehicles/' + existing.id, payload);
+                else await api.post('/vehicles', payload);
+                toast('Gefährt gespeichert', 'success'); render();
+            },
         });
-        if (!data) return;
-        const payload = {
-            person_id: Number(data.person_id), category_id: Number(data.category_id),
-            label: data.label, license_plate: data.license_plate, notes: data.notes, billing_period: data.billing_period,
-            rate: data.rate === '' ? null : Number(data.rate),
-            start_date: data.start_date,
-            // Abholdatum (end_date) is editable here so it can be corrected
-            // retroactively; status/reservation stay slider-managed.
-            status: existing?.status || 'stored',
-            end_date: data.end_date === '' ? null : data.end_date,
-            reserved_from: existing?.reserved_from ? existing.reserved_from.slice(0, 10) : null,
-            reserved_until: existing?.reserved_until ? existing.reserved_until.slice(0, 10) : null,
-        };
-        try {
-            if (existing) await api.put('/vehicles/' + existing.id, payload);
-            else await api.post('/vehicles', payload);
-            toast('Gefährt gespeichert', 'success'); render();
-        } catch (e) { toast(e.message, 'error'); }
     }
     function delVehicle(v, node) {
         deleteWithUndo('Gefährt löschen?', `„${v.label || v.category_name}“ wird gelöscht.`,
@@ -1495,7 +1531,7 @@
             api.get('/vehicles'), api.get('/vehicles/' + id + '/photos'), api.get('/vehicles/' + id + '/history'),
         ]);
         const v = vehicles.find((x) => x.id === id);
-        if (!v) { page.innerHTML = ''; page.append(emptyState('▣', 'Gefährt nicht gefunden.')); return; }
+        if (!v) { page.innerHTML = ''; page.append(emptyState('car', 'Gefährt nicht gefunden.')); return; }
         const vc = coverage(v);
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' },
@@ -1654,7 +1690,7 @@
     async function chargeForm(presetPerson) {
         if (!state.persons.length) { toast('Zuerst eine Person anlegen', 'error'); return; }
         const svcOptions = [{ value: '', label: '— frei —' }, ...state.services.map((s) => ({ value: s.name + '|' + s.default_amount, label: `${s.name} (${eur(s.default_amount)})` }))];
-        const data = await formModal({
+        await formModal({
             title: 'Zusatzkosten hinzufügen',
             fields: [
                 { name: 'person_id', label: 'Person', type: 'select', required: true, value: presetPerson ?? state.persons[0].id, options: state.persons.map((p) => ({ value: p.id, label: personName(p) })) },
@@ -1664,18 +1700,17 @@
                 { name: 'quantity', label: 'Menge', type: 'number', step: '0.5', value: '1' },
                 { name: 'charged_on', label: 'Datum', type: 'date', value: today() },
             ],
+            save: async (data) => {
+                // catalog pre-fill applied client-side if user picked one but left fields empty
+                if (data.service) {
+                    const [nm, amt] = data.service.split('|');
+                    if (!data.description) data.description = nm;
+                    if (!data.amount) data.amount = amt;
+                }
+                await api.post('/charges', { person_id: Number(data.person_id), description: data.description, amount: Number(data.amount), quantity: Number(data.quantity) || 1, charged_on: data.charged_on });
+                toast('Position gespeichert', 'success'); render();
+            },
         });
-        if (!data) return;
-        // catalog pre-fill applied client-side if user picked one but left fields empty
-        if (data.service) {
-            const [nm, amt] = data.service.split('|');
-            if (!data.description) data.description = nm;
-            if (!data.amount) data.amount = amt;
-        }
-        try {
-            await api.post('/charges', { person_id: Number(data.person_id), description: data.description, amount: Number(data.amount), quantity: Number(data.quantity) || 1, charged_on: data.charged_on });
-            toast('Position gespeichert', 'success'); render();
-        } catch (e) { toast(e.message, 'error'); }
     }
 
     // ================= TARIFFS (categories + services) =================
@@ -1712,7 +1747,7 @@
         }
     };
     async function categoryForm(existing) {
-        const data = await formModal({
+        await formModal({
             title: existing ? 'Tarif bearbeiten' : 'Neuer Tarif',
             fields: [
                 { name: 'name', label: 'Name', required: true, value: existing?.name },
@@ -1732,43 +1767,45 @@
                 y.addEventListener('input', fromYearly);
                 sync.addEventListener('change', fromMonthly);
             },
+            save: async (data) => {
+                const payload = { name: data.name, default_monthly_cost: Number(data.default_monthly_cost), default_yearly_cost: Number(data.default_yearly_cost), rates_synced: data.rates_synced };
+                existing ? await api.put('/categories/' + existing.id, payload) : await api.post('/categories', payload);
+                toast('Tarif gespeichert', 'success'); render();
+            },
         });
-        if (!data) return;
-        const payload = { name: data.name, default_monthly_cost: Number(data.default_monthly_cost), default_yearly_cost: Number(data.default_yearly_cost), rates_synced: data.rates_synced };
-        try { existing ? await api.put('/categories/' + existing.id, payload) : await api.post('/categories', payload); toast('Tarif gespeichert', 'success'); render(); }
-        catch (e) { toast(e.message, 'error'); }
     }
     function delCategory(c, node) { deleteWithUndo('Tarif löschen?', `„${c.name}“ wird gelöscht.`, () => api.del('/categories/' + c.id), () => render(), node); }
     async function serviceForm(existing) {
-        const data = await formModal({
+        await formModal({
             title: existing ? 'Dienst bearbeiten' : 'Neuer Dienst',
             fields: [
                 { name: 'name', label: 'Name', required: true, value: existing?.name },
                 { name: 'default_amount', label: 'Standardpreis (€)', type: 'number', step: '0.01', min: 0, value: existing?.default_amount ?? 0 },
             ],
+            save: async (data) => {
+                const payload = { name: data.name, default_amount: Number(data.default_amount) };
+                existing ? await api.put('/services/' + existing.id, payload) : await api.post('/services', payload);
+                toast('Dienst gespeichert', 'success'); render();
+            },
         });
-        if (!data) return;
-        const payload = { name: data.name, default_amount: Number(data.default_amount) };
-        try { existing ? await api.put('/services/' + existing.id, payload) : await api.post('/services', payload); toast('Dienst gespeichert', 'success'); render(); }
-        catch (e) { toast(e.message, 'error'); }
     }
     function delService(s, node) { deleteWithUndo('Dienst löschen?', `„${s.name}“ wird gelöscht.`, () => api.del('/services/' + s.id), () => render(), node); }
 
     // ================= USERS (admin) =================
     routes.users = async (page) => {
-        if (!isAdmin()) { page.innerHTML = ''; page.append(emptyState('⚙', 'Nur für Administratoren.')); return; }
+        if (!isAdmin()) { page.innerHTML = ''; page.append(emptyState('settings', 'Nur für Administratoren.')); return; }
         const users = await api.get('/users');
         mountList(page, {
-            title: 'Benutzer', emptyIcon: '⚙', emptyText: 'Keine Benutzer.',
+            title: 'Benutzer', emptyIcon: 'users', emptyText: 'Keine Benutzer.',
             onAdd: () => userForm(), items: users,
             searchText: (u) => norm([u.username, u.email, ROLE_LABEL[u.role]].join(' ')),
             sorts: [{ label: 'Name A–Z', cmp: (a, b) => a.username.localeCompare(b.username) }],
             render: (u) => el('div', { class: 'card' }, el('div', { class: 'card-row' },
                 el('div', {}, el('h3', {}, esc(u.username), ' ', el('span', { class: 'badge badge-role' }, ROLE_LABEL[u.role] || u.role),
-                    u.totp_enabled ? el('span', { class: 'badge badge-stored', title: '2FA aktiv' }, '🔐') : null),
+                    u.totp_enabled ? el('span', { class: 'badge badge-stored badge-ic', title: '2FA aktiv', 'aria-label': '2FA aktiv' }, icon('shield', 12), '2FA') : null),
                     el('div', { class: 'card-meta' }, esc(u.email) || 'keine E-Mail')),
                 el('div', { class: 'card-actions' },
-                    u.totp_enabled ? el('button', { class: 'btn btn-ghost btn-sm', title: '2FA von ' + u.username + ' zurücksetzen', 'aria-label': '2FA von ' + u.username + ' zurücksetzen', onclick: () => resetUserMfa(u) }, '🔓') : null,
+                    u.totp_enabled ? el('button', { class: 'btn btn-ghost btn-sm', title: '2FA von ' + u.username + ' zurücksetzen', 'aria-label': '2FA von ' + u.username + ' zurücksetzen', onclick: () => resetUserMfa(u) }, icon('unlock')) : null,
                     el('button', { class: 'btn btn-ghost btn-sm', title: u.username + ' bearbeiten', 'aria-label': u.username + ' bearbeiten', onclick: () => userForm(u) }, icon('edit')),
                     u.id === state.user.id ? null : el('button', { class: 'btn btn-ghost btn-sm', title: u.username + ' löschen', 'aria-label': u.username + ' löschen', onclick: (e) => delUser(u, e.currentTarget.closest('.card')) }, icon('trash'))))),
         });
@@ -1779,7 +1816,7 @@
         catch (e) { toast(e.message, 'error'); }
     }
     async function userForm(existing) {
-        const data = await formModal({
+        await formModal({
             title: existing ? 'Benutzer bearbeiten' : 'Neuer Benutzer',
             fields: [
                 { name: 'username', label: 'Benutzername', required: !existing, value: existing?.username },
@@ -1787,11 +1824,12 @@
                 { name: 'password', label: existing ? 'Neues Passwort (optional)' : 'Passwort', type: 'password', required: !existing, minLength: 8, help: 'Mindestens 8 Zeichen.' },
                 { name: 'role', label: 'Rolle', type: 'select', value: existing?.role || 'editor', options: Object.entries(ROLE_LABEL).map(([v, l]) => ({ value: v, label: l })) },
             ],
+            save: async (data) => {
+                const payload = { username: data.username, email: data.email, role: data.role, password: data.password };
+                existing ? await api.put('/users/' + existing.id, payload) : await api.post('/users', payload);
+                toast('Benutzer gespeichert', 'success'); render();
+            },
         });
-        if (!data) return;
-        const payload = { username: data.username, email: data.email, role: data.role, password: data.password };
-        try { existing ? await api.put('/users/' + existing.id, payload) : await api.post('/users', payload); toast('Benutzer gespeichert', 'success'); render(); }
-        catch (e) { toast(e.message, 'error'); }
     }
     function delUser(u, node) { deleteWithUndo('Benutzer löschen?', `„${u.username}“ wird gelöscht.`, () => api.del('/users/' + u.id), () => render(), node); }
 
@@ -1825,7 +1863,7 @@
         return li;
     }
     routes.audit = async (page) => {
-        if (!isAdmin()) { page.innerHTML = ''; page.append(emptyState('⚙', 'Nur für Administratoren.')); return; }
+        if (!isAdmin()) { page.innerHTML = ''; page.append(emptyState('settings', 'Nur für Administratoren.')); return; }
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' }, el('button', { class: 'back-btn', onclick: () => navigate('dashboard') }, '‹'), el('h2', { style: 'margin:0' }, 'Audit-Log')));
 
@@ -1917,7 +1955,7 @@
         return ua.slice(0, 40);
     }
     async function changePasswordForm() {
-        const data = await formModal({
+        await formModal({
             title: 'Passwort ändern', submitLabel: 'Ändern',
             fields: [
                 { name: 'current_password', label: 'Aktuelles Passwort', type: 'password', required: true },
@@ -1939,10 +1977,11 @@
                 np.addEventListener('input', check);
                 cp.addEventListener('input', check);
             },
+            save: async (data) => {
+                await api.post('/auth/change-password', { current_password: data.current_password, new_password: data.new_password });
+                toast('Passwort geändert', 'success');
+            },
         });
-        if (!data) return;
-        try { await api.post('/auth/change-password', { current_password: data.current_password, new_password: data.new_password }); toast('Passwort geändert', 'success'); }
-        catch (e) { toast(e.message, 'error'); }
     }
     async function setup2FA() {
         let info;
@@ -2007,10 +2046,14 @@
             .catch(() => toast('Kopieren fehlgeschlagen', 'error'));
     }
     async function disable2FA() {
-        const data = await formModal({ title: '2FA deaktivieren', submitLabel: 'Deaktivieren', fields: [{ name: 'password', label: 'Passwort zur Bestätigung', type: 'password', required: true }] });
-        if (!data) return;
-        try { await api.post('/auth/2fa/disable', { password: data.password }); toast('2FA deaktiviert', 'success'); state.user.totp_enabled = false; render(); }
-        catch (e) { toast(e.message, 'error'); }
+        await formModal({
+            title: '2FA deaktivieren', submitLabel: 'Deaktivieren',
+            fields: [{ name: 'password', label: 'Passwort zur Bestätigung', type: 'password', required: true }],
+            save: async (data) => {
+                await api.post('/auth/2fa/disable', { password: data.password });
+                toast('2FA deaktiviert', 'success'); state.user.totp_enabled = false; render();
+            },
+        });
     }
     async function regenerateRecoveryCodes() {
         const data = await formModal({
