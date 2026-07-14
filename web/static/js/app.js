@@ -61,6 +61,7 @@
         receipt: '<path d="M6 3h12v18l-2.2-1.3-2 1.3-2-1.3-2 1.3-2-1.3L6 21V3Z"/><path d="M9.2 8.5h5.6M9.2 12h5.6"/>',
         check: '<path d="M20 6 9 17l-5-5"/>',
         plus: '<path d="M12 5v14M5 12h14"/>',
+        archive: '<rect x="3.5" y="5" width="17" height="4" rx="1"/><path d="M5 9v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4"/>',
     };
     const icon = (name, size = 16) => {
         const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -1290,7 +1291,7 @@
         };
 
         const addRow = (v) => {
-            const cat = el('select', {}, ...state.categories.map((c) => el('option', { value: c.id }, c.name)));
+            const cat = el('select', {}, ...state.categories.filter((c) => !c.archived || (v && c.id === v.category_id)).map((c) => el('option', { value: c.id }, c.name)));
             if (v && v.category_id) for (const o of cat.options) if (Number(o.value) === v.category_id) o.selected = true;
             const label = el('input', { type: 'text', placeholder: 'Bezeichnung', value: (v && v.label) || '' });
             const plate = el('input', { type: 'text', placeholder: 'Kennzeichen', value: (v && v.license_plate) || '' });
@@ -1490,7 +1491,7 @@
             title: existing ? 'Gefährt bearbeiten' : 'Neues Gefährt',
             fields: [
                 { name: 'person_id', label: 'Person', type: 'select', required: true, value: existing?.person_id ?? presetPerson ?? state.persons[0].id, options: state.persons.map((p) => ({ value: p.id, label: personName(p) })) },
-                { name: 'category_id', label: 'Tarif / Typ', type: 'select', required: true, value: initCat, options: state.categories.map((c) => ({ value: c.id, label: `${c.name} (${eur(c.default_monthly_cost)}/M, ${eur(c.default_yearly_cost)}/J)` })) },
+                { name: 'category_id', label: 'Tarif / Typ', type: 'select', required: true, value: initCat, options: state.categories.filter((c) => !c.archived || c.id === initCat).map((c) => ({ value: c.id, label: `${c.name} (${eur(c.default_monthly_cost)}/M, ${eur(c.default_yearly_cost)}/J)` + (c.archived ? ' · archiviert' : '') })) },
                 { name: 'label', label: 'Bezeichnung', value: existing?.label, placeholder: 'z. B. Wohnwagen Hobby' },
                 { name: 'license_plate', label: 'Kennzeichen', value: existing?.license_plate },
                 { name: 'start_date', label: 'Einstelldatum', type: 'date', required: true, value: existing?.start_date ? existing.start_date.slice(0, 10) : today() },
@@ -1726,7 +1727,7 @@
 
     async function chargeForm(presetPerson) {
         if (!state.persons.length) { toast('Zuerst eine Person anlegen', 'error'); return; }
-        const svcOptions = [{ value: '', label: '— frei —' }, ...state.services.map((s) => ({ value: s.name + '|' + s.default_amount, label: `${s.name} (${eur(s.default_amount)})` }))];
+        const svcOptions = [{ value: '', label: '— frei —' }, ...state.services.filter((s) => !s.archived).map((s) => ({ value: s.name + '|' + s.default_amount, label: `${s.name} (${eur(s.default_amount)})` }))];
         const initPerson = presetPerson ?? state.persons[0].id;
         // Bindable vehicles for a person: active, not archived. Free = own paid slider.
         const vehOpts = async (pid) => {
@@ -1874,6 +1875,7 @@
             el('span', { class: 'cfg-main' },
                 el('span', { class: 'cfg-title' }, c ? esc(c.name) : 'Neuer Tarif'),
                 el('span', { class: 'cfg-sub' }, c ? `${eur(c.default_monthly_cost)}/M · ${eur(c.default_yearly_cost)}/J` : 'noch nicht gespeichert')),
+            c && c.archived ? el('span', { class: 'badge badge-collected' }, 'Archiviert') : null,
             c && c.rates_synced ? el('span', { class: 'badge badge-cat', title: 'Jahr = Monat × 12' }, '×12') : null,
             el('span', { class: 'tf-chev', 'aria-hidden': 'true' }, icon('chevron', 18)));
 
@@ -1911,12 +1913,15 @@
                 el('div', {}, el('label', {}, 'Preis / Jahr (€)'), yearI)),
             saveRow);
         if (c) {
+            inner.append(el('div', { class: 'cfg-actions2' }, c.archived
+                ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => setCatArchived(c, false) }, icon('undo', 15), ' Reaktivieren')
+                : el('button', { class: 'btn btn-ghost btn-sm', onclick: () => setCatArchived(c, true) }, icon('archive', 15), ' Archivieren')));
             inner.append(el('div', { class: 'tf-danger-label' }, icon('alert', 13), 'Gefahrenzone'));
             inner.append(el('div', { class: 'u-dz-actions' },
                 el('button', { class: 'btn btn-danger btn-sm', onclick: (e) => delCategory(c, e.currentTarget.closest('.card')) }, icon('trash', 15), ' Tarif löschen')));
         }
         const panel = el('div', { class: 'tf-panel', id: pid }, inner);
-        const card = el('div', { class: 'card cfg-card' }, head, panel);
+        const card = el('div', { class: 'card cfg-card' + (c && c.archived ? ' cfg-arch' : '') }, head, panel);
         // Unsaved blank card: mark it (single-instance) and let it be discarded.
         if (!c) { card.setAttribute('data-new-card', ''); saveRow.append(el('button', { type: 'button', class: 'btn btn-ghost', onclick: () => cfgDiscardDraft(card, 'tag', 'Noch keine Tarife.') }, 'Abbrechen')); }
         cfgDisclosure(card, head, panel, openNow);
@@ -1924,11 +1929,16 @@
         return card;
     }
     function delCategory(c, node) { deleteWithUndo('Tarif löschen?', `„${c.name}“ wird gelöscht.`, () => api.del('/categories/' + c.id), () => render(), node); }
+    async function setCatArchived(c, archived) {
+        try { await api.post('/categories/' + c.id + '/archived', { archived }); toast(archived ? 'Tarif archiviert' : 'Tarif reaktiviert', 'success'); render(); }
+        catch (e) { toast(e.message, 'error'); }
+    }
     function serviceCard(s, openNow = false) {
         const pid = 'svc-panel-' + (s ? s.id : 'new');
         const head = el('button', { type: 'button', class: 'cfg-head tf-toggle', 'aria-expanded': 'false', 'aria-controls': pid },
             el('span', { class: 'cfg-ic' }, icon('receipt', 18)),
             el('span', { class: 'cfg-main' }, el('span', { class: 'cfg-title' }, s ? esc(s.name) : 'Neuer Dienst')),
+            s && s.archived ? el('span', { class: 'badge badge-collected' }, 'Archiviert') : null,
             el('span', { class: 'cfg-right' }, s ? eur(s.default_amount) : ''),
             el('span', { class: 'tf-chev', 'aria-hidden': 'true' }, icon('chevron', 18)));
         const nameI = el('input', { type: 'text', id: 'svcname-' + (s ? s.id : 'new'), value: s ? s.name : '' });
@@ -1950,17 +1960,24 @@
             el('label', {}, 'Standardpreis (€)'), amtI,
             saveRow);
         if (s) {
+            inner.append(el('div', { class: 'cfg-actions2' }, s.archived
+                ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => setSvcArchived(s, false) }, icon('undo', 15), ' Reaktivieren')
+                : el('button', { class: 'btn btn-ghost btn-sm', onclick: () => setSvcArchived(s, true) }, icon('archive', 15), ' Archivieren')));
             inner.append(el('div', { class: 'tf-danger-label' }, icon('alert', 13), 'Gefahrenzone'));
             inner.append(el('div', { class: 'u-dz-actions' },
                 el('button', { class: 'btn btn-danger btn-sm', onclick: (e) => delService(s, e.currentTarget.closest('.card')) }, icon('trash', 15), ' Dienst löschen')));
         }
         const panel = el('div', { class: 'tf-panel', id: pid }, inner);
-        const card = el('div', { class: 'card cfg-card' }, head, panel);
+        const card = el('div', { class: 'card cfg-card' + (s && s.archived ? ' cfg-arch' : '') }, head, panel);
         // Unsaved blank card: mark it (single-instance) and let it be discarded.
         if (!s) { card.setAttribute('data-new-card', ''); saveRow.append(el('button', { type: 'button', class: 'btn btn-ghost', onclick: () => cfgDiscardDraft(card, 'receipt', 'Noch keine Dienste.') }, 'Abbrechen')); }
         cfgDisclosure(card, head, panel, openNow);
         if (openNow) setTimeout(() => nameI.focus(), 50);
         return card;
+    }
+    async function setSvcArchived(s, archived) {
+        try { await api.post('/services/' + s.id + '/archived', { archived }); toast(archived ? 'Dienst archiviert' : 'Dienst reaktiviert', 'success'); render(); }
+        catch (e) { toast(e.message, 'error'); }
     }
     function delService(s, node) { deleteWithUndo('Dienst löschen?', `„${s.name}“ wird gelöscht.`, () => api.del('/services/' + s.id), () => render(), node); }
 

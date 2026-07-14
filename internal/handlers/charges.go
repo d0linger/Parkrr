@@ -14,8 +14,8 @@ import (
 // ListServiceTypes returns the catalog of chargeable extra services.
 func (h *Handler) ListServiceTypes(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.Pool.Query(r.Context(),
-		`SELECT id, name, default_amount, created_at, updated_at
-		 FROM service_types ORDER BY name`)
+		`SELECT id, name, default_amount, archived, created_at, updated_at
+		 FROM service_types ORDER BY archived, name`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -24,7 +24,7 @@ func (h *Handler) ListServiceTypes(w http.ResponseWriter, r *http.Request) {
 	out := []models.ServiceType{}
 	for rows.Next() {
 		var s models.ServiceType
-		if err := rows.Scan(&s.ID, &s.Name, &s.DefaultAmount, &s.CreatedAt, &s.UpdatedAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.Name, &s.DefaultAmount, &s.Archived, &s.CreatedAt, &s.UpdatedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan failed")
 			return
 		}
@@ -120,6 +120,39 @@ func (h *Handler) DeleteServiceType(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit(r, "delete", "service_type", id, "deleted service")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// SetServiceArchived archives/reactivates a catalog service. Archived services
+// drop out of the "Aus Katalog" picker; existing charges are snapshots.
+func (h *Handler) SetServiceArchived(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req struct {
+		Archived bool `json:"archived"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	ct, err := h.Pool.Exec(r.Context(),
+		`UPDATE service_types SET archived=$1, updated_at=now() WHERE id=$2`, req.Archived, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update service")
+		return
+	}
+	if ct.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "service not found")
+		return
+	}
+	verb := "reactivated service"
+	if req.Archived {
+		verb = "archived service"
+	}
+	h.audit(r, "update", "service_type", id, verb)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // ---------- Charges ----------

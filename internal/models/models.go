@@ -330,8 +330,11 @@ type Category struct {
 	DefaultMonthlyCost float64   `json:"default_monthly_cost"`
 	DefaultYearlyCost  float64   `json:"default_yearly_cost"`
 	RatesSynced        bool      `json:"rates_synced"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	// Archived hides a tariff from the pickers (new vehicle / agreement) while
+	// keeping it valid for existing vehicles, whose rate is locked anyway.
+	Archived  bool      `json:"archived"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Vehicle is a stored conveyance belonging to a Person.
@@ -385,8 +388,11 @@ type ServiceType struct {
 	ID            int64     `json:"id"`
 	Name          string    `json:"name"`
 	DefaultAmount float64   `json:"default_amount"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	// Archived hides the service from the "Aus Katalog" picker while keeping it
+	// listed; existing charges are snapshots and are unaffected.
+	Archived  bool      `json:"archived"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Charge is an extra line item (service) billed to a person/vehicle.

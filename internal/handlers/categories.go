@@ -10,8 +10,8 @@ import (
 func (h *Handler) ListCategories(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.Pool.Query(r.Context(),
 		`SELECT id, name, default_monthly_cost, default_yearly_cost, rates_synced,
-		        created_at, updated_at
-		 FROM categories ORDER BY name`)
+		        archived, created_at, updated_at
+		 FROM categories ORDER BY archived, name`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -22,7 +22,7 @@ func (h *Handler) ListCategories(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var c models.Category
 		if err := rows.Scan(&c.ID, &c.Name, &c.DefaultMonthlyCost,
-			&c.DefaultYearlyCost, &c.RatesSynced, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			&c.DefaultYearlyCost, &c.RatesSynced, &c.Archived, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan failed")
 			return
 		}
@@ -154,4 +154,37 @@ func (h *Handler) DeleteCategory(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit(r, "delete", "category", id, "deleted tariff")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// SetCategoryArchived archives/reactivates a tariff. Archived tariffs stay valid
+// for existing vehicles (whose rate is locked) but drop out of the pickers.
+func (h *Handler) SetCategoryArchived(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req struct {
+		Archived bool `json:"archived"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	ct, err := h.Pool.Exec(r.Context(),
+		`UPDATE categories SET archived=$1, updated_at=now() WHERE id=$2`, req.Archived, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update category")
+		return
+	}
+	if ct.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "category not found")
+		return
+	}
+	verb := "reactivated tariff"
+	if req.Archived {
+		verb = "archived tariff"
+	}
+	h.audit(r, "update", "category", id, verb)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

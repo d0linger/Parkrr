@@ -280,7 +280,10 @@ textarea { resize: vertical; min-height: 72px; }
 .cfg-save { margin-top: 0.8rem; display: flex; gap: 0.5rem; }
 /* The tariff form is taller than the 2FA panel default; give it headroom so the
    danger zone isn't clipped by the collapse max-height. */
-.cfg-card .tf-panel.open { max-height: 640px; }
+.cfg-card .tf-panel.open { max-height: 680px; }
+/* Archived tariff/service: dim the collapsed header, keep the panel usable. */
+.cfg-arch .cfg-head { opacity: 0.55; }
+.cfg-actions2 { margin-top: 0.7rem; }
 
 /* Flat-rate agreement: covered-vehicle checkbox list in the form. */
 .agreement-vehicles { display: flex; flex-direction: column; gap: 0.3rem; max-height: 11rem; overflow-y: auto; margin-top: 0.3rem; }
