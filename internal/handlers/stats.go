@@ -14,20 +14,21 @@ import (
 
 // personStatsResponse is the payload for a single person's statistics.
 type personStatsResponse struct {
-	PersonID       int64                   `json:"person_id"`
-	PersonName     string                  `json:"person_name"`
-	TotalAccrued   float64                 `json:"total_accrued"`
-	TotalCharges   float64                 `json:"total_charges"`
-	TotalPaid      float64                 `json:"total_paid"`
-	Balance        float64                 `json:"balance"`
-	ActiveVehicles int                     `json:"active_vehicles"`
-	TotalVehicles  int                     `json:"total_vehicles"`
-	Year           int                     `json:"year"`
-	MonthlyAccrued []float64               `json:"monthly_accrued"`
-	Years          []models.YearStat       `json:"years"`
-	Vehicles       []models.Vehicle        `json:"vehicles"`
-	Agreements     []models.FlatRatePeriod `json:"agreements"`
-	HasFlatRate    bool                    `json:"has_flat_rate"`
+	PersonID         int64                    `json:"person_id"`
+	PersonName       string                   `json:"person_name"`
+	TotalAccrued     float64                  `json:"total_accrued"`
+	TotalCharges     float64                  `json:"total_charges"`
+	TotalPaid        float64                  `json:"total_paid"`
+	Balance          float64                  `json:"balance"`
+	ActiveVehicles   int                      `json:"active_vehicles"`
+	TotalVehicles    int                      `json:"total_vehicles"`
+	Year             int                      `json:"year"`
+	MonthlyAccrued   []float64                `json:"monthly_accrued"`
+	Years            []models.YearStat        `json:"years"`
+	Vehicles         []models.Vehicle         `json:"vehicles"`
+	Agreements       []models.FlatRatePeriod  `json:"agreements"`
+	RecurringCharges []models.RecurringCharge `json:"recurring_charges"`
+	HasFlatRate      bool                     `json:"has_flat_rate"`
 }
 
 // parseYearParam reads an optional ?year= query parameter, returning def when it
@@ -171,9 +172,18 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Recurring extra costs accrue per period on top of rent + one-off charges.
+	recurs, err := h.loadRecurringCharges(r.Context(), id, now)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	resp.RecurringCharges = recurs
+	recAccrued, recPaid := recurringSums(recurs, now)
+
 	resp.TotalAccrued = round2(rentAccrued)
-	resp.TotalCharges = round2(totalCharges)
-	resp.TotalPaid = round2(rentPaid + paidCharges)
+	resp.TotalCharges = round2(totalCharges + recAccrued)
+	resp.TotalPaid = round2(rentPaid + paidCharges + recPaid)
 	resp.Balance = round2(resp.TotalAccrued + resp.TotalCharges - resp.TotalPaid)
 
 	writeJSON(w, http.StatusOK, resp)
@@ -306,6 +316,18 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	if cerr := crows.Err(); cerr != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
+	}
+
+	// Recurring extra costs accrue per period into the same charge totals.
+	recurByPerson, err := h.loadAllRecurringCharges(ctx, now)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	for pid, list := range recurByPerson {
+		acc, pd := recurringSums(list, now)
+		chargesByPerson[pid] += acc
+		paidChargesByPerson[pid] += pd
 	}
 
 	personIDs := map[int64]struct{}{}

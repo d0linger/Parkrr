@@ -330,6 +330,39 @@ func (a *FlatRatePeriod) AccruedAsOf(asOf time.Time) float64 {
 	return a.CostInRange(a.StartDate, asOf.AddDate(0, 0, 1))
 }
 
+// RecurringCharge is a person-level extra cost that accrues per period like rent
+// ("Wiederkehrende Nebenkosten") and is settled per period, billed on top of the
+// flat-rate / per-vehicle rent. Its accrual and per-period payment math reuse the
+// flat-rate period logic via AsPeriod.
+type RecurringCharge struct {
+	ID          int64              `json:"id"`
+	PersonID    int64              `json:"person_id"`
+	Description string             `json:"description"`
+	Amount      float64            `json:"amount"`
+	Period      string             `json:"period"` // monthly | yearly
+	StartDate   time.Time          `json:"start_date"`
+	EndDate     *time.Time         `json:"end_date"` // nil = open-ended
+	Paid        bool               `json:"paid"`     // master flag: whole charge paid
+	PaidPeriods []string           `json:"paid_periods"`
+	PaidFixed   map[string]float64 `json:"paid_fixed,omitempty"`
+	CreatedAt   time.Time          `json:"created_at"`
+	UpdatedAt   time.Time          `json:"updated_at"`
+
+	// Derived (not stored).
+	Accrued     float64            `json:"accrued"`
+	Settled     bool               `json:"settled"`
+	PeriodCosts map[string]float64 `json:"period_costs,omitempty"`
+}
+
+// AsPeriod returns a FlatRatePeriod view so the recurring charge reuses the exact
+// prorated accrual and per-period payment math as flat-rate agreements.
+func (rc *RecurringCharge) AsPeriod() FlatRatePeriod {
+	return FlatRatePeriod{
+		Amount: rc.Amount, Period: rc.Period, StartDate: rc.StartDate, EndDate: rc.EndDate,
+		Paid: rc.Paid, PaidPeriods: rc.PaidPeriods, PaidFixed: rc.PaidFixed, VehicleIDs: []int64{},
+	}
+}
+
 // Category is a centrally-managed vehicle type with default pricing.
 type Category struct {
 	ID                 int64   `json:"id"`

@@ -80,6 +80,14 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/agreements/{id}/paid", editor(hf(h.SetAgreementPaid)))
 	mux.Handle("POST /api/agreements/{id}/period-paid", editor(hf(h.SetAgreementPeriodPaid)))
 
+	// --- Recurring extra costs (Wiederkehrende Nebenkosten) ---
+	mux.Handle("GET /api/persons/{id}/recurring", authed(hf(h.ListRecurringCharges)))
+	mux.Handle("POST /api/persons/{id}/recurring", editor(hf(h.CreateRecurringCharge)))
+	mux.Handle("PUT /api/recurring/{id}", editor(hf(h.UpdateRecurringCharge)))
+	mux.Handle("DELETE /api/recurring/{id}", editor(hf(h.DeleteRecurringCharge)))
+	mux.Handle("POST /api/recurring/{id}/paid", editor(hf(h.SetRecurringChargePaid)))
+	mux.Handle("POST /api/recurring/{id}/period-paid", editor(hf(h.SetRecurringChargePeriodPaid)))
+
 	// --- Vehicles ---
 	mux.Handle("GET /api/vehicles", authed(hf(h.ListVehicles)))
 	mux.Handle("POST /api/vehicles", editor(hf(h.CreateVehicle)))
