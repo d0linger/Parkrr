@@ -229,6 +229,33 @@ type chargeRequest struct {
 	ChargedOn   string  `json:"charged_on"`
 }
 
+// chargeChartData returns a person's one-off charges (by charge date) both per
+// calendar month of the given year (index 0 = January) and summed per year, in a
+// single round trip. Charges dated on or after until are excluded so future-dated
+// charges don't show up before they are due, matching the rent/recurring cutoff.
+func (h *Handler) chargeChartData(ctx context.Context, personID int64, year int, until time.Time) ([]float64, map[int]float64, error) {
+	monthly := make([]float64, 12)
+	yearly := map[int]float64{}
+	rows, err := h.Pool.Query(ctx,
+		`SELECT charged_on, amount*quantity FROM charges WHERE person_id=$1 AND charged_on < $2`, personID, until)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var chargedOn time.Time
+		var s float64
+		if err := rows.Scan(&chargedOn, &s); err != nil {
+			return nil, nil, err
+		}
+		yearly[chargedOn.Year()] += s
+		if chargedOn.Year() == year {
+			monthly[int(chargedOn.Month())-1] += s
+		}
+	}
+	return monthly, yearly, rows.Err()
+}
+
 // validateCharge normalizes and validates a charge request and returns the parsed
 // charged_on. badMsg carries a 400 reason (empty when valid); a non-nil error
 // signals a 500. A bound vehicle must belong to the same person.

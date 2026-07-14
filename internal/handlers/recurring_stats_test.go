@@ -88,6 +88,10 @@ func TestRecurringChargeInStats(t *testing.T) {
 	if err := json.Unmarshal(orec.Body.Bytes(), &ov); err != nil {
 		t.Fatalf("decode overview: %v", err)
 	}
+	// Recurring accrual is revenue: it must show up in the Umsatz total.
+	if ov.AccruedTotal < 100000 {
+		t.Errorf("recurring accrual missing from AccruedTotal (Umsatz): %.2f", ov.AccruedTotal)
+	}
 	found := false
 	for _, o := range ov.TopOutstanding {
 		if o.PersonID == personID {

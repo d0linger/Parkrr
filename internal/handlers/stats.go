@@ -160,8 +160,64 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	// Vehicles bound to a Pauschale bill nothing individually (ownership model).
 	until := now.AddDate(0, 0, 1)
 	rentAccrued, rentPaid := personRent(agreements, vehicles, cats, time.Time{}, until)
+
+	recurs, err := h.loadRecurringCharges(r.Context(), id, now)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	resp.RecurringCharges = recurs
+
+	// Charts show total cost (rent + extra charges). Fold one-off charges (by date)
+	// and recurring accrual into the per-month and per-year figures. Future-dated
+	// one-off charges are excluded via until, matching rent/recurring.
+	otMonth, otYear, err := h.chargeChartData(r.Context(), id, year, until)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	recMonth := recurringMonthly(recurs, year, now)
 	resp.MonthlyAccrued = personMonthly(agreements, vehicles, cats, year, now)
-	resp.Years = personYears(agreements, vehicles, cats, now)
+	for m := range resp.MonthlyAccrued {
+		resp.MonthlyAccrued[m] = round2(resp.MonthlyAccrued[m] + otMonth[m] + recMonth[m])
+	}
+
+	byYear := map[int]float64{}
+	minYear := now.Year()
+	for _, ys := range personYears(agreements, vehicles, cats, now) {
+		byYear[ys.Year] += ys.Cost
+		if ys.Year < minYear {
+			minYear = ys.Year
+		}
+	}
+	for y, c := range otYear {
+		byYear[y] += c
+		if y < minYear {
+			minYear = y
+		}
+	}
+	for i := range recurs {
+		p := recurs[i].AsPeriod()
+		if sy := p.StartDate.Year(); sy < minYear {
+			minYear = sy
+		}
+		for y := p.StartDate.Year(); y <= now.Year(); y++ {
+			yFrom := time.Date(y, 1, 1, 0, 0, 0, 0, time.UTC)
+			yTo := time.Date(y+1, 1, 1, 0, 0, 0, 0, time.UTC)
+			if yTo.After(until) {
+				yTo = until
+			}
+			if yTo.After(yFrom) {
+				byYear[y] += p.CostInRange(yFrom, yTo)
+			}
+		}
+	}
+	resp.Years = []models.YearStat{}
+	for y := now.Year(); y >= minYear; y-- {
+		if c := round2(byYear[y]); c > 0 {
+			resp.Years = append(resp.Years, models.YearStat{Year: y, Cost: c})
+		}
+	}
 
 	// Extra charges are billed on top of rent; a bound charge is paid when its
 	// covering Pauschale's period is paid (or the vehicle's own paid flag is set),
@@ -171,14 +227,6 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-
-	// Recurring extra costs accrue per period on top of rent + one-off charges.
-	recurs, err := h.loadRecurringCharges(r.Context(), id, now)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	resp.RecurringCharges = recurs
 	recAccrued, recPaid := recurringSums(recurs, now)
 
 	resp.TotalAccrued = round2(rentAccrued)
@@ -297,6 +345,10 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	vehPaid := vehiclePaidMap(vehicles)
 	chargesByPerson := map[int64]float64{}
 	paidChargesByPerson := map[int64]float64{}
+	// Extra charges are revenue too: accrue the one-off charges into the year
+	// windows and per month (by charge date) to fold into the Umsatz figures.
+	var chargeThisYear, chargePrevYear float64
+	chargeByMonth := make([]float64, 12)
 	for crows.Next() {
 		var pid int64
 		var vid *int64
@@ -311,6 +363,13 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		t, p := chargeAmounts(agByPerson[pid], vehPaid, vid, amount, qty, chargedOn, ownPaid)
 		chargesByPerson[pid] += t
 		paidChargesByPerson[pid] += p
+		if !chargedOn.Before(yearStart) && chargedOn.Before(yearEnd) {
+			chargeThisYear += t
+			chargeByMonth[int(chargedOn.Month())-1] += t
+		}
+		if !chargedOn.Before(prevStart) && chargedOn.Before(prevEnd) {
+			chargePrevYear += t
+		}
 	}
 	crows.Close()
 	if cerr := crows.Err(); cerr != nil {
@@ -328,6 +387,15 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		acc, pd := recurringSums(list, now)
 		chargesByPerson[pid] += acc
 		paidChargesByPerson[pid] += pd
+		for i := range list {
+			p := list[i].AsPeriod()
+			chargeThisYear += p.CostInRange(yearStart, yearEnd)
+			chargePrevYear += p.CostInRange(prevStart, prevEnd)
+		}
+		recM := recurringMonthly(list, resp.Year, now)
+		for m := range chargeByMonth {
+			chargeByMonth[m] += recM[m]
+		}
 	}
 
 	personIDs := map[int64]struct{}{}
@@ -369,9 +437,21 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
-	resp.AccruedTotal = round2(resp.AccruedTotal)
-	resp.AccruedThisYear = round2(resp.AccruedThisYear)
-	resp.AccruedPrevYear = round2(resp.AccruedPrevYear)
+	// Revenue (Umsatz) = rent + extra charges. Fold charges into the accrued
+	// totals; the per-person charge maps carry the whole-period totals.
+	var totalCharges, paidCharges float64
+	for _, v := range chargesByPerson {
+		totalCharges += v
+	}
+	for _, v := range paidChargesByPerson {
+		paidCharges += v
+	}
+	resp.AccruedTotal = round2(resp.AccruedTotal + totalCharges)
+	resp.AccruedThisYear = round2(resp.AccruedThisYear + chargeThisYear)
+	resp.AccruedPrevYear = round2(resp.AccruedPrevYear + chargePrevYear)
+	for m := range resp.RevenueByMonth {
+		resp.RevenueByMonth[m] = round2(resp.RevenueByMonth[m] + chargeByMonth[m])
+	}
 
 	// Largest open balances first, capped so the dashboard stays a summary.
 	sort.Slice(resp.TopOutstanding, func(i, j int) bool {
@@ -381,44 +461,16 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		resp.TopOutstanding = resp.TopOutstanding[:5]
 	}
 
-	resp.ChargesByMonth = h.sumByMonth(ctx, resp.Year,
-		`SELECT extract(month from charged_on)::int, COALESCE(sum(amount*quantity),0)
-		 FROM charges WHERE extract(year from charged_on)=$1 GROUP BY 1`)
+	// Extra charges per month (one-off + recurring), kept as a separate chart.
+	resp.ChargesByMonth = make([]float64, 12)
+	for m := range chargeByMonth {
+		resp.ChargesByMonth[m] = round2(chargeByMonth[m])
+	}
 
-	// Totals reuse the per-person charge maps (no extra global queries).
-	var totalCharges, paidCharges float64
-	for _, v := range chargesByPerson {
-		totalCharges += v
-	}
-	for _, v := range paidChargesByPerson {
-		paidCharges += v
-	}
 	resp.PaidTotal = round2(paidRent + paidCharges)
-	resp.OutstandingTotal = round2(resp.AccruedTotal + totalCharges - resp.PaidTotal)
+	resp.OutstandingTotal = round2(resp.AccruedTotal - resp.PaidTotal)
 
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// sumByMonth runs a "month -> sum" query for a year and returns a 12-slot slice
-// (index 0 = January). Errors yield an all-zero slice.
-func (h *Handler) sumByMonth(ctx context.Context, year int, query string) []float64 {
-	out := make([]float64, 12)
-	rows, err := h.Pool.Query(ctx, query, year)
-	if err != nil {
-		return out
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var month int
-		var sum float64
-		if err := rows.Scan(&month, &sum); err != nil {
-			return out
-		}
-		if month >= 1 && month <= 12 {
-			out[month-1] = round2(sum)
-		}
-	}
-	return out
 }
 
 // personMonthly computes combined rent (flat-rate agreements + uncovered

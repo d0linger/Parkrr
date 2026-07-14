@@ -83,6 +83,27 @@ func (h *Handler) loadAllRecurringCharges(ctx context.Context, now time.Time) (m
 	return out, rows.Err()
 }
 
+// recurringMonthly returns the recurring charges' accrual per calendar month of
+// the given year (index 0 = January), capped at now for the current year.
+func recurringMonthly(list []models.RecurringCharge, year int, now time.Time) []float64 {
+	out := make([]float64, 12)
+	until := now.AddDate(0, 0, 1)
+	for i := range list {
+		p := list[i].AsPeriod()
+		for m := 0; m < 12; m++ {
+			mStart := time.Date(year, time.Month(m+1), 1, 0, 0, 0, 0, time.UTC)
+			mEnd := mStart.AddDate(0, 1, 0)
+			if mEnd.After(until) {
+				mEnd = until
+			}
+			if mEnd.After(mStart) {
+				out[m] += p.CostInRange(mStart, mEnd)
+			}
+		}
+	}
+	return out
+}
+
 // recurringSums returns the accrued and paid totals (euros) of a person's
 // recurring charges as of now, reusing the flat-rate period math.
 func recurringSums(list []models.RecurringCharge, now time.Time) (accrued, paid float64) {
