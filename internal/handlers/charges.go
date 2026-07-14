@@ -303,22 +303,25 @@ func (h *Handler) SetChargePaid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A charge bound to a vehicle is settled via that vehicle; its own flag is
-	// meaningless there, so reject the toggle instead of silently storing it.
-	var vehicleID *int64
-	switch err := h.Pool.QueryRow(r.Context(), `SELECT vehicle_id FROM charges WHERE id=$1`, id).Scan(&vehicleID); {
-	case err == pgx.ErrNoRows:
-		writeError(w, http.StatusNotFound, "charge not found")
-		return
-	case err != nil:
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	if vehicleID != nil {
-		writeError(w, http.StatusConflict, "charge is settled via its vehicle")
-		return
-	}
-	if _, err := h.Pool.Exec(r.Context(), `UPDATE charges SET paid=$1 WHERE id=$2`, req.Paid, id); err != nil {
+	// meaningless there. Update only standalone charges in one atomic statement.
+	ct, err := h.Pool.Exec(r.Context(),
+		`UPDATE charges SET paid=$1 WHERE id=$2 AND vehicle_id IS NULL`, req.Paid, id)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update charge")
+		return
+	}
+	if ct.RowsAffected() == 0 {
+		// No row updated: either the charge is missing (404) or it is bound to a
+		// vehicle (409). Distinguish the two only on this edge.
+		var exists bool
+		switch e := h.Pool.QueryRow(r.Context(), `SELECT true FROM charges WHERE id=$1`, id).Scan(&exists); {
+		case e == pgx.ErrNoRows:
+			writeError(w, http.StatusNotFound, "charge not found")
+		case e != nil:
+			writeError(w, http.StatusInternalServerError, "query failed")
+		default:
+			writeError(w, http.StatusConflict, "charge is settled via its vehicle")
+		}
 		return
 	}
 	verb := "charge marked open"
