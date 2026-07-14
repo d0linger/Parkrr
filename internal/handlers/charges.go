@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"time"
@@ -228,6 +229,38 @@ type chargeRequest struct {
 	ChargedOn   string  `json:"charged_on"`
 }
 
+// validateCharge normalizes and validates a charge request and returns the parsed
+// charged_on. badMsg carries a 400 reason (empty when valid); a non-nil error
+// signals a 500. A bound vehicle must belong to the same person.
+func (h *Handler) validateCharge(ctx context.Context, req *chargeRequest) (time.Time, string, error) {
+	req.Description = trim(req.Description)
+	if req.PersonID <= 0 || req.Description == "" {
+		return time.Time{}, "person_id and description are required", nil
+	}
+	if req.Quantity <= 0 {
+		req.Quantity = 1
+	}
+	if req.VehicleID != nil {
+		var owner int64
+		err := h.Pool.QueryRow(ctx, `SELECT person_id FROM vehicles WHERE id=$1`, *req.VehicleID).Scan(&owner)
+		if err == pgx.ErrNoRows || (err == nil && owner != req.PersonID) {
+			return time.Time{}, "vehicle does not belong to that person", nil
+		}
+		if err != nil {
+			return time.Time{}, "", err
+		}
+	}
+	chargedOn := time.Now()
+	if trim(req.ChargedOn) != "" {
+		t, perr := time.Parse(dateLayout, trim(req.ChargedOn))
+		if perr != nil {
+			return time.Time{}, "charged_on must be YYYY-MM-DD", nil
+		}
+		chargedOn = t
+	}
+	return chargedOn, "", nil
+}
+
 // CreateCharge adds an extra line item.
 func (h *Handler) CreateCharge(w http.ResponseWriter, r *http.Request) {
 	var req chargeRequest
@@ -235,39 +268,14 @@ func (h *Handler) CreateCharge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	req.Description = trim(req.Description)
-	if req.PersonID <= 0 || req.Description == "" {
-		writeError(w, http.StatusBadRequest, "person_id and description are required")
+	chargedOn, badMsg, serr := h.validateCharge(r.Context(), &req)
+	if serr != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	if req.Quantity <= 0 {
-		req.Quantity = 1
-	}
-	// A bound charge must belong to a vehicle of the same person, otherwise its
-	// paid state would be governed by another person's vehicle.
-	if req.VehicleID != nil {
-		var owner int64
-		switch err := h.Pool.QueryRow(r.Context(), `SELECT person_id FROM vehicles WHERE id=$1`, *req.VehicleID).Scan(&owner); {
-		case err == pgx.ErrNoRows:
-			writeError(w, http.StatusBadRequest, "vehicle does not exist")
-			return
-		case err != nil:
-			writeError(w, http.StatusInternalServerError, "query failed")
-			return
-		}
-		if owner != req.PersonID {
-			writeError(w, http.StatusBadRequest, "vehicle does not belong to that person")
-			return
-		}
-	}
-	chargedOn := time.Now()
-	if trim(req.ChargedOn) != "" {
-		t, err := time.Parse(dateLayout, trim(req.ChargedOn))
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "charged_on must be YYYY-MM-DD")
-			return
-		}
-		chargedOn = t
+	if badMsg != "" {
+		writeError(w, http.StatusBadRequest, badMsg)
+		return
 	}
 	var id int64
 	err := h.Pool.QueryRow(r.Context(),
@@ -285,6 +293,47 @@ func (h *Handler) CreateCharge(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit(r, "create", "charge", id, "added charge "+req.Description)
 	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
+}
+
+// UpdateCharge edits an extra line item; the paid state is left unchanged.
+func (h *Handler) UpdateCharge(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req chargeRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	chargedOn, badMsg, serr := h.validateCharge(r.Context(), &req)
+	if serr != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if badMsg != "" {
+		writeError(w, http.StatusBadRequest, badMsg)
+		return
+	}
+	ct, err := h.Pool.Exec(r.Context(),
+		`UPDATE charges SET person_id=$1, vehicle_id=$2, description=$3, amount=$4,
+		        quantity=$5, charged_on=$6 WHERE id=$7`,
+		req.PersonID, req.VehicleID, req.Description, req.Amount, req.Quantity, chargedOn, id)
+	if err != nil {
+		if isForeignKeyViolation(err) {
+			writeError(w, http.StatusBadRequest, "person or vehicle does not exist")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "could not update charge")
+		return
+	}
+	if ct.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "charge not found")
+		return
+	}
+	h.audit(r, "update", "charge", id, "updated charge "+req.Description)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // DeleteCharge removes an extra line item.
