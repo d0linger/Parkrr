@@ -1814,15 +1814,21 @@
     function userCard(u) {
         const pid = 'u-panel-' + u.id;
         const isSelf = u.id === state.user.id;
+        const initial = (u.username || '?').trim().charAt(0).toUpperCase() || '?';
         const head = el('button', { type: 'button', class: 'u-head tf-toggle', 'aria-expanded': 'false', 'aria-controls': pid },
-            el('h3', { class: 'u-name' }, esc(u.username), ' ',
-                el('span', { class: 'badge badge-role' }, ROLE_LABEL[u.role] || u.role),
-                u.totp_enabled ? el('span', { class: 'badge badge-stored badge-ic', title: '2FA aktiv', 'aria-label': '2FA aktiv' }, icon('shield', 12), '2FA') : null),
+            el('span', { class: 'u-avatar', 'aria-hidden': 'true' }, initial),
+            el('span', { class: 'u-namewrap' },
+                // A <span> (not a heading): interactive <button> content may only be
+                // phrasing content, so a heading here would be invalid HTML.
+                el('span', { class: 'u-name' }, esc(u.username), ' ',
+                    el('span', { class: 'badge badge-role' }, ROLE_LABEL[u.role] || u.role),
+                    u.totp_enabled ? el('span', { class: 'badge badge-stored badge-ic', title: '2FA aktiv', 'aria-label': '2FA aktiv' }, icon('shield', 12), '2FA') : null),
+                el('span', { class: 'u-sub' }, esc(u.email) || 'keine E-Mail')),
             el('span', { class: 'tf-chev', 'aria-hidden': 'true' }, icon('chevron', 18)));
 
         // Inline quick password reset (keeps username/email/role untouched).
         const pw = el('input', { type: 'password', id: 'setpw-' + u.id, autocomplete: 'new-password' });
-        const setBtn = el('button', { class: 'btn btn-primary btn-block' }, 'Passwort setzen');
+        const setBtn = el('button', { class: 'btn btn-primary' }, icon('key', 15), ' Setzen');
         setBtn.addEventListener('click', async () => {
             if (pw.value.length < 8) { toast('Passwort: mindestens 8 Zeichen', 'error'); pw.focus(); return; }
             setBtn.disabled = true;
@@ -1834,17 +1840,15 @@
         });
 
         const dz = el('div', { class: 'u-dz-actions' });
-        if (u.totp_enabled) dz.append(el('button', { class: 'btn btn-ghost', onclick: () => resetUserMfa(u) }, icon('unlock', 15), ' 2FA zurücksetzen'));
-        if (!isSelf) dz.append(el('button', { class: 'btn btn-danger', onclick: (e) => delUser(u, e.currentTarget.closest('.card')) }, icon('trash', 15), ' Benutzer löschen'));
+        if (u.totp_enabled) dz.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => resetUserMfa(u) }, icon('unlock', 15), ' 2FA zurücksetzen'));
+        if (!isSelf) dz.append(el('button', { class: 'btn btn-danger btn-sm', onclick: (e) => delUser(u, e.currentTarget.closest('.card')) }, icon('trash', 15), ' Benutzer löschen'));
         const hasDanger = u.totp_enabled || !isSelf;
 
         const panel = el('div', { class: 'tf-panel', id: pid },
             el('div', { class: 'u-panel-inner' },
-                el('div', { class: 'card-meta u-email' }, esc(u.email) || 'keine E-Mail'),
                 el('label', { class: 'u-pw-label', for: 'setpw-' + u.id }, 'Neues Passwort'),
-                el('div', { class: 'input-affix' }, pw, pwToggleBtn(pw)),
-                setBtn,
-                el('button', { class: 'btn btn-ghost btn-block u-edit', onclick: () => userForm(u) }, icon('edit', 15), ' Name, E-Mail, Rolle'),
+                el('div', { class: 'u-pw-row' }, el('div', { class: 'input-affix' }, pw, pwToggleBtn(pw)), setBtn),
+                el('button', { class: 'btn btn-ghost btn-sm u-edit', onclick: () => userForm(u) }, icon('edit', 15), ' Name, E-Mail & Rolle'),
                 hasDanger ? el('div', { class: 'tf-danger-label' }, icon('alert', 13), 'Gefahrenzone') : null,
                 hasDanger ? dz : null));
 
