@@ -227,6 +227,13 @@ func (a *FlatRatePeriod) PeriodKey(t time.Time) string {
 	return fmt.Sprintf("%04d-%02d", t.Year(), int(t.Month()))
 }
 
+// PeriodPaidAt reports whether the sub-period containing t is settled in full —
+// either the whole-agreement Paid flag or a whole-period payment for that key. A
+// fixed partial payment (PaidFixed) does not count as fully paid.
+func (a *FlatRatePeriod) PeriodPaidAt(t time.Time) bool {
+	return a.Paid || a.paidKeySet()[a.PeriodKey(t)]
+}
+
 // subPeriods invokes fn for each calendar sub-period (month or year, per Period)
 // that the agreement's active window intersects within [from, to). It passes the
 // intersected slice [s, e), the full sub-period bounds [pStart, pEnd) and the

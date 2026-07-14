@@ -41,6 +41,64 @@ func parseYearParam(r *http.Request, def int) int {
 	return def
 }
 
+// chargeSettled reports whether an extra charge counts as paid. A standalone
+// charge (no vehicle) uses its own flag. A vehicle-bound charge is settled when a
+// covering Pauschale's sub-period for the charge's date is paid in full — so
+// marking that Pauschale paid also settles the bound extras — and otherwise falls
+// back to the vehicle's own paid flag.
+func chargeSettled(agreements []models.FlatRatePeriod, vehicleID *int64, chargedOn time.Time, ownPaid, vehiclePaid bool) bool {
+	if vehicleID == nil {
+		return ownPaid
+	}
+	for i := range agreements {
+		a := &agreements[i]
+		if a.Covers(*vehicleID) && a.ActiveAt(chargedOn) && a.PeriodPaidAt(chargedOn) {
+			return true
+		}
+	}
+	return vehiclePaid
+}
+
+// personChargeSums returns a person's total charges and the paid portion, with a
+// vehicle-bound charge settled via its covering Pauschale (or the vehicle's own
+// paid flag). vehPaid maps a vehicle id to its stored paid flag.
+func (h *Handler) personChargeSums(ctx context.Context, personID int64, agreements []models.FlatRatePeriod, vehPaid map[int64]bool) (total, paid float64, err error) {
+	rows, qerr := h.Pool.Query(ctx,
+		`SELECT vehicle_id, amount, quantity, charged_on, paid FROM charges WHERE person_id=$1`, personID)
+	if qerr != nil {
+		return 0, 0, qerr
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var vid *int64
+		var amount, qty float64
+		var chargedOn time.Time
+		var ownPaid bool
+		if serr := rows.Scan(&vid, &amount, &qty, &chargedOn, &ownPaid); serr != nil {
+			return 0, 0, serr
+		}
+		t := amount * qty
+		total += t
+		vp := false
+		if vid != nil {
+			vp = vehPaid[*vid]
+		}
+		if chargeSettled(agreements, vid, chargedOn, ownPaid, vp) {
+			paid += t
+		}
+	}
+	return total, paid, rows.Err()
+}
+
+// vehiclePaidMap indexes vehicles by id -> stored paid flag.
+func vehiclePaidMap(vehicles []models.Vehicle) map[int64]bool {
+	m := make(map[int64]bool, len(vehicles))
+	for i := range vehicles {
+		m[vehicles[i].ID] = vehicles[i].Paid
+	}
+	return m
+}
+
 // PersonStats returns per-year and per-month cost statistics plus the open
 // balance for a single person. Accepts ?year= for the monthly breakdown.
 func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
@@ -95,21 +153,17 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	resp.MonthlyAccrued = personMonthly(agreements, vehicles, cats, year, now)
 	resp.Years = personYears(agreements, vehicles, cats, now)
 
-	// Extra charges are billed on top of rent; a charge counts as paid when its
-	// vehicle is marked paid (flat-rate persons: rent-paid via the flat slider).
-	_ = h.Pool.QueryRow(r.Context(),
-		`SELECT COALESCE(sum(amount * quantity), 0) FROM charges WHERE person_id=$1`, id,
-	).Scan(&resp.TotalCharges)
-	var paidCharges float64
-	_ = h.Pool.QueryRow(r.Context(),
-		`SELECT COALESCE(sum(c.amount * c.quantity), 0)
-		 FROM charges c LEFT JOIN vehicles v ON v.id = c.vehicle_id
-		 WHERE c.person_id=$1
-		   AND ((c.vehicle_id IS NOT NULL AND v.paid) OR (c.vehicle_id IS NULL AND c.paid))`, id,
-	).Scan(&paidCharges)
+	// Extra charges are billed on top of rent; a bound charge is paid when its
+	// covering Pauschale's period is paid (or the vehicle's own paid flag is set),
+	// a standalone charge when its own flag is set.
+	totalCharges, paidCharges, err := h.personChargeSums(r.Context(), id, agreements, vehiclePaidMap(vehicles))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 
 	resp.TotalAccrued = round2(rentAccrued)
-	resp.TotalCharges = round2(resp.TotalCharges)
+	resp.TotalCharges = round2(totalCharges)
 	resp.TotalPaid = round2(rentPaid + paidCharges)
 	resp.Balance = round2(resp.TotalAccrued + resp.TotalCharges - resp.TotalPaid)
 
@@ -182,22 +236,6 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	prevStart := yearStart.AddDate(-1, 0, 0)
 	prevEnd := prevStart.Add(yearEnd.Sub(yearStart))
 
-	// Per-person charge sums (all + paid), reused for both the totals and the
-	// per-person open balance. person_id is required on every charge.
-	chargesByPerson, err := h.chargeSumsByPerson(ctx, `SELECT person_id, COALESCE(sum(amount*quantity),0) FROM charges GROUP BY person_id`)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	paidChargesByPerson, err := h.chargeSumsByPerson(ctx,
-		`SELECT c.person_id, COALESCE(sum(c.amount*c.quantity),0)
-		 FROM charges c LEFT JOIN vehicles v ON v.id = c.vehicle_id
-		 WHERE (c.vehicle_id IS NOT NULL AND v.paid) OR (c.vehicle_id IS NULL AND c.paid)
-		 GROUP BY c.person_id`)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
 	personNames := map[int64]string{}
 	if rows, nerr := h.Pool.Query(ctx, `SELECT id, trim(first_name || ' ' || last_name) FROM persons`); nerr == nil {
 		defer rows.Close()
@@ -228,6 +266,45 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
+
+	// Per-person charge sums (all + paid). A vehicle-bound charge is settled via
+	// its covering Pauschale's period (or the vehicle's own paid flag); a
+	// standalone charge via its own flag. Reused for the totals and open balances.
+	crows, err := h.Pool.Query(ctx, `SELECT person_id, vehicle_id, amount, quantity, charged_on, paid FROM charges`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	vehPaid := vehiclePaidMap(vehicles)
+	chargesByPerson := map[int64]float64{}
+	paidChargesByPerson := map[int64]float64{}
+	for crows.Next() {
+		var pid int64
+		var vid *int64
+		var amount, qty float64
+		var chargedOn time.Time
+		var ownPaid bool
+		if serr := crows.Scan(&pid, &vid, &amount, &qty, &chargedOn, &ownPaid); serr != nil {
+			crows.Close()
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		t := amount * qty
+		chargesByPerson[pid] += t
+		vp := false
+		if vid != nil {
+			vp = vehPaid[*vid]
+		}
+		if chargeSettled(agByPerson[pid], vid, chargedOn, ownPaid, vp) {
+			paidChargesByPerson[pid] += t
+		}
+	}
+	crows.Close()
+	if cerr := crows.Err(); cerr != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+
 	personIDs := map[int64]struct{}{}
 	for pid := range vehByPerson {
 		personIDs[pid] = struct{}{}
@@ -295,27 +372,6 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	resp.OutstandingTotal = round2(resp.AccruedTotal + totalCharges - resp.PaidTotal)
 
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// chargeSumsByPerson runs a "person_id -> sum" charge query into a map. Errors
-// are propagated rather than swallowed, so the dashboard never reports partial
-// money figures as if they were complete.
-func (h *Handler) chargeSumsByPerson(ctx context.Context, query string) (map[int64]float64, error) {
-	out := map[int64]float64{}
-	rows, err := h.Pool.Query(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var pid int64
-		var sum float64
-		if err := rows.Scan(&pid, &sum); err != nil {
-			return nil, err
-		}
-		out[pid] = sum
-	}
-	return out, rows.Err()
 }
 
 // sumByMonth runs a "month -> sum" query for a year and returns a 12-slot slice
