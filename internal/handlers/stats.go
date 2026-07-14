@@ -103,8 +103,9 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	var paidCharges float64
 	_ = h.Pool.QueryRow(r.Context(),
 		`SELECT COALESCE(sum(c.amount * c.quantity), 0)
-		 FROM charges c JOIN vehicles v ON v.id = c.vehicle_id
-		 WHERE c.person_id=$1 AND v.paid`, id,
+		 FROM charges c LEFT JOIN vehicles v ON v.id = c.vehicle_id
+		 WHERE c.person_id=$1
+		   AND ((c.vehicle_id IS NOT NULL AND v.paid) OR (c.vehicle_id IS NULL AND c.paid))`, id,
 	).Scan(&paidCharges)
 
 	resp.TotalAccrued = round2(rentAccrued)
@@ -190,7 +191,9 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 	paidChargesByPerson, err := h.chargeSumsByPerson(ctx,
 		`SELECT c.person_id, COALESCE(sum(c.amount*c.quantity),0)
-		 FROM charges c JOIN vehicles v ON v.id = c.vehicle_id WHERE v.paid GROUP BY c.person_id`)
+		 FROM charges c LEFT JOIN vehicles v ON v.id = c.vehicle_id
+		 WHERE (c.vehicle_id IS NOT NULL AND v.paid) OR (c.vehicle_id IS NULL AND c.paid)
+		 GROUP BY c.person_id`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return

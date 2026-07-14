@@ -14,8 +14,8 @@ import (
 // ListServiceTypes returns the catalog of chargeable extra services.
 func (h *Handler) ListServiceTypes(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.Pool.Query(r.Context(),
-		`SELECT id, name, default_amount, created_at, updated_at
-		 FROM service_types ORDER BY name`)
+		`SELECT id, name, default_amount, archived, created_at, updated_at
+		 FROM service_types ORDER BY archived, name`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -24,7 +24,7 @@ func (h *Handler) ListServiceTypes(w http.ResponseWriter, r *http.Request) {
 	out := []models.ServiceType{}
 	for rows.Next() {
 		var s models.ServiceType
-		if err := rows.Scan(&s.ID, &s.Name, &s.DefaultAmount, &s.CreatedAt, &s.UpdatedAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.Name, &s.DefaultAmount, &s.Archived, &s.CreatedAt, &s.UpdatedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan failed")
 			return
 		}
@@ -122,6 +122,39 @@ func (h *Handler) DeleteServiceType(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
+// SetServiceArchived archives/reactivates a catalog service. Archived services
+// drop out of the "Aus Katalog" picker; existing charges are snapshots.
+func (h *Handler) SetServiceArchived(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req struct {
+		Archived bool `json:"archived"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	ct, err := h.Pool.Exec(r.Context(),
+		`UPDATE service_types SET archived=$1, updated_at=now() WHERE id=$2`, req.Archived, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update service")
+		return
+	}
+	if ct.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "service not found")
+		return
+	}
+	verb := "reactivated service"
+	if req.Archived {
+		verb = "archived service"
+	}
+	h.audit(r, "update", "service_type", id, verb)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 // ---------- Charges ----------
 
 // ListCharges returns charges, optionally filtered by ?person_id=.
@@ -131,8 +164,13 @@ func (h *Handler) ListCharges(w http.ResponseWriter, r *http.Request) {
 		err  error
 	)
 	base := `SELECT c.id, c.person_id, c.vehicle_id, c.description, c.amount, c.quantity,
-	                c.charged_on, c.created_at, trim(pe.first_name || ' ' || pe.last_name)
-	         FROM charges c JOIN persons pe ON pe.id = c.person_id`
+	                c.charged_on, c.created_at, trim(pe.first_name || ' ' || pe.last_name),
+	                c.paid, COALESCE(v.paid, false),
+	                COALESCE(NULLIF(v.label, ''), NULLIF(v.license_plate, ''), cat.name, '')
+	         FROM charges c
+	         JOIN persons pe ON pe.id = c.person_id
+	         LEFT JOIN vehicles v ON v.id = c.vehicle_id
+	         LEFT JOIN categories cat ON cat.id = v.category_id`
 	limit, offset := pageParams(r, 1000, 1000)
 	if pid := r.URL.Query().Get("person_id"); pid != "" {
 		rows, err = h.Pool.Query(r.Context(),
@@ -150,7 +188,8 @@ func (h *Handler) ListCharges(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var c models.Charge
 		if err := rows.Scan(&c.ID, &c.PersonID, &c.VehicleID, &c.Description, &c.Amount,
-			&c.Quantity, &c.ChargedOn, &c.CreatedAt, &c.PersonName); err != nil {
+			&c.Quantity, &c.ChargedOn, &c.CreatedAt, &c.PersonName,
+			&c.Paid, &c.VehiclePaid, &c.VehicleLabel); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan failed")
 			return
 		}
@@ -183,6 +222,23 @@ func (h *Handler) CreateCharge(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Quantity <= 0 {
 		req.Quantity = 1
+	}
+	// A bound charge must belong to a vehicle of the same person, otherwise its
+	// paid state would be governed by another person's vehicle.
+	if req.VehicleID != nil {
+		var owner int64
+		switch err := h.Pool.QueryRow(r.Context(), `SELECT person_id FROM vehicles WHERE id=$1`, *req.VehicleID).Scan(&owner); {
+		case err == pgx.ErrNoRows:
+			writeError(w, http.StatusBadRequest, "vehicle does not exist")
+			return
+		case err != nil:
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		if owner != req.PersonID {
+			writeError(w, http.StatusBadRequest, "vehicle does not belong to that person")
+			return
+		}
 	}
 	chargedOn := time.Now()
 	if trim(req.ChargedOn) != "" {
@@ -229,4 +285,49 @@ func (h *Handler) DeleteCharge(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit(r, "delete", "charge", id, "deleted charge")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// SetChargePaid toggles a standalone charge's own paid flag. A charge bound to a
+// vehicle derives its paid state from that vehicle, so the flag is ignored there.
+func (h *Handler) SetChargePaid(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req struct {
+		Paid bool `json:"paid"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	// A charge bound to a vehicle is settled via that vehicle; its own flag is
+	// meaningless there. Update only standalone charges in one atomic statement.
+	ct, err := h.Pool.Exec(r.Context(),
+		`UPDATE charges SET paid=$1 WHERE id=$2 AND vehicle_id IS NULL`, req.Paid, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update charge")
+		return
+	}
+	if ct.RowsAffected() == 0 {
+		// No row updated: either the charge is missing (404) or it is bound to a
+		// vehicle (409). Distinguish the two only on this edge.
+		var exists bool
+		switch e := h.Pool.QueryRow(r.Context(), `SELECT true FROM charges WHERE id=$1`, id).Scan(&exists); {
+		case e == pgx.ErrNoRows:
+			writeError(w, http.StatusNotFound, "charge not found")
+		case e != nil:
+			writeError(w, http.StatusInternalServerError, "query failed")
+		default:
+			writeError(w, http.StatusConflict, "charge is settled via its vehicle")
+		}
+		return
+	}
+	verb := "charge marked open"
+	if req.Paid {
+		verb = "charge marked paid"
+	}
+	h.audit(r, "update", "charge", id, verb)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

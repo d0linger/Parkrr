@@ -101,17 +101,20 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/categories", authed(hf(h.ListCategories)))
 	mux.Handle("POST /api/categories", editor(hf(h.CreateCategory)))
 	mux.Handle("PUT /api/categories/{id}", editor(hf(h.UpdateCategory)))
+	mux.Handle("POST /api/categories/{id}/archived", editor(hf(h.SetCategoryArchived)))
 	mux.Handle("DELETE /api/categories/{id}", editor(hf(h.DeleteCategory)))
 
 	// --- Service catalog ---
 	mux.Handle("GET /api/services", authed(hf(h.ListServiceTypes)))
 	mux.Handle("POST /api/services", editor(hf(h.CreateServiceType)))
 	mux.Handle("PUT /api/services/{id}", editor(hf(h.UpdateServiceType)))
+	mux.Handle("POST /api/services/{id}/archived", editor(hf(h.SetServiceArchived)))
 	mux.Handle("DELETE /api/services/{id}", editor(hf(h.DeleteServiceType)))
 
 	// --- Charges ---
 	mux.Handle("GET /api/charges", authed(hf(h.ListCharges)))
 	mux.Handle("POST /api/charges", editor(hf(h.CreateCharge)))
+	mux.Handle("POST /api/charges/{id}/paid", editor(hf(h.SetChargePaid)))
 	mux.Handle("DELETE /api/charges/{id}", editor(hf(h.DeleteCharge)))
 
 	// --- Stats ---

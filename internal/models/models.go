@@ -325,13 +325,16 @@ func (a *FlatRatePeriod) AccruedAsOf(asOf time.Time) float64 {
 
 // Category is a centrally-managed vehicle type with default pricing.
 type Category struct {
-	ID                 int64     `json:"id"`
-	Name               string    `json:"name"`
-	DefaultMonthlyCost float64   `json:"default_monthly_cost"`
-	DefaultYearlyCost  float64   `json:"default_yearly_cost"`
-	RatesSynced        bool      `json:"rates_synced"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	ID                 int64   `json:"id"`
+	Name               string  `json:"name"`
+	DefaultMonthlyCost float64 `json:"default_monthly_cost"`
+	DefaultYearlyCost  float64 `json:"default_yearly_cost"`
+	RatesSynced        bool    `json:"rates_synced"`
+	// Archived hides a tariff from the pickers (new vehicle / agreement) while
+	// keeping it valid for existing vehicles, whose rate is locked anyway.
+	Archived  bool      `json:"archived"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Vehicle is a stored conveyance belonging to a Person.
@@ -382,11 +385,14 @@ type Vehicle struct {
 
 // ServiceType is a catalog entry for a chargeable extra service.
 type ServiceType struct {
-	ID            int64     `json:"id"`
-	Name          string    `json:"name"`
-	DefaultAmount float64   `json:"default_amount"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID            int64   `json:"id"`
+	Name          string  `json:"name"`
+	DefaultAmount float64 `json:"default_amount"`
+	// Archived hides the service from the "Aus Katalog" picker while keeping it
+	// listed; existing charges are snapshots and are unaffected.
+	Archived  bool      `json:"archived"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Charge is an extra line item (service) billed to a person/vehicle.
@@ -401,6 +407,11 @@ type Charge struct {
 	CreatedAt   time.Time `json:"created_at"`
 	PersonName  string    `json:"person_name,omitempty"`
 	Total       float64   `json:"total"`
+	// Paid is the charge's own settle flag, used when it is not bound to a
+	// vehicle. Bound charges instead follow VehiclePaid.
+	Paid         bool   `json:"paid"`
+	VehiclePaid  bool   `json:"vehicle_paid"`
+	VehicleLabel string `json:"vehicle_label,omitempty"`
 }
 
 // StatusChange is one entry in a vehicle's status history.
