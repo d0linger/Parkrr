@@ -1317,6 +1317,9 @@
                 const current = fixed != null ? { mode: 'partial', amount: fixed } : (paid ? { mode: 'full' } : null);
                 const choice = await periodPayDialog(key, defAmt, current);
                 if (!choice) { render(); return; }
+                // A partial payment of 0/blank is not a payment — revert instead of
+                // submitting an empty Teilbetrag.
+                if (choice.amount != null && !(choice.amount > 0)) { render(); return; }
                 await post(true, choice.amount);
                 return;
             }

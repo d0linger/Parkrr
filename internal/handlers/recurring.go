@@ -127,9 +127,11 @@ func (req *recurringRequest) parse() (desc, period string, amount float64, start
 	if req.Amount == nil || *req.Amount < 0 {
 		return "", "", 0, time.Time{}, nil, "amount must not be negative"
 	}
-	period = models.BillingMonthly
-	if req.Period == models.BillingYearly {
-		period = models.BillingYearly
+	switch req.Period {
+	case models.BillingMonthly, models.BillingYearly:
+		period = req.Period
+	default:
+		return "", "", 0, time.Time{}, nil, "period must be monthly or yearly"
 	}
 	s, err := time.Parse(dateLayout, trim(req.StartDate))
 	if err != nil {
@@ -285,6 +287,11 @@ func (h *Handler) SetRecurringChargePeriodPaid(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	// A fixed partial payment must be positive; a whole-period prepayment omits it.
+	if req.Paid && req.Amount != nil && *req.Amount <= 0 {
+		writeError(w, http.StatusBadRequest, "amount must be positive")
+		return
+	}
 	rc, err := h.getRecurring(r.Context(), id)
 	if err == pgx.ErrNoRows {
 		writeError(w, http.StatusNotFound, "recurring charge not found")
@@ -317,8 +324,8 @@ func (h *Handler) SetRecurringChargePeriodPaid(w http.ResponseWriter, r *http.Re
 	if req.Paid {
 		if req.Amount == nil {
 			periods = append(periods, req.PeriodKey) // whole period prepaid
-		} else if *req.Amount > 0 {
-			fixed[req.PeriodKey] = *req.Amount // fixed partial
+		} else {
+			fixed[req.PeriodKey] = *req.Amount // fixed partial (validated > 0 above)
 		}
 	}
 	fixedJSON, _ := json.Marshal(fixed)
