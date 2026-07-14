@@ -1777,6 +1777,15 @@
             if (p) { p.classList.remove('open'); p.inert = true; }
         }
     }
+    // Discard an unsaved draft card; if it was the last card, restore the
+    // empty-state (never duplicating it while persisted cards remain).
+    function cfgDiscardDraft(card, iconName, text) {
+        const list = card.parentElement;
+        card.remove();
+        if (list && !list.querySelector('.cfg-card') && !list.querySelector('.empty')) {
+            list.append(emptyState(iconName, text));
+        }
+    }
     // Wire a config card's header/panel: collapsed panel is inert; opening one
     // collapses its siblings (single-open); optionally opens immediately.
     function cfgDisclosure(card, head, panel, openNow) {
@@ -1841,7 +1850,7 @@
         const panel = el('div', { class: 'tf-panel', id: pid }, inner);
         const card = el('div', { class: 'card cfg-card' }, head, panel);
         // Unsaved blank card: mark it (single-instance) and let it be discarded.
-        if (!c) { card.setAttribute('data-new-card', ''); saveRow.append(el('button', { type: 'button', class: 'btn btn-ghost', onclick: () => card.remove() }, 'Abbrechen')); }
+        if (!c) { card.setAttribute('data-new-card', ''); saveRow.append(el('button', { type: 'button', class: 'btn btn-ghost', onclick: () => cfgDiscardDraft(card, 'tag', 'Noch keine Tarife.') }, 'Abbrechen')); }
         cfgDisclosure(card, head, panel, openNow);
         if (openNow) setTimeout(() => nameI.focus(), 50);
         return card;
@@ -1880,7 +1889,7 @@
         const panel = el('div', { class: 'tf-panel', id: pid }, inner);
         const card = el('div', { class: 'card cfg-card' }, head, panel);
         // Unsaved blank card: mark it (single-instance) and let it be discarded.
-        if (!s) { card.setAttribute('data-new-card', ''); saveRow.append(el('button', { type: 'button', class: 'btn btn-ghost', onclick: () => card.remove() }, 'Abbrechen')); }
+        if (!s) { card.setAttribute('data-new-card', ''); saveRow.append(el('button', { type: 'button', class: 'btn btn-ghost', onclick: () => cfgDiscardDraft(card, 'receipt', 'Noch keine Dienste.') }, 'Abbrechen')); }
         cfgDisclosure(card, head, panel, openNow);
         if (openNow) setTimeout(() => nameI.focus(), 50);
         return card;
