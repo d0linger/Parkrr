@@ -325,11 +325,11 @@ func (a *FlatRatePeriod) AccruedAsOf(asOf time.Time) float64 {
 
 // Category is a centrally-managed vehicle type with default pricing.
 type Category struct {
-	ID                 int64     `json:"id"`
-	Name               string    `json:"name"`
-	DefaultMonthlyCost float64   `json:"default_monthly_cost"`
-	DefaultYearlyCost  float64   `json:"default_yearly_cost"`
-	RatesSynced        bool      `json:"rates_synced"`
+	ID                 int64   `json:"id"`
+	Name               string  `json:"name"`
+	DefaultMonthlyCost float64 `json:"default_monthly_cost"`
+	DefaultYearlyCost  float64 `json:"default_yearly_cost"`
+	RatesSynced        bool    `json:"rates_synced"`
 	// Archived hides a tariff from the pickers (new vehicle / agreement) while
 	// keeping it valid for existing vehicles, whose rate is locked anyway.
 	Archived  bool      `json:"archived"`
@@ -385,9 +385,9 @@ type Vehicle struct {
 
 // ServiceType is a catalog entry for a chargeable extra service.
 type ServiceType struct {
-	ID            int64     `json:"id"`
-	Name          string    `json:"name"`
-	DefaultAmount float64   `json:"default_amount"`
+	ID            int64   `json:"id"`
+	Name          string  `json:"name"`
+	DefaultAmount float64 `json:"default_amount"`
 	// Archived hides the service from the "Aus Katalog" picker while keeping it
 	// listed; existing charges are snapshots and are unaffected.
 	Archived  bool      `json:"archived"`

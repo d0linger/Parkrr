@@ -223,6 +223,23 @@ func (h *Handler) CreateCharge(w http.ResponseWriter, r *http.Request) {
 	if req.Quantity <= 0 {
 		req.Quantity = 1
 	}
+	// A bound charge must belong to a vehicle of the same person, otherwise its
+	// paid state would be governed by another person's vehicle.
+	if req.VehicleID != nil {
+		var owner int64
+		switch err := h.Pool.QueryRow(r.Context(), `SELECT person_id FROM vehicles WHERE id=$1`, *req.VehicleID).Scan(&owner); {
+		case err == pgx.ErrNoRows:
+			writeError(w, http.StatusBadRequest, "vehicle does not exist")
+			return
+		case err != nil:
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		if owner != req.PersonID {
+			writeError(w, http.StatusBadRequest, "vehicle does not belong to that person")
+			return
+		}
+	}
 	chargedOn := time.Now()
 	if trim(req.ChargedOn) != "" {
 		t, err := time.Parse(dateLayout, trim(req.ChargedOn))
@@ -285,13 +302,23 @@ func (h *Handler) SetChargePaid(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(), `UPDATE charges SET paid=$1 WHERE id=$2`, req.Paid, id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not update charge")
+	// A charge bound to a vehicle is settled via that vehicle; its own flag is
+	// meaningless there, so reject the toggle instead of silently storing it.
+	var vehicleID *int64
+	switch err := h.Pool.QueryRow(r.Context(), `SELECT vehicle_id FROM charges WHERE id=$1`, id).Scan(&vehicleID); {
+	case err == pgx.ErrNoRows:
+		writeError(w, http.StatusNotFound, "charge not found")
+		return
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "charge not found")
+	if vehicleID != nil {
+		writeError(w, http.StatusConflict, "charge is settled via its vehicle")
+		return
+	}
+	if _, err := h.Pool.Exec(r.Context(), `UPDATE charges SET paid=$1 WHERE id=$2`, req.Paid, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update charge")
 		return
 	}
 	verb := "charge marked open"

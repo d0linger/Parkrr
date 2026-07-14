@@ -1291,6 +1291,13 @@
         };
 
         const addRow = (v) => {
+            // A brand-new row needs an active tariff; existing bound vehicles keep
+            // their own (possibly archived) one. Block a new row with no active tariff
+            // rather than rendering an empty, unsubmittable selector.
+            if (!v && !state.categories.some((c) => !c.archived)) {
+                toast('Kein aktiver Tarif – zuerst einen reaktivieren oder anlegen', 'error');
+                return;
+            }
             const cat = el('select', {}, ...state.categories.filter((c) => !c.archived || (v && c.id === v.category_id)).map((c) => el('option', { value: c.id }, c.name)));
             if (v && v.category_id) for (const o of cat.options) if (Number(o.value) === v.category_id) o.selected = true;
             const label = el('input', { type: 'text', placeholder: 'Bezeichnung', value: (v && v.label) || '' });
@@ -1715,10 +1722,23 @@
             onclick: (e) => { markActive(e.currentTarget); setChargePaid(it, true); } }, 'bezahlt'));
         return segThumb(seg);
     }
+    // Serialize rapid offen/bezahlt clicks: record the latest wanted state and,
+    // if no save is in flight, drain toward it — so a click during an in-flight
+    // request is never dropped and the server ends on the user's final choice.
     async function setChargePaid(it, paid) {
-        if (!!it.paid === paid) return;
-        try { await api.post('/charges/' + it.id + '/paid', { paid }); toast(paid ? 'Als bezahlt markiert' : 'Als offen markiert', 'success'); render(); }
-        catch (e) { toast(e.message, 'error'); render(); }
+        it._want = paid;
+        if (it._saving) return;
+        it._saving = true;
+        try {
+            while (it._want !== !!it.paid) {
+                const want = it._want;
+                await api.post('/charges/' + it.id + '/paid', { paid: want });
+                it.paid = want;
+            }
+            toast(it.paid ? 'Als bezahlt markiert' : 'Als offen markiert', 'success');
+        } catch (e) { toast(e.message, 'error'); }
+        it._saving = false;
+        render();
     }
     function delFinance(it, node) {
         deleteWithUndo('Position löschen?', 'Der Eintrag wird entfernt.',
@@ -1727,7 +1747,7 @@
 
     async function chargeForm(presetPerson) {
         if (!state.persons.length) { toast('Zuerst eine Person anlegen', 'error'); return; }
-        const svcOptions = [{ value: '', label: '— frei —' }, ...state.services.filter((s) => !s.archived).map((s) => ({ value: s.name + '|' + s.default_amount, label: `${s.name} (${eur(s.default_amount)})` }))];
+        const svcOptions = [{ value: '', label: '— frei —' }, ...state.services.filter((s) => !s.archived).map((s) => ({ value: String(s.id), label: `${s.name} (${eur(s.default_amount)})` }))];
         const initPerson = presetPerson ?? state.persons[0].id;
         // Bindable vehicles for a person: active, not archived. Free = own paid slider.
         const vehOpts = async (pid) => {
@@ -1756,29 +1776,38 @@
                 // stay editable) — otherwise the required-field validation blocks
                 // submit before the save-time fallback ever runs.
                 svc.addEventListener('change', () => {
-                    if (!svc.value) return;
-                    const [nm, a] = svc.value.split('|');
-                    desc.value = nm; amt.value = a;
+                    const s = state.services.find((x) => String(x.id) === svc.value);
+                    if (!s) return;
+                    desc.value = s.name; amt.value = s.default_amount;
                     for (const [node, errId] of [[desc, 'err_description'], [amt, 'err_amount']]) {
                         node.removeAttribute('aria-invalid');
                         const e = body.querySelector('#' + errId); if (e) e.hidden = true;
                     }
                 });
-                // Switching person reloads the bindable vehicles.
+                // Switching person reloads the bindable vehicles. A request token
+                // guards against an earlier (slower) response overwriting a newer one.
                 const per = body.querySelector('#f_person_id');
                 const veh = body.querySelector('#f_vehicle_id');
+                let vehReq = 0;
                 per.addEventListener('change', async () => {
+                    const my = ++vehReq;
+                    veh.disabled = true; veh.innerHTML = '';
+                    veh.append(el('option', { value: '' }, 'lädt …'));
                     const opts = await vehOpts(per.value);
+                    if (my !== vehReq) return; // superseded by a newer change
                     veh.innerHTML = '';
                     for (const o of opts) veh.append(el('option', { value: o.value }, o.label));
+                    veh.disabled = false;
                 });
             },
             save: async (data) => {
                 // Fallback for a catalog pick left otherwise untouched.
                 if (data.service) {
-                    const [nm, amt] = data.service.split('|');
-                    if (!data.description) data.description = nm;
-                    if (!data.amount) data.amount = amt;
+                    const s = state.services.find((x) => String(x.id) === String(data.service));
+                    if (s) {
+                        if (!data.description) data.description = s.name;
+                        if (!data.amount) data.amount = s.default_amount;
+                    }
                 }
                 await api.post('/charges', {
                     person_id: Number(data.person_id), description: data.description,
