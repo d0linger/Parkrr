@@ -229,49 +229,31 @@ type chargeRequest struct {
 	ChargedOn   string  `json:"charged_on"`
 }
 
-// chargesMonthlyByPerson returns a person's one-off charges per calendar month of
-// a year (index 0 = January), by charge date.
-func (h *Handler) chargesMonthlyByPerson(ctx context.Context, personID int64, year int) ([]float64, error) {
-	out := make([]float64, 12)
+// chargeChartData returns a person's one-off charges (by charge date) both per
+// calendar month of the given year (index 0 = January) and summed per year, in a
+// single round trip. Charges dated on or after until are excluded so future-dated
+// charges don't show up before they are due, matching the rent/recurring cutoff.
+func (h *Handler) chargeChartData(ctx context.Context, personID int64, year int, until time.Time) ([]float64, map[int]float64, error) {
+	monthly := make([]float64, 12)
+	yearly := map[int]float64{}
 	rows, err := h.Pool.Query(ctx,
-		`SELECT extract(month from charged_on)::int, COALESCE(sum(amount*quantity),0)
-		 FROM charges WHERE person_id=$1 AND extract(year from charged_on)=$2 GROUP BY 1`, personID, year)
+		`SELECT charged_on, amount*quantity FROM charges WHERE person_id=$1 AND charged_on < $2`, personID, until)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var m int
+		var chargedOn time.Time
 		var s float64
-		if err := rows.Scan(&m, &s); err != nil {
-			return nil, err
+		if err := rows.Scan(&chargedOn, &s); err != nil {
+			return nil, nil, err
 		}
-		if m >= 1 && m <= 12 {
-			out[m-1] = s
+		yearly[chargedOn.Year()] += s
+		if chargedOn.Year() == year {
+			monthly[int(chargedOn.Month())-1] += s
 		}
 	}
-	return out, rows.Err()
-}
-
-// chargesYearlyByPerson returns a person's one-off charges summed per year.
-func (h *Handler) chargesYearlyByPerson(ctx context.Context, personID int64) (map[int]float64, error) {
-	out := map[int]float64{}
-	rows, err := h.Pool.Query(ctx,
-		`SELECT extract(year from charged_on)::int, COALESCE(sum(amount*quantity),0)
-		 FROM charges WHERE person_id=$1 GROUP BY 1`, personID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var y int
-		var s float64
-		if err := rows.Scan(&y, &s); err != nil {
-			return nil, err
-		}
-		out[y] = s
-	}
-	return out, rows.Err()
+	return monthly, yearly, rows.Err()
 }
 
 // validateCharge normalizes and validates a charge request and returns the parsed

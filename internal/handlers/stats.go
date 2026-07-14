@@ -169,8 +169,9 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	resp.RecurringCharges = recurs
 
 	// Charts show total cost (rent + extra charges). Fold one-off charges (by date)
-	// and recurring accrual into the per-month and per-year figures.
-	otMonth, err := h.chargesMonthlyByPerson(r.Context(), id, year)
+	// and recurring accrual into the per-month and per-year figures. Future-dated
+	// one-off charges are excluded via until, matching rent/recurring.
+	otMonth, otYear, err := h.chargeChartData(r.Context(), id, year, until)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -188,11 +189,6 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 		if ys.Year < minYear {
 			minYear = ys.Year
 		}
-	}
-	otYear, err := h.chargesYearlyByPerson(r.Context(), id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
 	}
 	for y, c := range otYear {
 		byYear[y] += c
