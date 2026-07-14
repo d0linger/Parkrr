@@ -913,24 +913,19 @@
             page.append(det);
         }
 
-        // charges
+        // Zusatzkosten: one section for both — recurring as accruing cards on top,
+        // one-off as rows below. The "+ Position" dialog chooses the billing type.
+        const recs = stats.recurring_charges || [];
+        const chCount = charges.length + recs.length;
         const ch = el('div', { class: 'page-head section-head' },
             el('div', { class: 'sec-group' }, el('h3', { class: 'sec-eyebrow' }, 'Zusatzkosten'),
-                charges.length ? el('span', { class: 'sec-count' }, charges.length) : null));
+                chCount ? el('span', { class: 'sec-count' }, chCount) : null));
         if (canBill()) ch.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => chargeForm(id) }, '+ Position'));
         page.append(ch);
-        page.append(financeList(charges));
-
-        // recurring extra costs (Wiederkehrende Nebenkosten): accrue per period.
-        const recs = stats.recurring_charges || [];
-        if (canBill() || recs.length) {
-            const rh = el('div', { class: 'page-head section-head' },
-                el('div', { class: 'sec-group' }, el('h3', { class: 'sec-eyebrow' }, 'Wiederkehrende Nebenkosten'),
-                    recs.length ? el('span', { class: 'sec-count' }, recs.length) : null));
-            if (canBill()) rh.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => recurringForm(id) }, '+ Neu'));
-            page.append(rh);
-            if (!recs.length) page.append(el('p', { class: 'muted' }, 'Keine wiederkehrenden Nebenkosten.'));
-            else recs.forEach((rc) => page.append(recurringRow(id, rc)));
+        if (!chCount) page.append(el('p', { class: 'muted' }, 'Keine Zusatzkosten.'));
+        else {
+            recs.forEach((rc) => page.append(recurringRow(id, rc)));
+            if (charges.length) page.append(financeList(charges));
         }
 
         // statistics at the bottom, below the actionable sections
@@ -1826,6 +1821,7 @@
                 el('h3', {}, eur(it.total) + '  ', el('span', { class: 'muted', style: 'font-weight:400;font-size:.9rem' }, esc(it.description))),
                 el('div', { class: 'card-meta' }, esc(it.person_name) + ' · ' + fmtDate(it.charged_on) + (it.quantity !== 1 ? ` · ${it.quantity}×${eur(it.amount)}` : '') + (it.note ? ' · ' + esc(it.note) : ''))),
             canBill() && el('div', { class: 'card-actions' },
+                el('button', { class: 'btn btn-ghost btn-sm', title: (it.description || 'Position') + ' bearbeiten', 'aria-label': (it.description || 'Position') + ' bearbeiten', onclick: () => chargeForm(it.person_id, it) }, icon('edit')),
                 el('button', { class: 'btn btn-ghost btn-sm', title: (it.description || 'Position') + ' löschen', 'aria-label': (it.description || 'Position') + ' löschen', onclick: (e) => delFinance(it, e.currentTarget.closest('.card')) }, icon('trash')))));
         // Paid status: a bound charge follows its vehicle (read-only here); a free
         // charge gets its own offen/bezahlt slider.
@@ -1872,30 +1868,53 @@
             () => api.del('/charges/' + it.id), () => render(), node);
     }
 
-    async function chargeForm(presetPerson) {
+    async function chargeForm(presetPerson, existing) {
         if (!state.persons.length) { toast('Zuerst eine Person anlegen', 'error'); return; }
         const svcOptions = [{ value: '', label: '— frei —' }, ...state.services.filter((s) => !s.archived).map((s) => ({ value: String(s.id), label: `${s.name} (${eur(s.default_amount)})` }))];
-        const initPerson = presetPerson ?? state.persons[0].id;
-        // Bindable vehicles for a person: active, not archived. Free = own paid slider.
-        const vehOpts = async (pid) => {
+        const initPerson = existing?.person_id ?? presetPerson ?? state.persons[0].id;
+        // Bindable vehicles: active + not archived, plus the charge's own bound one
+        // (keepId) so editing a charge on an archived vehicle keeps the binding.
+        const vehOpts = async (pid, keepId) => {
             let vs = [];
             try { vs = await api.get('/vehicles?person_id=' + pid); } catch { /* ignore */ }
             return [{ value: '', label: '— frei (direkt bezahlbar) —' },
-                ...vs.filter((v) => !v.archived).map((v) => ({ value: v.id, label: vehicleTitle(v) }))];
+                ...vs.filter((v) => !v.archived || v.id === keepId).map((v) => ({ value: v.id, label: vehicleTitle(v) + (v.archived ? ' · archiviert' : '') }))];
         };
-        const initVehOpts = await vehOpts(initPerson);
+        const initVehOpts = await vehOpts(initPerson, existing?.vehicle_id);
         await formModal({
-            title: 'Zusatzkosten hinzufügen',
+            title: existing ? 'Zusatzkosten bearbeiten' : 'Neue Zusatzkosten',
             fields: [
                 { name: 'person_id', label: 'Person', type: 'select', required: true, value: initPerson, options: state.persons.map((p) => ({ value: p.id, label: personName(p) })) },
+                { name: 'billing', label: 'Abrechnung', type: 'select', value: 'once', options: [{ value: 'once', label: 'einmalig' }, { value: 'monthly', label: 'monatlich' }, { value: 'yearly', label: 'jährlich' }] },
                 { name: 'service', label: 'Aus Katalog', type: 'select', value: '', options: svcOptions, help: 'Optional – füllt Bezeichnung & Betrag vor.' },
-                { name: 'description', label: 'Bezeichnung', required: true, value: '' },
-                { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', required: true, value: '' },
-                { name: 'quantity', label: 'Menge', type: 'number', step: '0.5', value: '1' },
-                { name: 'vehicle_id', label: 'Zuordnung (optional)', type: 'select', value: '', options: initVehOpts, help: 'An ein Gefährt binden → Bezahlt läuft über das Gefährt. Sonst frei markierbar.' },
-                { name: 'charged_on', label: 'Datum', type: 'date', value: today() },
+                { name: 'description', label: 'Bezeichnung', required: true, value: existing?.description ?? '' },
+                { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', required: true, value: existing?.amount ?? '' },
+                { name: 'quantity', label: 'Menge', type: 'number', step: '0.5', value: existing?.quantity ?? '1' },
+                { name: 'charged_on', label: 'Datum', type: 'date', value: existing?.charged_on ? existing.charged_on.slice(0, 10) : today() },
+                { name: 'start_date', label: 'Gültig ab', type: 'date', value: today() },
+                { name: 'end_date', label: 'Gültig bis (optional)', type: 'date', value: '', help: 'Leer = laufend. Läuft je Zeitraum auf und ist je Zeitraum bezahlbar.' },
+                { name: 'vehicle_id', label: 'Zuordnung (optional)', type: 'select', value: existing?.vehicle_id ?? '', options: initVehOpts, help: 'An ein Gefährt binden → Bezahlt läuft über das Gefährt. Sonst frei markierbar.' },
             ],
             onRender: (body) => {
+                // Billing mode toggles which fields apply: once → Menge/Datum/Zuordnung;
+                // monthly/yearly → Gültig ab/bis (recurring, accrues per period).
+                const setShown = (name, show) => {
+                    const lbl = body.querySelector('label[for="f_' + name + '"]');
+                    const inp = body.querySelector('#f_' + name);
+                    const help = body.querySelector('#help_' + name);
+                    const wrap = inp ? (inp.closest('.input-affix') || inp) : null;
+                    for (const n of [lbl, wrap, help]) if (n) n.style.display = show ? '' : 'none';
+                };
+                const applyMode = (mode) => {
+                    const once = mode === 'once';
+                    setShown('quantity', once); setShown('charged_on', once); setShown('vehicle_id', once);
+                    setShown('start_date', !once); setShown('end_date', !once);
+                };
+                const billing = body.querySelector('#f_billing');
+                billing.addEventListener('change', () => applyMode(billing.value));
+                if (existing) { billing.value = 'once'; setShown('billing', false); } // editing a one-off: type fixed
+                applyMode(billing.value);
+
                 const svc = body.querySelector('#f_service');
                 const desc = body.querySelector('#f_description');
                 const amt = body.querySelector('#f_amount');
@@ -1920,7 +1939,9 @@
                     const my = ++vehReq;
                     veh.disabled = true; veh.innerHTML = '';
                     veh.append(el('option', { value: '' }, 'lädt …'));
-                    const opts = await vehOpts(per.value);
+                    // Back on the charge's original person, keep its (maybe archived) bound vehicle.
+                    const keepId = String(per.value) === String(existing?.person_id) ? existing?.vehicle_id : null;
+                    const opts = await vehOpts(per.value, keepId);
                     if (my !== vehReq) return; // superseded by a newer change
                     veh.innerHTML = '';
                     for (const o of opts) veh.append(el('option', { value: o.value }, o.label));
@@ -1936,13 +1957,24 @@
                         if (!data.amount) data.amount = s.default_amount;
                     }
                 }
-                await api.post('/charges', {
-                    person_id: Number(data.person_id), description: data.description,
-                    amount: Number(data.amount), quantity: Number(data.quantity) || 1,
-                    charged_on: data.charged_on,
-                    vehicle_id: data.vehicle_id ? Number(data.vehicle_id) : null,
-                });
-                toast('Position gespeichert', 'success'); render();
+                const personID = Number(data.person_id);
+                if (existing || data.billing === 'once') {
+                    // One-off charge: same payload whether creating or editing.
+                    const payload = {
+                        person_id: personID, description: data.description, amount: Number(data.amount),
+                        quantity: Number(data.quantity) || 1, charged_on: data.charged_on,
+                        vehicle_id: data.vehicle_id ? Number(data.vehicle_id) : null,
+                    };
+                    if (existing) await api.put('/charges/' + existing.id, payload);
+                    else await api.post('/charges', payload);
+                } else {
+                    // Recurring: monthly/yearly, accrues per period on the person.
+                    await api.post('/persons/' + personID + '/recurring', {
+                        description: data.description, amount: Number(data.amount), period: data.billing,
+                        start_date: data.start_date, end_date: data.end_date === '' ? null : data.end_date,
+                    });
+                }
+                toast('Zusatzkosten gespeichert', 'success'); render();
             },
         });
     }
