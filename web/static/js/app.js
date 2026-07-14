@@ -921,6 +921,18 @@
         page.append(ch);
         page.append(financeList(charges));
 
+        // recurring extra costs (Wiederkehrende Nebenkosten): accrue per period.
+        const recs = stats.recurring_charges || [];
+        if (canBill() || recs.length) {
+            const rh = el('div', { class: 'page-head section-head' },
+                el('div', { class: 'sec-group' }, el('h3', { class: 'sec-eyebrow' }, 'Wiederkehrende Nebenkosten'),
+                    recs.length ? el('span', { class: 'sec-count' }, recs.length) : null));
+            if (canBill()) rh.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => recurringForm(id) }, '+ Neu'));
+            page.append(rh);
+            if (!recs.length) page.append(el('p', { class: 'muted' }, 'Keine wiederkehrenden Nebenkosten.'));
+            else recs.forEach((rc) => page.append(recurringRow(id, rc)));
+        }
+
         // statistics at the bottom, below the actionable sections
         const chartCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Aufgelaufene Miete pro Monat · ' + stats.year));
         chartCard.append(chartBars(stats.monthly_accrued, MONTHS));
@@ -1227,6 +1239,118 @@
         seg.append(el('button', { class: (!a.paid ? 'active open' : ''), type: 'button', role: 'radio', 'aria-checked': String(!a.paid), onclick: (e) => setPaid(false, e) }, 'offen'));
         seg.append(el('button', { class: (a.paid ? 'active done' : ''), type: 'button', role: 'radio', 'aria-checked': String(a.paid), onclick: (e) => setPaid(true, e) }, 'bezahlt'));
         return segThumb(seg);
+    }
+
+    // ---- Recurring extra costs (Wiederkehrende Nebenkosten) ----
+    // A recurring charge shares the Pauschale's period/paid shape, so it reuses the
+    // generic period helpers (agreementPeriods / periodFixed / periodPaid / dialog).
+    function recurringRow(personId, rc) {
+        const unit = rc.period === 'yearly' ? '/Jahr' : '/Monat';
+        const partial = !rc.paid && (((rc.paid_periods && rc.paid_periods.length)) || (rc.paid_fixed && Object.keys(rc.paid_fixed).length));
+        const stLabel = rc.paid ? 'Bezahlt' : partial ? 'Teilweise bezahlt' : 'Offen';
+        const stCls = rc.paid ? 'badge-active' : partial ? 'badge-cat' : 'badge-ended';
+        const config = eur(rc.amount) + unit + ' · ' + fmtDate(rc.start_date) + (rc.end_date ? ' – ' + fmtDate(rc.end_date) : ' – offen');
+        const row = el('div', { class: 'card', style: 'margin-top:.5rem' });
+        row.append(el('div', { class: 'card-row' },
+            el('div', { style: 'flex:1' },
+                el('div', { class: 'ag-status-row' }, el('span', { class: 'badge ' + stCls }, stLabel)),
+                el('div', {}, el('strong', {}, esc(rc.description))),
+                el('div', { class: 'ag-accrued' + (rc.paid ? '' : ' is-open') }, eur(rc.accrued), el('span', { class: 'unit' }, ' aufgelaufen')),
+                el('div', { class: 'card-meta' }, config)),
+            canBill() ? el('div', { class: 'card-actions' },
+                el('button', { class: 'btn btn-ghost btn-sm', title: rc.description + ' bearbeiten', 'aria-label': rc.description + ' bearbeiten', onclick: () => recurringForm(personId, rc) }, icon('edit')),
+                el('button', { class: 'btn btn-ghost btn-sm', title: rc.description + ' löschen', 'aria-label': rc.description + ' löschen', onclick: (e) => delRecurring(rc, e.currentTarget.closest('.card')) }, icon('trash'))) : null));
+        if (canBill()) row.append(recurringPayments(rc));
+        return row;
+    }
+    function recurringPayments(rc) {
+        const wrap = el('div', {});
+        wrap.append(el('div', { class: 'controls-row' },
+            el('span', { class: 'muted', style: 'font-size:.85rem' }, 'Alle Zeiträume'), recurringPaidSlider(rc)));
+        const periods = agreementPeriods(rc);
+        const curKey = rc.period === 'yearly' ? today().slice(0, 4) : today().slice(0, 7);
+        if (periods.length) {
+            const det = persistDetails('rec-pay-' + rc.id, 'period-payments', 'Zahlung je Zeitraum (' + periods.length + ')', false);
+            const box = el('div', { class: 'period-list' });
+            for (const p of periods) {
+                const amt = rc.period_costs ? rc.period_costs[p.key] : null;
+                const running = p.key === curKey;
+                const fx = periodFixed(rc, p.key);
+                box.append(el('div', { class: 'period-row' },
+                    el('span', { class: 'period-label' }, p.label,
+                        amt != null ? el('span', { class: 'period-amt' }, ' · ' + eur(amt)) : null,
+                        running ? el('span', { class: 'period-amt', title: '„bezahlt": ganze Periode im Voraus – oder Teilbetrag wählen' }, ' · läuft') : null,
+                        fx != null ? el('span', { class: 'period-amt', title: 'Teilbetrag bezahlt – Rest offen' }, ' · Teil ' + eur(fx)) : null),
+                    recurringPeriodSlider(rc, p.key, running, amt)));
+            }
+            det.append(box);
+            wrap.append(det);
+        }
+        return wrap;
+    }
+    function recurringPaidSlider(rc) {
+        const seg = el('div', { class: 'seg-mini pay', role: 'radiogroup', 'aria-label': 'Zahlstatus wiederkehrende Kosten' });
+        const setPaid = async (val, e) => {
+            markActive(e.currentTarget);
+            try { await api.post('/recurring/' + rc.id + '/paid', { paid: val }); toast(val ? 'bezahlt' : 'offen', 'success'); render(); }
+            catch (err) { toast(err.message, 'error'); render(); }
+        };
+        seg.append(el('button', { class: (!rc.paid ? 'active open' : ''), type: 'button', role: 'radio', 'aria-checked': String(!rc.paid), onclick: (e) => setPaid(false, e) }, 'offen'));
+        seg.append(el('button', { class: (rc.paid ? 'active done' : ''), type: 'button', role: 'radio', 'aria-checked': String(rc.paid), onclick: (e) => setPaid(true, e) }, 'bezahlt'));
+        return segThumb(seg);
+    }
+    function recurringPeriodSlider(rc, key, running, defAmt) {
+        const paid = periodPaid(rc, key);
+        const seg = el('div', { class: 'seg-mini pay', role: 'radiogroup', 'aria-label': 'Zahlstatus ' + key });
+        const post = async (val, amount) => {
+            try {
+                const body = { period_key: key, paid: val };
+                if (val && amount != null) body.amount = amount;
+                await api.post('/recurring/' + rc.id + '/period-paid', body);
+                toast(val ? 'bezahlt' : 'offen', 'success'); render();
+            } catch (err) { toast(err.message, 'error'); render(); }
+        };
+        const onPaid = async (e) => {
+            markActive(e.currentTarget);
+            const fixed = periodFixed(rc, key);
+            if (running || fixed != null) {
+                const current = fixed != null ? { mode: 'partial', amount: fixed } : (paid ? { mode: 'full' } : null);
+                const choice = await periodPayDialog(key, defAmt, current);
+                if (!choice) { render(); return; }
+                await post(true, choice.amount);
+                return;
+            }
+            await post(true, null);
+        };
+        seg.append(el('button', { class: !paid ? 'active open' : '', type: 'button', role: 'radio', 'aria-checked': String(!paid), onclick: (e) => { markActive(e.currentTarget); post(false, null); } }, 'offen'));
+        seg.append(el('button', { class: paid ? 'active done' : '', type: 'button', role: 'radio', 'aria-checked': String(paid), onclick: onPaid }, 'bezahlt'));
+        return segThumb(seg);
+    }
+    async function recurringForm(personId, existing) {
+        await formModal({
+            title: existing ? 'Wiederkehrende Kosten bearbeiten' : 'Neue wiederkehrende Kosten',
+            submitLabel: 'Speichern',
+            fields: [
+                { name: 'description', label: 'Bezeichnung', required: true, value: existing?.description },
+                { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', min: 0, required: true, value: existing?.amount ?? '' },
+                { name: 'period', label: 'Abrechnung', type: 'select', value: existing?.period || 'monthly', options: [{ value: 'monthly', label: 'monatlich' }, { value: 'yearly', label: 'jährlich' }] },
+                { name: 'start_date', label: 'Gültig ab', type: 'date', required: true, value: existing?.start_date ? existing.start_date.slice(0, 10) : today() },
+                { name: 'end_date', label: 'Gültig bis (optional)', type: 'date', value: existing?.end_date ? existing.end_date.slice(0, 10) : '', help: 'Leer = laufend. Läuft je Zeitraum auf und ist je Zeitraum bezahlbar.' },
+            ],
+            save: async (data) => {
+                const payload = {
+                    description: data.description, amount: Number(data.amount), period: data.period,
+                    start_date: data.start_date, end_date: data.end_date === '' ? null : data.end_date,
+                };
+                if (existing) await api.put('/recurring/' + existing.id, payload);
+                else await api.post('/persons/' + personId + '/recurring', payload);
+                toast('Wiederkehrende Kosten gespeichert', 'success'); render();
+            },
+        });
+    }
+    function delRecurring(rc, node) {
+        deleteWithUndo('Wiederkehrende Kosten löschen?', `„${rc.description}“ wird entfernt.`,
+            () => api.del('/recurring/' + rc.id), () => render(), node);
     }
     async function delAgreement(a) {
         const count = (a.vehicle_ids || []).length;
