@@ -1709,8 +1709,25 @@
                 { name: 'quantity', label: 'Menge', type: 'number', step: '0.5', value: '1' },
                 { name: 'charged_on', label: 'Datum', type: 'date', value: today() },
             ],
+            // Picking a catalog entry fills Bezeichnung + Betrag right away (both stay
+            // editable) — otherwise the required-field validation blocks submit before
+            // the save-time fallback below ever runs.
+            onRender: (body) => {
+                const svc = body.querySelector('#f_service');
+                const desc = body.querySelector('#f_description');
+                const amt = body.querySelector('#f_amount');
+                svc.addEventListener('change', () => {
+                    if (!svc.value) return;
+                    const [nm, a] = svc.value.split('|');
+                    desc.value = nm; amt.value = a;
+                    for (const [node, errId] of [[desc, 'err_description'], [amt, 'err_amount']]) {
+                        node.removeAttribute('aria-invalid');
+                        const e = body.querySelector('#' + errId); if (e) e.hidden = true;
+                    }
+                });
+            },
             save: async (data) => {
-                // catalog pre-fill applied client-side if user picked one but left fields empty
+                // Fallback for a catalog pick left otherwise untouched.
                 if (data.service) {
                     const [nm, amt] = data.service.split('|');
                     if (!data.description) data.description = nm;
