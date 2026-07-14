@@ -57,6 +57,10 @@
         key: '<circle cx="7.6" cy="15.4" r="4"/><path d="M10.4 12.6 20 3M16.5 6.5l2.5 2.5M14 9l2 2"/>',
         power: '<path d="M12 4v8"/><path d="M7.4 6.8a7 7 0 1 0 9.2 0"/>',
         chevron: '<path d="M9 6l6 6-6 6"/>',
+        tag: '<path d="M12.6 3.6 20.4 11.4a2 2 0 0 1 0 2.8l-6.2 6.2a2 2 0 0 1-2.8 0L3.6 12.6V5.6a2 2 0 0 1 2-2h7Z"/><circle cx="8.3" cy="8.3" r="1.3"/>',
+        receipt: '<path d="M6 3h12v18l-2.2-1.3-2 1.3-2-1.3-2 1.3-2-1.3L6 21V3Z"/><path d="M9.2 8.5h5.6M9.2 12h5.6"/>',
+        check: '<path d="M20 6 9 17l-5-5"/>',
+        plus: '<path d="M12 5v14M5 12h14"/>',
     };
     const icon = (name, size = 16) => {
         const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -1722,77 +1726,173 @@
     let tariffTab = 'categories';
     routes.tariffs = async (page) => {
         await refreshLookups();
+        const isCat = tariffTab === 'categories';
+        const manage = canManage();
         page.innerHTML = '';
         page.append(el('div', { class: 'page-head' }, el('h2', {}, 'Tarife & Dienste')));
-        const seg = el('div', { class: 'segments' },
-            el('button', { class: tariffTab === 'categories' ? 'active' : '', onclick: () => { tariffTab = 'categories'; render(); } }, 'Tarife'),
-            el('button', { class: tariffTab === 'services' ? 'active' : '', onclick: () => { tariffTab = 'services'; render(); } }, 'Dienste'));
-        page.append(seg);
+        page.append(el('div', { class: 'segments' },
+            el('button', { class: isCat ? 'active' : '', onclick: () => { tariffTab = 'categories'; render(); } }, 'Tarife'),
+            el('button', { class: !isCat ? 'active' : '', onclick: () => { tariffTab = 'services'; render(); } }, 'Dienste')));
+        page.append(el('p', { class: 'muted', style: 'margin:.2rem 0 .7rem' },
+            isCat ? 'Zentrale Gefährt-Typen mit Standardpreisen (beim Gefährt überschreibbar).'
+                : 'Katalog für Zusatzleistungen (Strom, Reinigung …).'));
 
-        if (tariffTab === 'categories') {
-            if (canManage()) page.append(el('div', { style: 'text-align:right;margin-bottom:.5rem' }, el('button', { class: 'btn btn-primary btn-sm', onclick: () => categoryForm() }, '+ Tarif')));
-            page.append(el('p', { class: 'muted', style: 'margin-top:-.3rem' }, 'Zentrale Gefährt-Typen mit Standardpreisen (beim Gefährt überschreibbar).'));
-            for (const c of state.categories) {
-                page.append(el('div', { class: 'card' }, el('div', { class: 'card-row' },
-                    el('div', {}, el('h3', {}, esc(c.name), ' ', c.rates_synced ? el('span', { class: 'badge badge-cat', title: 'Jahr = Monat × 12' }, '×12') : null), el('div', { class: 'card-meta' }, `${eur(c.default_monthly_cost)} / Monat · ${eur(c.default_yearly_cost)} / Jahr`)),
-                    canManage() && el('div', { class: 'card-actions' },
-                        el('button', { class: 'btn btn-ghost btn-sm', title: c.name + ' bearbeiten', 'aria-label': c.name + ' bearbeiten', onclick: () => categoryForm(c) }, icon('edit')),
-                        el('button', { class: 'btn btn-ghost btn-sm', title: c.name + ' löschen', 'aria-label': c.name + ' löschen', onclick: (e) => delCategory(c, e.currentTarget.closest('.card')) }, icon('trash'))))));
-            }
-        } else {
-            if (canManage()) page.append(el('div', { style: 'text-align:right;margin-bottom:.5rem' }, el('button', { class: 'btn btn-primary btn-sm', onclick: () => serviceForm() }, '+ Dienst')));
-            page.append(el('p', { class: 'muted', style: 'margin-top:-.3rem' }, 'Katalog für Zusatzleistungen (Strom, Reinigung …).'));
-            for (const s of state.services) {
-                page.append(el('div', { class: 'card' }, el('div', { class: 'card-row' },
-                    el('div', {}, el('h3', {}, esc(s.name)), el('div', { class: 'card-meta' }, eur(s.default_amount))),
-                    canManage() && el('div', { class: 'card-actions' },
-                        el('button', { class: 'btn btn-ghost btn-sm', title: s.name + ' bearbeiten', 'aria-label': s.name + ' bearbeiten', onclick: () => serviceForm(s) }, icon('edit')),
-                        el('button', { class: 'btn btn-ghost btn-sm', title: s.name + ' löschen', 'aria-label': s.name + ' löschen', onclick: (e) => delService(s, e.currentTarget.closest('.card')) }, icon('trash'))))));
-            }
+        const list = el('div', {});
+        // "+ Neu" opens a blank, already-expanded inline card at the top.
+        if (manage) {
+            const addBtn = el('button', { class: 'btn btn-ghost btn-block', style: 'margin-bottom:.6rem' },
+                icon('plus', 15), isCat ? ' Neuer Tarif' : ' Neuer Dienst');
+            addBtn.addEventListener('click', () => {
+                // Keep at most one unsaved blank card, and clear the empty-state so
+                // the new card doesn't sit next to "Noch keine …".
+                const stale = list.querySelector('[data-new-card]'); if (stale) stale.remove();
+                const empty = list.querySelector('.empty'); if (empty) empty.remove();
+                cfgCloseAll(list);
+                list.prepend(isCat ? categoryCard(null, true) : serviceCard(null, true));
+            });
+            page.append(addBtn);
         }
+        const items = isCat ? state.categories : state.services;
+        if (!items.length) list.append(emptyState(isCat ? 'tag' : 'receipt', isCat ? 'Noch keine Tarife.' : 'Noch keine Dienste.'));
+        else if (isCat) items.forEach((c) => list.append(manage ? categoryCard(c) : cfgReadonly('tag', esc(c.name),
+            `${eur(c.default_monthly_cost)} / Monat · ${eur(c.default_yearly_cost)} / Jahr`,
+            c.rates_synced ? el('span', { class: 'badge badge-cat', title: 'Jahr = Monat × 12' }, '×12') : null)));
+        else items.forEach((s) => list.append(manage ? serviceCard(s) : cfgReadonly('receipt', esc(s.name), null,
+            el('span', { class: 'cfg-right' }, eur(s.default_amount)))));
+        page.append(list);
     };
-    async function categoryForm(existing) {
-        await formModal({
-            title: existing ? 'Tarif bearbeiten' : 'Neuer Tarif',
-            fields: [
-                { name: 'name', label: 'Name', required: true, value: existing?.name },
-                { name: 'rates_synced', label: 'Monats-/Jahrespreis koppeln (Jahr = Monat × 12)', type: 'checkbox', value: existing?.rates_synced },
-                { name: 'default_monthly_cost', label: 'Preis / Monat (€)', type: 'number', step: '0.01', min: 0, value: existing?.default_monthly_cost ?? 0 },
-                { name: 'default_yearly_cost', label: 'Preis / Jahr (€)', type: 'number', step: '0.01', min: 0, value: existing?.default_yearly_cost ?? 0 },
-            ],
-            // When "koppeln" is checked, editing one price auto-fills the other.
-            onRender: (body) => {
-                const sync = body.querySelector('#f_rates_synced');
-                const m = body.querySelector('#f_default_monthly_cost');
-                const y = body.querySelector('#f_default_yearly_cost');
-                const r2 = (n) => Math.round(n * 100) / 100;
-                const fromMonthly = () => { if (sync.checked) y.value = r2((parseFloat(m.value) || 0) * 12); };
-                const fromYearly = () => { if (sync.checked) m.value = r2((parseFloat(y.value) || 0) / 12); };
-                m.addEventListener('input', fromMonthly);
-                y.addEventListener('input', fromYearly);
-                sync.addEventListener('change', fromMonthly);
-            },
-            save: async (data) => {
-                const payload = { name: data.name, default_monthly_cost: Number(data.default_monthly_cost), default_yearly_cost: Number(data.default_yearly_cost), rates_synced: data.rates_synced };
-                existing ? await api.put('/categories/' + existing.id, payload) : await api.post('/categories', payload);
-                toast('Tarif gespeichert', 'success'); render();
-            },
+    // Read-only config row (readers): no toggle, no edit.
+    function cfgReadonly(iconName, title, sub, right) {
+        return el('div', { class: 'card cfg-card' }, el('div', { class: 'cfg-head' },
+            el('span', { class: 'cfg-ic' }, icon(iconName, 18)),
+            el('span', { class: 'cfg-main' }, el('span', { class: 'cfg-title' }, title),
+                sub ? el('span', { class: 'cfg-sub' }, sub) : null),
+            right || null));
+    }
+    // Single-open accordion: collapse every open config card in a list.
+    function cfgCloseAll(list) {
+        for (const h of list.querySelectorAll('.cfg-head[aria-expanded="true"]')) {
+            h.setAttribute('aria-expanded', 'false');
+            const p = h.parentElement.querySelector('.tf-panel');
+            if (p) { p.classList.remove('open'); p.inert = true; }
+        }
+    }
+    // Discard an unsaved draft card; if it was the last card, restore the
+    // empty-state (never duplicating it while persisted cards remain).
+    function cfgDiscardDraft(card, iconName, text) {
+        const list = card.parentElement;
+        card.remove();
+        if (list && !list.querySelector('.cfg-card') && !list.querySelector('.empty')) {
+            list.append(emptyState(iconName, text));
+        }
+    }
+    // Wire a config card's header/panel: collapsed panel is inert; opening one
+    // collapses its siblings (single-open); optionally opens immediately.
+    function cfgDisclosure(card, head, panel, openNow) {
+        panel.inert = !openNow;
+        if (openNow) { head.setAttribute('aria-expanded', 'true'); panel.classList.add('open'); }
+        head.addEventListener('click', () => {
+            const open = head.getAttribute('aria-expanded') === 'true';
+            if (!open) cfgCloseAll(card.parentElement);
+            head.setAttribute('aria-expanded', String(!open));
+            panel.classList.toggle('open', !open);
+            panel.inert = open;
         });
     }
-    function delCategory(c, node) { deleteWithUndo('Tarif löschen?', `„${c.name}“ wird gelöscht.`, () => api.del('/categories/' + c.id), () => render(), node); }
-    async function serviceForm(existing) {
-        await formModal({
-            title: existing ? 'Dienst bearbeiten' : 'Neuer Dienst',
-            fields: [
-                { name: 'name', label: 'Name', required: true, value: existing?.name },
-                { name: 'default_amount', label: 'Standardpreis (€)', type: 'number', step: '0.01', min: 0, value: existing?.default_amount ?? 0 },
-            ],
-            save: async (data) => {
-                const payload = { name: data.name, default_amount: Number(data.default_amount) };
-                existing ? await api.put('/services/' + existing.id, payload) : await api.post('/services', payload);
-                toast('Dienst gespeichert', 'success'); render();
-            },
+    function categoryCard(c, openNow = false) {
+        const pid = 'cat-panel-' + (c ? c.id : 'new');
+        const head = el('button', { type: 'button', class: 'cfg-head tf-toggle', 'aria-expanded': 'false', 'aria-controls': pid },
+            el('span', { class: 'cfg-ic' }, icon('tag', 18)),
+            el('span', { class: 'cfg-main' },
+                el('span', { class: 'cfg-title' }, c ? esc(c.name) : 'Neuer Tarif'),
+                el('span', { class: 'cfg-sub' }, c ? `${eur(c.default_monthly_cost)}/M · ${eur(c.default_yearly_cost)}/J` : 'noch nicht gespeichert')),
+            c && c.rates_synced ? el('span', { class: 'badge badge-cat', title: 'Jahr = Monat × 12' }, '×12') : null,
+            el('span', { class: 'tf-chev', 'aria-hidden': 'true' }, icon('chevron', 18)));
+
+        const nameCatId = 'catname-' + (c ? c.id : 'new');
+        const nameI = el('input', { type: 'text', id: nameCatId, value: c ? c.name : '' });
+        const syncI = el('input', { type: 'checkbox' }); if (c && c.rates_synced) syncI.checked = true;
+        const monI = el('input', { type: 'number', step: '0.01', min: 0, value: c ? c.default_monthly_cost : 0 });
+        const yearI = el('input', { type: 'number', step: '0.01', min: 0, value: c ? c.default_yearly_cost : 0 });
+        const r2 = (n) => Math.round(n * 100) / 100;
+        // "koppeln" on: editing one price auto-fills the other (Jahr = Monat × 12).
+        monI.addEventListener('input', () => { if (syncI.checked) yearI.value = r2((parseFloat(monI.value) || 0) * 12); });
+        yearI.addEventListener('input', () => { if (syncI.checked) monI.value = r2((parseFloat(yearI.value) || 0) / 12); });
+        syncI.addEventListener('change', () => { if (syncI.checked) yearI.value = r2((parseFloat(monI.value) || 0) * 12); });
+        const syncId = 'cat-sync-' + (c ? c.id : 'new');
+        syncI.id = syncId;
+
+        const saveBtn = el('button', { class: 'btn btn-primary' }, icon('check', 15), ' Speichern');
+        saveBtn.addEventListener('click', async () => {
+            const name = nameI.value.trim();
+            if (!name) { toast('Name ist erforderlich', 'error'); nameI.focus(); return; }
+            saveBtn.disabled = true;
+            const payload = { name, default_monthly_cost: Number(monI.value) || 0, default_yearly_cost: Number(yearI.value) || 0, rates_synced: syncI.checked };
+            try {
+                if (c) await api.put('/categories/' + c.id, payload); else await api.post('/categories', payload);
+                toast('Tarif gespeichert', 'success'); render();
+            } catch (e) { toast(e.message, 'error'); saveBtn.disabled = false; }
         });
+
+        const saveRow = el('div', { class: 'cfg-save' }, saveBtn);
+        const inner = el('div', { class: 'cfg-panel-in' },
+            el('label', { for: nameCatId }, 'Name'), nameI,
+            el('label', { class: 'switch', for: syncId }, syncI, el('span', { class: 'track' }), el('span', {}, 'Monats-/Jahrespreis koppeln (Jahr = Monat × 12)')),
+            el('div', { class: 'field-row', style: 'margin-top:.5rem' },
+                el('div', {}, el('label', {}, 'Preis / Monat (€)'), monI),
+                el('div', {}, el('label', {}, 'Preis / Jahr (€)'), yearI)),
+            saveRow);
+        if (c) {
+            inner.append(el('div', { class: 'tf-danger-label' }, icon('alert', 13), 'Gefahrenzone'));
+            inner.append(el('div', { class: 'u-dz-actions' },
+                el('button', { class: 'btn btn-danger btn-sm', onclick: (e) => delCategory(c, e.currentTarget.closest('.card')) }, icon('trash', 15), ' Tarif löschen')));
+        }
+        const panel = el('div', { class: 'tf-panel', id: pid }, inner);
+        const card = el('div', { class: 'card cfg-card' }, head, panel);
+        // Unsaved blank card: mark it (single-instance) and let it be discarded.
+        if (!c) { card.setAttribute('data-new-card', ''); saveRow.append(el('button', { type: 'button', class: 'btn btn-ghost', onclick: () => cfgDiscardDraft(card, 'tag', 'Noch keine Tarife.') }, 'Abbrechen')); }
+        cfgDisclosure(card, head, panel, openNow);
+        if (openNow) setTimeout(() => nameI.focus(), 50);
+        return card;
+    }
+    function delCategory(c, node) { deleteWithUndo('Tarif löschen?', `„${c.name}“ wird gelöscht.`, () => api.del('/categories/' + c.id), () => render(), node); }
+    function serviceCard(s, openNow = false) {
+        const pid = 'svc-panel-' + (s ? s.id : 'new');
+        const head = el('button', { type: 'button', class: 'cfg-head tf-toggle', 'aria-expanded': 'false', 'aria-controls': pid },
+            el('span', { class: 'cfg-ic' }, icon('receipt', 18)),
+            el('span', { class: 'cfg-main' }, el('span', { class: 'cfg-title' }, s ? esc(s.name) : 'Neuer Dienst')),
+            el('span', { class: 'cfg-right' }, s ? eur(s.default_amount) : ''),
+            el('span', { class: 'tf-chev', 'aria-hidden': 'true' }, icon('chevron', 18)));
+        const nameI = el('input', { type: 'text', id: 'svcname-' + (s ? s.id : 'new'), value: s ? s.name : '' });
+        const amtI = el('input', { type: 'number', step: '0.01', min: 0, value: s ? s.default_amount : 0 });
+        const saveBtn = el('button', { class: 'btn btn-primary' }, icon('check', 15), ' Speichern');
+        saveBtn.addEventListener('click', async () => {
+            const name = nameI.value.trim();
+            if (!name) { toast('Name ist erforderlich', 'error'); nameI.focus(); return; }
+            saveBtn.disabled = true;
+            const payload = { name, default_amount: Number(amtI.value) || 0 };
+            try {
+                if (s) await api.put('/services/' + s.id, payload); else await api.post('/services', payload);
+                toast('Dienst gespeichert', 'success'); render();
+            } catch (e) { toast(e.message, 'error'); saveBtn.disabled = false; }
+        });
+        const saveRow = el('div', { class: 'cfg-save' }, saveBtn);
+        const inner = el('div', { class: 'cfg-panel-in' },
+            el('label', { for: nameI.id }, 'Name'), nameI,
+            el('label', {}, 'Standardpreis (€)'), amtI,
+            saveRow);
+        if (s) {
+            inner.append(el('div', { class: 'tf-danger-label' }, icon('alert', 13), 'Gefahrenzone'));
+            inner.append(el('div', { class: 'u-dz-actions' },
+                el('button', { class: 'btn btn-danger btn-sm', onclick: (e) => delService(s, e.currentTarget.closest('.card')) }, icon('trash', 15), ' Dienst löschen')));
+        }
+        const panel = el('div', { class: 'tf-panel', id: pid }, inner);
+        const card = el('div', { class: 'card cfg-card' }, head, panel);
+        // Unsaved blank card: mark it (single-instance) and let it be discarded.
+        if (!s) { card.setAttribute('data-new-card', ''); saveRow.append(el('button', { type: 'button', class: 'btn btn-ghost', onclick: () => cfgDiscardDraft(card, 'receipt', 'Noch keine Dienste.') }, 'Abbrechen')); }
+        cfgDisclosure(card, head, panel, openNow);
+        if (openNow) setTimeout(() => nameI.focus(), 50);
+        return card;
     }
     function delService(s, node) { deleteWithUndo('Dienst löschen?', `„${s.name}“ wird gelöscht.`, () => api.del('/services/' + s.id), () => render(), node); }
 
