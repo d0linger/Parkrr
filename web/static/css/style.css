@@ -257,7 +257,7 @@ textarea { resize: vertical; min-height: 72px; }
     font-weight: 800; font-size: 0.95rem; text-transform: uppercase;
 }
 .u-namewrap { flex: 1; min-width: 0; }
-.u-name { margin: 0; font-size: 1rem; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.u-name { margin: 0; font-size: 1rem; font-weight: 650; letter-spacing: -0.01em; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
 .u-sub { font-size: 0.78rem; color: var(--text-muted); margin-top: 0.1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .u-panel-inner { padding-top: 0.9rem; }
 .u-pw-label { margin-top: 0; }

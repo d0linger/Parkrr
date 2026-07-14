@@ -1818,7 +1818,9 @@
         const head = el('button', { type: 'button', class: 'u-head tf-toggle', 'aria-expanded': 'false', 'aria-controls': pid },
             el('span', { class: 'u-avatar', 'aria-hidden': 'true' }, initial),
             el('span', { class: 'u-namewrap' },
-                el('h3', { class: 'u-name' }, esc(u.username), ' ',
+                // A <span> (not a heading): interactive <button> content may only be
+                // phrasing content, so a heading here would be invalid HTML.
+                el('span', { class: 'u-name' }, esc(u.username), ' ',
                     el('span', { class: 'badge badge-role' }, ROLE_LABEL[u.role] || u.role),
                     u.totp_enabled ? el('span', { class: 'badge badge-stored badge-ic', title: '2FA aktiv', 'aria-label': '2FA aktiv' }, icon('shield', 12), '2FA') : null),
                 el('span', { class: 'u-sub' }, esc(u.email) || 'keine E-Mail')),
