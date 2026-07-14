@@ -181,6 +181,9 @@ func (h *Handler) parseVehicleRequest(r *http.Request) (*parsedVehicle, error) {
 	if !models.ValidStatuses[req.Status] {
 		return nil, errors.New("invalid status")
 	}
+	if !validNameLength(req.Label) || !validNameLength(req.LicensePlate) || !validNoteLength(req.Notes) {
+		return nil, errors.New("input length limit exceeded")
+	}
 	if req.PersonID <= 0 || req.CategoryID <= 0 {
 		return nil, errors.New("person_id and category_id are required")
 	}

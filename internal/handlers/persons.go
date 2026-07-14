@@ -79,6 +79,15 @@ func (req *personRequest) normalize() {
 	req.Notes = trim(req.Notes)
 }
 
+func (req *personRequest) validate() bool {
+	return validNameLength(req.FirstName) &&
+		validNameLength(req.LastName) &&
+		validEmailLength(req.Email) &&
+		validPhoneLength(req.Phone) &&
+		validAddressLength(req.Address) &&
+		validNoteLength(req.Notes)
+}
+
 // CreatePerson adds a new person.
 func (h *Handler) CreatePerson(w http.ResponseWriter, r *http.Request) {
 	var req personRequest
@@ -89,6 +98,10 @@ func (h *Handler) CreatePerson(w http.ResponseWriter, r *http.Request) {
 	req.normalize()
 	if req.FirstName == "" && req.LastName == "" {
 		writeError(w, http.StatusBadRequest, "first or last name is required")
+		return
+	}
+	if !req.validate() {
+		writeError(w, http.StatusBadRequest, "input length limit exceeded")
 		return
 	}
 	p, err := scanPerson(h.Pool.QueryRow(r.Context(),
@@ -119,6 +132,10 @@ func (h *Handler) UpdatePerson(w http.ResponseWriter, r *http.Request) {
 	req.normalize()
 	if req.FirstName == "" && req.LastName == "" {
 		writeError(w, http.StatusBadRequest, "first or last name is required")
+		return
+	}
+	if !req.validate() {
+		writeError(w, http.StatusBadRequest, "input length limit exceeded")
 		return
 	}
 	old, _ := h.getPerson(r.Context(), id)

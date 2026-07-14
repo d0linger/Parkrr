@@ -41,6 +41,12 @@ const (
 	maxUsernameLen = 100
 	minPasswordLen = 8
 	maxPasswordLen = 72
+	maxNameLen     = 100
+	maxEmailLen    = 255
+	maxNoteLen     = 2000
+	maxPhoneLen    = 50
+	maxAddressLen  = 500
+	maxTOTPCodeLen = 20
 )
 
 // validUsernameLength reports whether s is a non-empty username within the
@@ -53,6 +59,15 @@ func validUsernameLength(s string) bool {
 // validPasswordLength reports whether pw satisfies the length policy.
 func validPasswordLength(pw string) bool {
 	return len(pw) >= minPasswordLen && len(pw) <= maxPasswordLen
+}
+
+func validNameLength(s string) bool    { return len(s) <= maxNameLen }
+func validEmailLength(s string) bool   { return len(s) <= maxEmailLen }
+func validNoteLength(s string) bool    { return len(s) <= maxNoteLen }
+func validPhoneLength(s string) bool   { return len(s) <= maxPhoneLen }
+func validAddressLength(s string) bool { return len(s) <= maxAddressLen }
+func validTOTPCodeLength(s string) bool {
+	return len(s) > 0 && len(s) <= maxTOTPCodeLen
 }
 
 // passwordBreached reports whether a new password appears in a known breach.

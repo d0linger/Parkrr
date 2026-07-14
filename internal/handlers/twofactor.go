@@ -66,7 +66,12 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !h.Auth.ValidateEncryptedTOTP(encSecret, trim(req.Code)) {
+	code := trim(req.Code)
+	if !validTOTPCodeLength(code) {
+		writeError(w, http.StatusBadRequest, "invalid code")
+		return
+	}
+	if !h.Auth.ValidateEncryptedTOTP(encSecret, code) {
 		h.Limiter.RecordFailure(key)
 		writeError(w, http.StatusBadRequest, "invalid code")
 		return
