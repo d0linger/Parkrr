@@ -59,6 +59,21 @@ func chargeSettled(agreements []models.FlatRatePeriod, vehicleID *int64, charged
 	return vehiclePaid
 }
 
+// chargeAmounts computes one charge row's total (amount × quantity) and its paid
+// portion — the whole total when chargeSettled reports it paid, otherwise 0. The
+// vehicle's stored paid flag is looked up in vehPaid.
+func chargeAmounts(agreements []models.FlatRatePeriod, vehPaid map[int64]bool, vid *int64, amount, qty float64, chargedOn time.Time, ownPaid bool) (total, paid float64) {
+	total = amount * qty
+	vp := false
+	if vid != nil {
+		vp = vehPaid[*vid]
+	}
+	if chargeSettled(agreements, vid, chargedOn, ownPaid, vp) {
+		paid = total
+	}
+	return total, paid
+}
+
 // personChargeSums returns a person's total charges and the paid portion, with a
 // vehicle-bound charge settled via its covering Pauschale (or the vehicle's own
 // paid flag). vehPaid maps a vehicle id to its stored paid flag.
@@ -77,15 +92,9 @@ func (h *Handler) personChargeSums(ctx context.Context, personID int64, agreemen
 		if serr := rows.Scan(&vid, &amount, &qty, &chargedOn, &ownPaid); serr != nil {
 			return 0, 0, serr
 		}
-		t := amount * qty
+		t, p := chargeAmounts(agreements, vehPaid, vid, amount, qty, chargedOn, ownPaid)
 		total += t
-		vp := false
-		if vid != nil {
-			vp = vehPaid[*vid]
-		}
-		if chargeSettled(agreements, vid, chargedOn, ownPaid, vp) {
-			paid += t
-		}
+		paid += p
 	}
 	return total, paid, rows.Err()
 }
@@ -289,15 +298,9 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "query failed")
 			return
 		}
-		t := amount * qty
+		t, p := chargeAmounts(agByPerson[pid], vehPaid, vid, amount, qty, chargedOn, ownPaid)
 		chargesByPerson[pid] += t
-		vp := false
-		if vid != nil {
-			vp = vehPaid[*vid]
-		}
-		if chargeSettled(agByPerson[pid], vid, chargedOn, ownPaid, vp) {
-			paidChargesByPerson[pid] += t
-		}
+		paidChargesByPerson[pid] += p
 	}
 	crows.Close()
 	if cerr := crows.Err(); cerr != nil {

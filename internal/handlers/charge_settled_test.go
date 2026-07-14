@@ -50,6 +50,7 @@ func TestChargeSettled(t *testing.T) {
 		{"bound, no agreements, vehicle unpaid", i64p(7), nil, false, false, false},
 		{"bound, covered, master paid", i64p(7), mk(func(a *models.FlatRatePeriod) { a.Paid = true }), false, false, true},
 		{"bound, covered, period paid", i64p(7), mk(func(a *models.FlatRatePeriod) { a.PaidPeriods = []string{"2026-06"} }), false, false, true},
+		{"bound, covered, period only partially paid (fixed)", i64p(7), mk(func(a *models.FlatRatePeriod) { a.PaidFixed = map[string]float64{"2026-06": 40} }), false, false, false},
 		{"bound, covered, other period paid only", i64p(7), mk(func(a *models.FlatRatePeriod) { a.PaidPeriods = []string{"2026-05"} }), false, false, false},
 		{"bound, covered, period unpaid -> vehicle flag", i64p(7), mk(nil), false, true, true},
 		{"bound, covered, period unpaid, vehicle unpaid", i64p(7), mk(nil), false, false, false},
