@@ -131,8 +131,13 @@ func (h *Handler) ListCharges(w http.ResponseWriter, r *http.Request) {
 		err  error
 	)
 	base := `SELECT c.id, c.person_id, c.vehicle_id, c.description, c.amount, c.quantity,
-	                c.charged_on, c.created_at, trim(pe.first_name || ' ' || pe.last_name)
-	         FROM charges c JOIN persons pe ON pe.id = c.person_id`
+	                c.charged_on, c.created_at, trim(pe.first_name || ' ' || pe.last_name),
+	                c.paid, COALESCE(v.paid, false),
+	                COALESCE(NULLIF(v.label, ''), NULLIF(v.license_plate, ''), cat.name, '')
+	         FROM charges c
+	         JOIN persons pe ON pe.id = c.person_id
+	         LEFT JOIN vehicles v ON v.id = c.vehicle_id
+	         LEFT JOIN categories cat ON cat.id = v.category_id`
 	limit, offset := pageParams(r, 1000, 1000)
 	if pid := r.URL.Query().Get("person_id"); pid != "" {
 		rows, err = h.Pool.Query(r.Context(),
@@ -150,7 +155,8 @@ func (h *Handler) ListCharges(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var c models.Charge
 		if err := rows.Scan(&c.ID, &c.PersonID, &c.VehicleID, &c.Description, &c.Amount,
-			&c.Quantity, &c.ChargedOn, &c.CreatedAt, &c.PersonName); err != nil {
+			&c.Quantity, &c.ChargedOn, &c.CreatedAt, &c.PersonName,
+			&c.Paid, &c.VehiclePaid, &c.VehicleLabel); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan failed")
 			return
 		}
@@ -229,4 +235,36 @@ func (h *Handler) DeleteCharge(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit(r, "delete", "charge", id, "deleted charge")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// SetChargePaid toggles a standalone charge's own paid flag. A charge bound to a
+// vehicle derives its paid state from that vehicle, so the flag is ignored there.
+func (h *Handler) SetChargePaid(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req struct {
+		Paid bool `json:"paid"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	ct, err := h.Pool.Exec(r.Context(), `UPDATE charges SET paid=$1 WHERE id=$2`, req.Paid, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update charge")
+		return
+	}
+	if ct.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "charge not found")
+		return
+	}
+	verb := "charge marked open"
+	if req.Paid {
+		verb = "charge marked paid"
+	}
+	h.audit(r, "update", "charge", id, verb)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

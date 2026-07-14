@@ -401,6 +401,11 @@ type Charge struct {
 	CreatedAt   time.Time `json:"created_at"`
 	PersonName  string    `json:"person_name,omitempty"`
 	Total       float64   `json:"total"`
+	// Paid is the charge's own settle flag, used when it is not bound to a
+	// vehicle. Bound charges instead follow VehiclePaid.
+	Paid         bool   `json:"paid"`
+	VehiclePaid  bool   `json:"vehicle_paid"`
+	VehicleLabel string `json:"vehicle_label,omitempty"`
 }
 
 // StatusChange is one entry in a vehicle's status history.

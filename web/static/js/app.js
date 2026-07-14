@@ -1684,12 +1684,40 @@
         return wrap;
     }
     function financeRow(it) {
-        return el('div', { class: 'card' }, el('div', { class: 'card-row' },
+        const bound = it.vehicle_id != null;
+        const paidEff = bound ? !!it.vehicle_paid : !!it.paid;
+        const card = el('div', { class: 'card' }, el('div', { class: 'card-row' },
             el('div', { style: 'flex:1' },
                 el('h3', {}, eur(it.total) + '  ', el('span', { class: 'muted', style: 'font-weight:400;font-size:.9rem' }, esc(it.description))),
                 el('div', { class: 'card-meta' }, esc(it.person_name) + ' · ' + fmtDate(it.charged_on) + (it.quantity !== 1 ? ` · ${it.quantity}×${eur(it.amount)}` : '') + (it.note ? ' · ' + esc(it.note) : ''))),
             canBill() && el('div', { class: 'card-actions' },
                 el('button', { class: 'btn btn-ghost btn-sm', title: (it.description || 'Position') + ' löschen', 'aria-label': (it.description || 'Position') + ' löschen', onclick: (e) => delFinance(it, e.currentTarget.closest('.card')) }, icon('trash')))));
+        // Paid status: a bound charge follows its vehicle (read-only here); a free
+        // charge gets its own offen/bezahlt slider.
+        const ctrl = el('div', { class: 'controls-row' });
+        if (bound) {
+            ctrl.append(el('span', { class: 'badge ' + (paidEff ? 'badge-active' : 'badge-ended') },
+                (paidEff ? 'bezahlt' : 'offen') + ' · über ' + esc(it.vehicle_label || 'Gefährt')));
+        } else if (canBill()) {
+            ctrl.append(chargePaidSlider(it));
+        } else {
+            ctrl.append(el('span', { class: 'badge ' + (paidEff ? 'badge-active' : 'badge-ended') }, paidEff ? 'bezahlt' : 'offen'));
+        }
+        card.append(ctrl);
+        return card;
+    }
+    function chargePaidSlider(it) {
+        const seg = el('div', { class: 'seg-mini pay', role: 'radiogroup', 'aria-label': 'Zahlstatus' });
+        seg.append(el('button', { class: (!it.paid ? 'active open' : ''), type: 'button', role: 'radio', 'aria-checked': String(!it.paid), 'aria-label': 'Zahlung offen',
+            onclick: (e) => { markActive(e.currentTarget); setChargePaid(it, false); } }, 'offen'));
+        seg.append(el('button', { class: (it.paid ? 'active done' : ''), type: 'button', role: 'radio', 'aria-checked': String(it.paid), 'aria-label': 'Bezahlt',
+            onclick: (e) => { markActive(e.currentTarget); setChargePaid(it, true); } }, 'bezahlt'));
+        return segThumb(seg);
+    }
+    async function setChargePaid(it, paid) {
+        if (!!it.paid === paid) return;
+        try { await api.post('/charges/' + it.id + '/paid', { paid }); toast(paid ? 'Als bezahlt markiert' : 'Als offen markiert', 'success'); render(); }
+        catch (e) { toast(e.message, 'error'); render(); }
     }
     function delFinance(it, node) {
         deleteWithUndo('Position löschen?', 'Der Eintrag wird entfernt.',
@@ -1699,23 +1727,33 @@
     async function chargeForm(presetPerson) {
         if (!state.persons.length) { toast('Zuerst eine Person anlegen', 'error'); return; }
         const svcOptions = [{ value: '', label: '— frei —' }, ...state.services.map((s) => ({ value: s.name + '|' + s.default_amount, label: `${s.name} (${eur(s.default_amount)})` }))];
+        const initPerson = presetPerson ?? state.persons[0].id;
+        // Bindable vehicles for a person: active, not archived. Free = own paid slider.
+        const vehOpts = async (pid) => {
+            let vs = [];
+            try { vs = await api.get('/vehicles?person_id=' + pid); } catch { /* ignore */ }
+            return [{ value: '', label: '— frei (direkt bezahlbar) —' },
+                ...vs.filter((v) => !v.archived).map((v) => ({ value: v.id, label: vehicleTitle(v) }))];
+        };
+        const initVehOpts = await vehOpts(initPerson);
         await formModal({
             title: 'Zusatzkosten hinzufügen',
             fields: [
-                { name: 'person_id', label: 'Person', type: 'select', required: true, value: presetPerson ?? state.persons[0].id, options: state.persons.map((p) => ({ value: p.id, label: personName(p) })) },
+                { name: 'person_id', label: 'Person', type: 'select', required: true, value: initPerson, options: state.persons.map((p) => ({ value: p.id, label: personName(p) })) },
                 { name: 'service', label: 'Aus Katalog', type: 'select', value: '', options: svcOptions, help: 'Optional – füllt Bezeichnung & Betrag vor.' },
                 { name: 'description', label: 'Bezeichnung', required: true, value: '' },
                 { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', required: true, value: '' },
                 { name: 'quantity', label: 'Menge', type: 'number', step: '0.5', value: '1' },
+                { name: 'vehicle_id', label: 'Zuordnung (optional)', type: 'select', value: '', options: initVehOpts, help: 'An ein Gefährt binden → Bezahlt läuft über das Gefährt. Sonst frei markierbar.' },
                 { name: 'charged_on', label: 'Datum', type: 'date', value: today() },
             ],
-            // Picking a catalog entry fills Bezeichnung + Betrag right away (both stay
-            // editable) — otherwise the required-field validation blocks submit before
-            // the save-time fallback below ever runs.
             onRender: (body) => {
                 const svc = body.querySelector('#f_service');
                 const desc = body.querySelector('#f_description');
                 const amt = body.querySelector('#f_amount');
+                // Picking a catalog entry fills Bezeichnung + Betrag right away (both
+                // stay editable) — otherwise the required-field validation blocks
+                // submit before the save-time fallback ever runs.
                 svc.addEventListener('change', () => {
                     if (!svc.value) return;
                     const [nm, a] = svc.value.split('|');
@@ -1725,6 +1763,14 @@
                         const e = body.querySelector('#' + errId); if (e) e.hidden = true;
                     }
                 });
+                // Switching person reloads the bindable vehicles.
+                const per = body.querySelector('#f_person_id');
+                const veh = body.querySelector('#f_vehicle_id');
+                per.addEventListener('change', async () => {
+                    const opts = await vehOpts(per.value);
+                    veh.innerHTML = '';
+                    for (const o of opts) veh.append(el('option', { value: o.value }, o.label));
+                });
             },
             save: async (data) => {
                 // Fallback for a catalog pick left otherwise untouched.
@@ -1733,7 +1779,12 @@
                     if (!data.description) data.description = nm;
                     if (!data.amount) data.amount = amt;
                 }
-                await api.post('/charges', { person_id: Number(data.person_id), description: data.description, amount: Number(data.amount), quantity: Number(data.quantity) || 1, charged_on: data.charged_on });
+                await api.post('/charges', {
+                    person_id: Number(data.person_id), description: data.description,
+                    amount: Number(data.amount), quantity: Number(data.quantity) || 1,
+                    charged_on: data.charged_on,
+                    vehicle_id: data.vehicle_id ? Number(data.vehicle_id) : null,
+                });
                 toast('Position gespeichert', 'success'); render();
             },
         });

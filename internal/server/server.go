@@ -112,6 +112,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	// --- Charges ---
 	mux.Handle("GET /api/charges", authed(hf(h.ListCharges)))
 	mux.Handle("POST /api/charges", editor(hf(h.CreateCharge)))
+	mux.Handle("POST /api/charges/{id}/paid", editor(hf(h.SetChargePaid)))
 	mux.Handle("DELETE /api/charges/{id}", editor(hf(h.DeleteCharge)))
 
 	// --- Stats ---
