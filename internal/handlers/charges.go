@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -195,6 +196,25 @@ func (h *Handler) ListCharges(w http.ResponseWriter, r *http.Request) {
 		}
 		c.Total = round2(c.Amount * c.Quantity)
 		out = append(out, c)
+	}
+	rows.Close()
+
+	// Fold Pauschale settlement into bound charges' displayed paid state: a bound
+	// charge is paid when its covering agreement's period for the charge date is
+	// paid, else it follows the vehicle's own flag (already scanned).
+	var pfilter int64
+	if pid := r.URL.Query().Get("person_id"); pid != "" {
+		pfilter, _ = strconv.ParseInt(pid, 10, 64)
+	}
+	agByPerson, aerr := h.loadAllAgreements(r.Context(), pfilter)
+	if aerr != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	for i := range out {
+		if c := &out[i]; c.VehicleID != nil {
+			c.VehiclePaid = chargeSettled(agByPerson[c.PersonID], c.VehicleID, c.ChargedOn, false, c.VehiclePaid)
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
