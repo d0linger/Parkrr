@@ -277,7 +277,7 @@ textarea { resize: vertical; min-height: 72px; }
 .cfg-right { flex: none; font-weight: 700; font-variant-numeric: tabular-nums; font-size: 0.95rem; }
 .cfg-panel-in { padding-top: 0.7rem; }
 .cfg-panel-in > label:first-child { margin-top: 0; }
-.cfg-save { margin-top: 0.8rem; }
+.cfg-save { margin-top: 0.8rem; display: flex; gap: 0.5rem; }
 /* The tariff form is taller than the 2FA panel default; give it headroom so the
    danger zone isn't clipped by the collapse max-height. */
 .cfg-card .tf-panel.open { max-height: 640px; }

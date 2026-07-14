@@ -1743,6 +1743,10 @@
             const addBtn = el('button', { class: 'btn btn-ghost btn-block', style: 'margin-bottom:.6rem' },
                 icon('plus', 15), isCat ? ' Neuer Tarif' : ' Neuer Dienst');
             addBtn.addEventListener('click', () => {
+                // Keep at most one unsaved blank card, and clear the empty-state so
+                // the new card doesn't sit next to "Noch keine …".
+                const stale = list.querySelector('[data-new-card]'); if (stale) stale.remove();
+                const empty = list.querySelector('.empty'); if (empty) empty.remove();
                 cfgCloseAll(list);
                 list.prepend(isCat ? categoryCard(null, true) : serviceCard(null, true));
             });
@@ -1821,13 +1825,14 @@
             } catch (e) { toast(e.message, 'error'); saveBtn.disabled = false; }
         });
 
+        const saveRow = el('div', { class: 'cfg-save' }, saveBtn);
         const inner = el('div', { class: 'cfg-panel-in' },
             el('label', { for: nameCatId }, 'Name'), nameI,
             el('label', { class: 'switch', for: syncId }, syncI, el('span', { class: 'track' }), el('span', {}, 'Monats-/Jahrespreis koppeln (Jahr = Monat × 12)')),
             el('div', { class: 'field-row', style: 'margin-top:.5rem' },
                 el('div', {}, el('label', {}, 'Preis / Monat (€)'), monI),
                 el('div', {}, el('label', {}, 'Preis / Jahr (€)'), yearI)),
-            el('div', { class: 'cfg-save' }, saveBtn));
+            saveRow);
         if (c) {
             inner.append(el('div', { class: 'tf-danger-label' }, icon('alert', 13), 'Gefahrenzone'));
             inner.append(el('div', { class: 'u-dz-actions' },
@@ -1835,6 +1840,8 @@
         }
         const panel = el('div', { class: 'tf-panel', id: pid }, inner);
         const card = el('div', { class: 'card cfg-card' }, head, panel);
+        // Unsaved blank card: mark it (single-instance) and let it be discarded.
+        if (!c) { card.setAttribute('data-new-card', ''); saveRow.append(el('button', { type: 'button', class: 'btn btn-ghost', onclick: () => card.remove() }, 'Abbrechen')); }
         cfgDisclosure(card, head, panel, openNow);
         if (openNow) setTimeout(() => nameI.focus(), 50);
         return card;
@@ -1860,10 +1867,11 @@
                 toast('Dienst gespeichert', 'success'); render();
             } catch (e) { toast(e.message, 'error'); saveBtn.disabled = false; }
         });
+        const saveRow = el('div', { class: 'cfg-save' }, saveBtn);
         const inner = el('div', { class: 'cfg-panel-in' },
             el('label', { for: nameI.id }, 'Name'), nameI,
             el('label', {}, 'Standardpreis (€)'), amtI,
-            el('div', { class: 'cfg-save' }, saveBtn));
+            saveRow);
         if (s) {
             inner.append(el('div', { class: 'tf-danger-label' }, icon('alert', 13), 'Gefahrenzone'));
             inner.append(el('div', { class: 'u-dz-actions' },
@@ -1871,6 +1879,8 @@
         }
         const panel = el('div', { class: 'tf-panel', id: pid }, inner);
         const card = el('div', { class: 'card cfg-card' }, head, panel);
+        // Unsaved blank card: mark it (single-instance) and let it be discarded.
+        if (!s) { card.setAttribute('data-new-card', ''); saveRow.append(el('button', { type: 'button', class: 'btn btn-ghost', onclick: () => card.remove() }, 'Abbrechen')); }
         cfgDisclosure(card, head, panel, openNow);
         if (openNow) setTimeout(() => nameI.focus(), 50);
         return card;
