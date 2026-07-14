@@ -268,6 +268,20 @@ textarea { resize: vertical; min-height: 72px; }
 .u-dz-actions { display: flex; gap: 0.5rem; margin-top: 0.55rem; flex-wrap: wrap; }
 .u-dz-actions .btn { flex: 0 1 auto; }
 
+/* Tarife/Dienste: inline-editable config cards (accordion). */
+.cfg-head { display: flex; align-items: center; gap: 0.65rem; width: 100%; background: transparent; border: none; padding: 0; color: inherit; font: inherit; text-align: left; }
+.cfg-ic { width: 34px; height: 34px; border-radius: 9px; flex: none; display: flex; align-items: center; justify-content: center; background: var(--primary-soft); color: var(--primary-hover); }
+.cfg-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.cfg-title { font-weight: 650; font-size: 1rem; }
+.cfg-sub { font-size: 0.78rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.cfg-right { flex: none; font-weight: 700; font-variant-numeric: tabular-nums; font-size: 0.95rem; }
+.cfg-panel-in { padding-top: 0.7rem; }
+.cfg-panel-in > label:first-child { margin-top: 0; }
+.cfg-save { margin-top: 0.8rem; }
+/* The tariff form is taller than the 2FA panel default; give it headroom so the
+   danger zone isn't clipped by the collapse max-height. */
+.cfg-card .tf-panel.open { max-height: 640px; }
+
 /* Flat-rate agreement: covered-vehicle checkbox list in the form. */
 .agreement-vehicles { display: flex; flex-direction: column; gap: 0.3rem; max-height: 11rem; overflow-y: auto; margin-top: 0.3rem; }
 
