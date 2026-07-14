@@ -765,7 +765,7 @@
         // Revenue chart
         const revCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Umsatz pro Monat · ' + ov.year));
         revCard.append(chartLine(ov.revenue_by_month, MONTHS));
-        revCard.append(el('div', { class: 'legend' }, el('span', {}, el('span', { class: 'dotc', style: 'background:var(--primary)' }), 'Aufgelaufene Miete')));
+        revCard.append(el('div', { class: 'legend' }, el('span', {}, el('span', { class: 'dotc', style: 'background:var(--primary)' }), 'Miete + Zusatzkosten')));
         page.append(revCard);
 
         // Extra charges per month

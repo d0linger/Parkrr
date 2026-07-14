@@ -297,6 +297,10 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	vehPaid := vehiclePaidMap(vehicles)
 	chargesByPerson := map[int64]float64{}
 	paidChargesByPerson := map[int64]float64{}
+	// Extra charges are revenue too: accrue the one-off charges into the year
+	// windows and per month (by charge date) to fold into the Umsatz figures.
+	var chargeThisYear, chargePrevYear float64
+	chargeByMonth := make([]float64, 12)
 	for crows.Next() {
 		var pid int64
 		var vid *int64
@@ -311,6 +315,13 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		t, p := chargeAmounts(agByPerson[pid], vehPaid, vid, amount, qty, chargedOn, ownPaid)
 		chargesByPerson[pid] += t
 		paidChargesByPerson[pid] += p
+		if !chargedOn.Before(yearStart) && chargedOn.Before(yearEnd) {
+			chargeThisYear += t
+			chargeByMonth[int(chargedOn.Month())-1] += t
+		}
+		if !chargedOn.Before(prevStart) && chargedOn.Before(prevEnd) {
+			chargePrevYear += t
+		}
 	}
 	crows.Close()
 	if cerr := crows.Err(); cerr != nil {
@@ -328,6 +339,21 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		acc, pd := recurringSums(list, now)
 		chargesByPerson[pid] += acc
 		paidChargesByPerson[pid] += pd
+		for i := range list {
+			p := list[i].AsPeriod()
+			chargeThisYear += p.CostInRange(yearStart, yearEnd)
+			chargePrevYear += p.CostInRange(prevStart, prevEnd)
+			for m := 0; m < 12; m++ {
+				mStart := time.Date(resp.Year, time.Month(m+1), 1, 0, 0, 0, 0, time.UTC)
+				mEnd := mStart.AddDate(0, 1, 0)
+				if mEnd.After(until) {
+					mEnd = until
+				}
+				if mEnd.After(mStart) {
+					chargeByMonth[m] += p.CostInRange(mStart, mEnd)
+				}
+			}
+		}
 	}
 
 	personIDs := map[int64]struct{}{}
@@ -369,9 +395,21 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
-	resp.AccruedTotal = round2(resp.AccruedTotal)
-	resp.AccruedThisYear = round2(resp.AccruedThisYear)
-	resp.AccruedPrevYear = round2(resp.AccruedPrevYear)
+	// Revenue (Umsatz) = rent + extra charges. Fold charges into the accrued
+	// totals; the per-person charge maps carry the whole-period totals.
+	var totalCharges, paidCharges float64
+	for _, v := range chargesByPerson {
+		totalCharges += v
+	}
+	for _, v := range paidChargesByPerson {
+		paidCharges += v
+	}
+	resp.AccruedTotal = round2(resp.AccruedTotal + totalCharges)
+	resp.AccruedThisYear = round2(resp.AccruedThisYear + chargeThisYear)
+	resp.AccruedPrevYear = round2(resp.AccruedPrevYear + chargePrevYear)
+	for m := range resp.RevenueByMonth {
+		resp.RevenueByMonth[m] = round2(resp.RevenueByMonth[m] + chargeByMonth[m])
+	}
 
 	// Largest open balances first, capped so the dashboard stays a summary.
 	sort.Slice(resp.TopOutstanding, func(i, j int) bool {
@@ -381,20 +419,13 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		resp.TopOutstanding = resp.TopOutstanding[:5]
 	}
 
+	// One-off extra charges per month, kept as a separate breakdown chart.
 	resp.ChargesByMonth = h.sumByMonth(ctx, resp.Year,
 		`SELECT extract(month from charged_on)::int, COALESCE(sum(amount*quantity),0)
 		 FROM charges WHERE extract(year from charged_on)=$1 GROUP BY 1`)
 
-	// Totals reuse the per-person charge maps (no extra global queries).
-	var totalCharges, paidCharges float64
-	for _, v := range chargesByPerson {
-		totalCharges += v
-	}
-	for _, v := range paidChargesByPerson {
-		paidCharges += v
-	}
 	resp.PaidTotal = round2(paidRent + paidCharges)
-	resp.OutstandingTotal = round2(resp.AccruedTotal + totalCharges - resp.PaidTotal)
+	resp.OutstandingTotal = round2(resp.AccruedTotal - resp.PaidTotal)
 
 	writeJSON(w, http.StatusOK, resp)
 }
