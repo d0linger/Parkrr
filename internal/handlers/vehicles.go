@@ -191,6 +191,16 @@ func (h *Handler) parseVehicleRequest(r *http.Request) (*parsedVehicle, error) {
 		return nil, errors.New("rate must not be negative")
 	}
 
+	if !validNameLength(req.Label) {
+		return nil, errors.New("label is too long")
+	}
+	if !validNameLength(req.LicensePlate) {
+		return nil, errors.New("license_plate is too long")
+	}
+	if !validNoteLength(req.Notes) {
+		return nil, errors.New("notes is too long")
+	}
+
 	start, err := time.Parse(dateLayout, trim(req.StartDate))
 	if err != nil {
 		return nil, errors.New("start_date must be YYYY-MM-DD")

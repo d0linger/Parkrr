@@ -50,6 +50,10 @@ func (h *Handler) CreateCategory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
+	if !validNameLength(req.Name) {
+		writeError(w, http.StatusBadRequest, "name is too long")
+		return
+	}
 	if req.DefaultMonthlyCost < 0 || req.DefaultYearlyCost < 0 {
 		writeError(w, http.StatusBadRequest, "costs must not be negative")
 		return
@@ -90,6 +94,10 @@ func (h *Handler) UpdateCategory(w http.ResponseWriter, r *http.Request) {
 	req.Name = trim(req.Name)
 	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if !validNameLength(req.Name) {
+		writeError(w, http.StatusBadRequest, "name is too long")
 		return
 	}
 	if req.DefaultMonthlyCost < 0 || req.DefaultYearlyCost < 0 {

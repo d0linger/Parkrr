@@ -50,6 +50,10 @@ func (h *Handler) CreateServiceType(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
+	if !validNameLength(req.Name) {
+		writeError(w, http.StatusBadRequest, "name is too long")
+		return
+	}
 	var id int64
 	err := h.Pool.QueryRow(r.Context(),
 		`INSERT INTO service_types (name, default_amount) VALUES ($1,$2) RETURNING id`,
@@ -81,6 +85,10 @@ func (h *Handler) UpdateServiceType(w http.ResponseWriter, r *http.Request) {
 	req.Name = trim(req.Name)
 	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if !validNameLength(req.Name) {
+		writeError(w, http.StatusBadRequest, "name is too long")
 		return
 	}
 	ct, err := h.Pool.Exec(r.Context(),
@@ -179,6 +187,10 @@ func (h *Handler) CreateCharge(w http.ResponseWriter, r *http.Request) {
 	req.Description = trim(req.Description)
 	if req.PersonID <= 0 || req.Description == "" {
 		writeError(w, http.StatusBadRequest, "person_id and description are required")
+		return
+	}
+	if !validNameLength(req.Description) {
+		writeError(w, http.StatusBadRequest, "description is too long")
 		return
 	}
 	if req.Quantity <= 0 {
