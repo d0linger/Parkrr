@@ -929,7 +929,7 @@
         }
 
         // statistics at the bottom, below the actionable sections
-        const chartCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Aufgelaufene Miete pro Monat · ' + stats.year));
+        const chartCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Kosten pro Monat · ' + stats.year));
         chartCard.append(chartBars(stats.monthly_accrued, MONTHS));
         page.append(chartCard);
         if (stats.years.length) {
