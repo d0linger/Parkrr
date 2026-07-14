@@ -316,9 +316,15 @@ func (h *Handler) UpdateCharge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, badMsg)
 		return
 	}
+	// The own paid flag only governs standalone charges; a bound charge follows its
+	// vehicle/Pauschale. So when the binding changes (bind, unbind or rebind) the
+	// old flag is stale — reset it to open. Edits that keep the binding keep paid.
+	// (In UPDATE, the RHS vehicle_id refers to the pre-update value.)
 	ct, err := h.Pool.Exec(r.Context(),
 		`UPDATE charges SET person_id=$1, vehicle_id=$2, description=$3, amount=$4,
-		        quantity=$5, charged_on=$6 WHERE id=$7`,
+		        quantity=$5, charged_on=$6,
+		        paid = CASE WHEN vehicle_id IS DISTINCT FROM $2 THEN false ELSE paid END
+		 WHERE id=$7`,
 		req.PersonID, req.VehicleID, req.Description, req.Amount, req.Quantity, chargedOn, id)
 	if err != nil {
 		if isForeignKeyViolation(err) {
