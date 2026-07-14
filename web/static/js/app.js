@@ -1939,7 +1939,9 @@
                     const my = ++vehReq;
                     veh.disabled = true; veh.innerHTML = '';
                     veh.append(el('option', { value: '' }, 'lädt …'));
-                    const opts = await vehOpts(per.value, null);
+                    // Back on the charge's original person, keep its (maybe archived) bound vehicle.
+                    const keepId = String(per.value) === String(existing?.person_id) ? existing?.vehicle_id : null;
+                    const opts = await vehOpts(per.value, keepId);
                     if (my !== vehReq) return; // superseded by a newer change
                     veh.innerHTML = '';
                     for (const o of opts) veh.append(el('option', { value: o.value }, o.label));
@@ -1956,19 +1958,15 @@
                     }
                 }
                 const personID = Number(data.person_id);
-                if (existing) {
-                    // Editing an existing one-off charge.
-                    await api.put('/charges/' + existing.id, {
+                if (existing || data.billing === 'once') {
+                    // One-off charge: same payload whether creating or editing.
+                    const payload = {
                         person_id: personID, description: data.description, amount: Number(data.amount),
                         quantity: Number(data.quantity) || 1, charged_on: data.charged_on,
                         vehicle_id: data.vehicle_id ? Number(data.vehicle_id) : null,
-                    });
-                } else if (data.billing === 'once') {
-                    await api.post('/charges', {
-                        person_id: personID, description: data.description, amount: Number(data.amount),
-                        quantity: Number(data.quantity) || 1, charged_on: data.charged_on,
-                        vehicle_id: data.vehicle_id ? Number(data.vehicle_id) : null,
-                    });
+                    };
+                    if (existing) await api.put('/charges/' + existing.id, payload);
+                    else await api.post('/charges', payload);
                 } else {
                     // Recurring: monthly/yearly, accrues per period on the person.
                     await api.post('/persons/' + personID + '/recurring', {
