@@ -55,10 +55,10 @@ func TestInputLengthValidation(t *testing.T) {
 			errMsg:     "email is too long",
 		},
 		{
-			name:       "PasskeyRegisterBegin: Name too long",
-			path:       "/api/passkeys/register/begin",
-			method:     "POST",
-			body:       struct {
+			name:   "PasskeyRegisterBegin: Name too long",
+			path:   "/api/passkeys/register/begin",
+			method: "POST",
+			body: struct {
 				Name string `json:"name"`
 			}{Name: longName},
 			wantStatus: http.StatusBadRequest,
