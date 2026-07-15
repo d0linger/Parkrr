@@ -77,6 +77,50 @@ func TestRecurringPaidBound(t *testing.T) {
 	}
 }
 
+// TestRecurringPaidBoundMidPeriodStart covers a charge that begins mid-period
+// with a Pauschale starting on the same day: the first (partial) period must be
+// recognised as covered, not skipped because its calendar start predates the
+// Pauschale.
+func TestRecurringPaidBoundMidPeriodStart(t *testing.T) {
+	mustDate := func(s string) time.Time {
+		d, err := time.Parse("2006-01-02", s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	i64p := func(v int64) *int64 { return &v }
+	now := mustDate("2026-06-15")
+	const vid int64 = 7
+
+	cases := []struct {
+		name   string
+		period string
+		start  string
+	}{
+		{"monthly mid-month start", models.BillingMonthly, "2026-01-15"},
+		{"yearly mid-year start", models.BillingYearly, "2026-03-10"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := models.RecurringCharge{
+				VehicleID: i64p(vid), Amount: 100, Period: tc.period, StartDate: mustDate(tc.start),
+			}
+			rcp := rc.AsPeriod()
+			accrued := rcp.AccruedAsOf(now)
+			// Pauschale covering the vehicle, starting the same day, fully paid.
+			ag := []models.FlatRatePeriod{{
+				Amount: 200, Period: tc.period, StartDate: mustDate(tc.start),
+				VehicleIDs: []int64{vid}, Paid: true,
+			}}
+			got := recurringPaidBound(&rc, ag, false, now)
+			if math.Abs(got-accrued) > 0.01 {
+				t.Errorf("first partial period not settled: paid=%.2f, want accrued=%.2f", got, accrued)
+			}
+		})
+	}
+}
+
 // TestRecurringSumsUnbound checks that a person-level (unbound) recurring charge
 // still settles via its own flags through recurringSums.
 func TestRecurringSumsUnbound(t *testing.T) {

@@ -55,6 +55,12 @@ func recurringPaidBound(rc *models.RecurringCharge, agreements []models.FlatRate
 		if err != nil {
 			continue
 		}
+		// The parsed date is the calendar period start (1st of month/year). For a
+		// charge that begins mid-period, use its actual start so a Pauschale that
+		// also begins on rc.StartDate is found active for that first period.
+		if d.Before(rc.StartDate) {
+			d = rc.StartDate
+		}
 		if chargeSettled(agreements, rc.VehicleID, d, false, vehiclePaid) {
 			paid += cost
 		}

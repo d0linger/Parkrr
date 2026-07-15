@@ -1355,9 +1355,16 @@
         // Bindable vehicles: active + not archived, plus the charge's own bound one
         // so editing a charge on an archived vehicle keeps the binding.
         let vs = [];
-        try { vs = await api.get('/vehicles?person_id=' + personId); } catch { /* ignore */ }
-        const vehOpts = [{ value: '', label: '— frei (direkt bezahlbar) —' },
-            ...vs.filter((v) => !v.archived || v.id === existing?.vehicle_id).map((v) => ({ value: v.id, label: vehicleTitle(v) + (v.archived ? ' · archiviert' : '') }))];
+        let vehLoadFailed = false;
+        try { vs = await api.get('/vehicles?person_id=' + personId); } catch { vehLoadFailed = true; }
+        const vehOpts = [{ value: '', label: '— frei (direkt bezahlbar) —' }];
+        if (vehLoadFailed && existing?.vehicle_id != null) {
+            // List unavailable: keep the current binding selectable so saving
+            // unrelated edits never silently unbinds the charge.
+            vehOpts.push({ value: existing.vehicle_id, label: (existing.vehicle_label || 'Aktuelles Gefährt') + ' · Liste nicht geladen' });
+        } else {
+            vehOpts.push(...vs.filter((v) => !v.archived || v.id === existing?.vehicle_id).map((v) => ({ value: v.id, label: vehicleTitle(v) + (v.archived ? ' · archiviert' : '') })));
+        }
         await formModal({
             title: existing ? 'Wiederkehrende Kosten bearbeiten' : 'Neue wiederkehrende Kosten',
             submitLabel: 'Speichern',
@@ -1708,10 +1715,12 @@
         if (!v) { page.innerHTML = ''; page.append(emptyState('car', 'Gefährt nicht gefunden.')); return; }
         const vc = coverage(v);
         // Extra costs bound to this Gefährt (one-off + recurring), shown here so the
-        // full picture lives at the Gefährt, not only on the person page.
+        // full picture lives at the Gefährt, not only on the person page. A failed
+        // fetch propagates to the route's error handling rather than silently
+        // rendering an empty (and misleading) "no extra costs" state.
         const [pCharges, pRecurring] = await Promise.all([
-            api.get('/charges?person_id=' + v.person_id).catch(() => []),
-            api.get('/persons/' + v.person_id + '/recurring').catch(() => []),
+            api.get('/charges?person_id=' + v.person_id),
+            api.get('/persons/' + v.person_id + '/recurring'),
         ]);
         const vCharges = pCharges.filter((c) => c.vehicle_id === v.id);
         const vRecurring = pRecurring.filter((rc) => rc.vehicle_id === v.id);
