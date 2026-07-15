@@ -244,6 +244,9 @@ func (req *agreementRequest) parse() (models.FlatRatePeriod, string) {
 	if end != nil && end.Before(start) {
 		return a, "end_date must not be before start_date"
 	}
+	if !validNoteLength(req.Note) {
+		return a, "note is too long"
+	}
 	seen := map[int64]bool{}
 	vids := []int64{}
 	for _, v := range req.VehicleIDs {

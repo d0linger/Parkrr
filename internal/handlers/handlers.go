@@ -34,11 +34,18 @@ func New(pool *pgxpool.Pool) *Handler {
 	}
 }
 
-// Password length policy: bcrypt hashes only the first 72 bytes and x/crypto
-// rejects longer inputs outright (a 500 without this check), so cap what we
-// accept up front. len() counts bytes, matching bcrypt's limit.
+// Input length policy: cap what we accept up front to protect against resource
+// exhaustion (DoS) and database bloat. bcrypt hashes only the first 72 bytes
+// and x/crypto rejects longer inputs outright (a 500 without this check), so
+// cap passwords at 72. len() counts bytes.
 const (
 	maxUsernameLen = 100
+	maxNameLen     = 100
+	maxEmailLen    = 255
+	maxNoteLen     = 2000
+	maxPhoneLen    = 50
+	maxAddressLen  = 500
+	maxTOTPCodeLen = 20
 	minPasswordLen = 8
 	maxPasswordLen = 72
 )
@@ -48,6 +55,37 @@ const (
 // username) from memory pressure via over-long keys.
 func validUsernameLength(s string) bool {
 	return len(s) > 0 && len(s) <= maxUsernameLen
+}
+
+// validNameLength reports whether s is within the name length cap.
+func validNameLength(s string) bool {
+	return len(s) <= maxNameLen
+}
+
+// validEmailLength reports whether s is within the email length cap.
+func validEmailLength(s string) bool {
+	return len(s) <= maxEmailLen
+}
+
+// validNoteLength reports whether s is within the note length cap.
+func validNoteLength(s string) bool {
+	return len(s) <= maxNoteLen
+}
+
+// validPhoneLength reports whether s is within the phone length cap.
+func validPhoneLength(s string) bool {
+	return len(s) <= maxPhoneLen
+}
+
+// validAddressLength reports whether s is within the address length cap.
+func validAddressLength(s string) bool {
+	return len(s) <= maxAddressLen
+}
+
+// validTOTPCodeLength reports whether s is a non-empty TOTP code within the
+// length cap.
+func validTOTPCodeLength(s string) bool {
+	return len(s) > 0 && len(s) <= maxTOTPCodeLen
 }
 
 // validPasswordLength reports whether pw satisfies the length policy.

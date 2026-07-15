@@ -74,7 +74,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	req.Username = trim(req.Username)
 	// Reject over-long identifiers/credentials before any state lookup: caps
 	// the rate-limiter key size and avoids handing bcrypt an oversized input.
-	if !validUsernameLength(req.Username) || len(req.Password) > maxPasswordLen {
+	if !validUsernameLength(req.Username) || len(req.Password) > maxPasswordLen || len(req.TOTPCode) > maxTOTPCodeLen {
 		writeError(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}

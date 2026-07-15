@@ -61,6 +61,10 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "start setup first")
 		return
 	}
+	if !validTOTPCodeLength(trim(req.Code)) {
+		writeError(w, http.StatusBadRequest, "invalid code")
+		return
+	}
 	// Throttle: a 6-digit code is otherwise brute-forceable during enrolment.
 	key, ok := h.checkRateLimit(w, r, u.Username)
 	if !ok {

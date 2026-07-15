@@ -79,6 +79,28 @@ func (req *personRequest) normalize() {
 	req.Notes = trim(req.Notes)
 }
 
+func (req *personRequest) validate() string {
+	if req.FirstName == "" && req.LastName == "" {
+		return "first or last name is required"
+	}
+	if !validNameLength(req.FirstName) || !validNameLength(req.LastName) {
+		return "name is too long"
+	}
+	if !validEmailLength(req.Email) {
+		return "email is too long"
+	}
+	if !validPhoneLength(req.Phone) {
+		return "phone is too long"
+	}
+	if !validAddressLength(req.Address) {
+		return "address is too long"
+	}
+	if !validNoteLength(req.Notes) {
+		return "notes is too long"
+	}
+	return ""
+}
+
 // CreatePerson adds a new person.
 func (h *Handler) CreatePerson(w http.ResponseWriter, r *http.Request) {
 	var req personRequest
@@ -87,8 +109,8 @@ func (h *Handler) CreatePerson(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.normalize()
-	if req.FirstName == "" && req.LastName == "" {
-		writeError(w, http.StatusBadRequest, "first or last name is required")
+	if msg := req.validate(); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
 	p, err := scanPerson(h.Pool.QueryRow(r.Context(),
@@ -117,8 +139,8 @@ func (h *Handler) UpdatePerson(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.normalize()
-	if req.FirstName == "" && req.LastName == "" {
-		writeError(w, http.StatusBadRequest, "first or last name is required")
+	if msg := req.validate(); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
 	old, _ := h.getPerson(r.Context(), id)
