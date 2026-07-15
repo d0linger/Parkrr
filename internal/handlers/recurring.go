@@ -11,16 +11,22 @@ import (
 	"github.com/preining/parkrr/internal/models"
 )
 
-const recurringCols = `id, person_id, description, amount, period, start_date, end_date,
-	paid, paid_periods, paid_fixed, created_at, updated_at`
+// recurringSelect joins the bound vehicle (and its category) so each row carries
+// a display label; vehicle_id is NULL for person-level charges.
+const recurringSelect = `SELECT rc.id, rc.person_id, rc.vehicle_id, rc.description, rc.amount, rc.period,
+	rc.start_date, rc.end_date, rc.paid, rc.paid_periods, rc.paid_fixed, rc.created_at, rc.updated_at,
+	COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), cat.name, '') AS vehicle_label
+	FROM recurring_charges rc
+	LEFT JOIN vehicles v ON v.id = rc.vehicle_id
+	LEFT JOIN categories cat ON cat.id = v.category_id`
 
 // scanRecurring reads one recurring_charges row (paid_fixed as raw JSON).
 func scanRecurring(row pgx.Row) (models.RecurringCharge, error) {
 	var rc models.RecurringCharge
 	var fixedRaw []byte
-	if err := row.Scan(&rc.ID, &rc.PersonID, &rc.Description, &rc.Amount, &rc.Period,
+	if err := row.Scan(&rc.ID, &rc.PersonID, &rc.VehicleID, &rc.Description, &rc.Amount, &rc.Period,
 		&rc.StartDate, &rc.EndDate, &rc.Paid, &rc.PaidPeriods, &fixedRaw,
-		&rc.CreatedAt, &rc.UpdatedAt); err != nil {
+		&rc.CreatedAt, &rc.UpdatedAt, &rc.VehicleLabel); err != nil {
 		return rc, err
 	}
 	if rc.PaidPeriods == nil {
@@ -32,22 +38,51 @@ func scanRecurring(row pgx.Row) (models.RecurringCharge, error) {
 	return rc, nil
 }
 
-// deriveRecurring fills the derived accrual/settlement fields as of now.
-func deriveRecurring(rc *models.RecurringCharge, now time.Time) {
+// recurringPaidBound returns the paid euros of a vehicle-bound recurring charge:
+// each elapsed sub-period counts as paid when the covering Pauschale's period for
+// that sub-period is settled (or the vehicle's own paid flag is set), mirroring
+// how a one-off bound charge settles via chargeSettled. A bound charge's own
+// per-period flags are ignored — payment follows the Gefährt/Pauschale.
+func recurringPaidBound(rc *models.RecurringCharge, agreements []models.FlatRatePeriod, vehiclePaid bool, now time.Time) float64 {
+	p := rc.AsPeriod()
+	var paid float64
+	for key, cost := range p.ElapsedPeriodCosts(now) {
+		layout := "2006-01"
+		if rc.Period == models.BillingYearly {
+			layout = "2006"
+		}
+		d, err := time.Parse(layout, key)
+		if err != nil {
+			continue
+		}
+		if chargeSettled(agreements, rc.VehicleID, d, false, vehiclePaid) {
+			paid += cost
+		}
+	}
+	return round2(paid)
+}
+
+// deriveRecurring fills the derived accrual/settlement fields as of now. A bound
+// charge is settled via its Gefährt/Pauschale; a person-level one via its own
+// per-period flags.
+func deriveRecurring(rc *models.RecurringCharge, agreements []models.FlatRatePeriod, vehPaid map[int64]bool, now time.Time) {
 	p := rc.AsPeriod()
 	rc.Accrued = round2(p.AccruedAsOf(now))
-	rc.Settled = p.SettledAsOf(now)
 	rc.PeriodCosts = p.ElapsedPeriodCosts(now)
+	if rc.VehicleID != nil {
+		rc.Settled = recurringPaidBound(rc, agreements, vehPaid[*rc.VehicleID], now)+0.005 >= rc.Accrued
+	} else {
+		rc.Settled = p.SettledAsOf(now)
+	}
 }
 
 func (h *Handler) getRecurring(ctx context.Context, id int64) (models.RecurringCharge, error) {
-	return scanRecurring(h.Pool.QueryRow(ctx,
-		`SELECT `+recurringCols+` FROM recurring_charges WHERE id=$1`, id))
+	return scanRecurring(h.Pool.QueryRow(ctx, recurringSelect+` WHERE rc.id=$1`, id))
 }
 
-func (h *Handler) loadRecurringCharges(ctx context.Context, personID int64, now time.Time) ([]models.RecurringCharge, error) {
+func (h *Handler) loadRecurringCharges(ctx context.Context, personID int64, agreements []models.FlatRatePeriod, vehPaid map[int64]bool, now time.Time) ([]models.RecurringCharge, error) {
 	rows, err := h.Pool.Query(ctx,
-		`SELECT `+recurringCols+` FROM recurring_charges WHERE person_id=$1 ORDER BY start_date DESC, id DESC`, personID)
+		recurringSelect+` WHERE rc.person_id=$1 ORDER BY rc.start_date DESC, rc.id DESC`, personID)
 	if err != nil {
 		return nil, err
 	}
@@ -58,15 +93,17 @@ func (h *Handler) loadRecurringCharges(ctx context.Context, personID int64, now 
 		if serr != nil {
 			return nil, serr
 		}
-		deriveRecurring(&rc, now)
+		deriveRecurring(&rc, agreements, vehPaid, now)
 		out = append(out, rc)
 	}
 	return out, rows.Err()
 }
 
-// loadAllRecurringCharges groups every recurring charge by person (dashboard).
-func (h *Handler) loadAllRecurringCharges(ctx context.Context, now time.Time) (map[int64][]models.RecurringCharge, error) {
-	rows, err := h.Pool.Query(ctx, `SELECT `+recurringCols+` FROM recurring_charges`)
+// loadAllRecurringCharges groups every recurring charge by person (dashboard),
+// settling bound charges via each person's agreements and the global vehicle
+// paid map.
+func (h *Handler) loadAllRecurringCharges(ctx context.Context, agByPerson map[int64][]models.FlatRatePeriod, vehPaid map[int64]bool, now time.Time) (map[int64][]models.RecurringCharge, error) {
+	rows, err := h.Pool.Query(ctx, recurringSelect)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +114,7 @@ func (h *Handler) loadAllRecurringCharges(ctx context.Context, now time.Time) (m
 		if serr != nil {
 			return nil, serr
 		}
-		deriveRecurring(&rc, now)
+		deriveRecurring(&rc, agByPerson[rc.PersonID], vehPaid, now)
 		out[rc.PersonID] = append(out[rc.PersonID], rc)
 	}
 	return out, rows.Err()
@@ -105,13 +142,19 @@ func recurringMonthly(list []models.RecurringCharge, year int, now time.Time) []
 }
 
 // recurringSums returns the accrued and paid totals (euros) of a person's
-// recurring charges as of now, reusing the flat-rate period math.
-func recurringSums(list []models.RecurringCharge, now time.Time) (accrued, paid float64) {
+// recurring charges as of now, reusing the flat-rate period math. A bound charge
+// is settled via its Gefährt/Pauschale; a person-level one via its own flags.
+func recurringSums(list []models.RecurringCharge, agreements []models.FlatRatePeriod, vehPaid map[int64]bool, now time.Time) (accrued, paid float64) {
 	until := now.AddDate(0, 0, 1)
 	for i := range list {
-		p := list[i].AsPeriod()
+		rc := &list[i]
+		p := rc.AsPeriod()
 		accrued += p.CostInRange(p.StartDate, until)
-		paid += float64(p.PaidCentsInRange(p.StartDate, until)) / 100
+		if rc.VehicleID != nil {
+			paid += recurringPaidBound(rc, agreements, vehPaid[*rc.VehicleID], now)
+		} else {
+			paid += float64(p.PaidCentsInRange(p.StartDate, until)) / 100
+		}
 	}
 	return round2(accrued), round2(paid)
 }
@@ -123,7 +166,19 @@ func (h *Handler) ListRecurringCharges(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	list, err := h.loadRecurringCharges(r.Context(), id, time.Now())
+	now := time.Now()
+	// Bound charges settle via the person's Pauschalen / vehicle paid flags.
+	agreements, err := h.loadAgreements(r.Context(), id, now)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	vehicles, _, err := h.loadVehiclesWithCategories(r, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	list, err := h.loadRecurringCharges(r.Context(), id, agreements, vehiclePaidMap(vehicles), now)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -137,6 +192,25 @@ type recurringRequest struct {
 	Period      string   `json:"period"`
 	StartDate   string   `json:"start_date"`
 	EndDate     *string  `json:"end_date"`
+	VehicleID   *int64   `json:"vehicle_id"` // optional binding to a Gefährt
+}
+
+// vehicleBelongsTo reports a 400 reason if the bound vehicle does not belong to
+// personID (or does not exist); empty when valid or unbound. A non-nil error is a
+// 500.
+func (h *Handler) vehicleBelongsTo(ctx context.Context, vehicleID *int64, personID int64) (string, error) {
+	if vehicleID == nil {
+		return "", nil
+	}
+	var owner int64
+	err := h.Pool.QueryRow(ctx, `SELECT person_id FROM vehicles WHERE id=$1`, *vehicleID).Scan(&owner)
+	if err == pgx.ErrNoRows || (err == nil && owner != personID) {
+		return "vehicle does not belong to that person", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return "", nil
 }
 
 // parse validates and normalizes a recurring-charge request.
@@ -189,14 +263,21 @@ func (h *Handler) CreateRecurringCharge(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+	if badMsg, verr := h.vehicleBelongsTo(r.Context(), req.VehicleID, personID); verr != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	} else if badMsg != "" {
+		writeError(w, http.StatusBadRequest, badMsg)
+		return
+	}
 	var id int64
 	err := h.Pool.QueryRow(r.Context(),
-		`INSERT INTO recurring_charges (person_id, description, amount, period, start_date, end_date)
-		 VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-		personID, desc, amount, period, start, end).Scan(&id)
+		`INSERT INTO recurring_charges (person_id, vehicle_id, description, amount, period, start_date, end_date)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+		personID, req.VehicleID, desc, amount, period, start, end).Scan(&id)
 	if err != nil {
 		if isForeignKeyViolation(err) {
-			writeError(w, http.StatusBadRequest, "person does not exist")
+			writeError(w, http.StatusBadRequest, "person or vehicle does not exist")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "could not create recurring charge")
@@ -206,7 +287,9 @@ func (h *Handler) CreateRecurringCharge(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
 }
 
-// UpdateRecurringCharge edits a recurring charge's terms (payment state kept).
+// UpdateRecurringCharge edits a recurring charge's terms. Changing the vehicle
+// binding resets the payment state (a bound charge settles via its Gefährt, so
+// its own flags would be meaningless / stale after the binding changes).
 func (h *Handler) UpdateRecurringCharge(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
@@ -223,11 +306,35 @@ func (h *Handler) UpdateRecurringCharge(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+	existing, gerr := h.getRecurring(r.Context(), id)
+	if gerr == pgx.ErrNoRows {
+		writeError(w, http.StatusNotFound, "recurring charge not found")
+		return
+	}
+	if gerr != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if badMsg, verr := h.vehicleBelongsTo(r.Context(), req.VehicleID, existing.PersonID); verr != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	} else if badMsg != "" {
+		writeError(w, http.StatusBadRequest, badMsg)
+		return
+	}
 	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE recurring_charges SET description=$1, amount=$2, period=$3, start_date=$4,
-		        end_date=$5, updated_at=now() WHERE id=$6`,
-		desc, amount, period, start, end, id)
+		`UPDATE recurring_charges SET description=$1, amount=$2, period=$3, start_date=$4, end_date=$5,
+		        vehicle_id=$6,
+		        paid = CASE WHEN vehicle_id IS DISTINCT FROM $6 THEN false ELSE paid END,
+		        paid_periods = CASE WHEN vehicle_id IS DISTINCT FROM $6 THEN '{}'::text[] ELSE paid_periods END,
+		        paid_fixed = CASE WHEN vehicle_id IS DISTINCT FROM $6 THEN '{}'::jsonb ELSE paid_fixed END,
+		        updated_at=now() WHERE id=$7`,
+		desc, amount, period, start, end, req.VehicleID, id)
 	if err != nil {
+		if isForeignKeyViolation(err) {
+			writeError(w, http.StatusBadRequest, "vehicle does not exist")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not update recurring charge")
 		return
 	}
