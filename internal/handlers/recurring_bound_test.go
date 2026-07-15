@@ -79,7 +79,7 @@ func TestRecurringPaidBound(t *testing.T) {
 
 // TestRecurringPaidBoundMidPeriodStart covers a charge that begins mid-period
 // with a Pauschale starting on the same day: the first (partial) period must be
-// recognised as covered, not skipped because its calendar start predates the
+// recognized as covered, not skipped because its calendar start predates the
 // Pauschale.
 func TestRecurringPaidBoundMidPeriodStart(t *testing.T) {
 	mustDate := func(s string) time.Time {
