@@ -247,6 +247,16 @@ func (req *agreementRequest) parse() (models.FlatRatePeriod, string) {
 	if !validNoteLength(req.Note) {
 		return a, "note is too long"
 	}
+	for _, nv := range req.NewVehicles {
+		if !validNameLength(nv.Label) || !validNameLength(nv.LicensePlate) {
+			return a, "vehicle label or license plate is too long"
+		}
+	}
+	for _, ev := range req.EditVehicles {
+		if !validNameLength(ev.Label) || !validNameLength(ev.LicensePlate) {
+			return a, "vehicle label or license plate is too long"
+		}
+	}
 	seen := map[int64]bool{}
 	vids := []int64{}
 	for _, v := range req.VehicleIDs {

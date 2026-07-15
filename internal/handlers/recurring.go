@@ -225,6 +225,9 @@ func (req *recurringRequest) parse() (desc, period string, amount float64, start
 	if desc == "" {
 		return "", "", 0, time.Time{}, nil, "description is required"
 	}
+	if !validNameLength(desc) {
+		return "", "", 0, time.Time{}, nil, "description is too long"
+	}
 	if req.Amount == nil || *req.Amount < 0 {
 		return "", "", 0, time.Time{}, nil, "amount must not be negative"
 	}

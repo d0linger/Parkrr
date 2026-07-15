@@ -7,7 +7,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/preining/parkrr/internal/auth"
 )
+
+func ptr[T any](v T) *T { return &v }
 
 func TestInputLengthValidation(t *testing.T) {
 	h := &Handler{}
@@ -26,6 +30,48 @@ func TestInputLengthValidation(t *testing.T) {
 		wantStatus int
 		errMsg     string
 	}{
+		{
+			name:       "CreateAgreement: Inline Vehicle Label too long",
+			path:       "/api/persons/1/agreements",
+			method:     "POST",
+			body:       agreementRequest{Amount: ptr(100.0), StartDate: "2024-01-01", NewVehicles: []newVehicleReq{{Label: longName}}},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "vehicle label or license plate is too long",
+		},
+		{
+			name:       "CreateRecurringCharge: Description too long",
+			path:       "/api/persons/1/recurring",
+			method:     "POST",
+			body:       recurringRequest{Description: longName, Amount: ptr(50.0), Period: "monthly", StartDate: "2024-01-01"},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "description is too long",
+		},
+		{
+			name:       "CreateUser: Email too long",
+			path:       "/api/users",
+			method:     "POST",
+			body:       userRequest{Username: "newuser", Email: longEmail, Password: "password123", Role: "editor"},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "email is too long",
+		},
+		{
+			name:       "PasskeyRegisterBegin: Name too long",
+			path:       "/api/passkeys/register/begin",
+			method:     "POST",
+			body:       struct {
+				Name string `json:"name"`
+			}{Name: longName},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "name is too long",
+		},
+		{
+			name:       "ChangeVehicleStatus: Note too long",
+			path:       "/api/vehicles/1/status",
+			method:     "POST",
+			body:       statusRequest{Status: "stored", Note: longNote},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "note is too long",
+		},
 		{
 			name:       "CreatePerson: First Name too long",
 			path:       "/api/persons",
@@ -107,6 +153,21 @@ func TestInputLengthValidation(t *testing.T) {
 			w := httptest.NewRecorder()
 
 			switch tt.name {
+			case "CreateAgreement: Inline Vehicle Label too long":
+				req.SetPathValue("id", "1")
+				h.CreateAgreement(w, req)
+			case "CreateRecurringCharge: Description too long":
+				req.SetPathValue("id", "1")
+				h.CreateRecurringCharge(w, req)
+			case "CreateUser: Email too long":
+				h.CreateUser(w, req)
+			case "PasskeyRegisterBegin: Name too long":
+				wa, _ := auth.NewWebAuthnService(nil, "example.com", "Parkrr", []string{"https://example.com"})
+				ah := &AuthHandler{Handler: h, WebAuthn: wa}
+				ah.PasskeyRegisterBegin(w, req)
+			case "ChangeVehicleStatus: Note too long":
+				req.SetPathValue("id", "1")
+				h.ChangeVehicleStatus(w, req)
 			case "CreatePerson: First Name too long", "CreatePerson: Last Name too long", "CreatePerson: Email too long", "CreatePerson: Phone too long", "CreatePerson: Address too long", "CreatePerson: Note too long":
 				h.CreatePerson(w, req)
 			case "CreateCategory: Name too long":
