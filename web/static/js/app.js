@@ -1486,6 +1486,7 @@
                 { name: 'note', label: 'Notiz (optional)', value: existing?.note },
             ],
             onRender: (body) => {
+                segmentedField(body, 'period', [{ v: 'monthly', l: 'pro Monat' }, { v: 'yearly', l: 'pro Jahr' }]);
                 if (!state.categories.length) { body.append(el('div', { class: 'card-meta' }, 'Zuerst einen Tarif anlegen.')); return; }
                 body.append(el('label', {}, 'Gefährte dieser Pauschale'));
                 listBox = el('div', { class: 'new-vehicles' });
@@ -1672,6 +1673,7 @@
                 { name: 'notes', label: 'Notizen', type: 'textarea', value: existing?.notes },
             ],
             onRender: (body) => {
+                segmentedField(body, 'billing_period', [{ v: 'monthly', l: 'monatlich' }, { v: 'yearly', l: 'jährlich' }]);
                 const rateInp = body.querySelector('#f_rate');
                 const catInp = body.querySelector('#f_category_id');
                 const perInp = body.querySelector('#f_billing_period');
@@ -1935,6 +1937,33 @@
             () => api.del('/charges/' + it.id), () => render(), node);
     }
 
+    // Turn a formModal <select name=field> into a Parkrr segmented pill (the tab
+    // style) that drives the hidden select — so formModal still reads the value
+    // and any change-listeners on the select keep firing. opts: [{ v, l }].
+    function segmentedField(body, name, opts) {
+        const sel = body.querySelector('#f_' + name);
+        if (!sel) return;
+        // Announce the visible, localized label ("Abrechnung"/"Zeitraum"), not the
+        // internal field name, to screen readers.
+        const lbl = body.querySelector('label[for="f_' + name + '"]');
+        const ariaLabel = (lbl && lbl.textContent.trim()) || name;
+        sel.style.display = 'none';
+        const seg = el('div', { class: 'segments', role: 'group', 'aria-label': ariaLabel, style: 'margin-bottom:0' });
+        const btns = [];
+        opts.forEach((o) => {
+            const b = el('button', {
+                type: 'button', class: sel.value === o.v ? 'active' : '', 'aria-pressed': String(sel.value === o.v),
+                onclick: () => {
+                    sel.value = o.v;
+                    btns.forEach((x) => { const on = x === b; x.classList.toggle('active', on); x.setAttribute('aria-pressed', String(on)); });
+                    sel.dispatchEvent(new Event('change'));
+                },
+            }, o.l);
+            btns.push(b); seg.append(b);
+        });
+        sel.after(seg);
+    }
+
     async function chargeForm(presetPerson, existing) {
         if (!state.persons.length) { toast('Zuerst eine Person anlegen', 'error'); return; }
         const svcOptions = [{ value: '', label: '— frei —' }, ...state.services.filter((s) => !s.archived).map((s) => ({ value: String(s.id), label: `${s.name} (${eur(s.default_amount)})` }))];
@@ -1980,6 +2009,12 @@
                 };
                 const billing = body.querySelector('#f_billing');
                 billing.addEventListener('change', () => applyMode(billing.value));
+                // Present the billing type as a Parkrr segmented pill driving the
+                // hidden select. Only for new positions — when editing a one-off the
+                // type is fixed and the field stays hidden.
+                if (!existing) {
+                    segmentedField(body, 'billing', [{ v: 'once', l: 'einmalig' }, { v: 'monthly', l: 'monatlich' }, { v: 'yearly', l: 'jährlich' }]);
+                }
                 if (existing) { billing.value = 'once'; setShown('billing', false); } // editing a one-off: type fixed
                 applyMode(billing.value);
 
