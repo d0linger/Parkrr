@@ -337,6 +337,7 @@ func (a *FlatRatePeriod) AccruedAsOf(asOf time.Time) float64 {
 type RecurringCharge struct {
 	ID          int64              `json:"id"`
 	PersonID    int64              `json:"person_id"`
+	VehicleID   *int64             `json:"vehicle_id"` // nil = person-level, directly payable
 	Description string             `json:"description"`
 	Amount      float64            `json:"amount"`
 	Period      string             `json:"period"` // monthly | yearly
@@ -349,17 +350,23 @@ type RecurringCharge struct {
 	UpdatedAt   time.Time          `json:"updated_at"`
 
 	// Derived (not stored).
-	Accrued     float64            `json:"accrued"`
-	Settled     bool               `json:"settled"`
-	PeriodCosts map[string]float64 `json:"period_costs,omitempty"`
+	Accrued      float64            `json:"accrued"`
+	Settled      bool               `json:"settled"`
+	PeriodCosts  map[string]float64 `json:"period_costs,omitempty"`
+	VehicleLabel string             `json:"vehicle_label,omitempty"` // display label when bound
 }
 
 // AsPeriod returns a FlatRatePeriod view so the recurring charge reuses the exact
-// prorated accrual and per-period payment math as flat-rate agreements.
+// prorated accrual and per-period payment math as flat-rate agreements. A bound
+// charge carries its vehicle id so coverage/settlement can attribute it.
 func (rc *RecurringCharge) AsPeriod() FlatRatePeriod {
+	vids := []int64{}
+	if rc.VehicleID != nil {
+		vids = []int64{*rc.VehicleID}
+	}
 	return FlatRatePeriod{
 		Amount: rc.Amount, Period: rc.Period, StartDate: rc.StartDate, EndDate: rc.EndDate,
-		Paid: rc.Paid, PaidPeriods: rc.PaidPeriods, PaidFixed: rc.PaidFixed, VehicleIDs: []int64{},
+		Paid: rc.Paid, PaidPeriods: rc.PaidPeriods, PaidFixed: rc.PaidFixed, VehicleIDs: vids,
 	}
 }
 

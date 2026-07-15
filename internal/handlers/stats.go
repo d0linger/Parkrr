@@ -161,7 +161,8 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	until := now.AddDate(0, 0, 1)
 	rentAccrued, rentPaid := personRent(agreements, vehicles, cats, time.Time{}, until)
 
-	recurs, err := h.loadRecurringCharges(r.Context(), id, now)
+	vehPaid := vehiclePaidMap(vehicles)
+	recurs, err := h.loadRecurringCharges(r.Context(), id, agreements, vehPaid, now)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -222,12 +223,12 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	// Extra charges are billed on top of rent; a bound charge is paid when its
 	// covering Pauschale's period is paid (or the vehicle's own paid flag is set),
 	// a standalone charge when its own flag is set.
-	totalCharges, paidCharges, err := h.personChargeSums(r.Context(), id, agreements, vehiclePaidMap(vehicles))
+	totalCharges, paidCharges, err := h.personChargeSums(r.Context(), id, agreements, vehPaid)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	recAccrued, recPaid := recurringSums(recurs, now)
+	recAccrued, recPaid := recurringSums(recurs, agreements, vehPaid, now)
 
 	resp.TotalAccrued = round2(rentAccrued)
 	resp.TotalCharges = round2(totalCharges + recAccrued)
@@ -378,13 +379,13 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Recurring extra costs accrue per period into the same charge totals.
-	recurByPerson, err := h.loadAllRecurringCharges(ctx, now)
+	recurByPerson, err := h.loadAllRecurringCharges(ctx, agByPerson, vehPaid, now)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 	for pid, list := range recurByPerson {
-		acc, pd := recurringSums(list, now)
+		acc, pd := recurringSums(list, agByPerson[pid], vehPaid, now)
 		chargesByPerson[pid] += acc
 		paidChargesByPerson[pid] += pd
 		for i := range list {

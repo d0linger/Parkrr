@@ -849,6 +849,17 @@
         const [vehicles, charges] = await Promise.all([
             api.get('/vehicles?person_id=' + id), api.get('/charges?person_id=' + id),
         ]);
+        const recs = stats.recurring_charges || [];
+        // Per-vehicle summary of bound extra costs (one-off total + recurring
+        // accrued), surfaced on the vehicle cards and their Pauschale nesting.
+        const chargeByVeh = {};
+        const addBoundCharge = (vid, amt) => {
+            if (vid == null) return;
+            const e = chargeByVeh[vid] || (chargeByVeh[vid] = { sum: 0, count: 0 });
+            e.sum += Number(amt) || 0; e.count += 1;
+        };
+        charges.forEach((c) => addBoundCharge(c.vehicle_id, c.total));
+        recs.forEach((rc) => addBoundCharge(rc.vehicle_id, rc.accrued));
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' },
             el('button', { class: 'back-btn', onclick: () => navigate('persons'), 'aria-label': 'Zurück' }, '‹'),
@@ -885,11 +896,11 @@
                     activeAg.length ? el('span', { class: 'sec-count' }, activeAg.length) : null),
                 canBill() ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => agreementForm(id, vehicles) }, '+ Pauschale') : null));
             if (!ags.length) frCard.append(el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Keine Pauschale – Abrechnung je Gefährt.'));
-            else activeAg.forEach((a) => frCard.append(agreementRow(id, a, vehicles)));
+            else activeAg.forEach((a) => frCard.append(agreementRow(id, a, vehicles, chargeByVeh)));
             if (activeAg.length === 0 && ags.length) frCard.append(el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Keine laufende Pauschale.'));
             if (endedAg.length) {
                 const det = persistDetails('person-ag-archive-' + id, 'archive-section', 'Beendete Pauschalen (' + endedAg.length + ')', false);
-                endedAg.forEach((a) => det.append(agreementRow(id, a, vehicles)));
+                endedAg.forEach((a) => det.append(agreementRow(id, a, vehicles, chargeByVeh)));
                 frCard.append(det);
             }
             page.append(frCard);
@@ -906,16 +917,15 @@
         if (canManage()) vh.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => vehicleForm(null, id) }, '+ Gefährt'));
         page.append(vh);
         if (!activeVeh.length) page.append(el('p', { class: 'muted' }, 'Keine einzeln abgerechneten Gefährte.'));
-        else activeVeh.forEach((v) => page.append(vehicleCard(v, { linkable: true })));
+        else activeVeh.forEach((v) => page.append(vehicleCard(v, { linkable: true, chargeInfo: chargeByVeh[v.id] })));
         if (archivedVeh.length) {
             const det = persistDetails('person-archive-' + id, 'archive-section', 'Archiv (' + archivedVeh.length + ')', false);
-            archivedVeh.forEach((v) => det.append(vehicleCard(v, { linkable: true })));
+            archivedVeh.forEach((v) => det.append(vehicleCard(v, { linkable: true, chargeInfo: chargeByVeh[v.id] })));
             page.append(det);
         }
 
         // Zusatzkosten: one section for both — recurring as accruing cards on top,
         // one-off as rows below. The "+ Position" dialog chooses the billing type.
-        const recs = stats.recurring_charges || [];
         const chCount = charges.length + recs.length;
         const ch = el('div', { class: 'page-head section-head' },
             el('div', { class: 'sec-group' }, el('h3', { class: 'sec-eyebrow' }, 'Zusatzkosten'),
@@ -1005,7 +1015,7 @@
         return { covered, active, owed, settled: covered && owed <= 0.005 };
     }
 
-    function vehicleCard(v, { linkable = true } = {}) {
+    function vehicleCard(v, { linkable = true, chargeInfo = null } = {}) {
         const title = vehicleTitle(v);
         const rateUnit = v.billing_period === 'yearly' ? '/Jahr' : '/Monat';
         const c = coverage(v);
@@ -1024,6 +1034,12 @@
                 v.photo_count ? el('span', { class: 'muted' }, '  ', icon('camera', 13), ' ' + v.photo_count) : null),
             el('div', { class: 'card-meta' }, rateLine),
             accruedLine);
+        // Bound extra costs attributed to this Gefährt (also shown when nested under
+        // a Pauschale), so the total picture is visible without opening the detail.
+        if (chargeInfo && chargeInfo.sum > 0.005) {
+            main.append(el('div', { class: 'card-meta', style: 'margin-top:.2rem;color:var(--accent);font-weight:600' },
+                'Zusatzkosten: ' + eur(chargeInfo.sum) + (chargeInfo.count > 1 ? ' · ' + chargeInfo.count + ' Pos.' : '')));
+        }
         const actions = el('div', { class: 'card-actions' },
             // Archived vehicles are read-only, so no inline edit; delete stays for
             // genuine mistakes.
@@ -1088,7 +1104,7 @@
     }
 
     // ---- flat-rate agreements (Pauschale-Einträge) ----
-    function agreementRow(personId, a, vehicles) {
+    function agreementRow(personId, a, vehicles, chargeByVeh = {}) {
         const unit = a.period === 'yearly' ? '/Jahr' : '/Monat';
         const covered = (a.vehicle_ids && a.vehicle_ids.length)
             ? a.vehicle_ids.map((vid) => { const v = vehicles.find((x) => x.id === vid); return v ? vehicleTitle(v) : '#' + vid; }).join(', ')
@@ -1126,7 +1142,7 @@
             : vehicles;
         if (sub.length) {
             const det = persistDetails('ag-veh-' + a.id, 'archive-section', 'Gefährte (' + sub.length + ')', true);
-            sub.forEach((v) => det.append(vehicleCard(v, { linkable: true })));
+            sub.forEach((v) => det.append(vehicleCard(v, { linkable: true, chargeInfo: chargeByVeh[v.id] })));
             row.append(det);
         }
         return row;
@@ -1241,21 +1257,32 @@
     // generic period helpers (agreementPeriods / periodFixed / periodPaid / dialog).
     function recurringRow(personId, rc) {
         const unit = rc.period === 'yearly' ? '/Jahr' : '/Monat';
+        // A bound charge is settled via its Gefährt/Pauschale (read-only here); a
+        // free one keeps its own per-period payment controls.
+        const bound = rc.vehicle_id != null;
         const partial = !rc.paid && (((rc.paid_periods && rc.paid_periods.length)) || (rc.paid_fixed && Object.keys(rc.paid_fixed).length));
-        const stLabel = rc.paid ? 'Bezahlt' : partial ? 'Teilweise bezahlt' : 'Offen';
-        const stCls = rc.paid ? 'badge-active' : partial ? 'badge-cat' : 'badge-ended';
+        let stLabel, stCls;
+        if (bound) {
+            stLabel = (rc.settled ? 'bezahlt' : 'offen') + ' · über ' + esc(rc.vehicle_label || 'Gefährt');
+            stCls = rc.settled ? 'badge-active' : 'badge-ended';
+        } else {
+            stLabel = rc.paid ? 'Bezahlt' : partial ? 'Teilweise bezahlt' : 'Offen';
+            stCls = rc.paid ? 'badge-active' : partial ? 'badge-cat' : 'badge-ended';
+        }
+        const open = bound ? !rc.settled : !rc.paid;
         const config = eur(rc.amount) + unit + ' · ' + fmtDate(rc.start_date) + (rc.end_date ? ' – ' + fmtDate(rc.end_date) : ' – offen');
         const row = el('div', { class: 'card', style: 'margin-top:.5rem' });
         row.append(el('div', { class: 'card-row' },
             el('div', { style: 'flex:1' },
                 el('div', { class: 'ag-status-row' }, el('span', { class: 'badge ' + stCls }, stLabel)),
                 el('div', {}, el('strong', {}, esc(rc.description))),
-                el('div', { class: 'ag-accrued' + (rc.paid ? '' : ' is-open') }, eur(rc.accrued), el('span', { class: 'unit' }, ' aufgelaufen')),
+                el('div', { class: 'ag-accrued' + (open ? ' is-open' : '') }, eur(rc.accrued), el('span', { class: 'unit' }, ' aufgelaufen')),
                 el('div', { class: 'card-meta' }, config)),
             canBill() ? el('div', { class: 'card-actions' },
                 el('button', { class: 'btn btn-ghost btn-sm', title: rc.description + ' bearbeiten', 'aria-label': rc.description + ' bearbeiten', onclick: () => recurringForm(personId, rc) }, icon('edit')),
                 el('button', { class: 'btn btn-ghost btn-sm', title: rc.description + ' löschen', 'aria-label': rc.description + ' löschen', onclick: (e) => delRecurring(rc, e.currentTarget.closest('.card')) }, icon('trash'))) : null));
-        if (canBill()) row.append(recurringPayments(rc));
+        // Bound charges follow the Gefährt/Pauschale — no own payment sliders.
+        if (canBill() && !bound) row.append(recurringPayments(rc));
         return row;
     }
     function recurringPayments(rc) {
@@ -1325,6 +1352,19 @@
         return segThumb(seg);
     }
     async function recurringForm(personId, existing) {
+        // Bindable vehicles: active + not archived, plus the charge's own bound one
+        // so editing a charge on an archived vehicle keeps the binding.
+        let vs = [];
+        let vehLoadFailed = false;
+        try { vs = await api.get('/vehicles?person_id=' + personId); } catch { vehLoadFailed = true; }
+        const vehOpts = [{ value: '', label: '— frei (direkt bezahlbar) —' }];
+        if (vehLoadFailed && existing?.vehicle_id != null) {
+            // List unavailable: keep the current binding selectable so saving
+            // unrelated edits never silently unbinds the charge.
+            vehOpts.push({ value: existing.vehicle_id, label: (existing.vehicle_label || 'Aktuelles Gefährt') + ' · Liste nicht geladen' });
+        } else {
+            vehOpts.push(...vs.filter((v) => !v.archived || v.id === existing?.vehicle_id).map((v) => ({ value: v.id, label: vehicleTitle(v) + (v.archived ? ' · archiviert' : '') })));
+        }
         await formModal({
             title: existing ? 'Wiederkehrende Kosten bearbeiten' : 'Neue wiederkehrende Kosten',
             submitLabel: 'Speichern',
@@ -1334,11 +1374,13 @@
                 { name: 'period', label: 'Abrechnung', type: 'select', value: existing?.period || 'monthly', options: [{ value: 'monthly', label: 'monatlich' }, { value: 'yearly', label: 'jährlich' }] },
                 { name: 'start_date', label: 'Gültig ab', type: 'date', required: true, value: existing?.start_date ? existing.start_date.slice(0, 10) : today() },
                 { name: 'end_date', label: 'Gültig bis (optional)', type: 'date', value: existing?.end_date ? existing.end_date.slice(0, 10) : '', help: 'Leer = laufend. Läuft je Zeitraum auf und ist je Zeitraum bezahlbar.' },
+                { name: 'vehicle_id', label: 'Zuordnung (optional)', type: 'select', value: existing?.vehicle_id ?? '', options: vehOpts, help: 'An ein Gefährt binden → erscheint dort, Bezahlt läuft über Gefährt/Pauschale. Sonst frei markierbar.' },
             ],
             save: async (data) => {
                 const payload = {
                     description: data.description, amount: Number(data.amount), period: data.period,
                     start_date: data.start_date, end_date: data.end_date === '' ? null : data.end_date,
+                    vehicle_id: data.vehicle_id ? Number(data.vehicle_id) : null,
                 };
                 if (existing) await api.put('/recurring/' + existing.id, payload);
                 else await api.post('/persons/' + personId + '/recurring', payload);
@@ -1672,6 +1714,16 @@
         const v = vehicles.find((x) => x.id === id);
         if (!v) { page.innerHTML = ''; page.append(emptyState('car', 'Gefährt nicht gefunden.')); return; }
         const vc = coverage(v);
+        // Extra costs bound to this Gefährt (one-off + recurring), shown here so the
+        // full picture lives at the Gefährt, not only on the person page. A failed
+        // fetch propagates to the route's error handling rather than silently
+        // rendering an empty (and misleading) "no extra costs" state.
+        const [pCharges, pRecurring] = await Promise.all([
+            api.get('/charges?person_id=' + v.person_id),
+            api.get('/persons/' + v.person_id + '/recurring'),
+        ]);
+        const vCharges = pCharges.filter((c) => c.vehicle_id === v.id);
+        const vRecurring = pRecurring.filter((rc) => rc.vehicle_id === v.id);
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' },
             el('button', { class: 'back-btn', onclick: () => navigate('vehicles'), 'aria-label': 'Zurück' }, '‹'),
@@ -1690,6 +1742,21 @@
                 : el('div', { class: 'balance' }, el('strong', {}, vc.covered ? 'Aufgelaufen (Rest)' : 'Aufgelaufen'),
                     el('strong', { class: 'amt' }, eur(vc.owed))),
             v.notes ? el('div', { class: 'card-meta', style: 'margin-top:.5rem' }, esc(v.notes)) : null));
+
+        // Bound extra costs, with a subtotal — kept separate from the rent
+        // "Aufgelaufen" above (they are billed on top, exactly like on the person page).
+        if (vCharges.length || vRecurring.length) {
+            let sub = 0;
+            vCharges.forEach((c) => { sub += Number(c.total) || 0; });
+            vRecurring.forEach((rc) => { sub += Number(rc.accrued) || 0; });
+            const zk = el('div', { class: 'card' }, el('h3', {}, 'Zusatzkosten'));
+            vRecurring.forEach((rc) => zk.append(recurringRow(v.person_id, rc)));
+            if (vCharges.length) zk.append(financeList(vCharges));
+            zk.append(el('div', { class: 'balance', style: 'margin-top:.6rem;border-top:1px dashed var(--border);padding-top:.6rem' },
+                el('strong', {}, 'Zusatzkosten aufgelaufen'),
+                el('strong', { class: 'amt', style: 'color:var(--accent)' }, eur(sub))));
+            page.append(zk);
+        }
 
         if (v.archived) {
             page.append(el('div', { class: 'card is-archived' },
@@ -1893,7 +1960,7 @@
                 { name: 'charged_on', label: 'Datum', type: 'date', value: existing?.charged_on ? existing.charged_on.slice(0, 10) : today() },
                 { name: 'start_date', label: 'Gültig ab', type: 'date', value: today() },
                 { name: 'end_date', label: 'Gültig bis (optional)', type: 'date', value: '', help: 'Leer = laufend. Läuft je Zeitraum auf und ist je Zeitraum bezahlbar.' },
-                { name: 'vehicle_id', label: 'Zuordnung (optional)', type: 'select', value: existing?.vehicle_id ?? '', options: initVehOpts, help: 'An ein Gefährt binden → Bezahlt läuft über das Gefährt. Sonst frei markierbar.' },
+                { name: 'vehicle_id', label: 'Zuordnung (optional)', type: 'select', value: existing?.vehicle_id ?? '', options: initVehOpts, help: 'An ein Gefährt binden → erscheint dort, Bezahlt läuft über Gefährt/Pauschale. Sonst frei markierbar.' },
             ],
             onRender: (body) => {
                 // Billing mode toggles which fields apply: once → Menge/Datum/Zuordnung;
@@ -1907,7 +1974,8 @@
                 };
                 const applyMode = (mode) => {
                     const once = mode === 'once';
-                    setShown('quantity', once); setShown('charged_on', once); setShown('vehicle_id', once);
+                    // Zuordnung gilt für alle Abrechnungsarten (einmalig wie wiederkehrend).
+                    setShown('quantity', once); setShown('charged_on', once); setShown('vehicle_id', true);
                     setShown('start_date', !once); setShown('end_date', !once);
                 };
                 const billing = body.querySelector('#f_billing');
@@ -1968,10 +2036,12 @@
                     if (existing) await api.put('/charges/' + existing.id, payload);
                     else await api.post('/charges', payload);
                 } else {
-                    // Recurring: monthly/yearly, accrues per period on the person.
+                    // Recurring: monthly/yearly, accrues per period; optionally bound to
+                    // a Gefährt (then settled via the Gefährt/Pauschale, like one-offs).
                     await api.post('/persons/' + personID + '/recurring', {
                         description: data.description, amount: Number(data.amount), period: data.billing,
                         start_date: data.start_date, end_date: data.end_date === '' ? null : data.end_date,
+                        vehicle_id: data.vehicle_id ? Number(data.vehicle_id) : null,
                     });
                 }
                 toast('Zusatzkosten gespeichert', 'success'); render();
