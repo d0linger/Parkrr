@@ -1980,6 +1980,27 @@
                 };
                 const billing = body.querySelector('#f_billing');
                 billing.addEventListener('change', () => applyMode(billing.value));
+                // Present the billing type as a Parkrr segmented control (the pill
+                // used for the Tarife/Dienste tabs) driving the hidden select, so
+                // formModal still reads its value. Only for new positions — when
+                // editing a one-off the type is fixed and the field stays hidden.
+                if (!existing) {
+                    billing.style.display = 'none';
+                    const seg = el('div', { class: 'segments', role: 'group', 'aria-label': 'Abrechnung', style: 'margin-bottom:0' });
+                    const btns = [];
+                    [{ v: 'once', l: 'einmalig' }, { v: 'monthly', l: 'monatlich' }, { v: 'yearly', l: 'jährlich' }].forEach((o) => {
+                        const b = el('button', {
+                            type: 'button', class: billing.value === o.v ? 'active' : '', 'aria-pressed': String(billing.value === o.v),
+                            onclick: () => {
+                                billing.value = o.v;
+                                btns.forEach((x) => { const on = x === b; x.classList.toggle('active', on); x.setAttribute('aria-pressed', String(on)); });
+                                billing.dispatchEvent(new Event('change'));
+                            },
+                        }, o.l);
+                        btns.push(b); seg.append(b);
+                    });
+                    billing.after(seg);
+                }
                 if (existing) { billing.value = 'once'; setShown('billing', false); } // editing a one-off: type fixed
                 applyMode(billing.value);
 
