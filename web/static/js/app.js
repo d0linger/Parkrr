@@ -1943,8 +1943,12 @@
     function segmentedField(body, name, opts) {
         const sel = body.querySelector('#f_' + name);
         if (!sel) return;
+        // Announce the visible, localized label ("Abrechnung"/"Zeitraum"), not the
+        // internal field name, to screen readers.
+        const lbl = body.querySelector('label[for="f_' + name + '"]');
+        const ariaLabel = (lbl && lbl.textContent.trim()) || name;
         sel.style.display = 'none';
-        const seg = el('div', { class: 'segments', role: 'group', 'aria-label': name, style: 'margin-bottom:0' });
+        const seg = el('div', { class: 'segments', role: 'group', 'aria-label': ariaLabel, style: 'margin-bottom:0' });
         const btns = [];
         opts.forEach((o) => {
             const b = el('button', {
