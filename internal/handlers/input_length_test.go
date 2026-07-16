@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/preining/parkrr/internal/auth"
 )
 
 func TestInputLengthValidation(t *testing.T) {
@@ -129,4 +131,138 @@ func TestInputLengthValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestExtraInputLengthValidation(t *testing.T) {
+	h := &Handler{}
+
+	wa, err := auth.NewWebAuthnService(nil, "localhost", "Test", []string{"http://localhost"})
+	if err != nil {
+		t.Fatalf("failed to build webauthn: %v", err)
+	}
+	ah := &AuthHandler{
+		Handler:  h,
+		WebAuthn: wa,
+	}
+
+	t.Run("PasskeyRegisterBegin: Name too long", func(t *testing.T) {
+		body := struct {
+			Name string `json:"name"`
+		}{
+			Name: strings.Repeat("a", maxNameLen+1),
+		}
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest("POST", "/api/passkeys/register/begin", bytes.NewReader(b))
+		w := httptest.NewRecorder()
+
+		ah.PasskeyRegisterBegin(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("got status %d, want %d", w.Code, http.StatusBadRequest)
+		}
+		var resp map[string]string
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		if !strings.Contains(resp["error"], "passkey name is too long") {
+			t.Errorf("unexpected error message: %q", resp["error"])
+		}
+	})
+
+	t.Run("ChangeVehicleStatus: Note too long", func(t *testing.T) {
+		body := struct {
+			Status string `json:"status"`
+			Note   string `json:"note"`
+		}{
+			Status: "stored",
+			Note:   strings.Repeat("a", maxNoteLen+1),
+		}
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest("POST", "/api/vehicles/1/status", bytes.NewReader(b))
+		req.SetPathValue("id", "1")
+		w := httptest.NewRecorder()
+
+		h.ChangeVehicleStatus(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("got status %d, want %d", w.Code, http.StatusBadRequest)
+		}
+		var resp map[string]string
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		if !strings.Contains(resp["error"], "note is too long") {
+			t.Errorf("unexpected error message: %q", resp["error"])
+		}
+	})
+
+	t.Run("CreateRecurringCharge: Description too long", func(t *testing.T) {
+		body := struct {
+			Description string `json:"description"`
+		}{
+			Description: strings.Repeat("a", maxNameLen+1),
+		}
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest("POST", "/api/persons/1/recurring", bytes.NewReader(b))
+		req.SetPathValue("id", "1")
+		w := httptest.NewRecorder()
+
+		h.CreateRecurringCharge(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("got status %d, want %d", w.Code, http.StatusBadRequest)
+		}
+		var resp map[string]string
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		if !strings.Contains(resp["error"], "description is too long") {
+			t.Errorf("unexpected error message: %q", resp["error"])
+		}
+	})
+
+	t.Run("CreateUser: Email too long", func(t *testing.T) {
+		body := struct {
+			Username string `json:"username"`
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}{
+			Username: "valid_user",
+			Email:    strings.Repeat("b", maxEmailLen+1),
+			Password: "valid_password",
+		}
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest("POST", "/api/users", bytes.NewReader(b))
+		w := httptest.NewRecorder()
+
+		h.CreateUser(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("got status %d, want %d", w.Code, http.StatusBadRequest)
+		}
+		var resp map[string]string
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		if !strings.Contains(resp["error"], "email is too long") {
+			t.Errorf("unexpected error message: %q", resp["error"])
+		}
+	})
+
+	t.Run("UpdateUser: Email too long", func(t *testing.T) {
+		body := struct {
+			Username string `json:"username"`
+			Email    string `json:"email"`
+		}{
+			Username: "valid_user",
+			Email:    strings.Repeat("b", maxEmailLen+1),
+		}
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest("PUT", "/api/users/1", bytes.NewReader(b))
+		req.SetPathValue("id", "1")
+		w := httptest.NewRecorder()
+
+		h.UpdateUser(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("got status %d, want %d", w.Code, http.StatusBadRequest)
+		}
+		var resp map[string]string
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		if !strings.Contains(resp["error"], "email is too long") {
+			t.Errorf("unexpected error message: %q", resp["error"])
+		}
+	})
 }

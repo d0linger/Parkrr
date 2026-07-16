@@ -394,6 +394,11 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	req.Note = trim(req.Note)
+	if !validNoteLength(req.Note) {
+		writeError(w, http.StatusBadRequest, "note is too long")
+		return
+	}
 	if !models.ValidStatuses[req.Status] {
 		writeError(w, http.StatusBadRequest, "invalid status")
 		return

@@ -17,3 +17,8 @@
 *Vulnerability:* Authentication identifiers (usernames) and credentials (passwords) lacked early length validation in the Login flow. This exposed the bcrypt comparison to resource exhaustion and allowed an attacker to exert memory pressure on the in-memory rate limiter by sending extremely large username strings used as throttle keys.
 *Learning:* Security boundaries must validate input size at the outermost layer. Protecting expensive cryptographic operations and stateful security primitives (like rate limiters) from malformed or over-sized input is a critical part of defense-in-depth.
 *Prevention:* Enforce strict maximum lengths on all authentication-related inputs (e.g., 100 chars for usernames, 72 bytes for passwords) before any processing or state lookup occurs.
+
+## 2026-07-15 - [Input Length Gaps on Secondary Operations and Metadata]
+*Vulnerability:* Secondary metadata fields (passkey names, vehicle status notes, recurring charge descriptions, and user emails) lacked early length validation, permitting unrestricted storage allocation and potential database bloat (DoS).
+*Learning:* Length validation must be uniform across all entities, not just primary login resources, as unchecked text fields in secondary metadata tables are equally prone to abuse and storage exhaust.
+*Prevention:* Consistently validate every input field against centralized size constraints immediately after decoding requests, before performing any storage or encryption operations.
