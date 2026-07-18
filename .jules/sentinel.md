@@ -17,3 +17,8 @@
 *Vulnerability:* Authentication identifiers (usernames) and credentials (passwords) lacked early length validation in the Login flow. This exposed the bcrypt comparison to resource exhaustion and allowed an attacker to exert memory pressure on the in-memory rate limiter by sending extremely large username strings used as throttle keys.
 *Learning:* Security boundaries must validate input size at the outermost layer. Protecting expensive cryptographic operations and stateful security primitives (like rate limiters) from malformed or over-sized input is a critical part of defense-in-depth.
 *Prevention:* Enforce strict maximum lengths on all authentication-related inputs (e.g., 100 chars for usernames, 72 bytes for passwords) before any processing or state lookup occurs.
+
+## 2026-07-16 - [Passkey Friendly Name Input Length Validation]
+*Vulnerability:* Unrestricted length on the passkey friendly name input (`name` field) on registration allowed for potential database bloat, excessively large cookie sizes for the encrypted ceremony state, and DoS risk via bloated payloads.
+*Learning:* Any user-supplied text field stored in cookies or persistent databases presents a risk of resource exhaustion or cookie size limit failures if it is not strictly bounded.
+*Prevention:* Enforce early length validation on all metadata fields, such as passkey friendly names, immediately upon decoding user-supplied payloads.
