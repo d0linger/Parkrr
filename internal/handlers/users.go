@@ -65,6 +65,10 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "username required (max 100) and password must be between 8 and 72 bytes")
 		return
 	}
+	if !validEmailLength(req.Email) {
+		writeError(w, http.StatusBadRequest, "email is too long")
+		return
+	}
 	if h.passwordBreached(r.Context(), req.Password) {
 		writeError(w, http.StatusBadRequest,
 			"this password has appeared in a known data breach; please choose another")
@@ -115,6 +119,10 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 	req.Username = trim(req.Username)
 	if !validUsernameLength(req.Username) {
 		writeError(w, http.StatusBadRequest, "username required (max 100)")
+		return
+	}
+	if !validEmailLength(req.Email) {
+		writeError(w, http.StatusBadRequest, "email is too long")
 		return
 	}
 	role, ok := normalizeRole(req.Role)
