@@ -92,6 +92,11 @@ func (h *AuthHandler) PasskeyRegisterBegin(w http.ResponseWriter, r *http.Reques
 	}
 	_ = decodeJSON(r, &body) // name is optional
 
+	if !validNameLength(trim(body.Name)) {
+		writeError(w, http.StatusBadRequest, "name is too long")
+		return
+	}
+
 	opts, sd, err := h.WebAuthn.BeginRegistration(r.Context(), u)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not start passkey registration")

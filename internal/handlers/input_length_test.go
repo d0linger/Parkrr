@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/preining/parkrr/internal/auth"
 )
 
 func TestInputLengthValidation(t *testing.T) {
@@ -98,6 +100,38 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "description is too long",
 		},
+		{
+			name:       "CreateUser: Email too long",
+			path:       "/api/users",
+			method:     "POST",
+			body:       userRequest{Username: "valid_name", Password: "valid_password_8", Email: longEmail, Role: "editor"},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "email is too long",
+		},
+		{
+			name:       "UpdateUser: Email too long",
+			path:       "/api/users/1",
+			method:     "PUT",
+			body:       userRequest{Username: "valid_name", Email: longEmail, Role: "editor"},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "email is too long",
+		},
+		{
+			name:       "PasskeyRegisterBegin: Name too long",
+			path:       "/api/passkeys/register/begin",
+			method:     "POST",
+			body:       struct {
+				Name string `json:"name"`
+			}{Name: longName},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "name is too long",
+		},
+	}
+
+	waService, _ := auth.NewWebAuthnService(nil, "localhost", "Parkrr", []string{"http://localhost"})
+	ah := &AuthHandler{
+		Handler:  h,
+		WebAuthn: waService,
 	}
 
 	for _, tt := range tests {
@@ -115,6 +149,13 @@ func TestInputLengthValidation(t *testing.T) {
 				h.CreateServiceType(w, req)
 			case "CreateCharge: Description too long":
 				h.CreateCharge(w, req)
+			case "CreateUser: Email too long":
+				h.CreateUser(w, req)
+			case "UpdateUser: Email too long":
+				req.SetPathValue("id", "1")
+				h.UpdateUser(w, req)
+			case "PasskeyRegisterBegin: Name too long":
+				ah.PasskeyRegisterBegin(w, req)
 			}
 
 			if w.Code != tt.wantStatus {
