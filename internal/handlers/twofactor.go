@@ -104,6 +104,13 @@ func (h *AuthHandler) TOTPDisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// An over-long password can't match (bcrypt caps at 72 bytes), so
+	// reject it up front rather than spending a bcrypt compare on it.
+	if len(req.Password) > maxPasswordLen {
+		writeError(w, http.StatusForbidden, "password is incorrect")
+		return
+	}
+
 	key, ok := h.checkRateLimit(w, r, u.Username)
 	if !ok {
 		return
@@ -149,6 +156,13 @@ func (h *AuthHandler) TOTPRegenerateBackup(w http.ResponseWriter, r *http.Reques
 	var req totpDisableRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	// An over-long password can't match (bcrypt caps at 72 bytes), so
+	// reject it up front rather than spending a bcrypt compare on it.
+	if len(req.Password) > maxPasswordLen {
+		writeError(w, http.StatusForbidden, "password is incorrect")
 		return
 	}
 
