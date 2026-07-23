@@ -148,10 +148,12 @@ func TestInputLengthValidation(t *testing.T) {
 			errMsg:     "notes is too long",
 		},
 		{
-			name:       "PasskeyRegisterBegin: Name too long",
-			path:       "/api/passkeys/register/begin",
-			method:     "POST",
-			body:       struct { Name string `json:"name"` }{ Name: longName },
+			name:   "PasskeyRegisterBegin: Name too long",
+			path:   "/api/passkeys/register/begin",
+			method: "POST",
+			body: struct {
+				Name string `json:"name"`
+			}{Name: longName},
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "name is too long",
 		},
