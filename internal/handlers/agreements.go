@@ -223,6 +223,16 @@ func agreementSaveError(err error, fallback string) (string, int) {
 // person id). VehicleIDs is normalised (deduplicated).
 func (req *agreementRequest) parse() (models.FlatRatePeriod, string) {
 	var a models.FlatRatePeriod
+	for _, nv := range req.NewVehicles {
+		if !validNameLength(trim(nv.Label)) || !validNameLength(trim(nv.LicensePlate)) {
+			return a, "name is too long"
+		}
+	}
+	for _, ev := range req.EditVehicles {
+		if !validNameLength(trim(ev.Label)) || !validNameLength(trim(ev.LicensePlate)) {
+			return a, "name is too long"
+		}
+	}
 	if req.Amount == nil || *req.Amount <= 0 {
 		return a, "amount must be greater than zero"
 	}
