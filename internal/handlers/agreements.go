@@ -247,6 +247,24 @@ func (req *agreementRequest) parse() (models.FlatRatePeriod, string) {
 	if !validNoteLength(req.Note) {
 		return a, "note is too long"
 	}
+	// Security: validate label and plate lengths for inline/edited vehicles in
+	// agreements to prevent database bloat and resource exhaustion (DoS).
+	for _, nv := range req.NewVehicles {
+		if !validNameLength(trim(nv.Label)) {
+			return a, "label is too long"
+		}
+		if !validNameLength(trim(nv.LicensePlate)) {
+			return a, "license_plate is too long"
+		}
+	}
+	for _, ev := range req.EditVehicles {
+		if !validNameLength(trim(ev.Label)) {
+			return a, "label is too long"
+		}
+		if !validNameLength(trim(ev.LicensePlate)) {
+			return a, "license_plate is too long"
+		}
+	}
 	seen := map[int64]bool{}
 	vids := []int64{}
 	for _, v := range req.VehicleIDs {

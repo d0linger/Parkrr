@@ -5,6 +5,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/preining/parkrr/internal/auth"
+	"github.com/preining/parkrr/internal/models"
 )
 
 // Regression for the bcrypt 72-byte limit: over-long passwords must be
@@ -62,6 +65,26 @@ func TestPasswordLengthPolicy(t *testing.T) {
 	(&Handler{}).UpdateUser(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("UpdateUser with %d-byte password: expected 400, got %d", len(long), rec.Code)
+	}
+
+	// TOTPDisable validates password length early.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/2fa/disable",
+		strings.NewReader(`{"password":"`+long+`"}`))
+	ah.TOTPDisable(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("TOTPDisable with %d-byte password: expected 403, got %d", len(long), rec.Code)
+	}
+
+	// TOTPRegenerateBackup validates password length early.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/2fa/backup-codes/regenerate",
+		strings.NewReader(`{"password":"`+long+`"}`))
+	u := &models.User{TOTPEnabled: true}
+	req = req.WithContext(auth.ContextWithUser(req.Context(), u))
+	ah.TOTPRegenerateBackup(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("TOTPRegenerateBackup with %d-byte password: expected 403, got %d", len(long), rec.Code)
 	}
 }
 

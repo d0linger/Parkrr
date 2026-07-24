@@ -7,7 +7,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/preining/parkrr/internal/auth"
+	"github.com/preining/parkrr/internal/models"
 )
+
+func floatPtr(f float64) *float64 { return &f }
 
 func TestInputLengthValidation(t *testing.T) {
 	h := &Handler{}
@@ -98,6 +103,38 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "description is too long",
 		},
+		{
+			name:       "CreateAgreement: Inline vehicle label too long",
+			path:       "/api/persons/1/agreements",
+			method:     "POST",
+			body:       agreementRequest{Amount: floatPtr(100), Period: "monthly", StartDate: "2026-01-01", NewVehicles: []newVehicleReq{{CategoryID: 1, Label: longName}}},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "label is too long",
+		},
+		{
+			name:       "CreateAgreement: Inline vehicle plate too long",
+			path:       "/api/persons/1/agreements",
+			method:     "POST",
+			body:       agreementRequest{Amount: floatPtr(100), Period: "monthly", StartDate: "2026-01-01", NewVehicles: []newVehicleReq{{CategoryID: 1, LicensePlate: longName}}},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "license_plate is too long",
+		},
+		{
+			name:       "CreateAgreement: Edit vehicle label too long",
+			path:       "/api/persons/1/agreements",
+			method:     "POST",
+			body:       agreementRequest{Amount: floatPtr(100), Period: "monthly", StartDate: "2026-01-01", EditVehicles: []editVehicleReq{{ID: 1, CategoryID: 1, Label: longName}}},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "label is too long",
+		},
+		{
+			name:       "CreateAgreement: Edit vehicle plate too long",
+			path:       "/api/persons/1/agreements",
+			method:     "POST",
+			body:       agreementRequest{Amount: floatPtr(100), Period: "monthly", StartDate: "2026-01-01", EditVehicles: []editVehicleReq{{ID: 1, CategoryID: 1, LicensePlate: longName}}},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "license_plate is too long",
+		},
 	}
 
 	for _, tt := range tests {
@@ -115,6 +152,9 @@ func TestInputLengthValidation(t *testing.T) {
 				h.CreateServiceType(w, req)
 			case "CreateCharge: Description too long":
 				h.CreateCharge(w, req)
+			case "CreateAgreement: Inline vehicle label too long", "CreateAgreement: Inline vehicle plate too long", "CreateAgreement: Edit vehicle label too long", "CreateAgreement: Edit vehicle plate too long":
+				req.SetPathValue("id", "1")
+				h.CreateAgreement(w, req)
 			}
 
 			if w.Code != tt.wantStatus {
@@ -128,5 +168,36 @@ func TestInputLengthValidation(t *testing.T) {
 				t.Errorf("got error %q, want it to contain %q", resp["error"], tt.errMsg)
 			}
 		})
+	}
+}
+
+func TestPasskeyInputLengthValidation(t *testing.T) {
+	wa, err := auth.NewWebAuthnService(nil, "localhost", "Parkrr", []string{"http://localhost"})
+	if err != nil {
+		t.Fatalf("failed to create WebAuthn service: %v", err)
+	}
+	ah := &AuthHandler{
+		Handler:  &Handler{},
+		WebAuthn: wa,
+	}
+	longName := strings.Repeat("a", maxNameLen+1)
+
+	// Create request with user in context because PasskeyRegisterBegin retrieves user from context.
+	u := &models.User{Username: "testuser"}
+	req := httptest.NewRequest(http.MethodPost, "/api/passkeys/register/begin", strings.NewReader(`{"name":"`+longName+`"}`))
+	req = req.WithContext(auth.ContextWithUser(req.Context(), u))
+
+	w := httptest.NewRecorder()
+	ah.PasskeyRegisterBegin(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("PasskeyRegisterBegin with long name: expected 400, got %d", w.Code)
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if !strings.Contains(resp["error"], "passkey name is too long") {
+		t.Errorf("expected error containing 'passkey name is too long', got %q", resp["error"])
 	}
 }

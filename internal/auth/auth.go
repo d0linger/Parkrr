@@ -364,6 +364,12 @@ func UserFrom(ctx context.Context) (*models.User, bool) {
 	return u, ok
 }
 
+// ContextWithUser returns a new context with the given user stored under userCtxKey,
+// useful for testing handlers that require an authenticated user.
+func ContextWithUser(ctx context.Context, u *models.User) context.Context {
+	return context.WithValue(ctx, userCtxKey, u)
+}
+
 // RequireAuth is middleware that rejects unauthenticated API requests and
 // enforces CSRF on state-changing methods.
 func (m *Manager) RequireAuth(next http.Handler) http.Handler {

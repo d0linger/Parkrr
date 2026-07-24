@@ -91,6 +91,13 @@ func (h *AuthHandler) PasskeyRegisterBegin(w http.ResponseWriter, r *http.Reques
 		Name string `json:"name"`
 	}
 	_ = decodeJSON(r, &body) // name is optional
+	body.Name = trim(body.Name)
+	// Security: validate input size early to prevent database bloat, cookie size
+	// limit errors, or memory pressure when serializing/deserializing ceremony data.
+	if !validNameLength(body.Name) {
+		writeError(w, http.StatusBadRequest, "passkey name is too long")
+		return
+	}
 
 	opts, sd, err := h.WebAuthn.BeginRegistration(r.Context(), u)
 	if err != nil {
