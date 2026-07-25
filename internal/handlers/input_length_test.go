@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/preining/parkrr/internal/auth"
+	"github.com/preining/parkrr/internal/models"
 )
 
 func TestInputLengthValidation(t *testing.T) {
@@ -98,6 +101,22 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "description is too long",
 		},
+		{
+			name:       "CreateUser: Email too long",
+			path:       "/api/users",
+			method:     "POST",
+			body:       userRequest{Username: "testuser", Password: "password123", Email: longEmail},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "email is too long",
+		},
+		{
+			name:       "UpdateUser: Email too long",
+			path:       "/api/users/1",
+			method:     "PUT",
+			body:       userRequest{Username: "testuser", Email: longEmail},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "email is too long",
+		},
 	}
 
 	for _, tt := range tests {
@@ -115,6 +134,11 @@ func TestInputLengthValidation(t *testing.T) {
 				h.CreateServiceType(w, req)
 			case "CreateCharge: Description too long":
 				h.CreateCharge(w, req)
+			case "CreateUser: Email too long":
+				h.CreateUser(w, req)
+			case "UpdateUser: Email too long":
+				req.SetPathValue("id", "1")
+				h.UpdateUser(w, req)
 			}
 
 			if w.Code != tt.wantStatus {
@@ -128,5 +152,40 @@ func TestInputLengthValidation(t *testing.T) {
 				t.Errorf("got error %q, want it to contain %q", resp["error"], tt.errMsg)
 			}
 		})
+	}
+}
+
+func TestPasskeyRegisterBeginLengthValidation(t *testing.T) {
+	wa, err := auth.NewWebAuthnService(nil, "localhost", "Parkrr", []string{"http://localhost"})
+	if err != nil {
+		t.Fatalf("failed to build WebAuthnService: %v", err)
+	}
+
+	ah := &AuthHandler{
+		Handler:  &Handler{},
+		WebAuthn: wa,
+	}
+
+	longName := strings.Repeat("a", maxNameLen+1)
+	reqBody := map[string]string{"name": longName}
+	b, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest("POST", "/api/auth/passkey/register/begin", bytes.NewReader(b))
+	u := &models.User{ID: 1, Username: "testuser"}
+	ctx := auth.ContextWithUser(req.Context(), u)
+	req = req.WithContext(ctx)
+
+	w := httptest.NewRecorder()
+	ah.PasskeyRegisterBegin(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", w.Code)
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if !strings.Contains(resp["error"], "passkey name is too long") {
+		t.Errorf("got error %q, want it to contain 'passkey name is too long'", resp["error"])
 	}
 }
