@@ -17,3 +17,8 @@
 *Vulnerability:* Authentication identifiers (usernames) and credentials (passwords) lacked early length validation in the Login flow. This exposed the bcrypt comparison to resource exhaustion and allowed an attacker to exert memory pressure on the in-memory rate limiter by sending extremely large username strings used as throttle keys.
 *Learning:* Security boundaries must validate input size at the outermost layer. Protecting expensive cryptographic operations and stateful security primitives (like rate limiters) from malformed or over-sized input is a critical part of defense-in-depth.
 *Prevention:* Enforce strict maximum lengths on all authentication-related inputs (e.g., 100 chars for usernames, 72 bytes for passwords) before any processing or state lookup occurs.
+
+## 2026-07-14 - [Oversized Inputs in Nested/Inline Resource Actions]
+*Vulnerability:* While top-level resource creation endpoints validated input string lengths, nested or inline creation of sub-resources (e.g. inline vehicles inside agreements or nested recurring charges) did not apply the same checks. This allowed an attacker to bypass length validation and cause database/memory bloat.
+*Learning:* Input validation policies must cover all entry points. Nested objects or inline model creation/updating arrays in composite requests are often overlooked, creating security blind spots.
+*Prevention:* Centralize length constants and helper functions and call them consistently on nested/inline array items during payload parsing.
