@@ -61,8 +61,9 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Username = trim(req.Username)
-	if !validUsernameLength(req.Username) || !validPasswordLength(req.Password) {
-		writeError(w, http.StatusBadRequest, "username required (max 100) and password must be between 8 and 72 bytes")
+	req.Email = trim(req.Email)
+	if !validUsernameLength(req.Username) || !validPasswordLength(req.Password) || !validEmailLength(req.Email) {
+		writeError(w, http.StatusBadRequest, "username required (max 100), password must be between 8 and 72 bytes, and email must be max 255 bytes")
 		return
 	}
 	if h.passwordBreached(r.Context(), req.Password) {
@@ -85,7 +86,7 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		`INSERT INTO users (username, email, password_hash, role, is_admin)
 		 VALUES ($1, $2, $3, $4, $5)
 		 RETURNING id, username, email, is_admin, role, totp_enabled, created_at, updated_at`,
-		req.Username, trim(req.Email), hash, role, role == models.RoleAdmin,
+		req.Username, req.Email, hash, role, role == models.RoleAdmin,
 	).Scan(&u.ID, &u.Username, &u.Email, &u.IsAdmin, &u.Role, &u.TOTPEnabled,
 		&u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
@@ -113,8 +114,9 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Username = trim(req.Username)
-	if !validUsernameLength(req.Username) {
-		writeError(w, http.StatusBadRequest, "username required (max 100)")
+	req.Email = trim(req.Email)
+	if !validUsernameLength(req.Username) || !validEmailLength(req.Email) {
+		writeError(w, http.StatusBadRequest, "username required (max 100) and email must be max 255 bytes")
 		return
 	}
 	role, ok := normalizeRole(req.Role)
@@ -157,7 +159,7 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		}
 		_, err = h.Pool.Exec(r.Context(),
 			`UPDATE users SET username=$1, email=$2, role=$3, is_admin=$4, password_hash=$5, updated_at=now()
-			 WHERE id=$6`, req.Username, trim(req.Email), role, isAdmin, hash, id)
+			 WHERE id=$6`, req.Username, req.Email, role, isAdmin, hash, id)
 		if err != nil {
 			handleUserUpdateErr(w, err)
 			return
@@ -168,14 +170,14 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 	} else {
 		_, err := h.Pool.Exec(r.Context(),
 			`UPDATE users SET username=$1, email=$2, role=$3, is_admin=$4, updated_at=now()
-			 WHERE id=$5`, req.Username, trim(req.Email), role, isAdmin, id)
+			 WHERE id=$5`, req.Username, req.Email, role, isAdmin, id)
 		if err != nil {
 			handleUserUpdateErr(w, err)
 			return
 		}
 	}
 	newU := old
-	newU.Username, newU.Email, newU.Role, newU.IsAdmin = req.Username, trim(req.Email), role, isAdmin
+	newU.Username, newU.Email, newU.Role, newU.IsAdmin = req.Username, req.Email, role, isAdmin
 	changes := diffFields(old, newU, "created_at", "updated_at", "id", "totp_enabled", "is_admin")
 	if req.Password != "" {
 		if changes == nil {

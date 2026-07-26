@@ -1,8 +1,11 @@
 package handlers
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,5 +58,38 @@ func TestPasskeyLoginThrottle(t *testing.T) {
 	other.RemoteAddr = "198.51.100.9:40000"
 	if _, ok := ah.throttlePasskeyLogin(httptest.NewRecorder(), other); !ok {
 		t.Error("a different client IP must not be throttled")
+	}
+}
+
+func TestPasskeyRegisterBegin_NameLength(t *testing.T) {
+	wa, err := auth.NewWebAuthnService(nil, "example.com", "Example", []string{"https://example.com"})
+	if err != nil {
+		t.Fatalf("failed to create webauthn service: %v", err)
+	}
+
+	ah := &AuthHandler{
+		Handler:  &Handler{},
+		WebAuthn: wa,
+	}
+
+	// Create request with extremely long name
+	body := map[string]string{
+		"name": strings.Repeat("a", maxNameLen+1),
+	}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/passkeys/register/begin", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	ah.PasskeyRegisterBegin(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("got status %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if resp["error"] != "name is too long" {
+		t.Errorf("got error %q, want %q", resp["error"], "name is too long")
 	}
 }
