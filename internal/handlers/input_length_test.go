@@ -98,6 +98,22 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "description is too long",
 		},
+		{
+			name:       "CreateUser: Email too long",
+			path:       "/api/users",
+			method:     "POST",
+			body:       userRequest{Username: "testuser", Password: "testpassword123", Email: longEmail},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "email must be max 255 bytes",
+		},
+		{
+			name:       "UpdateUser: Email too long",
+			path:       "/api/users/1",
+			method:     "PUT",
+			body:       userRequest{Username: "testuser", Email: longEmail},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "email must be max 255 bytes",
+		},
 	}
 
 	for _, tt := range tests {
@@ -115,6 +131,11 @@ func TestInputLengthValidation(t *testing.T) {
 				h.CreateServiceType(w, req)
 			case "CreateCharge: Description too long":
 				h.CreateCharge(w, req)
+			case "CreateUser: Email too long":
+				h.CreateUser(w, req)
+			case "UpdateUser: Email too long":
+				req.SetPathValue("id", "1")
+				h.UpdateUser(w, req)
 			}
 
 			if w.Code != tt.wantStatus {
