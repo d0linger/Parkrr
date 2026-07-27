@@ -114,6 +114,46 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "email must be max 255 bytes",
 		},
+		{
+			name:       "CreateAgreement: NewVehicles Label too long",
+			path:       "/api/persons/1/agreements",
+			method:     "POST",
+			body:       agreementRequest{Amount: floatPtr(10.0), StartDate: "2023-01-01", NewVehicles: []newVehicleReq{{CategoryID: 1, Label: longName}}},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "label is too long",
+		},
+		{
+			name:       "CreateAgreement: NewVehicles LicensePlate too long",
+			path:       "/api/persons/1/agreements",
+			method:     "POST",
+			body:       agreementRequest{Amount: floatPtr(10.0), StartDate: "2023-01-01", NewVehicles: []newVehicleReq{{CategoryID: 1, LicensePlate: longName}}},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "license_plate is too long",
+		},
+		{
+			name:       "CreateAgreement: EditVehicles Label too long",
+			path:       "/api/persons/1/agreements",
+			method:     "POST",
+			body:       agreementRequest{Amount: floatPtr(10.0), StartDate: "2023-01-01", EditVehicles: []editVehicleReq{{ID: 1, CategoryID: 1, Label: longName}}},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "label is too long",
+		},
+		{
+			name:       "CreateAgreement: EditVehicles LicensePlate too long",
+			path:       "/api/persons/1/agreements",
+			method:     "POST",
+			body:       agreementRequest{Amount: floatPtr(10.0), StartDate: "2023-01-01", EditVehicles: []editVehicleReq{{ID: 1, CategoryID: 1, LicensePlate: longName}}},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "license_plate is too long",
+		},
+		{
+			name:       "CreateRecurringCharge: Description too long",
+			path:       "/api/persons/1/recurring",
+			method:     "POST",
+			body:       recurringRequest{Description: longName, Amount: floatPtr(10.0), Period: "monthly", StartDate: "2023-01-01"},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "description is too long",
+		},
 	}
 
 	for _, tt := range tests {
@@ -136,6 +176,12 @@ func TestInputLengthValidation(t *testing.T) {
 			case "UpdateUser: Email too long":
 				req.SetPathValue("id", "1")
 				h.UpdateUser(w, req)
+			case "CreateAgreement: NewVehicles Label too long", "CreateAgreement: NewVehicles LicensePlate too long", "CreateAgreement: EditVehicles Label too long", "CreateAgreement: EditVehicles LicensePlate too long":
+				req.SetPathValue("id", "1")
+				h.CreateAgreement(w, req)
+			case "CreateRecurringCharge: Description too long":
+				req.SetPathValue("id", "1")
+				h.CreateRecurringCharge(w, req)
 			}
 
 			if w.Code != tt.wantStatus {
@@ -150,4 +196,8 @@ func TestInputLengthValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func floatPtr(f float64) *float64 {
+	return &f
 }
