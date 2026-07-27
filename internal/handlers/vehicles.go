@@ -398,6 +398,12 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid status")
 		return
 	}
+	// Validate the status transition note length up front to protect against
+	// resource exhaustion (DoS) and database bloat.
+	if !validNoteLength(req.Note) {
+		writeError(w, http.StatusBadRequest, "notes is too long")
+		return
+	}
 	var oldStatus string
 	var archived bool
 	scanErr := h.Pool.QueryRow(r.Context(),
