@@ -19,6 +19,6 @@
 *Prevention:* Enforce strict maximum lengths on all authentication-related inputs (e.g., 100 chars for usernames, 72 bytes for passwords) before any processing or state lookup occurs.
 
 ## 2026-07-14 - [Inconsistent Password Length Validation across Secondary Auth Endpoints]
-*Vulnerability:* While password length caps were applied to `Login`, `ChangePassword`, and User Creation/Modification endpoints, secondary endpoints that require re-authentication (`TOTPDisable` and `TOTPRegenerateBackup`) lacked early length limits, allowing potentially expensive bcrypt hashing of long payloads on authenticated sessions.
+*Vulnerability:* While password length caps were applied to `Login`, `ChangePassword`, and User Creation/Modification endpoints, secondary endpoints that require re-authentication (`TOTPDisable` and `TOTPRegenerateBackup`) lacked early length limits, allowing potentially expensive bcrypt password comparisons against long payloads on authenticated sessions.
 *Learning:* Security validations and length limits must be applied uniformly to every entry point that accepts a password, even secondary re-authentication endpoints.
 *Prevention:* Always enforce the standard password length cap (72 bytes for bcrypt) at the request decoding or payload parsing step for every password-handling handler.
