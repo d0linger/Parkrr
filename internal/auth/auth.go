@@ -434,3 +434,8 @@ func isStateChanging(method string) bool {
 		return false
 	}
 }
+
+// ContextWithUser returns a new context containing the given user. Only for test use.
+func ContextWithUser(ctx context.Context, u *models.User) context.Context {
+	return context.WithValue(ctx, userCtxKey, u)
+}
