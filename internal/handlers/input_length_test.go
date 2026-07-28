@@ -104,7 +104,7 @@ func TestInputLengthValidation(t *testing.T) {
 			method:     "POST",
 			body:       userRequest{Username: "testuser", Password: "testpassword123", Email: longEmail},
 			wantStatus: http.StatusBadRequest,
-			errMsg:     "email must be max 255 bytes",
+			errMsg:     "email is too long",
 		},
 		{
 			name:       "UpdateUser: Email too long",
@@ -112,7 +112,7 @@ func TestInputLengthValidation(t *testing.T) {
 			method:     "PUT",
 			body:       userRequest{Username: "testuser", Email: longEmail},
 			wantStatus: http.StatusBadRequest,
-			errMsg:     "email must be max 255 bytes",
+			errMsg:     "email is too long",
 		},
 		{
 			name:       "CreateAgreement: NewVehicles Label too long",
@@ -154,6 +154,14 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "description is too long",
 		},
+		{
+			name:       "ChangeVehicleStatus: Note too long",
+			path:       "/api/vehicles/1/status",
+			method:     "POST",
+			body:       statusRequest{Status: "stored", Note: longNote},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "notes is too long",
+		},
 	}
 
 	for _, tt := range tests {
@@ -182,6 +190,9 @@ func TestInputLengthValidation(t *testing.T) {
 			case "CreateRecurringCharge: Description too long":
 				req.SetPathValue("id", "1")
 				h.CreateRecurringCharge(w, req)
+			case "ChangeVehicleStatus: Note too long":
+				req.SetPathValue("id", "1")
+				h.ChangeVehicleStatus(w, req)
 			}
 
 			if w.Code != tt.wantStatus {

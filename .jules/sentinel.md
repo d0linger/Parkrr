@@ -22,3 +22,8 @@
 *Vulnerability:* While password length caps were applied to `Login`, `ChangePassword`, and User Creation/Modification endpoints, secondary endpoints that require re-authentication (`TOTPDisable` and `TOTPRegenerateBackup`) lacked early length limits, allowing potentially expensive bcrypt password comparisons against long payloads on authenticated sessions.
 *Learning:* Security validations and length limits must be applied uniformly to every entry point that accepts a password, even secondary re-authentication endpoints.
 *Prevention:* Always enforce the standard password length cap (72 bytes for bcrypt) at the request decoding or payload parsing step for every password-handling handler.
+
+## 2026-07-15 - [Bypassing Note Length Limit via Status Transition Endpoint]
+*Vulnerability:* Although vehicle notes were restricted on creation/modification, the vehicle status change endpoint accepted an unrestricted `Note` field for logging the transition in the history database. This allowed users with editor permissions to bypass length controls and submit massive string payloads.
+*Learning:* Input sanitization and length bounds must be applied to text fields across all mutating endpoints, including transition/history logs, to prevent DB bloat and DoS/memory pressure.
+*Prevention:* Enforce the centralized note length validator (`validNoteLength`) on all endpoints receiving text notes or transition details.
