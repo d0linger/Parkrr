@@ -104,7 +104,7 @@ func TestInputLengthValidation(t *testing.T) {
 			method:     "POST",
 			body:       userRequest{Username: "testuser", Password: "testpassword123", Email: longEmail},
 			wantStatus: http.StatusBadRequest,
-			errMsg:     "email must be max 255 bytes",
+			errMsg:     "email is too long",
 		},
 		{
 			name:       "UpdateUser: Email too long",
@@ -112,7 +112,7 @@ func TestInputLengthValidation(t *testing.T) {
 			method:     "PUT",
 			body:       userRequest{Username: "testuser", Email: longEmail},
 			wantStatus: http.StatusBadRequest,
-			errMsg:     "email must be max 255 bytes",
+			errMsg:     "email is too long",
 		},
 		{
 			name:       "CreateAgreement: NewVehicles Label too long",
