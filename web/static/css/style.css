@@ -614,6 +614,12 @@ textarea { resize: vertical; min-height: 72px; }
 }
 .toast.error { border-color: var(--danger); color: var(--danger-hover); }
 .toast.success { border-color: var(--success); color: var(--success); }
+/* Undo/action inside a toast → a clearly tappable filled pill, not faint text. */
+.toast-undo { margin-left: 0.6rem; border: 0; cursor: pointer; font-family: inherit;
+    font-weight: 800; font-size: 0.82rem; color: #04231f; background: var(--brand-grad);
+    border-radius: 999px; padding: 0.3rem 0.85rem; }
+.toast-undo:hover { filter: brightness(1.06); }
+.toast-undo:focus-visible { outline: 2px solid var(--primary-hover); outline-offset: 2px; }
 @keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } }
 
 .loading { text-align: center; color: var(--text-muted); padding: 2rem; }

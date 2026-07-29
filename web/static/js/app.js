@@ -185,7 +185,7 @@
         t.className = 'toast';
         t.hidden = false;
         t.append(document.createTextNode(msg + '  '));
-        const btn = el('button', { class: 'btn btn-sm btn-ghost', style: 'margin-left:.4rem' }, actionLabel);
+        const btn = el('button', { class: 'toast-undo', type: 'button' }, actionLabel);
         btn.addEventListener('click', () => { t.hidden = true; onAction(); });
         t.append(btn);
         toastTimer = setTimeout(() => { t.hidden = true; }, ms);
@@ -1178,11 +1178,13 @@
     async function agreementMarkAllPaid(a) {
         try {
             await api.post('/agreements/' + a.id + '/paid', { paid: true });
+            // Re-render first, then raise the Undo toast last so the re-render
+            // can't steal attention from it; keep it up long enough to notice.
+            await render();
             toastAction('Als bezahlt markiert', 'Rückgängig', async () => {
                 try { await api.post('/agreements/' + a.id + '/paid', { paid: false }); render(); }
                 catch (e) { toast(e.message, 'error'); }
-            });
-            render();
+            }, 8000);
         } catch (e) { toast(e.message, 'error'); render(); }
     }
     function agreementRow(personId, a, vehicles, chargeByVeh = {}) {
