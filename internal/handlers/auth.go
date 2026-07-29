@@ -164,6 +164,13 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "new password must be between 8 and 72 bytes")
 		return
 	}
+	// Enforce rotation: the new password must actually change. Rejecting an
+	// identical new password stops a forced reset from being no-op'd by
+	// resubmitting the current one.
+	if req.NewPassword == req.CurrentPassword {
+		writeError(w, http.StatusBadRequest, "new password must differ from the current password")
+		return
+	}
 	// An over-long current password can't match (bcrypt caps at 72 bytes), so
 	// reject it up front rather than spending a bcrypt compare on it.
 	if len(req.CurrentPassword) > maxPasswordLen {

@@ -987,3 +987,27 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .brand-veh{ display:inline-flex; align-items:center; justify-content:center; color:var(--primary); }
 .app-header .brand-veh{ color:#effffb; }
 .brand-veh.brand-badge{ width:60px; height:60px; border-radius:17px; background:var(--grad); color:#04231f; margin:0 auto 2px; box-shadow:0 12px 26px -14px rgba(13,148,136,.9); }
+
+/* ===== REDESIGN · iteration 2 (fixes) ===== */
+/* explicit dark theme kept the old card gradient — flatten it (higher specificity than base) */
+:root[data-theme="dark"]{ --card-bg:#16213a; }
+.card,.stat,.owe-card,.chart-card{ background:var(--card-bg) !important; background-image:none !important; }
+
+/* Lead KPI "Offen gesamt" (the wide amber-tone tile) → teal→cyan gradient hero */
+.stat.tone-amber{ background:var(--grad) !important; border-color:transparent !important; box-shadow:0 16px 34px -20px rgba(13,148,136,.9); }
+.stat.tone-amber::after{ display:none !important; }
+.stat.tone-amber .value{ color:#fff !important; }
+.stat.tone-amber .label{ color:rgba(255,255,255,.84) !important; }
+.stat.tone-amber .stat-ic{ color:rgba(255,255,255,.85) !important; opacity:.9; }
+
+/* Login subtitle → mono eyebrow */
+.brand p{ font-family:var(--font-mono); font-weight:700; font-size:.72rem; letter-spacing:.14em; text-transform:uppercase; color:var(--text-muted); }
+
+/* Balance breakdown → visually separated inset box on the gradient hero */
+.card:has(> .bal-hero-num) .bal-breakdown{ background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.14); border-radius:12px; padding:.7rem .85rem; margin-top:.9rem; }
+
+/* Rails coloured by vehicle status / slider state (not just badge-active/ended) */
+.card:has(.seg-mini button.active.st-stored)::before,.card:has(.badge-stored)::before{ background:var(--success) !important; opacity:.9; }
+.card:has(.seg-mini button.active.st-reserved)::before,.card:has(.badge-reserved)::before{ background:var(--warning) !important; opacity:.9; }
+.card:has(.seg-mini button.active.st-collected)::before,.card:has(.badge-collected)::before{ background:var(--text-muted) !important; opacity:.8; }
+.card:has(.seg-mini button.active.st-cancelled)::before,.card:has(.badge-cancelled)::before{ background:var(--danger) !important; opacity:.9; }
