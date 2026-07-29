@@ -3088,7 +3088,8 @@
     }
 
     // ---------- rotating brand vehicle (login logo / topbar logo / favicon) ----------
-    // Picks a random vehicle each load, so a cache reset (Strg+F5) shows a new one.
+    // Picks one vehicle per session (persisted), so refreshes stay stable and a new
+    // session shows a new one — the login logo, topbar logo and favicon all match.
     const VEHICLES = [
         '<path d="M4.5 12 12 5.2 19.5 12"/><path d="M6.6 12.2v6.3M17.4 12.2v6.3"/><rect x="9" y="14.4" width="6" height="4" rx="1.1"/>',
         '<path d="M4.5 15.5v-3c0-.5.15-1 .45-1.4l1.7-2.3c.35-.5.9-.8 1.5-.8h6.7c.6 0 1.15.3 1.5.75l1.75 2.35c.3.4.45.9.45 1.4v3"/><path d="M2.5 15.5h19"/><circle cx="7.3" cy="16.3" r="1.7"/><circle cx="16.7" cy="16.3" r="1.7"/>',
@@ -3102,15 +3103,32 @@
         '<path d="M3 14.2h13.6a3 3 0 0 1-3 2.9H6a3 3 0 0 1-3-2.9Z"/><path d="M11 14l3.3-3.2 1.8 1"/><path d="M2.5 20c1.3.9 2.6.9 4 0s2.6-.9 4 0 2.6.9 4 0 2.6-.9 4 0"/>',
         '<path d="M3 15.5v-2.2l1.6-.6 1.4-3c.3-.6.9-1 1.6-1h6c.6 0 1.2.3 1.5.9l1.4 2.9 2.5.9v2.1"/><path d="M2.5 15.5h19"/><path d="M6 12.7h5"/><circle cx="7.3" cy="16.3" r="1.7"/><circle cx="16.7" cy="16.3" r="1.7"/>',
     ];
+    // Pick once per browser session and remember it: a normal refresh (F5 or a
+    // cache-bypassing hard reload — indistinguishable to a page) keeps the same
+    // vehicle, while a new session or cleared site data rolls a fresh one.
+    function pickVehicleIndex() {
+        let idx = -1;
+        try { idx = parseInt(sessionStorage.getItem('parkrr-veh'), 10); } catch { /* storage blocked */ }
+        if (!(idx >= 0 && idx < VEHICLES.length)) {
+            idx = Math.floor(Math.random() * VEHICLES.length);
+            try { sessionStorage.setItem('parkrr-veh', String(idx)); } catch { /* storage blocked */ }
+        }
+        return idx;
+    }
     function applyBrand() {
-        const inner = VEHICLES[Math.floor(Math.random() * VEHICLES.length)];
+        const inner = VEHICLES[pickVehicleIndex()];
         const mk = (size) => `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
         $$('.brand-veh').forEach((el) => { el.innerHTML = mk(el.dataset.veh || 24); });
-        const raw = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#0d9488" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
-        let link = document.querySelector('link[rel~="icon"]');
-        if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link); }
+        // Favicon: a filled teal tile + white glyph so it reads at tab size, and it
+        // rotates with the logos. Drop every existing icon link first, otherwise the
+        // static favicon.ico (sizes="any") wins and the dynamic one is ignored.
+        const raw = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="#0d9488"/><g fill="none" stroke="#ffffff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${inner}</g></svg>`;
+        document.querySelectorAll('link[rel~="icon"]').forEach((l) => l.remove());
+        const link = document.createElement('link');
+        link.rel = 'icon';
         link.type = 'image/svg+xml';
         link.href = 'data:image/svg+xml,' + encodeURIComponent(raw);
+        document.head.appendChild(link);
     }
 
     async function init() {
