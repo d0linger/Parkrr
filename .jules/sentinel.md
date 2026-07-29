@@ -27,3 +27,8 @@
 *Vulnerability:* Although vehicle notes were restricted on creation/modification, the vehicle status change endpoint accepted an unrestricted `Note` field for logging the transition in the history database. This allowed users with editor permissions to bypass length controls and submit massive string payloads.
 *Learning:* Input sanitization and length bounds must be applied to text fields across all mutating endpoints, including transition/history logs, to prevent DB bloat and DoS/memory pressure.
 *Prevention:* Enforce the centralized note length validator (`validNoteLength`) on all endpoints receiving text notes or transition details.
+
+## 2026-07-16 - [Unchecked rand.Read Error in Backup Code Generation]
+*Vulnerability:* The application ignored the error returned by `rand.Read` when generating multi-factor authentication (MFA) backup/recovery codes. If `rand.Read` failed, the function would return a predictable backup code (e.g. `AAAA-AAAA`), allowing an attacker who could predict or trigger a failure to bypass MFA.
+*Learning:* Cryptographic random number generators can occasionally fail due to resource depletion (e.g., file descriptor exhaustion) or entropy limits, and ignoring their errors risks falling back to insecure, predictable default values.
+*Prevention:* Always check and handle errors returned by `rand.Read` or other cryptographic primitives, and abort operations with secure errors instead of failing open.
