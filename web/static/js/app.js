@@ -1057,7 +1057,7 @@
         // Bound extra costs attributed to this Gefährt (also shown when nested under
         // a Pauschale), so the total picture is visible without opening the detail.
         if (chargeInfo && chargeInfo.sum > 0.005) {
-            main.append(el('div', { class: 'card-meta', style: 'margin-top:.2rem;color:var(--accent);font-weight:600' },
+            main.append(el('div', { class: 'card-meta', style: 'margin-top:.2rem;color:var(--accent-text);font-weight:600' },
                 'Zusatzkosten: ' + eur(chargeInfo.sum) + (chargeInfo.count > 1 ? ' · ' + chargeInfo.count + ' Pos.' : '')));
         }
         const actions = el('div', { class: 'card-actions' },
@@ -1843,7 +1843,7 @@
             if (vCharges.length) zk.append(financeList(vCharges));
             zk.append(el('div', { class: 'balance', style: 'margin-top:.6rem;border-top:1px dashed var(--border);padding-top:.6rem' },
                 el('strong', {}, 'Zusatzkosten aufgelaufen'),
-                el('strong', { class: 'amt', style: 'color:var(--accent)' }, eur(sub))));
+                el('strong', { class: 'amt', style: 'color:var(--accent-text)' }, eur(sub))));
             page.append(zk);
         }
 

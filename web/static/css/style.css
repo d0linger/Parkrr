@@ -376,7 +376,7 @@ textarea { resize: vertical; min-height: 72px; }
 .step-ok {
     display: flex; align-items: center; gap: 0.4rem; margin: 0 0 0.6rem;
     background: rgba(34, 197, 94, 0.12); border: 1px solid rgba(34, 197, 94, 0.3);
-    color: var(--success); border-radius: var(--radius-sm); padding: 0.4rem 0.6rem;
+    color: var(--success-text); border-radius: var(--radius-sm); padding: 0.4rem 0.6rem;
     font-size: 0.82rem; font-weight: 600;
 }
 .login-card.is-2fa #login-username,
@@ -476,20 +476,20 @@ textarea { resize: vertical; min-height: 72px; }
 .stat.tone-green::after { background: var(--success); }
 .stat.tone-amber::after { background: var(--accent); }
 .stat.tone-teal .value { color: var(--primary-hover); }
-.stat.tone-green .value { color: var(--success); }
-.stat.tone-amber .value { color: var(--accent); }
+.stat.tone-green .value { color: var(--success-text); }
+.stat.tone-amber .value { color: var(--accent-text); }
 .stat.tone-teal .stat-ic, .stat.tone-green .stat-ic, .stat.tone-amber .stat-ic { opacity: 0.85; }
 .stat.tone-teal .stat-ic { color: var(--primary-hover); }
-.stat.tone-green .stat-ic { color: var(--success); }
-.stat.tone-amber .stat-ic { color: var(--accent); }
+.stat.tone-green .stat-ic { color: var(--success-text); }
+.stat.tone-amber .stat-ic { color: var(--accent-text); }
 @media (prefers-reduced-motion: reduce) { .stat { transition: none; } }
 
 .badge {
     display: inline-block; font-size: 0.72rem; font-weight: 700;
     padding: 0.15rem 0.5rem; border-radius: 999px; vertical-align: middle;
 }
-.badge-active { background: rgba(46, 160, 67, 0.18); color: var(--success); }
-.badge-ended { background: rgba(210, 153, 34, 0.18); color: var(--warning); }
+.badge-active { background: rgba(46, 160, 67, 0.18); color: var(--success-text); }
+.badge-ended { background: rgba(210, 153, 34, 0.18); color: var(--warning-text); }
 .badge-cat { background: var(--bg-elev-2); color: var(--text-muted); }
 
 .empty { text-align: center; color: var(--text-muted); padding: 3rem 1rem; }
@@ -549,7 +549,7 @@ textarea { resize: vertical; min-height: 72px; }
 .owe-row:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
 .owe-nm { display: flex; align-items: center; gap: 0.55rem; }
 .owe-rank { width: 20px; height: 20px; border-radius: 50%; background: var(--bg-elev-2); color: var(--text-muted); font-size: 0.72rem; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; flex: none; font-variant-numeric: tabular-nums; }
-.owe-amt { display: flex; align-items: center; gap: 0.4rem; font-variant-numeric: tabular-nums; font-weight: 700; color: var(--accent); }
+.owe-amt { display: flex; align-items: center; gap: 0.4rem; font-variant-numeric: tabular-nums; font-weight: 700; color: var(--accent-text); }
 .owe-chev { color: var(--text-muted); font-weight: 400; }
 
 /* ---------- Modal (native dialog) ---------- */
@@ -618,7 +618,7 @@ textarea { resize: vertical; min-height: 72px; }
     animation: toast-in 0.2s ease;
 }
 .toast.error { border-color: var(--danger); color: var(--danger-hover); }
-.toast.success { border-color: var(--success); color: var(--success); }
+.toast.success { border-color: var(--success); color: var(--success-text); }
 /* Undo/action inside a toast → a clearly tappable filled pill, not faint text. */
 .toast-undo { margin-left: 0.6rem; border: 0; cursor: pointer; font-family: inherit;
     font-weight: 800; font-size: 0.82rem; color: #04231f; background: var(--brand-grad);
@@ -730,8 +730,8 @@ textarea { resize: vertical; min-height: 72px; }
 .seg-mini.pay button.active.done { color: #04231a; }
 
 /* ---------- Role / status badges ---------- */
-.badge-reserved { background: rgba(245, 158, 11, 0.18); color: var(--warning); }
-.badge-stored   { background: rgba(34, 197, 94, 0.18); color: var(--success); }
+.badge-reserved { background: rgba(245, 158, 11, 0.18); color: var(--warning-text); }
+.badge-stored   { background: rgba(34, 197, 94, 0.18); color: var(--success-text); }
 .badge-collected{ background: rgba(147, 161, 184, 0.2); color: var(--text-muted); }
 .badge-cancelled{ background: rgba(239, 68, 87, 0.18); color: var(--danger-hover); }
 .badge-role     { background: var(--primary-soft); color: var(--primary-hover); }
@@ -745,7 +745,7 @@ textarea { resize: vertical; min-height: 72px; }
 .balance:last-child { border-bottom: none; }
 .balance .amt { font-variant-numeric: tabular-nums; font-weight: 600; }
 .amt-pos { color: var(--danger-hover); }
-.amt-zero { color: var(--success); }
+.amt-zero { color: var(--success-text); }
 
 /* ---------- Balance card: hero saldo + breakdown ---------- */
 .bal-hero-label { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-muted); }
@@ -753,18 +753,18 @@ textarea { resize: vertical; min-height: 72px; }
     font-size: 2.5rem; font-weight: 800; letter-spacing: -0.03em; line-height: 1.05;
     font-variant-numeric: tabular-nums; margin-top: 0.1rem;
 }
-.bal-hero-num.is-owed { color: var(--accent); }
-.bal-hero-num.is-clear { color: var(--success); }
+.bal-hero-num.is-owed { color: var(--accent-text); }
+.bal-hero-num.is-clear { color: var(--success-text); }
 .bal-hero-sub { font-size: 0.76rem; color: var(--text-muted); margin-top: 0.15rem; }
 .bal-breakdown { margin-top: 0.9rem; padding-top: 0.7rem; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 0.3rem; }
 .bal-row { display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--text-muted); }
 .bal-row .v { font-variant-numeric: tabular-nums; }
-.bal-row.is-paid .v { color: var(--success); }
+.bal-row.is-paid .v { color: var(--success-text); }
 
 /* ---------- Pauschale card: status-forward header ---------- */
 .ag-status-row { display: flex; gap: 0.35rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.45rem; }
 .ag-accrued { font-weight: 800; font-size: 1.1rem; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
-.ag-accrued.is-open { color: var(--accent); }
+.ag-accrued.is-open { color: var(--accent-text); }
 .ag-accrued .unit { font-size: 0.74rem; font-weight: 600; color: var(--text-muted); letter-spacing: 0; }
 
 /* ---------- Section rhythm: eyebrow section headers ---------- */
@@ -873,7 +873,7 @@ textarea { resize: vertical; min-height: 72px; }
 .backup-warn {
     display: flex; gap: 0.4rem; align-items: flex-start;
     background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35);
-    color: var(--warning); border-radius: var(--radius-sm);
+    color: var(--warning-text); border-radius: var(--radius-sm);
     padding: 0.5rem 0.6rem; font-size: 0.82rem; font-weight: 600; margin: 0 0 0.2rem;
 }
 .backup-warn svg { flex: none; margin-top: 1px; }
@@ -951,10 +951,14 @@ textarea { resize: vertical; min-height: 72px; }
   --radius:14px; --radius-sm:11px;
   --grad:linear-gradient(135deg,#0d9488 0%,#22d3ee 100%);
   --card-bg:#16213a;
+  /* Text-only shades of accent/warning/success. Equal to the bright fills in dark;
+     darkened for light so amber/green TEXT clears WCAG AA on light surfaces. Fills,
+     rails, chart bars and buttons keep the bright --accent/--success/--warning. */
+  --accent-text:var(--accent); --warning-text:var(--warning); --success-text:var(--success);
 }
-:root[data-theme="light"]{ --card-bg:#ffffff; }
+:root[data-theme="light"]{ --card-bg:#ffffff; --accent-text:#b45309; --warning-text:#b45309; --success-text:#166534; }
 :root:not([data-theme]){ --card-bg:#16213a; }
-@media(prefers-color-scheme:light){ :root:not([data-theme]){ --card-bg:#ffffff; } }
+@media(prefers-color-scheme:light){ :root:not([data-theme]){ --card-bg:#ffffff; --accent-text:#b45309; --warning-text:#b45309; --success-text:#166534; } }
 
 body{ font-family:var(--font); }
 h1,h2,h3,.sectitle,.mtitle,.bal-hero-num,.ag-accrued,.stat .value,.owe-amt,.amt{ font-family:var(--font-head); }
@@ -1033,8 +1037,8 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .card.pcard::before{ content:""; position:absolute; left:11px; top:12px; bottom:12px; width:3px; border-radius:3px; background:var(--success); opacity:.85; }
 .card.pcard.is-owed::before{ background:var(--accent); opacity:.95; }
 .pcard__status{ display:flex; align-items:center; margin-right:.3rem; flex:none; }
-.pcard__owe{ font-family:var(--font-head); font-weight:800; font-variant-numeric:tabular-nums; color:var(--accent); font-size:.98rem; white-space:nowrap; }
-.pcard__paid{ font-family:var(--font-mono); font-weight:700; font-size:.62rem; letter-spacing:.09em; text-transform:uppercase; color:var(--success); background:var(--bg-elev-2); border-radius:999px; padding:.18rem .55rem; white-space:nowrap; }
+.pcard__owe{ font-family:var(--font-head); font-weight:800; font-variant-numeric:tabular-nums; color:var(--accent-text); font-size:.98rem; white-space:nowrap; }
+.pcard__paid{ font-family:var(--font-mono); font-weight:700; font-size:.62rem; letter-spacing:.09em; text-transform:uppercase; color:var(--success-text); background:rgba(34,197,94,.16); border-radius:999px; padding:.18rem .55rem; white-space:nowrap; }
 
 /* ===== REDESIGN · iteration 3 (feedback) ===== */
 
@@ -1058,15 +1062,15 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .card.charge-card::before{ content:""; position:absolute; left:11px; top:12px; bottom:12px; width:3px; border-radius:3px; opacity:.9; }
 .card.charge-card.is-paid::before{ background:var(--success); }
 .card.charge-card.is-open::before{ background:var(--accent); }
-.card.charge-card.is-paid .charge-ic{ color:var(--success); background:rgba(16,185,129,.15); }
-.card.charge-card.is-open .charge-ic{ color:var(--accent); background:rgba(245,158,11,.16); }
+.card.charge-card.is-paid .charge-ic{ color:var(--success-text); background:rgba(16,185,129,.15); }
+.card.charge-card.is-open .charge-ic{ color:var(--accent-text); background:rgba(245,158,11,.16); }
 
 /* Person-Detail · balance breakdown as its own three-figure card below the hero */
 .bal-figs{ display:grid; grid-template-columns:repeat(3,1fr); gap:.6rem; }
 .bal-figs .fig{ display:flex; flex-direction:column; gap:.2rem; min-width:0; }
 .bal-figs .fig-l{ font-family:var(--font-mono); font-weight:700; font-size:.6rem; letter-spacing:.08em; text-transform:uppercase; color:var(--text-muted); }
 .bal-figs .fig-v{ font-family:var(--font-head); font-weight:800; font-size:1.02rem; font-variant-numeric:tabular-nums; }
-.bal-figs .fig-v.is-paid{ color:var(--success); }
+.bal-figs .fig-v.is-paid{ color:var(--success-text); }
 
 /* Horizontal bars → taller, defined track + bolder fill so the extent reads */
 .bar-track{ height:16px; box-shadow:inset 0 0 0 1px var(--border); }
@@ -1101,12 +1105,12 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .ag-progress-row{ display:flex; align-items:center; gap:.55rem; }
 .ag-progress-row .bar-track{ flex:1; }
 .ag-pct{ font-family:var(--font-mono); font-weight:700; font-size:.68rem; color:var(--text-muted); font-variant-numeric:tabular-nums; white-space:nowrap; }
-.ag-pct.is-done{ color:var(--success); }
+.ag-pct.is-done{ color:var(--success-text); }
 /* Caption leads with the open remainder (amber); calm green once fully paid. */
-.ag-progress-cap .off{ color:var(--accent); font-weight:700; }
-.ag-progress-cap.is-done{ color:var(--success); font-weight:600; }
+.ag-progress-cap .off{ color:var(--accent-text); font-weight:700; }
+.ag-progress-cap.is-done{ color:var(--success-text); font-weight:600; }
 /* One-tap settle button → green accent. */
-.btn.ag-check{ color:var(--success); border-color:rgba(34,197,94,.4); }
+.btn.ag-check{ color:var(--success-text); border-color:rgba(34,197,94,.4); }
 .btn.ag-check:hover{ background:rgba(34,197,94,.14); }
 /* "beendet" tag → quiet outlined chip, distinct from the coverage badge. */
 .badge.ag-ended-tag{ background:transparent; border:1px solid var(--border); color:var(--text-muted); font-weight:700; }
