@@ -799,6 +799,10 @@
     // ================= PERSONS =================
     routes.persons = async (page) => {
         await refreshLookups();
+        // Open balance per person, batched in one request so each row can show its
+        // settlement status (and a status-coloured rail) without an N+1 of stats.
+        let oweMap = {};
+        try { oweMap = (await api.get('/persons/outstanding')) || {}; } catch (e) { oweMap = {}; }
         mountList(page, {
             title: 'Personen', emptyIcon: 'users', emptyText: 'Noch keine Personen.',
             onAdd: canManage() ? () => personForm() : null,
@@ -807,18 +811,26 @@
             sorts: [
                 { label: 'Name A–Z', cmp: (a, b) => personName(a).localeCompare(personName(b)) },
                 { label: 'Name Z–A', cmp: (a, b) => personName(b).localeCompare(personName(a)) },
+                { label: 'Offen zuerst', cmp: (a, b) => (Number(oweMap[b.id]) || 0) - (Number(oweMap[a.id]) || 0) },
                 { label: 'Neueste zuerst', cmp: (a, b) => b.id - a.id },
             ],
-            render: (p) => el('div', { class: 'card' },
-                el('div', { class: 'card-row' },
-                    el('div', { style: 'flex:1;cursor:pointer', onclick: () => navigate('persons/' + p.id) },
-                        el('h3', {}, personName(p), ' ', p.has_flat_rate ? el('span', { class: 'badge badge-active', title: 'Pauschale' }, 'Pauschale') : null),
-                        el('div', { class: 'card-meta' }, [p.email, p.phone].filter(Boolean).join(' · ') || 'keine Kontaktdaten')),
-                    el('div', { class: 'card-actions' },
-                        el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': personName(p) + ' öffnen', onclick: () => navigate('persons/' + p.id) }, '›'),
-                        canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' bearbeiten', 'aria-label': personName(p) + ' bearbeiten', onclick: () => personForm(p) }, icon('edit')),
-                        canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' löschen', 'aria-label': personName(p) + ' löschen', onclick: (e) => delPerson(p, e.currentTarget.closest('.card')) }, icon('trash')),
-                    ))),
+            render: (p) => {
+                const bal = Number(oweMap[p.id]) || 0;
+                const owes = bal > 0.005;
+                return el('div', { class: 'card pcard ' + (owes ? 'is-owed' : 'is-clear') },
+                    el('div', { class: 'card-row' },
+                        el('div', { style: 'flex:1;cursor:pointer', onclick: () => navigate('persons/' + p.id) },
+                            el('h3', {}, personName(p), ' ', p.has_flat_rate ? el('span', { class: 'badge badge-active', title: 'Pauschale' }, 'Pauschale') : null),
+                            el('div', { class: 'card-meta' }, [p.email, p.phone].filter(Boolean).join(' · ') || 'keine Kontaktdaten')),
+                        el('div', { class: 'pcard__status' }, owes
+                            ? el('span', { class: 'pcard__owe', title: 'Offener Saldo' }, eur(bal))
+                            : el('span', { class: 'pcard__paid', title: 'Keine offenen Beträge' }, 'Bezahlt')),
+                        el('div', { class: 'card-actions' },
+                            el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': personName(p) + ' öffnen', onclick: () => navigate('persons/' + p.id) }, '›'),
+                            canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' bearbeiten', 'aria-label': personName(p) + ' bearbeiten', onclick: () => personForm(p) }, icon('edit')),
+                            canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' löschen', 'aria-label': personName(p) + ' löschen', onclick: (e) => delPerson(p, e.currentTarget.closest('.card')) }, icon('trash')),
+                        )));
+            },
         });
     };
 

@@ -1016,3 +1016,11 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .stat{ min-width:0; overflow:hidden; }
 .stat.tone-teal .value,.stat.tone-green .value{ font-size:1.3rem; }
 .stat .value .yoy{ font-size:.6rem; }
+
+/* Personen list rows → inset settlement rail + open/paid status */
+.card.pcard{ position:relative; overflow:hidden; padding-left:calc(1rem + 9px); }
+.card.pcard::before{ content:""; position:absolute; left:11px; top:12px; bottom:12px; width:3px; border-radius:3px; background:var(--success); opacity:.85; }
+.card.pcard.is-owed::before{ background:var(--accent); opacity:.95; }
+.pcard__status{ display:flex; align-items:center; margin-right:.3rem; flex:none; }
+.pcard__owe{ font-family:var(--font-head); font-weight:800; font-variant-numeric:tabular-nums; color:var(--accent); font-size:.98rem; white-space:nowrap; }
+.pcard__paid{ font-family:var(--font-mono); font-weight:700; font-size:.62rem; letter-spacing:.09em; text-transform:uppercase; color:var(--success); background:var(--bg-elev-2); border-radius:999px; padding:.18rem .55rem; white-space:nowrap; }

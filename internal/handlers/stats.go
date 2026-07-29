@@ -238,6 +238,102 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// outstandingByPerson computes every person's open balance in one batched pass,
+// so the persons list can show who owes without an N+1 of PersonStats. The money
+// math is identical to PersonStats.Balance and the dashboard's TopOutstanding,
+// expressed through the same shared helpers (personRent / chargeAmounts /
+// recurringSums) — keep the three in sync. Returns person_id → open balance
+// (≤ 0 means settled).
+func (h *Handler) outstandingByPerson(r *http.Request) (map[int64]float64, error) {
+	ctx := r.Context()
+	vehicles, cats, err := h.loadVehiclesWithCategories(r, 0)
+	if err != nil {
+		return nil, err
+	}
+	agByPerson, err := h.loadAllAgreements(ctx, 0)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	until := now.AddDate(0, 0, 1)
+	vehPaid := vehiclePaidMap(vehicles)
+
+	vehByPerson := map[int64][]models.Vehicle{}
+	for i := range vehicles {
+		v := &vehicles[i]
+		vehByPerson[v.PersonID] = append(vehByPerson[v.PersonID], *v)
+	}
+
+	// One-off charges per person (total accrued + paid).
+	chargesByPerson := map[int64]float64{}
+	paidChargesByPerson := map[int64]float64{}
+	crows, err := h.Pool.Query(ctx, `SELECT person_id, vehicle_id, amount, quantity, charged_on, paid FROM charges`)
+	if err != nil {
+		return nil, err
+	}
+	for crows.Next() {
+		var pid int64
+		var vid *int64
+		var amount, qty float64
+		var chargedOn time.Time
+		var ownPaid bool
+		if serr := crows.Scan(&pid, &vid, &amount, &qty, &chargedOn, &ownPaid); serr != nil {
+			crows.Close()
+			return nil, serr
+		}
+		t, p := chargeAmounts(agByPerson[pid], vehPaid, vid, amount, qty, chargedOn, ownPaid)
+		chargesByPerson[pid] += t
+		paidChargesByPerson[pid] += p
+	}
+	crows.Close()
+	if cerr := crows.Err(); cerr != nil {
+		return nil, cerr
+	}
+
+	// Recurring extra costs accrue into the same charge totals.
+	recurByPerson, err := h.loadAllRecurringCharges(ctx, agByPerson, vehPaid, now)
+	if err != nil {
+		return nil, err
+	}
+	for pid, list := range recurByPerson {
+		acc, pd := recurringSums(list, agByPerson[pid], vehPaid, now)
+		chargesByPerson[pid] += acc
+		paidChargesByPerson[pid] += pd
+	}
+
+	// Any person with vehicles, an agreement, or a charge can carry a balance.
+	personIDs := map[int64]struct{}{}
+	for pid := range vehByPerson {
+		personIDs[pid] = struct{}{}
+	}
+	for pid := range agByPerson {
+		personIDs[pid] = struct{}{}
+	}
+	for pid := range chargesByPerson {
+		personIDs[pid] = struct{}{}
+	}
+
+	out := make(map[int64]float64, len(personIDs))
+	for pid := range personIDs {
+		tAcc, tPaid := personRent(agByPerson[pid], vehByPerson[pid], cats, time.Time{}, until)
+		owed := (tAcc + chargesByPerson[pid]) - (tPaid + paidChargesByPerson[pid])
+		out[pid] = round2(owed)
+	}
+	return out, nil
+}
+
+// OutstandingByPerson returns a person_id → open-balance map for the persons
+// list, so each row can show its settlement status without loading per-person
+// stats one at a time.
+func (h *Handler) OutstandingByPerson(w http.ResponseWriter, r *http.Request) {
+	out, err := h.outstandingByPerson(r)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 // overviewResponse summarizes the whole dataset for the dashboard.
 type overviewResponse struct {
 	TotalPersons     int            `json:"total_persons"`
