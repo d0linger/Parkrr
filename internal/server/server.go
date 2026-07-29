@@ -67,6 +67,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 
 	// --- Persons (read: any; write: manager/admin) ---
 	mux.Handle("GET /api/persons", authed(hf(h.ListPersons)))
+	mux.Handle("GET /api/persons/outstanding", authed(hf(h.OutstandingByPerson)))
 	mux.Handle("POST /api/persons", editor(hf(h.CreatePerson)))
 	mux.Handle("PUT /api/persons/{id}", editor(hf(h.UpdatePerson)))
 	mux.Handle("DELETE /api/persons/{id}", editor(hf(h.DeletePerson)))

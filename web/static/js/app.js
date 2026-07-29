@@ -185,7 +185,7 @@
         t.className = 'toast';
         t.hidden = false;
         t.append(document.createTextNode(msg + '  '));
-        const btn = el('button', { class: 'btn btn-sm btn-ghost', style: 'margin-left:.4rem' }, actionLabel);
+        const btn = el('button', { class: 'toast-undo', type: 'button' }, actionLabel);
         btn.addEventListener('click', () => { t.hidden = true; onAction(); });
         t.append(btn);
         toastTimer = setTimeout(() => { t.hidden = true; }, ms);
@@ -455,8 +455,8 @@
         const box = el('div', { class: 'chart' });
         box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Verlauf">
           <defs>
-            <linearGradient id="af-${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--primary-hover)" stop-opacity="0.30"/><stop offset="1" stop-color="var(--primary-hover)" stop-opacity="0"/></linearGradient>
-            <linearGradient id="as-${id}" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="var(--primary)"/><stop offset="1" stop-color="var(--primary-hover)"/></linearGradient>
+            <linearGradient id="af-${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--chart-c1)" stop-opacity="0.32"/><stop offset="1" stop-color="var(--chart-c2)" stop-opacity="0"/></linearGradient>
+            <linearGradient id="as-${id}" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="var(--chart-c1)"/><stop offset="1" stop-color="var(--chart-c2)"/></linearGradient>
           </defs>
           <g>${grid}</g>
           ${area ? `<path d="${area}" fill="url(#af-${id})"/>` : ''}
@@ -509,7 +509,7 @@
         }
         const box = el('div', { class: 'chart' });
         box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Balken">
-          <defs><linearGradient id="bf-${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--primary-hover)"/><stop offset="1" stop-color="var(--primary)"/></linearGradient></defs>
+          <defs><linearGradient id="bf-${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--chart-c2)"/><stop offset="1" stop-color="var(--chart-c1)"/></linearGradient></defs>
           <g>${grid}</g><g>${bars}</g><g>${lab}</g></svg>`;
         const svg = box.querySelector('svg');
         const tip = chartTip(box, svg, W, H);
@@ -723,9 +723,13 @@
             return;
         }
 
-        // Money first — "Offen gesamt" is the operator's lead metric. The
-        // Umsatz tile carries a year-over-year delta vs the same period last year.
-        const umsatz = statWide(eur(ov.accrued_this_year), 'Umsatz ' + ov.year, { icon: 'trend', tone: 'teal' });
+        // Money first — "Offen gesamt" is the operator's lead metric, shown as a
+        // gradient hero; Umsatz (with a YoY delta) and Bezahlt sit beside it.
+        page.append(el('div', { class: 'dash-hero' },
+            el('div', { class: 'dash-hero-label' }, 'Offen gesamt'),
+            el('div', { class: 'dash-hero-num' }, eur(ov.outstanding_total)),
+            el('div', { class: 'dash-hero-sub' }, 'Stand heute · offene Salden zum Nachfassen')));
+        const umsatz = stat(eur(ov.accrued_this_year), 'Umsatz ' + ov.year, { icon: 'trend', tone: 'teal' });
         const prev = ov.accrued_prev_year;
         if (prev != null && prev > 0) {
             const pct = Math.round(((ov.accrued_this_year - prev) / prev) * 100);
@@ -735,9 +739,8 @@
             umsatz.querySelector('.label').textContent = 'Umsatz ' + ov.year + ' · ggü. ' + (ov.year - 1);
         }
         page.append(el('div', { class: 'stat-grid' },
-            statWide(eur(ov.outstanding_total), 'Offen gesamt', { icon: 'clock', tone: 'amber' }),
             umsatz,
-            statWide(eur(ov.paid_total), 'Bezahlt', { icon: 'check', tone: 'green' }),
+            stat(eur(ov.paid_total), 'Bezahlt', { icon: 'check', tone: 'green' }),
         ));
         page.append(el('div', { class: 'stat-grid' },
             stat(ov.total_persons, 'Personen', { icon: 'users' }),
@@ -791,11 +794,16 @@
         scCard.append(bars);
         page.append(scCard);
     };
-    const statWide = (value, label, opts = {}) => { const t = stat(value, label, opts); t.style.gridColumn = 'span 2'; return t; };
 
     // ================= PERSONS =================
     routes.persons = async (page) => {
         await refreshLookups();
+        // Open balance per person, batched in one request so each row can show its
+        // settlement status (and a status-coloured rail) without an N+1 of stats.
+        let oweMap = {};
+        let oweOk = true;
+        try { oweMap = (await api.get('/persons/outstanding')) || {}; }
+        catch (e) { oweOk = false; toast('Salden konnten nicht geladen werden', 'error'); }
         mountList(page, {
             title: 'Personen', emptyIcon: 'users', emptyText: 'Noch keine Personen.',
             onAdd: canManage() ? () => personForm() : null,
@@ -804,18 +812,32 @@
             sorts: [
                 { label: 'Name A–Z', cmp: (a, b) => personName(a).localeCompare(personName(b)) },
                 { label: 'Name Z–A', cmp: (a, b) => personName(b).localeCompare(personName(a)) },
+                { label: 'Offen zuerst', cmp: (a, b) => (Number(oweMap[b.id]) || 0) - (Number(oweMap[a.id]) || 0) },
                 { label: 'Neueste zuerst', cmp: (a, b) => b.id - a.id },
             ],
-            render: (p) => el('div', { class: 'card' },
-                el('div', { class: 'card-row' },
-                    el('div', { style: 'flex:1;cursor:pointer', onclick: () => navigate('persons/' + p.id) },
-                        el('h3', {}, personName(p), ' ', p.has_flat_rate ? el('span', { class: 'badge badge-active', title: 'Pauschale' }, 'Pauschale') : null),
-                        el('div', { class: 'card-meta' }, [p.email, p.phone].filter(Boolean).join(' · ') || 'keine Kontaktdaten')),
-                    el('div', { class: 'card-actions' },
-                        el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': personName(p) + ' öffnen', onclick: () => navigate('persons/' + p.id) }, '›'),
-                        canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' bearbeiten', 'aria-label': personName(p) + ' bearbeiten', onclick: () => personForm(p) }, icon('edit')),
-                        canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' löschen', 'aria-label': personName(p) + ' löschen', onclick: (e) => delPerson(p, e.currentTarget.closest('.card')) }, icon('trash')),
-                    ))),
+            render: (p) => {
+                const bal = Number(oweMap[p.id]) || 0;
+                const owes = bal > 0.005;
+                // Only show a settlement state when the balances actually loaded; on
+                // failure the rail stays neutral and the status chip is omitted,
+                // rather than showing everyone as "Bezahlt". Amount/status and the row
+                // actions stack in a right rail so they never crowd on a narrow screen.
+                const stateCls = oweOk ? (owes ? ' is-owed' : ' is-clear') : '';
+                return el('div', { class: 'card pcard' + stateCls },
+                    el('div', { class: 'card-row' },
+                        el('div', { style: 'flex:1;cursor:pointer', onclick: () => navigate('persons/' + p.id) },
+                            el('h3', {}, personName(p), ' ', p.has_flat_rate ? el('span', { class: 'badge badge-active', title: 'Pauschale' }, 'Pauschale') : null),
+                            el('div', { class: 'card-meta' }, [p.email, p.phone].filter(Boolean).join(' · ') || 'keine Kontaktdaten')),
+                        el('div', { class: 'row-side' },
+                            oweOk ? el('div', { class: 'pcard__status' }, owes
+                                ? el('span', { class: 'pcard__owe', title: 'Offener Saldo' }, eur(bal))
+                                : el('span', { class: 'pcard__paid', title: 'Keine offenen Beträge' }, 'Bezahlt')) : null,
+                            el('div', { class: 'card-actions' },
+                                el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': personName(p) + ' öffnen', onclick: () => navigate('persons/' + p.id) }, '›'),
+                                canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' bearbeiten', 'aria-label': personName(p) + ' bearbeiten', onclick: () => personForm(p) }, icon('edit')),
+                                canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' löschen', 'aria-label': personName(p) + ' löschen', onclick: (e) => delPerson(p, e.currentTarget.closest('.card')) }, icon('trash')),
+                            ))));
+            },
         });
     };
 
@@ -871,11 +893,13 @@
         page.append(el('div', { class: 'card' },
             el('div', { class: 'bal-hero-label' }, 'Offener Saldo'),
             el('div', { class: 'bal-hero-num ' + (owed ? 'is-owed' : 'is-clear') }, eur(stats.balance)),
-            el('div', { class: 'bal-hero-sub' }, 'Stand heute · Miete + Zusatzkosten − Bezahlt'),
-            el('div', { class: 'bal-breakdown' },
-                el('div', { class: 'bal-row' }, el('span', {}, 'Aufgelaufene Miete'), el('span', { class: 'v' }, eur(stats.total_accrued))),
-                el('div', { class: 'bal-row' }, el('span', {}, 'Zusatzkosten'), el('span', { class: 'v' }, eur(stats.total_charges))),
-                el('div', { class: 'bal-row is-paid' }, el('span', {}, 'Bezahlt'), el('span', { class: 'v' }, '− ' + eur(stats.total_paid))))));
+            el('div', { class: 'bal-hero-sub' }, 'Stand heute · Miete + Zusatzkosten − Bezahlt')));
+        // Derivation lives in its own card below the hero: three labelled figures
+        // (Miete / Zusatzkosten / Bezahlt) so the breakdown reads as a small ledger.
+        page.append(el('div', { class: 'card bal-figs' },
+            el('div', { class: 'fig' }, el('div', { class: 'fig-l' }, 'Miete'), el('div', { class: 'fig-v' }, eur(stats.total_accrued))),
+            el('div', { class: 'fig' }, el('div', { class: 'fig-l' }, 'Zusatzkosten'), el('div', { class: 'fig-v' }, eur(stats.total_charges))),
+            el('div', { class: 'fig' }, el('div', { class: 'fig-l' }, 'Bezahlt'), el('div', { class: 'fig-v is-paid' }, eur(stats.total_paid)))));
 
         // flat-rate agreements (Pauschalen). Per-vehicle coverage badges/payment
         // come from the backend (v.flat_rate_covered / v.uncovered_cost).
@@ -1037,7 +1061,7 @@
         // Bound extra costs attributed to this Gefährt (also shown when nested under
         // a Pauschale), so the total picture is visible without opening the detail.
         if (chargeInfo && chargeInfo.sum > 0.005) {
-            main.append(el('div', { class: 'card-meta', style: 'margin-top:.2rem;color:var(--accent);font-weight:600' },
+            main.append(el('div', { class: 'card-meta', style: 'margin-top:.2rem;color:var(--accent-text);font-weight:600' },
                 'Zusatzkosten: ' + eur(chargeInfo.sum) + (chargeInfo.count > 1 ? ' · ' + chargeInfo.count + ' Pos.' : '')));
         }
         const actions = el('div', { class: 'card-actions' },
@@ -1104,32 +1128,97 @@
     }
 
     // ---- flat-rate agreements (Pauschale-Einträge) ----
+    // Share of the accrued amount that is settled (full periods + fixed partials,
+    // or the master paid flag). Returns the pieces the card needs: accrued, paid,
+    // still-open, fraction, and whether it's fully done.
+    function agreementPaid(a) {
+        const accrued = Number(a.accrued) || 0;
+        let paidAcc;
+        if (a.paid) {
+            paidAcc = accrued;
+        } else {
+            paidAcc = 0;
+            const costs = a.period_costs || {};
+            const paidP = a.paid_periods || [];
+            for (const k of paidP) paidAcc += Number(costs[k]) || 0;
+            const fixed = a.paid_fixed || {};
+            for (const k in fixed) {
+                if (paidP.includes(k)) continue; // whole period already counted
+                const c = Number(costs[k]) || 0;
+                paidAcc += c > 0 ? Math.min(Number(fixed[k]) || 0, c) : (Number(fixed[k]) || 0);
+            }
+        }
+        paidAcc = Math.min(paidAcc, accrued);
+        const frac = accrued > 0.005 ? Math.max(0, Math.min(1, paidAcc / accrued)) : (a.paid ? 1 : 0);
+        return {
+            accrued, paidAcc, frac,
+            open: Math.max(0, accrued - paidAcc),
+            done: accrued > 0.005 ? paidAcc >= accrued - 0.005 : true,
+        };
+    }
+    // Payment-progress bar for a Pauschale: a gradient fill + a % marker, and a
+    // caption that leads with what's still open — or a calm "vollständig bezahlt"
+    // once it's settled. Hidden until something has accrued.
+    function agreementProgress(a) {
+        const pd = agreementPaid(a);
+        if (pd.accrued <= 0.005) return null;
+        const pct = Math.round(pd.frac * 100);
+        const fill = el('div', { class: 'bar-fill' });
+        requestAnimationFrame(() => { fill.style.width = (pd.frac * 100) + '%'; });
+        const cap = pd.done
+            ? el('div', { class: 'ag-progress-cap is-done' }, '✓ vollständig bezahlt')
+            : el('div', { class: 'ag-progress-cap' },
+                el('span', { class: 'off' }, eur(pd.open) + ' offen'), ' · ' + pct + ' % bezahlt');
+        return el('div', { class: 'ag-progress' },
+            el('div', { class: 'ag-progress-row' },
+                el('div', { class: 'bar-track ag-bar' }, fill),
+                el('span', { class: 'ag-pct' + (pd.done ? ' is-done' : '') }, pct + ' %')),
+            cap);
+    }
+    // One-tap settle: mark the whole Pauschale paid, with an Undo. Only offered on
+    // a fully-open Pauschale, so Undo (paid=false) can't wipe partial per-period
+    // payments (the master flag clears them server-side).
+    async function agreementMarkAllPaid(a) {
+        try {
+            await api.post('/agreements/' + a.id + '/paid', { paid: true });
+            // Re-render first, then raise the Undo toast last so the re-render
+            // can't steal attention from it; keep it up long enough to notice.
+            await render();
+            toastAction('Als bezahlt markiert', 'Rückgängig', async () => {
+                try { await api.post('/agreements/' + a.id + '/paid', { paid: false }); render(); }
+                catch (e) { toast(e.message, 'error'); }
+            }, 8000);
+        } catch (e) { toast(e.message, 'error'); render(); }
+    }
     function agreementRow(personId, a, vehicles, chargeByVeh = {}) {
         const unit = a.period === 'yearly' ? '/Jahr' : '/Monat';
-        const covered = (a.vehicle_ids && a.vehicle_ids.length)
-            ? a.vehicle_ids.map((vid) => { const v = vehicles.find((x) => x.id === vid); return v ? vehicleTitle(v) : '#' + vid; }).join(', ')
-            : 'alle Gefährte';
-        // Lead with the question the user has ("paid? how much open?"): a status
-        // chip + the accrued amount up front; the contract config becomes a quiet
-        // meta line. partial = some periods/fixed amounts paid but not the whole.
-        const partial = !a.paid && (((a.paid_periods && a.paid_periods.length)) ||
-            (a.paid_fixed && Object.keys(a.paid_fixed).length));
-        const stLabel = a.paid ? 'Bezahlt' : partial ? 'Teilweise bezahlt' : 'Offen';
-        const stCls = a.paid ? 'badge-active' : partial ? 'badge-cat' : 'badge-ended';
+        // Payment state is carried by the progress bar + caption (and the amount
+        // turns amber only while something is open), so no separate status badge
+        // here — only the coverage badge (+ a "beendet" tag for expired ones).
+        const pd = agreementPaid(a);
+        const isEnded = a.end_date && a.end_date.slice(0, 10) <= today();
         const nCov = (a.vehicle_ids && a.vehicle_ids.length) ? a.vehicle_ids.length + ' Gefährte' : 'alle Gefährte';
+        // Terms only: rate + span (+ note). The covered vehicles live in the
+        // "N Gefährte" badge and the "Gefährte" section, so they're not repeated
+        // here. Open-ended reads "seit <start>" rather than "<start> – offen".
         const config = eur(a.amount) + unit + ' · '
-            + fmtDate(a.start_date) + (a.end_date ? ' – ' + fmtDate(a.end_date) : ' – offen')
-            + ' · ' + esc(covered) + (a.note ? ' · ' + esc(a.note) : '');
+            + (a.end_date ? fmtDate(a.start_date) + ' – ' + fmtDate(a.end_date) : 'seit ' + fmtDate(a.start_date))
+            + (a.note ? ' · ' + esc(a.note) : '');
+        // A one-tap "als bezahlt" is only safe (Undo-lossless) when nothing has
+        // been paid yet, so offer it just for a fully-open Pauschale.
+        const canQuickSettle = canBill() && pd.accrued > 0.005 && pd.paidAcc <= 0.005;
         const row = el('div', { class: 'card', style: 'margin-top:.5rem' });
         row.append(el('div', { class: 'card-row' },
-            el('div', { style: 'flex:1' },
+            el('div', { class: 'ag-body' },
                 el('div', { class: 'ag-status-row' },
-                    el('span', { class: 'badge ' + stCls }, stLabel),
-                    el('span', { class: 'badge badge-cat' }, nCov)),
-                el('div', { class: 'ag-accrued' + (a.paid ? '' : ' is-open') },
+                    el('span', { class: 'badge badge-cat' }, nCov),
+                    isEnded ? el('span', { class: 'badge ag-ended-tag' }, 'beendet ' + fmtDate(a.end_date)) : null),
+                el('div', { class: 'ag-accrued' + (pd.done ? '' : ' is-open') },
                     eur(a.accrued), el('span', { class: 'unit' }, ' aufgelaufen')),
+                agreementProgress(a),
                 el('div', { class: 'card-meta' }, config)),
             canBill() ? el('div', { class: 'card-actions' },
+                canQuickSettle ? el('button', { class: 'btn btn-ghost btn-sm ag-check', title: 'Ganze Pauschale als bezahlt markieren', 'aria-label': 'Pauschale als bezahlt markieren', onclick: () => agreementMarkAllPaid(a) }, icon('check')) : null,
                 el('button', { class: 'btn btn-ghost btn-sm', title: 'Pauschale ab ' + fmtDate(a.start_date) + ' bearbeiten', 'aria-label': 'Pauschale ab ' + fmtDate(a.start_date) + ' bearbeiten', onclick: () => agreementForm(personId, vehicles, a) }, icon('edit')),
                 el('button', { class: 'btn btn-ghost btn-sm', title: 'Pauschale ab ' + fmtDate(a.start_date) + ' löschen', 'aria-label': 'Pauschale ab ' + fmtDate(a.start_date) + ' löschen', onclick: () => delAgreement(a) }, icon('trash'))) : null));
         // Readers already see the status via the ag-status-row chip above; only
@@ -1141,7 +1230,7 @@
             ? vehicles.filter((v) => a.vehicle_ids.includes(v.id))
             : vehicles;
         if (sub.length) {
-            const det = persistDetails('ag-veh-' + a.id, 'archive-section', 'Gefährte (' + sub.length + ')', true);
+            const det = persistDetails('ag-veh-' + a.id, 'archive-section', 'Gefährte (' + sub.length + ')', false);
             sub.forEach((v) => det.append(vehicleCard(v, { linkable: true, chargeInfo: chargeByVeh[v.id] })));
             row.append(det);
         }
@@ -1151,31 +1240,33 @@
     // paid, offen = none) plus a collapsible per-period list (per year for yearly
     // agreements, per month for monthly ones) so single periods can be settled.
     function agreementPayments(a) {
-        const wrap = el('div', {});
-        wrap.append(el('div', { class: 'controls-row' },
-            el('span', { class: 'muted', style: 'font-size:.85rem' }, 'Alle Zeiträume'), agreementPaidSlider(a)));
+        // Master "Alle Zeiträume" slider (bezahlt = all paid, offen = none).
+        const master = el('div', { class: 'controls-row' },
+            el('span', { class: 'muted', style: 'font-size:.85rem' }, 'Alle Zeiträume'), agreementPaidSlider(a));
         const periods = agreementPeriods(a);
+        // Nothing has accrued yet: only the master toggle is relevant, show it bare.
+        if (!periods.length) return master;
         // Key of the period that is currently running (still accruing), so it can
         // be marked "läuft" — here "bezahlt" means the whole period is prepaid.
         const curKey = a.period === 'yearly' ? today().slice(0, 4) : today().slice(0, 7);
-        if (periods.length) {
-            const det = persistDetails('ag-pay-' + a.id, 'period-payments', 'Zahlung je Zeitraum (' + periods.length + ')', false);
-            const box = el('div', { class: 'period-list' });
-            for (const p of periods) {
-                const amt = a.period_costs ? a.period_costs[p.key] : null;
-                const running = p.key === curKey;
-                const fx = periodFixed(a, p.key);
-                box.append(el('div', { class: 'period-row' },
-                    el('span', { class: 'period-label' }, p.label,
-                        amt != null ? el('span', { class: 'period-amt' }, ' · ' + eur(amt)) : null,
-                        running ? el('span', { class: 'period-amt', title: '„bezahlt": ganze Periode im Voraus – oder Teilbetrag wählen' }, ' · läuft') : null,
-                        fx != null ? el('span', { class: 'period-amt', title: 'Teilbetrag bezahlt – Rest offen' }, ' · Teil ' + eur(fx)) : null),
-                    agreementPeriodSlider(a, p.key, running, amt)));
-            }
-            det.append(box);
-            wrap.append(det);
+        // Fold both the master toggle and the per-period list into one collapsed
+        // section, so the card at rest shows status (badge/bar) but no controls.
+        const det = persistDetails('ag-pay-' + a.id, 'period-payments', 'Zahlungen verwalten (' + periods.length + ')', false);
+        det.append(master);
+        const box = el('div', { class: 'period-list' });
+        for (const p of periods) {
+            const amt = a.period_costs ? a.period_costs[p.key] : null;
+            const running = p.key === curKey;
+            const fx = periodFixed(a, p.key);
+            box.append(el('div', { class: 'period-row' },
+                el('span', { class: 'period-label' }, p.label,
+                    amt != null ? el('span', { class: 'period-amt' }, ' · ' + eur(amt)) : null,
+                    running ? el('span', { class: 'period-amt', title: '„bezahlt": ganze Periode im Voraus – oder Teilbetrag wählen' }, ' · läuft') : null,
+                    fx != null ? el('span', { class: 'period-amt', title: 'Teilbetrag bezahlt – Rest offen' }, ' · Teil ' + eur(fx)) : null),
+                agreementPeriodSlider(a, p.key, running, amt)));
         }
-        return wrap;
+        det.append(box);
+        return det;
     }
     // agreementPeriods lists the elapsed sub-periods, newest first. The keys come
     // straight from the backend (period_costs, keyed "YYYY" / "YYYY-MM") — the
@@ -1756,7 +1847,7 @@
             if (vCharges.length) zk.append(financeList(vCharges));
             zk.append(el('div', { class: 'balance', style: 'margin-top:.6rem;border-top:1px dashed var(--border);padding-top:.6rem' },
                 el('strong', {}, 'Zusatzkosten aufgelaufen'),
-                el('strong', { class: 'amt', style: 'color:var(--accent)' }, eur(sub))));
+                el('strong', { class: 'amt', style: 'color:var(--accent-text)' }, eur(sub))));
             page.append(zk);
         }
 
@@ -1885,26 +1976,31 @@
     function financeRow(it) {
         const bound = it.vehicle_id != null;
         const paidEff = bound ? !!it.vehicle_paid : !!it.paid;
-        const card = el('div', { class: 'card' }, el('div', { class: 'card-row' },
-            el('div', { style: 'flex:1' },
-                el('h3', {}, eur(it.total) + '  ', el('span', { class: 'muted', style: 'font-weight:400;font-size:.9rem' }, esc(it.description))),
-                el('div', { class: 'card-meta' }, esc(it.person_name) + ' · ' + fmtDate(it.charged_on) + (it.quantity !== 1 ? ` · ${it.quantity}×${eur(it.amount)}` : '') + (it.note ? ' · ' + esc(it.note) : ''))),
-            canBill() && el('div', { class: 'card-actions' },
-                el('button', { class: 'btn btn-ghost btn-sm', title: (it.description || 'Position') + ' bearbeiten', 'aria-label': (it.description || 'Position') + ' bearbeiten', onclick: () => chargeForm(it.person_id, it) }, icon('edit')),
-                el('button', { class: 'btn btn-ghost btn-sm', title: (it.description || 'Position') + ' löschen', 'aria-label': (it.description || 'Position') + ' löschen', onclick: (e) => delFinance(it, e.currentTarget.closest('.card')) }, icon('trash')))));
-        // Paid status: a bound charge follows its vehicle (read-only here); a free
-        // charge gets its own offen/bezahlt slider.
-        const ctrl = el('div', { class: 'controls-row' });
-        if (bound) {
-            ctrl.append(el('span', { class: 'badge ' + (paidEff ? 'badge-active' : 'badge-ended') },
-                (paidEff ? 'bezahlt' : 'offen') + ' · über ' + esc(it.vehicle_label || 'Gefährt')));
-        } else if (canBill()) {
-            ctrl.append(chargePaidSlider(it));
-        } else {
-            ctrl.append(el('span', { class: 'badge ' + (paidEff ? 'badge-active' : 'badge-ended') }, paidEff ? 'bezahlt' : 'offen'));
-        }
-        card.append(ctrl);
-        return card;
+        const title = it.description ? esc(it.description) : 'Zusatzkosten';
+        const metaBits = [esc(it.person_name), fmtDate(it.charged_on)];
+        if (it.quantity !== 1) metaBits.push(`${it.quantity}×${eur(it.amount)}`);
+        if (it.note) metaBits.push(esc(it.note));
+        // Paid status sits under the details on the left: a bound charge follows
+        // its vehicle (read-only badge); a free charge gets its offen/bezahlt
+        // slider. Keeping it left of the amount keeps the right rail slim.
+        let statusEl;
+        if (bound) statusEl = el('span', { class: 'badge ' + (paidEff ? 'badge-active' : 'badge-ended'), title: 'über ' + esc(it.vehicle_label || 'Gefährt') }, (paidEff ? 'bezahlt' : 'offen') + ' · Gefährt');
+        else if (canBill()) statusEl = chargePaidSlider(it);
+        else statusEl = el('span', { class: 'badge ' + (paidEff ? 'badge-active' : 'badge-ended') }, paidEff ? 'bezahlt' : 'offen');
+        // Right rail: just the amount and (for billers) the row actions.
+        const side = el('div', { class: 'row-side' },
+            el('div', { class: 'charge-amt' }, eur(it.total)));
+        if (canBill()) side.append(el('div', { class: 'card-actions' },
+            el('button', { class: 'btn btn-ghost btn-sm', title: (it.description || 'Position') + ' bearbeiten', 'aria-label': (it.description || 'Position') + ' bearbeiten', onclick: () => chargeForm(it.person_id, it) }, icon('edit')),
+            el('button', { class: 'btn btn-ghost btn-sm', title: (it.description || 'Position') + ' löschen', 'aria-label': (it.description || 'Position') + ' löschen', onclick: (e) => delFinance(it, e.currentTarget.closest('.card')) }, icon('trash'))));
+        return el('div', { class: 'card charge-card ' + (paidEff ? 'is-paid' : 'is-open') },
+            el('div', { class: 'charge-row' },
+                el('span', { class: 'charge-ic', 'aria-hidden': 'true' }, icon('receipt', 20)),
+                el('div', { class: 'charge-main' },
+                    el('h3', {}, title),
+                    el('div', { class: 'card-meta' }, metaBits.join(' · ')),
+                    el('div', { class: 'charge-status' }, statusEl)),
+                side));
     }
     function chargePaidSlider(it) {
         const seg = el('div', { class: 'seg-mini pay', role: 'radiogroup', 'aria-label': 'Zahlstatus' });
@@ -2116,9 +2212,10 @@
         }
         const items = isCat ? state.categories : state.services;
         if (!items.length) list.append(emptyState(isCat ? 'tag' : 'receipt', isCat ? 'Noch keine Tarife.' : 'Noch keine Dienste.'));
-        else if (isCat) items.forEach((c) => list.append(manage ? categoryCard(c) : cfgReadonly('tag', esc(c.name),
-            `${eur(c.default_monthly_cost)} / Monat · ${eur(c.default_yearly_cost)} / Jahr`,
-            c.rates_synced ? el('span', { class: 'badge badge-cat', title: 'Jahr = Monat × 12' }, '×12') : null)));
+        else if (isCat) items.forEach((c) => list.append(manage ? categoryCard(c) : cfgReadonly('tag', esc(c.name), 'Standardtarif',
+            el('span', { style: 'display:flex;align-items:center;gap:.5rem' },
+                c.rates_synced ? el('span', { class: 'badge badge-cat', title: 'Jahr = Monat × 12' }, '×12') : null,
+                catRate(c)))));
         else items.forEach((s) => list.append(manage ? serviceCard(s) : cfgReadonly('receipt', esc(s.name), null,
             el('span', { class: 'cfg-right' }, eur(s.default_amount)))));
         page.append(list);
@@ -2161,15 +2258,23 @@
             panel.inert = open;
         });
     }
+    // Right-hand price for a Tarif card: monthly prominent, yearly muted below —
+    // sits on the right like the Dienste amount, per the mockup.
+    function catRate(c) {
+        return el('span', { class: 'cfg-right cfg-rate' },
+            el('span', { class: 'cfg-rate-m' }, eur(c.default_monthly_cost), el('span', { class: 'u' }, '/M')),
+            el('span', { class: 'cfg-rate-y' }, eur(c.default_yearly_cost), el('span', { class: 'u' }, '/J')));
+    }
     function categoryCard(c, openNow = false) {
         const pid = 'cat-panel-' + (c ? c.id : 'new');
         const head = el('button', { type: 'button', class: 'cfg-head tf-toggle', 'aria-expanded': 'false', 'aria-controls': pid },
             el('span', { class: 'cfg-ic' }, icon('tag', 18)),
             el('span', { class: 'cfg-main' },
                 el('span', { class: 'cfg-title' }, c ? esc(c.name) : 'Neuer Tarif'),
-                el('span', { class: 'cfg-sub' }, c ? `${eur(c.default_monthly_cost)}/M · ${eur(c.default_yearly_cost)}/J` : 'noch nicht gespeichert')),
+                el('span', { class: 'cfg-sub' }, c ? 'Standardtarif' : 'noch nicht gespeichert')),
             c && c.archived ? el('span', { class: 'badge badge-collected' }, 'Archiviert') : null,
             c && c.rates_synced ? el('span', { class: 'badge badge-cat', title: 'Jahr = Monat × 12' }, '×12') : null,
+            c ? catRate(c) : null,
             el('span', { class: 'tf-chev', 'aria-hidden': 'true' }, icon('chevron', 18)));
 
         const nameCatId = 'catname-' + (c ? c.id : 'new');
@@ -2985,8 +3090,53 @@
         update();
     }
 
+    // ---------- rotating brand vehicle (login logo / topbar logo / favicon) ----------
+    // Picks one vehicle per session (persisted), so refreshes stay stable and a new
+    // session shows a new one — the login logo, topbar logo and favicon all match.
+    const VEHICLES = [
+        '<path d="M4.5 12 12 5.2 19.5 12"/><path d="M6.6 12.2v6.3M17.4 12.2v6.3"/><rect x="9" y="14.4" width="6" height="4" rx="1.1"/>',
+        '<path d="M4.5 15.5v-3c0-.5.15-1 .45-1.4l1.7-2.3c.35-.5.9-.8 1.5-.8h6.7c.6 0 1.15.3 1.5.75l1.75 2.35c.3.4.45.9.45 1.4v3"/><path d="M2.5 15.5h19"/><circle cx="7.3" cy="16.3" r="1.7"/><circle cx="16.7" cy="16.3" r="1.7"/>',
+        '<path d="M3 15V11a3 3 0 0 1 3-3h9.7a2.8 2.8 0 0 1 2.8 2.8V15Z"/><path d="M2.5 15h16.5"/><path d="M18.5 13.2H22"/><rect x="5.5" y="10" width="4.5" height="3.3" rx=".6"/><circle cx="12.6" cy="16.3" r="1.8"/>',
+        '<path d="M3 14.5V11h13.5v3.5"/><path d="M3 14.5h13.5"/><path d="M16.5 12.8H21"/><circle cx="9" cy="16.3" r="1.8"/>',
+        '<path d="M3.5 13.5h16.5l-1.7 3.3a2 2 0 0 1-1.8 1.1H7a2 2 0 0 1-1.8-1.1L3.5 13.5Z"/><path d="M8.5 13.5v-3l4 1.3v1.7"/><path d="M2.5 20.4c1.4.9 2.7.9 4 0s2.6-.9 4 0 2.7.9 4 0 2.6-.9 4 0"/>',
+        '<path d="M2.5 16V9.2A1.2 1.2 0 0 1 3.7 8H13v8"/><path d="M13 8h3.4c.4 0 .8.2 1.05.5l2.3 3c.25.35.4.75.4 1.2V16H13"/><rect x="4.5" y="10" width="4" height="3" rx=".5"/><circle cx="7" cy="16.6" r="1.7"/><circle cx="16.6" cy="16.6" r="1.7"/>',
+        '<path d="M2.5 16v-4.8C2.5 9 4 7.5 6.2 7.5h9.6C18 7.5 19.5 9 19.5 11.2V16"/><path d="M2.5 12h17M11 8v4"/><circle cx="6.5" cy="16.6" r="1.7"/><circle cx="15.5" cy="16.6" r="1.7"/>',
+        '<circle cx="5.5" cy="15.5" r="3.2"/><circle cx="18.5" cy="15.5" r="3.2"/><path d="M5.5 15.5l3.2-4.5h4.3l1.9 3.1"/><path d="M8.7 11 7.9 8.4H11"/><path d="M15 14.2l3.5 1.3"/>',
+        '<path d="M4 16.4h14l-1.6 2.6a1.8 1.8 0 0 1-1.5.9H7.1a1.8 1.8 0 0 1-1.5-.9L4 16.4Z"/><path d="M11.2 15V3.6L17.6 15Z"/><path d="M11.2 15H5.4L11.2 8.6"/>',
+        '<path d="M3 14.2h13.6a3 3 0 0 1-3 2.9H6a3 3 0 0 1-3-2.9Z"/><path d="M11 14l3.3-3.2 1.8 1"/><path d="M2.5 20c1.3.9 2.6.9 4 0s2.6-.9 4 0 2.6.9 4 0 2.6-.9 4 0"/>',
+        '<path d="M3 15.5v-2.2l1.6-.6 1.4-3c.3-.6.9-1 1.6-1h6c.6 0 1.2.3 1.5.9l1.4 2.9 2.5.9v2.1"/><path d="M2.5 15.5h19"/><path d="M6 12.7h5"/><circle cx="7.3" cy="16.3" r="1.7"/><circle cx="16.7" cy="16.3" r="1.7"/>',
+    ];
+    // Pick once per browser session and remember it: a normal refresh (F5 or a
+    // cache-bypassing hard reload — indistinguishable to a page) keeps the same
+    // vehicle, while a new session or cleared site data rolls a fresh one.
+    function pickVehicleIndex() {
+        let idx = -1;
+        try { idx = parseInt(sessionStorage.getItem('parkrr-veh'), 10); } catch { /* storage blocked */ }
+        if (!(idx >= 0 && idx < VEHICLES.length)) {
+            idx = Math.floor(Math.random() * VEHICLES.length);
+            try { sessionStorage.setItem('parkrr-veh', String(idx)); } catch { /* storage blocked */ }
+        }
+        return idx;
+    }
+    function applyBrand() {
+        const inner = VEHICLES[pickVehicleIndex()];
+        const mk = (size) => `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
+        $$('.brand-veh').forEach((node) => { node.innerHTML = mk(node.dataset.veh || 24); });
+        // Favicon: a filled teal tile + white glyph so it reads at tab size, and it
+        // rotates with the logos. Drop every existing icon link first, otherwise the
+        // static favicon.ico (sizes="any") wins and the dynamic one is ignored.
+        const raw = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="#0d9488"/><g fill="none" stroke="#ffffff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${inner}</g></svg>`;
+        document.querySelectorAll('link[rel~="icon"]').forEach((l) => l.remove());
+        const link = document.createElement('link');
+        link.rel = 'icon';
+        link.type = 'image/svg+xml';
+        link.href = 'data:image/svg+xml,' + encodeURIComponent(raw);
+        document.head.appendChild(link);
+    }
+
     async function init() {
         initTheme();
+        applyBrand();
         bindStatic();
         setupInstallPrompt();
         setupOfflineIndicator();

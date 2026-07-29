@@ -1,5 +1,5 @@
 /* Parkrr service worker – offline shell caching. */
-const CACHE = 'parkrr-v66';
+const CACHE = 'parkrr-v79';
 const SHELL = [
     '/',
     '/css/style.css',
@@ -7,6 +7,9 @@ const SHELL = [
     '/manifest.webmanifest',
     '/icons/icon.svg',
     '/icons/icon-maskable.svg',
+    '/fonts/hanken.woff2',
+    '/fonts/manrope.woff2',
+    '/fonts/jbmono.woff2',
 ];
 
 self.addEventListener('install', (event) => {
