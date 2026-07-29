@@ -1062,3 +1062,23 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .bar-fill{ min-width:8px; box-shadow:0 1px 3px rgba(0,0,0,.18); }
 .bar-val{ font-weight:800; color:var(--text); font-size:.92rem; }
 .status-name{ font-weight:600; color:var(--text); }
+
+/* ===== REDESIGN · iteration 4 (feedback) ===== */
+:root{ --chart-c1:#0d9488; --chart-c2:#22d3ee; }
+
+/* Value charts + progress bars → brand teal→cyan gradient. Status-distribution
+   bars keep their semantic colours (set inline), so this only tints un-coloured
+   fills like the Pauschale progress bar. */
+.bar-fill{ background:linear-gradient(90deg, var(--chart-c1), var(--chart-c2)); }
+
+/* Zusatzkosten · compact one-tap paid toggle (replaces the bulky two-part slider) */
+.paid-toggle{ font-family:var(--font-mono); font-weight:700; font-size:.62rem; letter-spacing:.08em; text-transform:uppercase; border:1px solid transparent; border-radius:999px; padding:.22rem .62rem; cursor:pointer; white-space:nowrap; transition:filter .12s, background .12s; }
+.paid-toggle.is-open{ background:var(--accent); color:#3d2c05; }
+.paid-toggle.is-paid{ background:var(--success); color:#062712; }
+.paid-toggle:hover{ filter:brightness(1.06); }
+.paid-toggle:focus-visible{ outline:2px solid var(--primary); outline-offset:2px; }
+
+/* Pauschale · payment-progress bar */
+.ag-progress{ margin:.5rem 0 .15rem; }
+.ag-progress .bar-track.ag-bar{ height:10px; }
+.ag-progress-cap{ font-family:var(--font-mono); font-weight:700; font-size:.58rem; letter-spacing:.06em; text-transform:uppercase; color:var(--text-muted); margin-top:.3rem; }

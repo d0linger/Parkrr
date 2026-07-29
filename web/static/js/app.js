@@ -455,8 +455,8 @@
         const box = el('div', { class: 'chart' });
         box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Verlauf">
           <defs>
-            <linearGradient id="af-${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--primary-hover)" stop-opacity="0.30"/><stop offset="1" stop-color="var(--primary-hover)" stop-opacity="0"/></linearGradient>
-            <linearGradient id="as-${id}" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="var(--primary)"/><stop offset="1" stop-color="var(--primary-hover)"/></linearGradient>
+            <linearGradient id="af-${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--chart-c1)" stop-opacity="0.32"/><stop offset="1" stop-color="var(--chart-c2)" stop-opacity="0"/></linearGradient>
+            <linearGradient id="as-${id}" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="var(--chart-c1)"/><stop offset="1" stop-color="var(--chart-c2)"/></linearGradient>
           </defs>
           <g>${grid}</g>
           ${area ? `<path d="${area}" fill="url(#af-${id})"/>` : ''}
@@ -509,7 +509,7 @@
         }
         const box = el('div', { class: 'chart' });
         box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Balken">
-          <defs><linearGradient id="bf-${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--primary-hover)"/><stop offset="1" stop-color="var(--primary)"/></linearGradient></defs>
+          <defs><linearGradient id="bf-${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--chart-c2)"/><stop offset="1" stop-color="var(--chart-c1)"/></linearGradient></defs>
           <g>${grid}</g><g>${bars}</g><g>${lab}</g></svg>`;
         const svg = box.querySelector('svg');
         const tip = chartTip(box, svg, W, H);
@@ -1125,6 +1125,34 @@
     }
 
     // ---- flat-rate agreements (Pauschale-Einträge) ----
+    // Payment-progress bar for a Pauschale: the share of the accrued amount that
+    // has been settled (full periods + fixed partials, or the master paid flag).
+    // Uses the gradient bar-fill; hidden until something has accrued.
+    function agreementProgress(a) {
+        const accrued = Number(a.accrued) || 0;
+        if (accrued <= 0.005) return null;
+        let paidAcc;
+        if (a.paid) {
+            paidAcc = accrued;
+        } else {
+            paidAcc = 0;
+            const costs = a.period_costs || {};
+            const paidP = a.paid_periods || [];
+            for (const k of paidP) paidAcc += Number(costs[k]) || 0;
+            const fixed = a.paid_fixed || {};
+            for (const k in fixed) {
+                if (paidP.includes(k)) continue; // whole period already counted
+                const c = Number(costs[k]) || 0;
+                paidAcc += c > 0 ? Math.min(Number(fixed[k]) || 0, c) : (Number(fixed[k]) || 0);
+            }
+        }
+        const frac = Math.max(0, Math.min(1, paidAcc / accrued));
+        const fill = el('div', { class: 'bar-fill' });
+        requestAnimationFrame(() => { fill.style.width = (frac * 100) + '%'; });
+        return el('div', { class: 'ag-progress' },
+            el('div', { class: 'bar-track ag-bar' }, fill),
+            el('div', { class: 'ag-progress-cap' }, eur(paidAcc) + ' von ' + eur(accrued) + ' bezahlt'));
+    }
     function agreementRow(personId, a, vehicles, chargeByVeh = {}) {
         const unit = a.period === 'yearly' ? '/Jahr' : '/Monat';
         const covered = (a.vehicle_ids && a.vehicle_ids.length)
@@ -1149,6 +1177,7 @@
                     el('span', { class: 'badge badge-cat' }, nCov)),
                 el('div', { class: 'ag-accrued' + (a.paid ? '' : ' is-open') },
                     eur(a.accrued), el('span', { class: 'unit' }, ' aufgelaufen')),
+                agreementProgress(a),
                 el('div', { class: 'card-meta' }, config)),
             canBill() ? el('div', { class: 'card-actions' },
                 el('button', { class: 'btn btn-ghost btn-sm', title: 'Pauschale ab ' + fmtDate(a.start_date) + ' bearbeiten', 'aria-label': 'Pauschale ab ' + fmtDate(a.start_date) + ' bearbeiten', onclick: () => agreementForm(personId, vehicles, a) }, icon('edit')),
@@ -1914,7 +1943,7 @@
         // (read-only badge); a free charge gets its own offen/bezahlt slider.
         let statusEl;
         if (bound) statusEl = el('span', { class: 'badge ' + (paidEff ? 'badge-active' : 'badge-ended'), title: 'über ' + esc(it.vehicle_label || 'Gefährt') }, (paidEff ? 'bezahlt' : 'offen') + ' · Gefährt');
-        else if (canBill()) statusEl = chargePaidSlider(it);
+        else if (canBill()) statusEl = chargePaidToggle(it);
         else statusEl = el('span', { class: 'badge ' + (paidEff ? 'badge-active' : 'badge-ended') }, paidEff ? 'bezahlt' : 'offen');
         // Right rail: amount on top, the status control, then the row actions —
         // stacked so they never crowd on a narrow screen.
@@ -1932,13 +1961,27 @@
                     el('div', { class: 'card-meta' }, metaBits.join(' · '))),
                 side));
     }
-    function chargePaidSlider(it) {
-        const seg = el('div', { class: 'seg-mini pay', role: 'radiogroup', 'aria-label': 'Zahlstatus' });
-        seg.append(el('button', { class: (!it.paid ? 'active open' : ''), type: 'button', role: 'radio', 'aria-checked': String(!it.paid), 'aria-label': 'Zahlung offen',
-            onclick: (e) => { markActive(e.currentTarget); setChargePaid(it, false); } }, 'offen'));
-        seg.append(el('button', { class: (it.paid ? 'active done' : ''), type: 'button', role: 'radio', 'aria-checked': String(it.paid), 'aria-label': 'Bezahlt',
-            onclick: (e) => { markActive(e.currentTarget); setChargePaid(it, true); } }, 'bezahlt'));
-        return segThumb(seg);
+    // Compact one-tap paid toggle for a free charge: a single status pill that
+    // flips offen<->bezahlt (replaces the wider two-segment slider so the row's
+    // right rail stays slim).
+    function chargePaidToggle(it) {
+        const label = (paid) => paid ? 'bezahlt' : 'offen';
+        const pill = el('button', {
+            type: 'button', class: 'paid-toggle ' + (it.paid ? 'is-paid' : 'is-open'),
+            'aria-pressed': String(!!it.paid),
+            'aria-label': it.paid ? 'Bezahlt – tippen, um auf offen zu setzen' : 'Offen – tippen, um als bezahlt zu markieren',
+            onclick: (e) => {
+                const next = !it.paid;
+                // Optimistic swap so the pill reacts instantly; setChargePaid
+                // re-renders once the server confirms.
+                const b = e.currentTarget;
+                b.classList.toggle('is-paid', next);
+                b.classList.toggle('is-open', !next);
+                b.textContent = label(next);
+                setChargePaid(it, next);
+            },
+        }, label(it.paid));
+        return pill;
     }
     // Serialize rapid offen/bezahlt clicks: record the latest wanted state and,
     // if no save is in flight, drain toward it — so a click during an in-flight
