@@ -1024,3 +1024,41 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .pcard__status{ display:flex; align-items:center; margin-right:.3rem; flex:none; }
 .pcard__owe{ font-family:var(--font-head); font-weight:800; font-variant-numeric:tabular-nums; color:var(--accent); font-size:.98rem; white-space:nowrap; }
 .pcard__paid{ font-family:var(--font-mono); font-weight:700; font-size:.62rem; letter-spacing:.09em; text-transform:uppercase; color:var(--success); background:var(--bg-elev-2); border-radius:999px; padding:.18rem .55rem; white-space:nowrap; }
+
+/* ===== REDESIGN · iteration 3 (feedback) ===== */
+
+/* Übersicht · Top offene Salden: inset amber rail per person (they all owe) */
+.owe-row{ position:relative; padding-left:calc(0.9rem + 10px); }
+.owe-row::before{ content:""; position:absolute; left:9px; top:10px; bottom:10px; width:3px; border-radius:3px; background:var(--accent); opacity:.9; }
+
+/* Right rail on list rows: amount/status on top, row actions stacked below it */
+.row-side{ display:flex; flex-direction:column; align-items:flex-end; gap:.4rem; flex:none; }
+.row-side .card-actions{ margin:0; }
+.row-side .pcard__status{ margin:0; }
+
+/* Zusatzkosten cards → icon tile · title/meta · right amount+status (per design) */
+.charge-row{ display:flex; align-items:flex-start; gap:.7rem; }
+.charge-ic{ width:38px; height:38px; border-radius:11px; display:inline-flex; align-items:center; justify-content:center; flex:none; background:var(--bg-elev-2); color:var(--text-muted); }
+.charge-main{ flex:1; min-width:0; }
+.charge-main h3{ margin:0; }
+.charge-amt{ font-family:var(--font-head); font-weight:800; font-size:1.1rem; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.charge-status{ display:flex; }
+.card.charge-card{ position:relative; overflow:hidden; padding-left:calc(1rem + 9px); }
+.card.charge-card::before{ content:""; position:absolute; left:11px; top:12px; bottom:12px; width:3px; border-radius:3px; opacity:.9; }
+.card.charge-card.is-paid::before{ background:var(--success); }
+.card.charge-card.is-open::before{ background:var(--accent); }
+.card.charge-card.is-paid .charge-ic{ color:var(--success); background:rgba(16,185,129,.15); }
+.card.charge-card.is-open .charge-ic{ color:var(--accent); background:rgba(245,158,11,.16); }
+
+/* Person-Detail · balance breakdown as its own three-figure card below the hero */
+.bal-figs{ display:grid; grid-template-columns:repeat(3,1fr); gap:.6rem; }
+.bal-figs .fig{ display:flex; flex-direction:column; gap:.2rem; min-width:0; }
+.bal-figs .fig-l{ font-family:var(--font-mono); font-weight:700; font-size:.6rem; letter-spacing:.08em; text-transform:uppercase; color:var(--text-muted); }
+.bal-figs .fig-v{ font-family:var(--font-head); font-weight:800; font-size:1.02rem; font-variant-numeric:tabular-nums; }
+.bal-figs .fig-v.is-paid{ color:var(--success); }
+
+/* Horizontal bars → taller, defined track + bolder fill so the extent reads */
+.bar-track{ height:16px; box-shadow:inset 0 0 0 1px var(--border); }
+.bar-fill{ min-width:8px; box-shadow:0 1px 3px rgba(0,0,0,.18); }
+.bar-val{ font-weight:800; color:var(--text); font-size:.92rem; }
+.status-name{ font-weight:600; color:var(--text); }

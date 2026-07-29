@@ -817,19 +817,23 @@
             render: (p) => {
                 const bal = Number(oweMap[p.id]) || 0;
                 const owes = bal > 0.005;
+                // Amount/status and the row actions are stacked in a right rail
+                // (amount on top, buttons below) so they never crowd each other on
+                // a narrow screen.
                 return el('div', { class: 'card pcard ' + (owes ? 'is-owed' : 'is-clear') },
                     el('div', { class: 'card-row' },
                         el('div', { style: 'flex:1;cursor:pointer', onclick: () => navigate('persons/' + p.id) },
                             el('h3', {}, personName(p), ' ', p.has_flat_rate ? el('span', { class: 'badge badge-active', title: 'Pauschale' }, 'Pauschale') : null),
                             el('div', { class: 'card-meta' }, [p.email, p.phone].filter(Boolean).join(' · ') || 'keine Kontaktdaten')),
-                        el('div', { class: 'pcard__status' }, owes
-                            ? el('span', { class: 'pcard__owe', title: 'Offener Saldo' }, eur(bal))
-                            : el('span', { class: 'pcard__paid', title: 'Keine offenen Beträge' }, 'Bezahlt')),
-                        el('div', { class: 'card-actions' },
-                            el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': personName(p) + ' öffnen', onclick: () => navigate('persons/' + p.id) }, '›'),
-                            canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' bearbeiten', 'aria-label': personName(p) + ' bearbeiten', onclick: () => personForm(p) }, icon('edit')),
-                            canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' löschen', 'aria-label': personName(p) + ' löschen', onclick: (e) => delPerson(p, e.currentTarget.closest('.card')) }, icon('trash')),
-                        )));
+                        el('div', { class: 'row-side' },
+                            el('div', { class: 'pcard__status' }, owes
+                                ? el('span', { class: 'pcard__owe', title: 'Offener Saldo' }, eur(bal))
+                                : el('span', { class: 'pcard__paid', title: 'Keine offenen Beträge' }, 'Bezahlt')),
+                            el('div', { class: 'card-actions' },
+                                el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': personName(p) + ' öffnen', onclick: () => navigate('persons/' + p.id) }, '›'),
+                                canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' bearbeiten', 'aria-label': personName(p) + ' bearbeiten', onclick: () => personForm(p) }, icon('edit')),
+                                canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' löschen', 'aria-label': personName(p) + ' löschen', onclick: (e) => delPerson(p, e.currentTarget.closest('.card')) }, icon('trash')),
+                            ))));
             },
         });
     };
@@ -886,11 +890,13 @@
         page.append(el('div', { class: 'card' },
             el('div', { class: 'bal-hero-label' }, 'Offener Saldo'),
             el('div', { class: 'bal-hero-num ' + (owed ? 'is-owed' : 'is-clear') }, eur(stats.balance)),
-            el('div', { class: 'bal-hero-sub' }, 'Stand heute · Miete + Zusatzkosten − Bezahlt'),
-            el('div', { class: 'bal-breakdown' },
-                el('div', { class: 'bal-row' }, el('span', {}, 'Aufgelaufene Miete'), el('span', { class: 'v' }, eur(stats.total_accrued))),
-                el('div', { class: 'bal-row' }, el('span', {}, 'Zusatzkosten'), el('span', { class: 'v' }, eur(stats.total_charges))),
-                el('div', { class: 'bal-row is-paid' }, el('span', {}, 'Bezahlt'), el('span', { class: 'v' }, '− ' + eur(stats.total_paid))))));
+            el('div', { class: 'bal-hero-sub' }, 'Stand heute · Miete + Zusatzkosten − Bezahlt')));
+        // Derivation lives in its own card below the hero: three labelled figures
+        // (Miete / Zusatzkosten / Bezahlt) so the breakdown reads as a small ledger.
+        page.append(el('div', { class: 'card bal-figs' },
+            el('div', { class: 'fig' }, el('div', { class: 'fig-l' }, 'Miete'), el('div', { class: 'fig-v' }, eur(stats.total_accrued))),
+            el('div', { class: 'fig' }, el('div', { class: 'fig-l' }, 'Zusatzkosten'), el('div', { class: 'fig-v' }, eur(stats.total_charges))),
+            el('div', { class: 'fig' }, el('div', { class: 'fig-l' }, 'Bezahlt'), el('div', { class: 'fig-v is-paid' }, eur(stats.total_paid)))));
 
         // flat-rate agreements (Pauschalen). Per-vehicle coverage badges/payment
         // come from the backend (v.flat_rate_covered / v.uncovered_cost).
@@ -1900,26 +1906,31 @@
     function financeRow(it) {
         const bound = it.vehicle_id != null;
         const paidEff = bound ? !!it.vehicle_paid : !!it.paid;
-        const card = el('div', { class: 'card' }, el('div', { class: 'card-row' },
-            el('div', { style: 'flex:1' },
-                el('h3', {}, eur(it.total) + '  ', el('span', { class: 'muted', style: 'font-weight:400;font-size:.9rem' }, esc(it.description))),
-                el('div', { class: 'card-meta' }, esc(it.person_name) + ' · ' + fmtDate(it.charged_on) + (it.quantity !== 1 ? ` · ${it.quantity}×${eur(it.amount)}` : '') + (it.note ? ' · ' + esc(it.note) : ''))),
-            canBill() && el('div', { class: 'card-actions' },
-                el('button', { class: 'btn btn-ghost btn-sm', title: (it.description || 'Position') + ' bearbeiten', 'aria-label': (it.description || 'Position') + ' bearbeiten', onclick: () => chargeForm(it.person_id, it) }, icon('edit')),
-                el('button', { class: 'btn btn-ghost btn-sm', title: (it.description || 'Position') + ' löschen', 'aria-label': (it.description || 'Position') + ' löschen', onclick: (e) => delFinance(it, e.currentTarget.closest('.card')) }, icon('trash')))));
-        // Paid status: a bound charge follows its vehicle (read-only here); a free
-        // charge gets its own offen/bezahlt slider.
-        const ctrl = el('div', { class: 'controls-row' });
-        if (bound) {
-            ctrl.append(el('span', { class: 'badge ' + (paidEff ? 'badge-active' : 'badge-ended') },
-                (paidEff ? 'bezahlt' : 'offen') + ' · über ' + esc(it.vehicle_label || 'Gefährt')));
-        } else if (canBill()) {
-            ctrl.append(chargePaidSlider(it));
-        } else {
-            ctrl.append(el('span', { class: 'badge ' + (paidEff ? 'badge-active' : 'badge-ended') }, paidEff ? 'bezahlt' : 'offen'));
-        }
-        card.append(ctrl);
-        return card;
+        const title = it.description ? esc(it.description) : 'Zusatzkosten';
+        const metaBits = [esc(it.person_name), fmtDate(it.charged_on)];
+        if (it.quantity !== 1) metaBits.push(`${it.quantity}×${eur(it.amount)}`);
+        if (it.note) metaBits.push(esc(it.note));
+        // Paid status lives in the right rail: a bound charge follows its vehicle
+        // (read-only badge); a free charge gets its own offen/bezahlt slider.
+        let statusEl;
+        if (bound) statusEl = el('span', { class: 'badge ' + (paidEff ? 'badge-active' : 'badge-ended'), title: 'über ' + esc(it.vehicle_label || 'Gefährt') }, (paidEff ? 'bezahlt' : 'offen') + ' · Gefährt');
+        else if (canBill()) statusEl = chargePaidSlider(it);
+        else statusEl = el('span', { class: 'badge ' + (paidEff ? 'badge-active' : 'badge-ended') }, paidEff ? 'bezahlt' : 'offen');
+        // Right rail: amount on top, the status control, then the row actions —
+        // stacked so they never crowd on a narrow screen.
+        const side = el('div', { class: 'row-side' },
+            el('div', { class: 'charge-amt' }, eur(it.total)),
+            el('div', { class: 'charge-status' }, statusEl));
+        if (canBill()) side.append(el('div', { class: 'card-actions' },
+            el('button', { class: 'btn btn-ghost btn-sm', title: (it.description || 'Position') + ' bearbeiten', 'aria-label': (it.description || 'Position') + ' bearbeiten', onclick: () => chargeForm(it.person_id, it) }, icon('edit')),
+            el('button', { class: 'btn btn-ghost btn-sm', title: (it.description || 'Position') + ' löschen', 'aria-label': (it.description || 'Position') + ' löschen', onclick: (e) => delFinance(it, e.currentTarget.closest('.card')) }, icon('trash'))));
+        return el('div', { class: 'card charge-card ' + (paidEff ? 'is-paid' : 'is-open') },
+            el('div', { class: 'charge-row' },
+                el('span', { class: 'charge-ic', 'aria-hidden': 'true' }, icon('receipt', 20)),
+                el('div', { class: 'charge-main' },
+                    el('h3', {}, title),
+                    el('div', { class: 'card-meta' }, metaBits.join(' · '))),
+                side));
     }
     function chargePaidSlider(it) {
         const seg = el('div', { class: 'seg-mini pay', role: 'radiogroup', 'aria-label': 'Zahlstatus' });
