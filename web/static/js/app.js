@@ -794,7 +794,6 @@
         scCard.append(bars);
         page.append(scCard);
     };
-    const statWide = (value, label, opts = {}) => { const t = stat(value, label, opts); t.style.gridColumn = 'span 2'; return t; };
 
     // ================= PERSONS =================
     routes.persons = async (page) => {
