@@ -275,6 +275,11 @@ textarea { resize: vertical; min-height: 72px; }
 .cfg-title { font-weight: 650; font-size: 1rem; }
 .cfg-sub { font-size: 0.78rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .cfg-right { flex: none; font-weight: 700; font-variant-numeric: tabular-nums; font-size: 0.95rem; }
+/* Tarif price on the right: monthly prominent, yearly muted below (like Dienste). */
+.cfg-rate { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.12; text-align: right; }
+.cfg-rate-m { font-weight: 800; font-size: 0.98rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cfg-rate-y { font-weight: 600; font-size: 0.78rem; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; margin-top: 1px; }
+.cfg-rate .u { font-weight: 600; font-size: 0.72em; color: var(--text-muted); margin-left: 1px; }
 .cfg-panel-in { padding-top: 0.7rem; }
 .cfg-panel-in > label:first-child { margin-top: 0; }
 .cfg-save { margin-top: 0.8rem; display: flex; gap: 0.5rem; }

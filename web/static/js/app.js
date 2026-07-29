@@ -2209,9 +2209,10 @@
         }
         const items = isCat ? state.categories : state.services;
         if (!items.length) list.append(emptyState(isCat ? 'tag' : 'receipt', isCat ? 'Noch keine Tarife.' : 'Noch keine Dienste.'));
-        else if (isCat) items.forEach((c) => list.append(manage ? categoryCard(c) : cfgReadonly('tag', esc(c.name),
-            `${eur(c.default_monthly_cost)} / Monat · ${eur(c.default_yearly_cost)} / Jahr`,
-            c.rates_synced ? el('span', { class: 'badge badge-cat', title: 'Jahr = Monat × 12' }, '×12') : null)));
+        else if (isCat) items.forEach((c) => list.append(manage ? categoryCard(c) : cfgReadonly('tag', esc(c.name), 'Standardtarif',
+            el('span', { style: 'display:flex;align-items:center;gap:.5rem' },
+                c.rates_synced ? el('span', { class: 'badge badge-cat', title: 'Jahr = Monat × 12' }, '×12') : null,
+                catRate(c)))));
         else items.forEach((s) => list.append(manage ? serviceCard(s) : cfgReadonly('receipt', esc(s.name), null,
             el('span', { class: 'cfg-right' }, eur(s.default_amount)))));
         page.append(list);
@@ -2254,15 +2255,23 @@
             panel.inert = open;
         });
     }
+    // Right-hand price for a Tarif card: monthly prominent, yearly muted below —
+    // sits on the right like the Dienste amount, per the mockup.
+    function catRate(c) {
+        return el('span', { class: 'cfg-right cfg-rate' },
+            el('span', { class: 'cfg-rate-m' }, eur(c.default_monthly_cost), el('span', { class: 'u' }, '/M')),
+            el('span', { class: 'cfg-rate-y' }, eur(c.default_yearly_cost), el('span', { class: 'u' }, '/J')));
+    }
     function categoryCard(c, openNow = false) {
         const pid = 'cat-panel-' + (c ? c.id : 'new');
         const head = el('button', { type: 'button', class: 'cfg-head tf-toggle', 'aria-expanded': 'false', 'aria-controls': pid },
             el('span', { class: 'cfg-ic' }, icon('tag', 18)),
             el('span', { class: 'cfg-main' },
                 el('span', { class: 'cfg-title' }, c ? esc(c.name) : 'Neuer Tarif'),
-                el('span', { class: 'cfg-sub' }, c ? `${eur(c.default_monthly_cost)}/M · ${eur(c.default_yearly_cost)}/J` : 'noch nicht gespeichert')),
+                el('span', { class: 'cfg-sub' }, c ? 'Standardtarif' : 'noch nicht gespeichert')),
             c && c.archived ? el('span', { class: 'badge badge-collected' }, 'Archiviert') : null,
             c && c.rates_synced ? el('span', { class: 'badge badge-cat', title: 'Jahr = Monat × 12' }, '×12') : null,
+            c ? catRate(c) : null,
             el('span', { class: 'tf-chev', 'aria-hidden': 'true' }, icon('chevron', 18)));
 
         const nameCatId = 'catname-' + (c ? c.id : 'new');
