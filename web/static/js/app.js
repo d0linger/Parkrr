@@ -723,9 +723,13 @@
             return;
         }
 
-        // Money first — "Offen gesamt" is the operator's lead metric. The
-        // Umsatz tile carries a year-over-year delta vs the same period last year.
-        const umsatz = statWide(eur(ov.accrued_this_year), 'Umsatz ' + ov.year, { icon: 'trend', tone: 'teal' });
+        // Money first — "Offen gesamt" is the operator's lead metric, shown as a
+        // gradient hero; Umsatz (with a YoY delta) and Bezahlt sit beside it.
+        page.append(el('div', { class: 'dash-hero' },
+            el('div', { class: 'dash-hero-label' }, 'Offen gesamt'),
+            el('div', { class: 'dash-hero-num' }, eur(ov.outstanding_total)),
+            el('div', { class: 'dash-hero-sub' }, 'Stand heute · offene Salden zum Nachfassen')));
+        const umsatz = stat(eur(ov.accrued_this_year), 'Umsatz ' + ov.year, { icon: 'trend', tone: 'teal' });
         const prev = ov.accrued_prev_year;
         if (prev != null && prev > 0) {
             const pct = Math.round(((ov.accrued_this_year - prev) / prev) * 100);
@@ -735,9 +739,8 @@
             umsatz.querySelector('.label').textContent = 'Umsatz ' + ov.year + ' · ggü. ' + (ov.year - 1);
         }
         page.append(el('div', { class: 'stat-grid' },
-            statWide(eur(ov.outstanding_total), 'Offen gesamt', { icon: 'clock', tone: 'amber' }),
             umsatz,
-            statWide(eur(ov.paid_total), 'Bezahlt', { icon: 'check', tone: 'green' }),
+            stat(eur(ov.paid_total), 'Bezahlt', { icon: 'check', tone: 'green' }),
         ));
         page.append(el('div', { class: 'stat-grid' },
             stat(ov.total_persons, 'Personen', { icon: 'users' }),

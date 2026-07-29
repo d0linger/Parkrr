@@ -993,12 +993,11 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 :root[data-theme="dark"]{ --card-bg:#16213a; }
 .card,.stat,.owe-card,.chart-card{ background:var(--card-bg) !important; background-image:none !important; }
 
-/* Lead KPI "Offen gesamt" (the wide amber-tone tile) → teal→cyan gradient hero */
-.stat.tone-amber{ background:var(--grad) !important; border-color:transparent !important; box-shadow:0 16px 34px -20px rgba(13,148,136,.9); }
-.stat.tone-amber::after{ display:none !important; }
-.stat.tone-amber .value{ color:#fff !important; }
-.stat.tone-amber .label{ color:rgba(255,255,255,.84) !important; }
-.stat.tone-amber .stat-ic{ color:rgba(255,255,255,.85) !important; opacity:.9; }
+/* Dashboard lead metric "Offen gesamt" → teal→cyan gradient hero */
+.dash-hero{ background:var(--grad); border-radius:14px; padding:1.05rem 1.15rem; margin-bottom:.75rem; color:#fff; box-shadow:0 16px 34px -20px rgba(13,148,136,.9); }
+.dash-hero-label{ font-family:var(--font-mono); font-weight:700; font-size:.7rem; letter-spacing:.12em; text-transform:uppercase; color:rgba(255,255,255,.82); }
+.dash-hero-num{ font-family:var(--font-head); font-weight:800; font-size:2.15rem; letter-spacing:-.02em; line-height:1.05; font-variant-numeric:tabular-nums; margin-top:.15rem; }
+.dash-hero-sub{ font-size:.78rem; color:rgba(255,255,255,.85); margin-top:.25rem; }
 
 /* Login subtitle → mono eyebrow */
 .brand p{ font-family:var(--font-mono); font-weight:700; font-size:.72rem; letter-spacing:.14em; text-transform:uppercase; color:var(--text-muted); }
@@ -1011,3 +1010,9 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .card:has(.seg-mini button.active.st-reserved)::before,.card:has(.badge-reserved)::before{ background:var(--warning) !important; opacity:.9; }
 .card:has(.seg-mini button.active.st-collected)::before,.card:has(.badge-collected)::before{ background:var(--text-muted) !important; opacity:.8; }
 .card:has(.seg-mini button.active.st-cancelled)::before,.card:has(.badge-cancelled)::before{ background:var(--danger) !important; opacity:.9; }
+
+/* KPI grid: prevent long money values from overflowing 2-col; shrink money font a touch */
+.stat-grid{ grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
+.stat{ min-width:0; overflow:hidden; }
+.stat.tone-teal .value,.stat.tone-green .value{ font-size:1.3rem; }
+.stat .value .yoy{ font-size:.6rem; }
