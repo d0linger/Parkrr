@@ -1939,17 +1939,16 @@
         const metaBits = [esc(it.person_name), fmtDate(it.charged_on)];
         if (it.quantity !== 1) metaBits.push(`${it.quantity}×${eur(it.amount)}`);
         if (it.note) metaBits.push(esc(it.note));
-        // Paid status lives in the right rail: a bound charge follows its vehicle
-        // (read-only badge); a free charge gets its own offen/bezahlt slider.
+        // Paid status sits under the details on the left: a bound charge follows
+        // its vehicle (read-only badge); a free charge gets its offen/bezahlt
+        // slider. Keeping it left of the amount keeps the right rail slim.
         let statusEl;
         if (bound) statusEl = el('span', { class: 'badge ' + (paidEff ? 'badge-active' : 'badge-ended'), title: 'über ' + esc(it.vehicle_label || 'Gefährt') }, (paidEff ? 'bezahlt' : 'offen') + ' · Gefährt');
-        else if (canBill()) statusEl = chargePaidToggle(it);
+        else if (canBill()) statusEl = chargePaidSlider(it);
         else statusEl = el('span', { class: 'badge ' + (paidEff ? 'badge-active' : 'badge-ended') }, paidEff ? 'bezahlt' : 'offen');
-        // Right rail: amount on top, the status control, then the row actions —
-        // stacked so they never crowd on a narrow screen.
+        // Right rail: just the amount and (for billers) the row actions.
         const side = el('div', { class: 'row-side' },
-            el('div', { class: 'charge-amt' }, eur(it.total)),
-            el('div', { class: 'charge-status' }, statusEl));
+            el('div', { class: 'charge-amt' }, eur(it.total)));
         if (canBill()) side.append(el('div', { class: 'card-actions' },
             el('button', { class: 'btn btn-ghost btn-sm', title: (it.description || 'Position') + ' bearbeiten', 'aria-label': (it.description || 'Position') + ' bearbeiten', onclick: () => chargeForm(it.person_id, it) }, icon('edit')),
             el('button', { class: 'btn btn-ghost btn-sm', title: (it.description || 'Position') + ' löschen', 'aria-label': (it.description || 'Position') + ' löschen', onclick: (e) => delFinance(it, e.currentTarget.closest('.card')) }, icon('trash'))));
@@ -1958,30 +1957,17 @@
                 el('span', { class: 'charge-ic', 'aria-hidden': 'true' }, icon('receipt', 20)),
                 el('div', { class: 'charge-main' },
                     el('h3', {}, title),
-                    el('div', { class: 'card-meta' }, metaBits.join(' · '))),
+                    el('div', { class: 'card-meta' }, metaBits.join(' · ')),
+                    el('div', { class: 'charge-status' }, statusEl)),
                 side));
     }
-    // Compact one-tap paid toggle for a free charge: a single status pill that
-    // flips offen<->bezahlt (replaces the wider two-segment slider so the row's
-    // right rail stays slim).
-    function chargePaidToggle(it) {
-        const label = (paid) => paid ? 'bezahlt' : 'offen';
-        const pill = el('button', {
-            type: 'button', class: 'paid-toggle ' + (it.paid ? 'is-paid' : 'is-open'),
-            'aria-pressed': String(!!it.paid),
-            'aria-label': it.paid ? 'Bezahlt – tippen, um auf offen zu setzen' : 'Offen – tippen, um als bezahlt zu markieren',
-            onclick: (e) => {
-                const next = !it.paid;
-                // Optimistic swap so the pill reacts instantly; setChargePaid
-                // re-renders once the server confirms.
-                const b = e.currentTarget;
-                b.classList.toggle('is-paid', next);
-                b.classList.toggle('is-open', !next);
-                b.textContent = label(next);
-                setChargePaid(it, next);
-            },
-        }, label(it.paid));
-        return pill;
+    function chargePaidSlider(it) {
+        const seg = el('div', { class: 'seg-mini pay', role: 'radiogroup', 'aria-label': 'Zahlstatus' });
+        seg.append(el('button', { class: (!it.paid ? 'active open' : ''), type: 'button', role: 'radio', 'aria-checked': String(!it.paid), 'aria-label': 'Zahlung offen',
+            onclick: (e) => { markActive(e.currentTarget); setChargePaid(it, false); } }, 'offen'));
+        seg.append(el('button', { class: (it.paid ? 'active done' : ''), type: 'button', role: 'radio', 'aria-checked': String(it.paid), 'aria-label': 'Bezahlt',
+            onclick: (e) => { markActive(e.currentTarget); setChargePaid(it, true); } }, 'bezahlt'));
+        return segThumb(seg);
     }
     // Serialize rapid offen/bezahlt clicks: record the latest wanted state and,
     // if no save is in flight, drain toward it — so a click during an in-flight

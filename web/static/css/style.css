@@ -681,7 +681,7 @@ textarea { resize: vertical; min-height: 72px; }
     border: none; background: none; color: var(--text-muted); font-family: inherit;
     padding: 0.4rem 1rem; border-radius: 999px; cursor: pointer; font-weight: 600; font-size: 0.9rem;
 }
-.segments button.active { background: var(--primary); color: #04231f; }
+.segments button.active { background: var(--grad); color: #04231f; }
 
 /* ---------- Mini sliders (status / payment) on cards & detail ---------- */
 .controls-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-top: 0.7rem; }
@@ -1036,13 +1036,13 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .row-side .card-actions{ margin:0; }
 .row-side .pcard__status{ margin:0; }
 
-/* Zusatzkosten cards → icon tile · title/meta · right amount+status (per design) */
+/* Zusatzkosten cards → icon tile · title/meta/status on the left · amount+actions on the right */
 .charge-row{ display:flex; align-items:flex-start; gap:.7rem; }
 .charge-ic{ width:38px; height:38px; border-radius:11px; display:inline-flex; align-items:center; justify-content:center; flex:none; background:var(--bg-elev-2); color:var(--text-muted); }
 .charge-main{ flex:1; min-width:0; }
 .charge-main h3{ margin:0; }
 .charge-amt{ font-family:var(--font-head); font-weight:800; font-size:1.1rem; font-variant-numeric:tabular-nums; white-space:nowrap; }
-.charge-status{ display:flex; }
+.charge-status{ display:flex; margin-top:.45rem; }
 .card.charge-card{ position:relative; overflow:hidden; padding-left:calc(1rem + 9px); }
 .card.charge-card::before{ content:""; position:absolute; left:11px; top:12px; bottom:12px; width:3px; border-radius:3px; opacity:.9; }
 .card.charge-card.is-paid::before{ background:var(--success); }
@@ -1070,13 +1070,6 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
    bars keep their semantic colours (set inline), so this only tints un-coloured
    fills like the Pauschale progress bar. */
 .bar-fill{ background:linear-gradient(90deg, var(--chart-c1), var(--chart-c2)); }
-
-/* Zusatzkosten · compact one-tap paid toggle (replaces the bulky two-part slider) */
-.paid-toggle{ font-family:var(--font-mono); font-weight:700; font-size:.62rem; letter-spacing:.08em; text-transform:uppercase; border:1px solid transparent; border-radius:999px; padding:.22rem .62rem; cursor:pointer; white-space:nowrap; transition:filter .12s, background .12s; }
-.paid-toggle.is-open{ background:var(--accent); color:#3d2c05; }
-.paid-toggle.is-paid{ background:var(--success); color:#062712; }
-.paid-toggle:hover{ filter:brightness(1.06); }
-.paid-toggle:focus-visible{ outline:2px solid var(--primary); outline-offset:2px; }
 
 /* Pauschale · payment-progress bar */
 .ag-progress{ margin:.5rem 0 .15rem; }
