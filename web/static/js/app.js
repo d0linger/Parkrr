@@ -2985,8 +2985,35 @@
         update();
     }
 
+    // ---------- rotating brand vehicle (login logo / topbar logo / favicon) ----------
+    // Picks a random vehicle each load, so a cache reset (Strg+F5) shows a new one.
+    const VEHICLES = [
+        '<path d="M4.5 12 12 5.2 19.5 12"/><path d="M6.6 12.2v6.3M17.4 12.2v6.3"/><rect x="9" y="14.4" width="6" height="4" rx="1.1"/>',
+        '<path d="M4.5 15.5v-3c0-.5.15-1 .45-1.4l1.7-2.3c.35-.5.9-.8 1.5-.8h6.7c.6 0 1.15.3 1.5.75l1.75 2.35c.3.4.45.9.45 1.4v3"/><path d="M2.5 15.5h19"/><circle cx="7.3" cy="16.3" r="1.7"/><circle cx="16.7" cy="16.3" r="1.7"/>',
+        '<path d="M3 15V11a3 3 0 0 1 3-3h9.7a2.8 2.8 0 0 1 2.8 2.8V15Z"/><path d="M2.5 15h16.5"/><path d="M18.5 13.2H22"/><rect x="5.5" y="10" width="4.5" height="3.3" rx=".6"/><circle cx="12.6" cy="16.3" r="1.8"/>',
+        '<path d="M3 14.5V11h13.5v3.5"/><path d="M3 14.5h13.5"/><path d="M16.5 12.8H21"/><circle cx="9" cy="16.3" r="1.8"/>',
+        '<path d="M3.5 13.5h16.5l-1.7 3.3a2 2 0 0 1-1.8 1.1H7a2 2 0 0 1-1.8-1.1L3.5 13.5Z"/><path d="M8.5 13.5v-3l4 1.3v1.7"/><path d="M2.5 20.4c1.4.9 2.7.9 4 0s2.6-.9 4 0 2.7.9 4 0 2.6-.9 4 0"/>',
+        '<path d="M2.5 16V9.2A1.2 1.2 0 0 1 3.7 8H13v8"/><path d="M13 8h3.4c.4 0 .8.2 1.05.5l2.3 3c.25.35.4.75.4 1.2V16H13"/><rect x="4.5" y="10" width="4" height="3" rx=".5"/><circle cx="7" cy="16.6" r="1.7"/><circle cx="16.6" cy="16.6" r="1.7"/>',
+        '<path d="M2.5 16v-4.8C2.5 9 4 7.5 6.2 7.5h9.6C18 7.5 19.5 9 19.5 11.2V16"/><path d="M2.5 12h17M11 8v4"/><circle cx="6.5" cy="16.6" r="1.7"/><circle cx="15.5" cy="16.6" r="1.7"/>',
+        '<circle cx="5.5" cy="15.5" r="3.2"/><circle cx="18.5" cy="15.5" r="3.2"/><path d="M5.5 15.5l3.2-4.5h4.3l1.9 3.1"/><path d="M8.7 11 7.9 8.4H11"/><path d="M15 14.2l3.5 1.3"/>',
+        '<path d="M4 16.4h14l-1.6 2.6a1.8 1.8 0 0 1-1.5.9H7.1a1.8 1.8 0 0 1-1.5-.9L4 16.4Z"/><path d="M11.2 15V3.6L17.6 15Z"/><path d="M11.2 15H5.4L11.2 8.6"/>',
+        '<path d="M3 14.2h13.6a3 3 0 0 1-3 2.9H6a3 3 0 0 1-3-2.9Z"/><path d="M11 14l3.3-3.2 1.8 1"/><path d="M2.5 20c1.3.9 2.6.9 4 0s2.6-.9 4 0 2.6.9 4 0 2.6-.9 4 0"/>',
+        '<path d="M3 15.5v-2.2l1.6-.6 1.4-3c.3-.6.9-1 1.6-1h6c.6 0 1.2.3 1.5.9l1.4 2.9 2.5.9v2.1"/><path d="M2.5 15.5h19"/><path d="M6 12.7h5"/><circle cx="7.3" cy="16.3" r="1.7"/><circle cx="16.7" cy="16.3" r="1.7"/>',
+    ];
+    function applyBrand() {
+        const inner = VEHICLES[Math.floor(Math.random() * VEHICLES.length)];
+        const mk = (size) => `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
+        $$('.brand-veh').forEach((el) => { el.innerHTML = mk(el.dataset.veh || 24); });
+        const raw = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#0d9488" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
+        let link = document.querySelector('link[rel~="icon"]');
+        if (!link) { link = document.createElement('link'); link.rel = 'icon'; document.head.appendChild(link); }
+        link.type = 'image/svg+xml';
+        link.href = 'data:image/svg+xml,' + encodeURIComponent(raw);
+    }
+
     async function init() {
         initTheme();
+        applyBrand();
         bindStatic();
         setupInstallPrompt();
         setupOfflineIndicator();

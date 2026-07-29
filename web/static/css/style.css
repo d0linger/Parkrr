@@ -924,3 +924,66 @@ textarea { resize: vertical; min-height: 72px; }
     display: flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums;
 }
 .secret-copy { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+
+/* ===================================================================
+   REDESIGN · Agro-Modernist (Trekrr language, Parkrr colors)
+   Appended overrides — self-hosted fonts, gradients, flat cards, rails.
+   =================================================================== */
+@font-face{font-family:'Hanken Grotesk';font-weight:400 700;font-style:normal;font-display:swap;src:url(/fonts/hanken.woff2) format('woff2')}
+@font-face{font-family:'JetBrains Mono';font-weight:500 700;font-style:normal;font-display:swap;src:url(/fonts/jbmono.woff2) format('woff2')}
+@font-face{font-family:'Manrope';font-weight:700 800;font-style:normal;font-display:swap;src:url(/fonts/manrope.woff2) format('woff2')}
+
+:root{
+  --font:'Hanken Grotesk',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --font-head:'Manrope','Segoe UI Variable Display','Segoe UI',system-ui,sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+  --radius:14px; --radius-sm:11px;
+  --grad:linear-gradient(135deg,#0d9488 0%,#22d3ee 100%);
+  --card-bg:#16213a;
+}
+:root[data-theme="light"]{ --card-bg:#ffffff; }
+:root:not([data-theme]){ --card-bg:#16213a; }
+@media(prefers-color-scheme:light){ :root:not([data-theme]){ --card-bg:#ffffff; } }
+
+body{ font-family:var(--font); }
+h1,h2,h3,.sectitle,.mtitle,.bal-hero-num,.ag-accrued,.stat .value,.owe-amt,.amt{ font-family:var(--font-head); }
+h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
+
+/* mono eyebrow / labels */
+.sec-eyebrow,.bal-hero-label,.stat .label,.owe-head .muted,.field-hint.mono{ font-family:var(--font-mono); font-weight:700; text-transform:uppercase; letter-spacing:.09em; }
+
+/* Appbar → Parkrr teal→cyan gradient */
+.app-header{ background:linear-gradient(120deg,#0d9488 0%,#0ea5a0 45%,#22d3ee 100%) !important; border-bottom:0 !important; -webkit-backdrop-filter:none !important; backdrop-filter:none !important; }
+.app-title,.app-title span{ color:#effffb !important; font-weight:800; }
+.app-header .btn-icon{ color:#effffb; background:rgba(255,255,255,.16); border-radius:11px; }
+.app-header .btn-icon:hover{ background:rgba(255,255,255,.28); }
+
+/* Cards → flat surface + 14px */
+.card{ background:var(--card-bg) !important; border-radius:14px; }
+
+/* Buttons → pill */
+.btn{ border-radius:999px; font-family:var(--font-head); font-weight:700; }
+
+/* Balance hero → gradient summary */
+.card:has(> .bal-hero-num){ background:var(--grad) !important; border-color:transparent !important; box-shadow:0 16px 34px -20px rgba(13,148,136,.9); }
+.card:has(> .bal-hero-num) .bal-hero-label{ color:rgba(255,255,255,.82); }
+.card:has(> .bal-hero-num) .bal-hero-num{ color:#fff !important; }
+.card:has(> .bal-hero-num) .bal-hero-sub{ color:rgba(255,255,255,.84); }
+.card:has(> .bal-hero-num) .bal-breakdown{ border-top-color:rgba(255,255,255,.24); }
+.card:has(> .bal-hero-num) .bal-row{ color:rgba(255,255,255,.92); }
+.card:has(> .bal-hero-num) .bal-row.is-paid .v{ color:#c9f7dd; }
+
+/* Inset accent rails on rows carrying a payment/status control */
+.card:has(.controls-row){ position:relative; overflow:hidden; padding-left:calc(1rem + 9px); }
+.card:has(.controls-row)::before{ content:""; position:absolute; left:11px; top:12px; bottom:12px; width:3px; border-radius:3px; background:var(--text-muted); opacity:.55; }
+.card:has(.badge-active)::before,.card:has(.seg-mini .active.done)::before{ background:var(--success); opacity:.9; }
+.card:has(.badge-ended)::before,.card:has(.seg-mini .active.open)::before{ background:var(--accent); opacity:.9; }
+
+/* Dialog modal + login card → 20px + gradient top rule */
+.modal,.login-card{ border-radius:20px; }
+.modal-header h2,.mtitle{ font-family:var(--font-head); font-weight:800; }
+
+/* rotating brand vehicle */
+.brand-veh{ display:inline-flex; align-items:center; justify-content:center; color:var(--primary); }
+.app-header .brand-veh{ color:#effffb; }
+.brand-veh.brand-badge{ width:60px; height:60px; border-radius:17px; background:var(--grad); color:#04231f; margin:0 auto 2px; box-shadow:0 12px 26px -14px rgba(13,148,136,.9); }
