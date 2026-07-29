@@ -1155,23 +1155,23 @@
     }
     function agreementRow(personId, a, vehicles, chargeByVeh = {}) {
         const unit = a.period === 'yearly' ? '/Jahr' : '/Monat';
-        const covered = (a.vehicle_ids && a.vehicle_ids.length)
-            ? a.vehicle_ids.map((vid) => { const v = vehicles.find((x) => x.id === vid); return v ? vehicleTitle(v) : '#' + vid; }).join(', ')
-            : 'alle Gefährte';
         // Lead with the question the user has ("paid? how much open?"): a status
-        // chip + the accrued amount up front; the contract config becomes a quiet
+        // chip + the accrued amount up front; the contract terms become a quiet
         // meta line. partial = some periods/fixed amounts paid but not the whole.
         const partial = !a.paid && (((a.paid_periods && a.paid_periods.length)) ||
             (a.paid_fixed && Object.keys(a.paid_fixed).length));
         const stLabel = a.paid ? 'Bezahlt' : partial ? 'Teilweise bezahlt' : 'Offen';
         const stCls = a.paid ? 'badge-active' : partial ? 'badge-cat' : 'badge-ended';
         const nCov = (a.vehicle_ids && a.vehicle_ids.length) ? a.vehicle_ids.length + ' Gefährte' : 'alle Gefährte';
+        // Terms only: rate + span (+ note). The covered vehicles live in the
+        // "N Gefährte" badge and the "Gefährte" section, so they're not repeated
+        // here. Open-ended reads "seit <start>" rather than "<start> – offen".
         const config = eur(a.amount) + unit + ' · '
-            + fmtDate(a.start_date) + (a.end_date ? ' – ' + fmtDate(a.end_date) : ' – offen')
-            + ' · ' + esc(covered) + (a.note ? ' · ' + esc(a.note) : '');
+            + (a.end_date ? fmtDate(a.start_date) + ' – ' + fmtDate(a.end_date) : 'seit ' + fmtDate(a.start_date))
+            + (a.note ? ' · ' + esc(a.note) : '');
         const row = el('div', { class: 'card', style: 'margin-top:.5rem' });
         row.append(el('div', { class: 'card-row' },
-            el('div', { style: 'flex:1' },
+            el('div', { class: 'ag-body' },
                 el('div', { class: 'ag-status-row' },
                     el('span', { class: 'badge ' + stCls }, stLabel),
                     el('span', { class: 'badge badge-cat' }, nCov)),
@@ -1201,31 +1201,33 @@
     // paid, offen = none) plus a collapsible per-period list (per year for yearly
     // agreements, per month for monthly ones) so single periods can be settled.
     function agreementPayments(a) {
-        const wrap = el('div', {});
-        wrap.append(el('div', { class: 'controls-row' },
-            el('span', { class: 'muted', style: 'font-size:.85rem' }, 'Alle Zeiträume'), agreementPaidSlider(a)));
+        // Master "Alle Zeiträume" slider (bezahlt = all paid, offen = none).
+        const master = el('div', { class: 'controls-row' },
+            el('span', { class: 'muted', style: 'font-size:.85rem' }, 'Alle Zeiträume'), agreementPaidSlider(a));
         const periods = agreementPeriods(a);
+        // Nothing has accrued yet: only the master toggle is relevant, show it bare.
+        if (!periods.length) return master;
         // Key of the period that is currently running (still accruing), so it can
         // be marked "läuft" — here "bezahlt" means the whole period is prepaid.
         const curKey = a.period === 'yearly' ? today().slice(0, 4) : today().slice(0, 7);
-        if (periods.length) {
-            const det = persistDetails('ag-pay-' + a.id, 'period-payments', 'Zahlung je Zeitraum (' + periods.length + ')', false);
-            const box = el('div', { class: 'period-list' });
-            for (const p of periods) {
-                const amt = a.period_costs ? a.period_costs[p.key] : null;
-                const running = p.key === curKey;
-                const fx = periodFixed(a, p.key);
-                box.append(el('div', { class: 'period-row' },
-                    el('span', { class: 'period-label' }, p.label,
-                        amt != null ? el('span', { class: 'period-amt' }, ' · ' + eur(amt)) : null,
-                        running ? el('span', { class: 'period-amt', title: '„bezahlt": ganze Periode im Voraus – oder Teilbetrag wählen' }, ' · läuft') : null,
-                        fx != null ? el('span', { class: 'period-amt', title: 'Teilbetrag bezahlt – Rest offen' }, ' · Teil ' + eur(fx)) : null),
-                    agreementPeriodSlider(a, p.key, running, amt)));
-            }
-            det.append(box);
-            wrap.append(det);
+        // Fold both the master toggle and the per-period list into one collapsed
+        // section, so the card at rest shows status (badge/bar) but no controls.
+        const det = persistDetails('ag-pay-' + a.id, 'period-payments', 'Zahlungen verwalten (' + periods.length + ')', false);
+        det.append(master);
+        const box = el('div', { class: 'period-list' });
+        for (const p of periods) {
+            const amt = a.period_costs ? a.period_costs[p.key] : null;
+            const running = p.key === curKey;
+            const fx = periodFixed(a, p.key);
+            box.append(el('div', { class: 'period-row' },
+                el('span', { class: 'period-label' }, p.label,
+                    amt != null ? el('span', { class: 'period-amt' }, ' · ' + eur(amt)) : null,
+                    running ? el('span', { class: 'period-amt', title: '„bezahlt": ganze Periode im Voraus – oder Teilbetrag wählen' }, ' · läuft') : null,
+                    fx != null ? el('span', { class: 'period-amt', title: 'Teilbetrag bezahlt – Rest offen' }, ' · Teil ' + eur(fx)) : null),
+                agreementPeriodSlider(a, p.key, running, amt)));
         }
-        return wrap;
+        det.append(box);
+        return det;
     }
     // agreementPeriods lists the elapsed sub-periods, newest first. The keys come
     // straight from the backend (period_costs, keyed "YYYY" / "YYYY-MM") — the
