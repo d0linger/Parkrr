@@ -816,20 +816,22 @@
                 { label: 'Neueste zuerst', cmp: (a, b) => b.id - a.id },
             ],
             render: (p) => {
+                // "known" = the person has billing activity, i.e. appears in the
+                // outstanding map (has a Gefährt / Pauschale / Zusatzkosten). A person
+                // with none isn't "Bezahlt" — there's simply nothing to settle — so
+                // show a neutral row with no status chip. Also suppressed if the
+                // balances failed to load. Amount/status + actions stack in a right rail.
+                const known = oweOk && oweMap[p.id] !== undefined;
                 const bal = Number(oweMap[p.id]) || 0;
                 const owes = bal > 0.005;
-                // Only show a settlement state when the balances actually loaded; on
-                // failure the rail stays neutral and the status chip is omitted,
-                // rather than showing everyone as "Bezahlt". Amount/status and the row
-                // actions stack in a right rail so they never crowd on a narrow screen.
-                const stateCls = oweOk ? (owes ? ' is-owed' : ' is-clear') : '';
+                const stateCls = known ? (owes ? ' is-owed' : ' is-clear') : '';
                 return el('div', { class: 'card pcard' + stateCls },
                     el('div', { class: 'card-row' },
                         el('div', { style: 'flex:1;cursor:pointer', onclick: () => navigate('persons/' + p.id) },
                             el('h3', {}, personName(p), ' ', p.has_flat_rate ? el('span', { class: 'badge badge-active', title: 'Pauschale' }, 'Pauschale') : null),
                             el('div', { class: 'card-meta' }, [p.email, p.phone].filter(Boolean).join(' · ') || 'keine Kontaktdaten')),
                         el('div', { class: 'row-side' },
-                            oweOk ? el('div', { class: 'pcard__status' }, owes
+                            known ? el('div', { class: 'pcard__status' }, owes
                                 ? el('span', { class: 'pcard__owe', title: 'Offener Saldo' }, eur(bal))
                                 : el('span', { class: 'pcard__paid', title: 'Keine offenen Beträge' }, 'Bezahlt')) : null,
                             el('div', { class: 'card-actions' },
