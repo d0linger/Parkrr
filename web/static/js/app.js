@@ -1155,13 +1155,9 @@
     }
     function agreementRow(personId, a, vehicles, chargeByVeh = {}) {
         const unit = a.period === 'yearly' ? '/Jahr' : '/Monat';
-        // Lead with the question the user has ("paid? how much open?"): a status
-        // chip + the accrued amount up front; the contract terms become a quiet
-        // meta line. partial = some periods/fixed amounts paid but not the whole.
-        const partial = !a.paid && (((a.paid_periods && a.paid_periods.length)) ||
-            (a.paid_fixed && Object.keys(a.paid_fixed).length));
-        const stLabel = a.paid ? 'Bezahlt' : partial ? 'Teilweise bezahlt' : 'Offen';
-        const stCls = a.paid ? 'badge-active' : partial ? 'badge-cat' : 'badge-ended';
+        // Payment state is carried by the progress bar + caption (and the amount
+        // turns amber while anything is open), so no separate status badge here —
+        // only the coverage badge remains.
         const nCov = (a.vehicle_ids && a.vehicle_ids.length) ? a.vehicle_ids.length + ' Gefährte' : 'alle Gefährte';
         // Terms only: rate + span (+ note). The covered vehicles live in the
         // "N Gefährte" badge and the "Gefährte" section, so they're not repeated
@@ -1173,7 +1169,6 @@
         row.append(el('div', { class: 'card-row' },
             el('div', { class: 'ag-body' },
                 el('div', { class: 'ag-status-row' },
-                    el('span', { class: 'badge ' + stCls }, stLabel),
                     el('span', { class: 'badge badge-cat' }, nCov)),
                 el('div', { class: 'ag-accrued' + (a.paid ? '' : ' is-open') },
                     eur(a.accrued), el('span', { class: 'unit' }, ' aufgelaufen')),
@@ -1191,7 +1186,7 @@
             ? vehicles.filter((v) => a.vehicle_ids.includes(v.id))
             : vehicles;
         if (sub.length) {
-            const det = persistDetails('ag-veh-' + a.id, 'archive-section', 'Gefährte (' + sub.length + ')', true);
+            const det = persistDetails('ag-veh-' + a.id, 'archive-section', 'Gefährte (' + sub.length + ')', false);
             sub.forEach((v) => det.append(vehicleCard(v, { linkable: true, chargeInfo: chargeByVeh[v.id] })));
             row.append(det);
         }
