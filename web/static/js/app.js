@@ -801,7 +801,9 @@
         // Open balance per person, batched in one request so each row can show its
         // settlement status (and a status-coloured rail) without an N+1 of stats.
         let oweMap = {};
-        try { oweMap = (await api.get('/persons/outstanding')) || {}; } catch (e) { oweMap = {}; }
+        let oweOk = true;
+        try { oweMap = (await api.get('/persons/outstanding')) || {}; }
+        catch (e) { oweOk = false; toast('Salden konnten nicht geladen werden', 'error'); }
         mountList(page, {
             title: 'Personen', emptyIcon: 'users', emptyText: 'Noch keine Personen.',
             onAdd: canManage() ? () => personForm() : null,
@@ -816,18 +818,20 @@
             render: (p) => {
                 const bal = Number(oweMap[p.id]) || 0;
                 const owes = bal > 0.005;
-                // Amount/status and the row actions are stacked in a right rail
-                // (amount on top, buttons below) so they never crowd each other on
-                // a narrow screen.
-                return el('div', { class: 'card pcard ' + (owes ? 'is-owed' : 'is-clear') },
+                // Only show a settlement state when the balances actually loaded; on
+                // failure the rail stays neutral and the status chip is omitted,
+                // rather than showing everyone as "Bezahlt". Amount/status and the row
+                // actions stack in a right rail so they never crowd on a narrow screen.
+                const stateCls = oweOk ? (owes ? ' is-owed' : ' is-clear') : '';
+                return el('div', { class: 'card pcard' + stateCls },
                     el('div', { class: 'card-row' },
                         el('div', { style: 'flex:1;cursor:pointer', onclick: () => navigate('persons/' + p.id) },
                             el('h3', {}, personName(p), ' ', p.has_flat_rate ? el('span', { class: 'badge badge-active', title: 'Pauschale' }, 'Pauschale') : null),
                             el('div', { class: 'card-meta' }, [p.email, p.phone].filter(Boolean).join(' · ') || 'keine Kontaktdaten')),
                         el('div', { class: 'row-side' },
-                            el('div', { class: 'pcard__status' }, owes
+                            oweOk ? el('div', { class: 'pcard__status' }, owes
                                 ? el('span', { class: 'pcard__owe', title: 'Offener Saldo' }, eur(bal))
-                                : el('span', { class: 'pcard__paid', title: 'Keine offenen Beträge' }, 'Bezahlt')),
+                                : el('span', { class: 'pcard__paid', title: 'Keine offenen Beträge' }, 'Bezahlt')) : null,
                             el('div', { class: 'card-actions' },
                                 el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': personName(p) + ' öffnen', onclick: () => navigate('persons/' + p.id) }, '›'),
                                 canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' bearbeiten', 'aria-label': personName(p) + ' bearbeiten', onclick: () => personForm(p) }, icon('edit')),
@@ -3117,7 +3121,7 @@
     function applyBrand() {
         const inner = VEHICLES[pickVehicleIndex()];
         const mk = (size) => `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
-        $$('.brand-veh').forEach((el) => { el.innerHTML = mk(el.dataset.veh || 24); });
+        $$('.brand-veh').forEach((node) => { node.innerHTML = mk(node.dataset.veh || 24); });
         // Favicon: a filled teal tile + white glyph so it reads at tab size, and it
         // rotates with the logos. Drop every existing icon link first, otherwise the
         // static favicon.ico (sizes="any") wins and the dynamic one is ignored.

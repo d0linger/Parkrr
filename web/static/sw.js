@@ -1,5 +1,5 @@
 /* Parkrr service worker – offline shell caching. */
-const CACHE = 'parkrr-v78';
+const CACHE = 'parkrr-v79';
 const SHELL = [
     '/',
     '/css/style.css',

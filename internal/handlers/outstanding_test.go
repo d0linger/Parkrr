@@ -88,10 +88,10 @@ func TestOutstandingByPersonMatchesStats(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE recurring_charges SET paid=true WHERE id=$1`, rcID); err != nil {
 		t.Fatalf("mark paid: %v", err)
 	}
-	if bal := personBalance(); bal > 0.01 {
+	if bal := personBalance(); math.Abs(bal) > 0.01 {
 		t.Errorf("expected settled balance ~0 in stats, got %.2f", bal)
 	}
-	if got := outstanding()[personID]; got > 0.01 {
+	if got := outstanding()[personID]; math.Abs(got) > 0.01 {
 		t.Errorf("expected settled balance ~0 in outstanding, got %.2f", got)
 	}
 }

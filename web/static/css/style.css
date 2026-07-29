@@ -756,10 +756,6 @@ textarea { resize: vertical; min-height: 72px; }
 .bal-hero-num.is-owed { color: var(--accent-text); }
 .bal-hero-num.is-clear { color: var(--success-text); }
 .bal-hero-sub { font-size: 0.76rem; color: var(--text-muted); margin-top: 0.15rem; }
-.bal-breakdown { margin-top: 0.9rem; padding-top: 0.7rem; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 0.3rem; }
-.bal-row { display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--text-muted); }
-.bal-row .v { font-variant-numeric: tabular-nums; }
-.bal-row.is-paid .v { color: var(--success-text); }
 
 /* ---------- Pauschale card: status-forward header ---------- */
 .ag-status-row { display: flex; gap: 0.35rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.45rem; }
@@ -984,9 +980,6 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .card:has(> .bal-hero-num) .bal-hero-label{ color:rgba(255,255,255,.82); }
 .card:has(> .bal-hero-num) .bal-hero-num{ color:#fff !important; }
 .card:has(> .bal-hero-num) .bal-hero-sub{ color:rgba(255,255,255,.84); }
-.card:has(> .bal-hero-num) .bal-breakdown{ border-top-color:rgba(255,255,255,.24); }
-.card:has(> .bal-hero-num) .bal-row{ color:rgba(255,255,255,.92); }
-.card:has(> .bal-hero-num) .bal-row.is-paid .v{ color:#c9f7dd; }
 
 /* Inset accent rails on rows carrying a payment/status control */
 .card:has(.controls-row){ position:relative; overflow:hidden; padding-left:calc(1rem + 9px); }
@@ -1017,9 +1010,6 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 /* Login subtitle → mono eyebrow */
 .brand p{ font-family:var(--font-mono); font-weight:700; font-size:.72rem; letter-spacing:.14em; text-transform:uppercase; color:var(--text-muted); }
 
-/* Balance breakdown → visually separated inset box on the gradient hero */
-.card:has(> .bal-hero-num) .bal-breakdown{ background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.14); border-radius:12px; padding:.7rem .85rem; margin-top:.9rem; }
-
 /* Rails coloured by vehicle status / slider state (not just badge-active/ended) */
 .card:has(.seg-mini button.active.st-stored)::before,.card:has(.badge-stored)::before{ background:var(--success) !important; opacity:.9; }
 .card:has(.seg-mini button.active.st-reserved)::before,.card:has(.badge-reserved)::before{ background:var(--warning) !important; opacity:.9; }
@@ -1034,7 +1024,8 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 
 /* Personen list rows → inset settlement rail + open/paid status */
 .card.pcard{ position:relative; overflow:hidden; padding-left:calc(1rem + 9px); }
-.card.pcard::before{ content:""; position:absolute; left:11px; top:12px; bottom:12px; width:3px; border-radius:3px; background:var(--success); opacity:.85; }
+.card.pcard::before{ content:""; position:absolute; left:11px; top:12px; bottom:12px; width:3px; border-radius:3px; background:var(--text-muted); opacity:.5; }
+.card.pcard.is-clear::before{ background:var(--success); opacity:.85; }
 .card.pcard.is-owed::before{ background:var(--accent); opacity:.95; }
 .pcard__status{ display:flex; align-items:center; margin-right:.3rem; flex:none; }
 .pcard__owe{ font-family:var(--font-head); font-weight:800; font-variant-numeric:tabular-nums; color:var(--accent-text); font-size:.98rem; white-space:nowrap; }
@@ -1086,10 +1077,9 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
    fills like the Pauschale progress bar. */
 .bar-fill{ background:linear-gradient(90deg, var(--chart-c1), var(--chart-c2)); }
 
-/* Pauschale · payment-progress bar */
-.ag-progress{ margin:.5rem 0 .15rem; }
+/* Pauschale · payment-progress bar (margin comes from the .ag-body gap;
+   the caption is defined once in iteration 5 below) */
 .ag-progress .bar-track.ag-bar{ height:10px; }
-.ag-progress-cap{ font-family:var(--font-mono); font-weight:700; font-size:.58rem; letter-spacing:.06em; text-transform:uppercase; color:var(--text-muted); margin-top:.3rem; }
 
 /* ===== REDESIGN · iteration 5 (Pauschale legibility) ===== */
 /* Even vertical rhythm in the agreement card body, driven by one gap instead of
