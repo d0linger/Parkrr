@@ -1084,3 +1084,18 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .ag-body .ag-progress{ margin:0; }
 /* Progress caption → quiet sentence, not a shouty uppercase mono label. */
 .ag-progress-cap{ font-family:inherit; font-weight:500; font-size:.75rem; letter-spacing:0; text-transform:none; color:var(--text-muted); margin-top:.35rem; }
+
+/* ===== REDESIGN · iteration 6 (Pauschale: open rest, %-marker, one-tap, done) ===== */
+/* Progress bar + a % marker on the same row. */
+.ag-progress-row{ display:flex; align-items:center; gap:.55rem; }
+.ag-progress-row .bar-track{ flex:1; }
+.ag-pct{ font-family:var(--font-mono); font-weight:700; font-size:.68rem; color:var(--text-muted); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.ag-pct.is-done{ color:var(--success); }
+/* Caption leads with the open remainder (amber); calm green once fully paid. */
+.ag-progress-cap .off{ color:var(--accent); font-weight:700; }
+.ag-progress-cap.is-done{ color:var(--success); font-weight:600; }
+/* One-tap settle button → green accent. */
+.btn.ag-check{ color:var(--success); border-color:rgba(34,197,94,.4); }
+.btn.ag-check:hover{ background:rgba(34,197,94,.14); }
+/* "beendet" tag → quiet outlined chip, distinct from the coverage badge. */
+.badge.ag-ended-tag{ background:transparent; border:1px solid var(--border); color:var(--text-muted); font-weight:700; }

@@ -1125,12 +1125,11 @@
     }
 
     // ---- flat-rate agreements (Pauschale-Einträge) ----
-    // Payment-progress bar for a Pauschale: the share of the accrued amount that
-    // has been settled (full periods + fixed partials, or the master paid flag).
-    // Uses the gradient bar-fill; hidden until something has accrued.
-    function agreementProgress(a) {
+    // Share of the accrued amount that is settled (full periods + fixed partials,
+    // or the master paid flag). Returns the pieces the card needs: accrued, paid,
+    // still-open, fraction, and whether it's fully done.
+    function agreementPaid(a) {
         const accrued = Number(a.accrued) || 0;
-        if (accrued <= 0.005) return null;
         let paidAcc;
         if (a.paid) {
             paidAcc = accrued;
@@ -1146,18 +1145,53 @@
                 paidAcc += c > 0 ? Math.min(Number(fixed[k]) || 0, c) : (Number(fixed[k]) || 0);
             }
         }
-        const frac = Math.max(0, Math.min(1, paidAcc / accrued));
+        paidAcc = Math.min(paidAcc, accrued);
+        const frac = accrued > 0.005 ? Math.max(0, Math.min(1, paidAcc / accrued)) : (a.paid ? 1 : 0);
+        return {
+            accrued, paidAcc, frac,
+            open: Math.max(0, accrued - paidAcc),
+            done: accrued > 0.005 ? paidAcc >= accrued - 0.005 : true,
+        };
+    }
+    // Payment-progress bar for a Pauschale: a gradient fill + a % marker, and a
+    // caption that leads with what's still open — or a calm "vollständig bezahlt"
+    // once it's settled. Hidden until something has accrued.
+    function agreementProgress(a) {
+        const pd = agreementPaid(a);
+        if (pd.accrued <= 0.005) return null;
+        const pct = Math.round(pd.frac * 100);
         const fill = el('div', { class: 'bar-fill' });
-        requestAnimationFrame(() => { fill.style.width = (frac * 100) + '%'; });
+        requestAnimationFrame(() => { fill.style.width = (pd.frac * 100) + '%'; });
+        const cap = pd.done
+            ? el('div', { class: 'ag-progress-cap is-done' }, '✓ vollständig bezahlt')
+            : el('div', { class: 'ag-progress-cap' },
+                el('span', { class: 'off' }, eur(pd.open) + ' offen'), ' · ' + pct + ' % bezahlt');
         return el('div', { class: 'ag-progress' },
-            el('div', { class: 'bar-track ag-bar' }, fill),
-            el('div', { class: 'ag-progress-cap' }, eur(paidAcc) + ' von ' + eur(accrued) + ' bezahlt'));
+            el('div', { class: 'ag-progress-row' },
+                el('div', { class: 'bar-track ag-bar' }, fill),
+                el('span', { class: 'ag-pct' + (pd.done ? ' is-done' : '') }, pct + ' %')),
+            cap);
+    }
+    // One-tap settle: mark the whole Pauschale paid, with an Undo. Only offered on
+    // a fully-open Pauschale, so Undo (paid=false) can't wipe partial per-period
+    // payments (the master flag clears them server-side).
+    async function agreementMarkAllPaid(a) {
+        try {
+            await api.post('/agreements/' + a.id + '/paid', { paid: true });
+            toastAction('Als bezahlt markiert', 'Rückgängig', async () => {
+                try { await api.post('/agreements/' + a.id + '/paid', { paid: false }); render(); }
+                catch (e) { toast(e.message, 'error'); }
+            });
+            render();
+        } catch (e) { toast(e.message, 'error'); render(); }
     }
     function agreementRow(personId, a, vehicles, chargeByVeh = {}) {
         const unit = a.period === 'yearly' ? '/Jahr' : '/Monat';
         // Payment state is carried by the progress bar + caption (and the amount
-        // turns amber while anything is open), so no separate status badge here —
-        // only the coverage badge remains.
+        // turns amber only while something is open), so no separate status badge
+        // here — only the coverage badge (+ a "beendet" tag for expired ones).
+        const pd = agreementPaid(a);
+        const isEnded = a.end_date && a.end_date.slice(0, 10) <= today();
         const nCov = (a.vehicle_ids && a.vehicle_ids.length) ? a.vehicle_ids.length + ' Gefährte' : 'alle Gefährte';
         // Terms only: rate + span (+ note). The covered vehicles live in the
         // "N Gefährte" badge and the "Gefährte" section, so they're not repeated
@@ -1165,16 +1199,21 @@
         const config = eur(a.amount) + unit + ' · '
             + (a.end_date ? fmtDate(a.start_date) + ' – ' + fmtDate(a.end_date) : 'seit ' + fmtDate(a.start_date))
             + (a.note ? ' · ' + esc(a.note) : '');
+        // A one-tap "als bezahlt" is only safe (Undo-lossless) when nothing has
+        // been paid yet, so offer it just for a fully-open Pauschale.
+        const canQuickSettle = canBill() && pd.accrued > 0.005 && pd.paidAcc <= 0.005;
         const row = el('div', { class: 'card', style: 'margin-top:.5rem' });
         row.append(el('div', { class: 'card-row' },
             el('div', { class: 'ag-body' },
                 el('div', { class: 'ag-status-row' },
-                    el('span', { class: 'badge badge-cat' }, nCov)),
-                el('div', { class: 'ag-accrued' + (a.paid ? '' : ' is-open') },
+                    el('span', { class: 'badge badge-cat' }, nCov),
+                    isEnded ? el('span', { class: 'badge ag-ended-tag' }, 'beendet ' + fmtDate(a.end_date)) : null),
+                el('div', { class: 'ag-accrued' + (pd.done ? '' : ' is-open') },
                     eur(a.accrued), el('span', { class: 'unit' }, ' aufgelaufen')),
                 agreementProgress(a),
                 el('div', { class: 'card-meta' }, config)),
             canBill() ? el('div', { class: 'card-actions' },
+                canQuickSettle ? el('button', { class: 'btn btn-ghost btn-sm ag-check', title: 'Ganze Pauschale als bezahlt markieren', 'aria-label': 'Pauschale als bezahlt markieren', onclick: () => agreementMarkAllPaid(a) }, icon('check')) : null,
                 el('button', { class: 'btn btn-ghost btn-sm', title: 'Pauschale ab ' + fmtDate(a.start_date) + ' bearbeiten', 'aria-label': 'Pauschale ab ' + fmtDate(a.start_date) + ' bearbeiten', onclick: () => agreementForm(personId, vehicles, a) }, icon('edit')),
                 el('button', { class: 'btn btn-ghost btn-sm', title: 'Pauschale ab ' + fmtDate(a.start_date) + ' löschen', 'aria-label': 'Pauschale ab ' + fmtDate(a.start_date) + ' löschen', onclick: () => delAgreement(a) }, icon('trash'))) : null));
         // Readers already see the status via the ag-status-row chip above; only
