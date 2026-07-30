@@ -482,7 +482,7 @@ textarea { resize: vertical; min-height: 72px; }
 .stat.tone-teal .stat-ic { color: var(--primary-hover); }
 .stat.tone-green .stat-ic { color: var(--success-text); }
 .stat.tone-amber .stat-ic { color: var(--accent-text); }
-@media (prefers-reduced-motion: reduce) { .stat { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .stat { transition: none; } .stat:hover { transform: none; } }
 
 .badge {
     display: inline-block; font-size: 0.72rem; font-weight: 700;
@@ -1005,7 +1005,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .dash-hero{ background:var(--grad); border-radius:14px; padding:1.05rem 1.15rem; margin-bottom:.75rem; color:#fff; box-shadow:0 16px 34px -20px rgba(13,148,136,.9); transition:transform .16s ease, box-shadow .16s ease; }
 /* Same lift-on-hover/tap as the KPI tiles (border-highlight omitted — the hero has no border). */
 .dash-hero:hover{ transform:translateY(-2px); box-shadow:0 22px 42px -18px rgba(13,148,136,.95); }
-@media (prefers-reduced-motion: reduce){ .dash-hero{ transition:none; } }
+@media (prefers-reduced-motion: reduce){ .dash-hero{ transition:none; } .dash-hero:hover{ transform:none; } }
 .dash-hero-label{ font-family:var(--font-mono); font-weight:700; font-size:.7rem; letter-spacing:.12em; text-transform:uppercase; color:rgba(255,255,255,.82); }
 .dash-hero-num{ font-family:var(--font-head); font-weight:800; font-size:2.15rem; letter-spacing:-.02em; line-height:1.05; font-variant-numeric:tabular-nums; margin-top:.15rem; }
 .dash-hero-sub{ font-size:.78rem; color:rgba(255,255,255,.85); margin-top:.25rem; }
