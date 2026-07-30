@@ -10,7 +10,10 @@ var codeRe = regexp.MustCompile(`^[A-Z0-9]{4}-[A-Z0-9]{4}$`)
 func TestRandomCodeFormat(t *testing.T) {
 	seen := map[string]bool{}
 	for i := 0; i < 200; i++ {
-		c := randomCode()
+		c, err := randomCode()
+		if err != nil {
+			t.Fatalf("randomCode failed: %v", err)
+		}
 		if !codeRe.MatchString(c) {
 			t.Fatalf("bad code format: %q", c)
 		}
