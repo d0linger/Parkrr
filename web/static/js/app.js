@@ -795,7 +795,8 @@
         // to compare against. Choice is persisted across visits.
         if ((Number(ov.accrued_prev_year) || 0) > 0 || (Number(ov.accrued_prev_full) || 0) > 0) {
             const modeBtns = [['A', 'Zeitraum'], ['B', '% Vorjahr'], ['C', 'Prognose']].map(([m, lbl]) =>
-                el('button', { class: 'yoy-mode' + (yoyMode === m ? ' active' : ''), type: 'button', title: YOY_MODE_TITLE[m],
+                el('button', { class: 'yoy-mode' + (yoyMode === m ? ' active' : ''), type: 'button',
+                    'aria-pressed': String(yoyMode === m), title: YOY_MODE_TITLE[m],
                     onclick: () => { yoyMode = m; try { localStorage.setItem('parkrr-yoy', m); } catch (e) { /* storage blocked */ } render(); } }, lbl));
             page.append(el('div', { class: 'yoy-modes', role: 'group', 'aria-label': 'Vergleichsmodus Umsatz' }, ...modeBtns));
         }
