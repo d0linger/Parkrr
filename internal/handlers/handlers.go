@@ -83,7 +83,7 @@ func decodeJSON(r *http.Request, dst any) error {
 	// is allowed — browsers always set one on cross-site form POSTs, and some
 	// internal callers omit it.
 	if ct := r.Header.Get("Content-Type"); ct != "" {
-		if mt, _, _ := mime.ParseMediaType(ct); mt != "application/json" {
+		if mt, _, err := mime.ParseMediaType(ct); err != nil || mt != "application/json" {
 			return errNotJSON
 		}
 	}

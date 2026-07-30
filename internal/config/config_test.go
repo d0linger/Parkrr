@@ -35,7 +35,7 @@ func TestLoadRejectsShortSecret(t *testing.T) {
 	t.Setenv("PARKRR_ADMIN_PASSWORD", "admin-password")
 	t.Setenv("PARKRR_SESSION_SECRET", "short")
 	if _, err := Load(); err == nil {
-		t.Fatal("expected error for session secret under 32 chars")
+		t.Fatal("expected error for session secret under 32 bytes")
 	}
 }
 
