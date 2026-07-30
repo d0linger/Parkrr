@@ -734,8 +734,15 @@
         if (prev != null && prev > 0) {
             const pct = Math.round(((ov.accrued_this_year - prev) / prev) * 100);
             const cls = pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat';
-            const txt = pct > 0 ? '▲ +' + pct + ' %' : pct < 0 ? '▼ ' + Math.abs(pct) + ' %' : '± 0 %';
-            umsatz.querySelector('.value').append(el('span', { class: 'yoy ' + cls, title: 'ggü. ' + (ov.year - 1) }, ' ' + txt));
+            // Compare like-for-like: year-to-date vs the same window last year. If
+            // the business barely existed in that window (e.g. started mid-year),
+            // the base is tiny and the ratio explodes — cap the display so it reads
+            // ">+999 %" instead of an absurd figure.
+            const txt = pct > 999 ? '▲ >+999 %'
+                : pct > 0 ? '▲ +' + pct + ' %'
+                    : pct < 0 ? '▼ ' + Math.abs(pct) + ' %'
+                        : '± 0 %';
+            umsatz.querySelector('.value').append(el('span', { class: 'yoy ' + cls, title: 'ggü. gleichem Zeitraum ' + (ov.year - 1) }, ' ' + txt));
             umsatz.querySelector('.label').textContent = 'Umsatz ' + ov.year + ' · ggü. ' + (ov.year - 1);
         }
         page.append(el('div', { class: 'stat-grid' },
