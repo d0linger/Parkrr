@@ -197,13 +197,19 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 		_, _ = w.Write(indexHTML)
 	})
 
-	// Middleware chain (outermost first): access log -> metrics -> rate limit ->
-	// security headers -> body limit -> routes.
+	return buildChain(authMgr, mux, rateLimitPerMin, stop), nil
+}
+
+// buildChain assembles the middleware stack around the router (outermost first:
+// access log -> metrics -> rate limit -> security headers -> body limit ->
+// routes). Extracted from New so the wiring — including the request-body limit —
+// is testable without a live database pool.
+func buildChain(authMgr *auth.Manager, mux *http.ServeMux, rateLimitPerMin int, stop <-chan struct{}) http.Handler {
 	chain := securityHeaders(authMgr, limitRequestBody(mux))
 	chain = rateLimit(authMgr, rateLimitPerMin, stop, chain)
 	chain = metricsMiddleware(mux, chain)
 	chain = requestLogger(authMgr, chain)
-	return chain, nil
+	return chain
 }
 
 // maxRequestBody caps every request body as a DoS backstop. It sits ABOVE the

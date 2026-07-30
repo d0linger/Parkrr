@@ -6,7 +6,46 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/preining/parkrr/internal/auth"
 )
+
+// TestBuildChainEnforcesBodyLimit checks the wiring, not just the middleware in
+// isolation: a request routed through the full chain New assembles is still body-
+// limited (so the test fails if the body-limit stops being wired into the chain),
+// while a normal request reaches the handler.
+func TestBuildChainEnforcesBodyLimit(t *testing.T) {
+	mux := http.NewServeMux()
+	var reached bool
+	mux.HandleFunc("POST /x", func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	})
+	stop := make(chan struct{})
+	defer close(stop)
+	// A zero Manager is enough: the chain only calls pool-free methods
+	// (RequestIsHTTPS / ClientIP) before the body limit and handler.
+	h := buildChain(&auth.Manager{}, mux, 100000, stop)
+
+	// Oversized declared body → 413, and the handler must not run.
+	reached = false
+	req := httptest.NewRequest(http.MethodPost, "/x", bytes.NewReader(bytes.Repeat([]byte("a"), maxRequestBody+1)))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge || reached {
+		t.Fatalf("oversized: want 413 without reaching handler, got %d (reached=%v)", rec.Code, reached)
+	}
+
+	// A normal request flows through and reaches the handler.
+	reached = false
+	req = httptest.NewRequest(http.MethodPost, "/x", bytes.NewReader([]byte("ok")))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !reached {
+		t.Fatalf("normal: want 200 reaching handler, got %d (reached=%v)", rec.Code, reached)
+	}
+}
 
 // TestLimitRequestBody covers the boundary of the global request-body cap: a body
 // of exactly maxRequestBody reaches the handler and is fully readable, while one
