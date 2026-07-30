@@ -705,15 +705,20 @@
         B: 'Anteil am kompletten Vorjahresumsatz (keine Wachstumsrate)',
         C: 'Hochrechnung aufs Gesamtjahr, verglichen mit dem Vorjahr gesamt',
     };
-    // Fraction of the given year elapsed as of today (1 for a past year).
+    // Fraction of the given year elapsed, aligned with the API's revenue numerator:
+    // Overview accrues through until := now.AddDate(0,0,1) (now + 1 day, continuous),
+    // so the projection denominator must use the same +1-day cutoff — otherwise the
+    // year looks less elapsed than the numerator implies and the projection runs high.
+    // 1 for a past year, ~0 for a future one.
     function yearElapsedFraction(year) {
         const now = new Date();
-        if (year < now.getFullYear()) return 1;
-        if (year > now.getFullYear()) return 0.01;
+        const curYear = now.getUTCFullYear();
+        if (year < curYear) return 1;
+        if (year > curYear) return 0.01;
         const start = Date.UTC(year, 0, 1);
-        const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+        const cutoff = now.getTime() + 86400000; // now + 1 day, matching the API cutoff
         const total = ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0) ? 366 : 365;
-        return Math.max((today - start) / 86400000 + 1, 1) / total;
+        return Math.min(Math.max((cutoff - start) / 86400000, 1) / total, 1);
     }
     // The Umsatz delta for the chosen compare mode. Returns {txt,cls,title,label}
     // or null when there's nothing sensible to compare.
