@@ -41,6 +41,7 @@ type Config struct {
 
 	// Account security
 	CheckBreachedPasswords bool // check new passwords against the HIBP range API
+	FailClosedOnBreach     bool // if the HIBP check is unavailable, reject the password (default false = allow)
 }
 
 // Load reads configuration from the environment, applying sensible defaults.
@@ -67,6 +68,7 @@ func Load() (*Config, error) {
 		AuditRetentionDays: getenvInt("PARKRR_AUDIT_RETENTION_DAYS", 365),
 
 		CheckBreachedPasswords: getenvBool("PARKRR_CHECK_BREACHED_PASSWORDS", true),
+		FailClosedOnBreach:     getenvBool("PARKRR_BREACH_CHECK_FAIL_CLOSED", false),
 	}
 
 	// Allow assembling the DB URL from discrete parts (docker-compose friendly).
@@ -87,8 +89,8 @@ func Load() (*Config, error) {
 	if cfg.SessionSecret == "" {
 		return nil, fmt.Errorf("PARKRR_SESSION_SECRET must be set (use a long random string)")
 	}
-	if len(cfg.SessionSecret) < 16 {
-		return nil, fmt.Errorf("PARKRR_SESSION_SECRET must be at least 16 characters")
+	if len(cfg.SessionSecret) < 32 {
+		return nil, fmt.Errorf("PARKRR_SESSION_SECRET must be at least 32 characters of high-entropy randomness (e.g. `openssl rand -base64 48`)")
 	}
 
 	return cfg, nil

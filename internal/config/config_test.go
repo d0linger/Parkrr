@@ -5,7 +5,7 @@ import "testing"
 func setRequired(t *testing.T) {
 	t.Helper()
 	t.Setenv("PARKRR_ADMIN_PASSWORD", "admin-password")
-	t.Setenv("PARKRR_SESSION_SECRET", "a-very-long-session-secret")
+	t.Setenv("PARKRR_SESSION_SECRET", "a-very-long-session-secret-with-enough-entropy")
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -35,13 +35,13 @@ func TestLoadRejectsShortSecret(t *testing.T) {
 	t.Setenv("PARKRR_ADMIN_PASSWORD", "admin-password")
 	t.Setenv("PARKRR_SESSION_SECRET", "short")
 	if _, err := Load(); err == nil {
-		t.Fatal("expected error for session secret under 16 chars")
+		t.Fatal("expected error for session secret under 32 chars")
 	}
 }
 
 func TestLoadRequiresAdminPassword(t *testing.T) {
 	t.Setenv("PARKRR_ADMIN_PASSWORD", "")
-	t.Setenv("PARKRR_SESSION_SECRET", "a-very-long-session-secret")
+	t.Setenv("PARKRR_SESSION_SECRET", "a-very-long-session-secret-with-enough-entropy")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected error when admin password is missing")
 	}
