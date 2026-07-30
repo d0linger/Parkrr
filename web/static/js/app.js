@@ -23,6 +23,9 @@
         }
         return node;
     };
+    // Coerces to a string for use as element text (via el()/textContent, which is
+    // XSS-safe). NOT an HTML escaper — never concatenate esc() into innerHTML; build
+    // markup from DOM nodes instead (see setPending, chart tooltips use static data).
     const esc = (s) => String(s ?? '');
     const getCookie = (name) => {
         const m = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
@@ -320,8 +323,16 @@
                 const submit = $('#modal-submit');
                 submit.disabled = on;
                 submit.setAttribute('aria-busy', on ? 'true' : 'false');
-                if (on) submit.innerHTML = '<span class="spin" aria-hidden="true"></span> ' + esc(submitLabel) + '…';
-                else submit.textContent = submitLabel;
+                if (on) {
+                    // Build from DOM nodes rather than an innerHTML string, so the
+                    // label is never interpreted as markup (esc() only coerces to a
+                    // string; the DOM's textContent is what makes this XSS-safe).
+                    submit.textContent = '';
+                    const spin = document.createElement('span');
+                    spin.className = 'spin';
+                    spin.setAttribute('aria-hidden', 'true');
+                    submit.append(spin, document.createTextNode(' ' + submitLabel + '…'));
+                } else submit.textContent = submitLabel;
                 $('#modal-cancel').disabled = on;
                 $('#modal-close').disabled = on;
             };

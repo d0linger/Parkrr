@@ -193,9 +193,7 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Limiter.Reset(key)
 
-	if h.passwordBreached(r.Context(), req.NewPassword) {
-		writeError(w, http.StatusBadRequest,
-			"this password has appeared in a known data breach; please choose another")
+	if h.rejectBreachedPassword(w, r, req.NewPassword) {
 		return
 	}
 

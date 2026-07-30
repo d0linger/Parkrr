@@ -4,8 +4,10 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -23,7 +25,10 @@ type Handler struct {
 
 	// CheckBreachedPasswords enables the HIBP k-anonymity check on new passwords.
 	CheckBreachedPasswords bool
-	hibpClient             *http.Client
+	// FailClosedOnBreach rejects a new password when the HIBP check can't run
+	// (default false = fail open, allowing the change).
+	FailClosedOnBreach bool
+	hibpClient         *http.Client
 }
 
 // New constructs a Handler.
@@ -36,20 +41,55 @@ func New(pool *pgxpool.Pool) *Handler {
 
 // Input length policy (constants + valid*Length helpers) lives in validation.go.
 
-// passwordBreached reports whether a new password appears in a known breach.
-// It fails open: if the check is disabled or the HIBP API is unreachable, the
-// password is allowed (availability of password changes is not held hostage to
-// a third-party service), and the failure is logged.
-func (h *Handler) passwordBreached(ctx context.Context, password string) bool {
+// breachResult is the outcome of a new-password breach check.
+type breachResult int
+
+const (
+	breachOK          breachResult = iota // safe (or the check is disabled / failed open)
+	breachFound                           // the password appears in a known breach
+	breachUnavailable                     // the check couldn't run and policy is fail-closed
+)
+
+// checkPasswordBreach classifies a new password. If the check is disabled the
+// password is allowed. If the HIBP API is unreachable the outcome follows
+// FailClosedOnBreach: fail open by default (a change isn't held hostage to a
+// third-party service) or report "unavailable" when set to fail closed. The
+// failure is logged either way.
+func (h *Handler) checkPasswordBreach(ctx context.Context, password string) breachResult {
 	if !h.CheckBreachedPasswords {
-		return false
+		return breachOK
 	}
 	n, err := auth.BreachedPasswordCount(ctx, h.hibpClient, password)
 	if err != nil {
-		slog.Warn("breached-password check unavailable, allowing", "err", err)
+		if h.FailClosedOnBreach {
+			slog.Warn("breached-password check unavailable, rejecting (fail-closed)", "err", err)
+			return breachUnavailable
+		}
+		slog.Warn("breached-password check unavailable, allowing (fail-open)", "err", err)
+		return breachOK
+	}
+	if n > 0 {
+		return breachFound
+	}
+	return breachOK
+}
+
+// rejectBreachedPassword runs the breach check and, if the password must be
+// rejected, writes the appropriate response and returns true (so the caller
+// returns). A confirmed breach is a 400 with a clear message; an unavailable
+// check under a fail-closed policy is a 503 (try again) — never mislabelled as
+// a known breach.
+func (h *Handler) rejectBreachedPassword(w http.ResponseWriter, r *http.Request, password string) bool {
+	switch h.checkPasswordBreach(r.Context(), password) {
+	case breachFound:
+		writeError(w, http.StatusBadRequest, "this password has appeared in a known data breach; please choose another")
+		return true
+	case breachUnavailable:
+		writeError(w, http.StatusServiceUnavailable, "could not verify the password against the breach database; please try again shortly")
+		return true
+	default:
 		return false
 	}
-	return n > 0
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -64,7 +104,19 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+var errNotJSON = errors.New("content type must be application/json")
+
 func decodeJSON(r *http.Request, dst any) error {
+	// Require a JSON content type when one is declared. A cross-site HTML form can
+	// only send urlencoded/multipart/text-plain bodies, so rejecting those closes
+	// CSRF on JSON endpoints (including login) without needing CORS. An absent type
+	// is allowed — browsers always set one on cross-site form POSTs, and some
+	// internal callers omit it.
+	if ct := r.Header.Get("Content-Type"); ct != "" {
+		if mt, _, err := mime.ParseMediaType(ct); err != nil || mt != "application/json" {
+			return errNotJSON
+		}
+	}
 	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	dec.DisallowUnknownFields()
 	return dec.Decode(dst)
