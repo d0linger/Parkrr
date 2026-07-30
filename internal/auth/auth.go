@@ -155,22 +155,8 @@ func randomToken(n int) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// maxAuthUsernameLen / maxAuthPasswordLen bound credential sizes before any DB
-// lookup or bcrypt compare, so an oversized password can't burn CPU. bcrypt
-// ignores input past 72 bytes anyway. Handlers already bound these; guarding
-// here as well protects every current and future caller (defense in depth).
-const (
-	maxAuthUsernameLen = 100
-	maxAuthPasswordLen = 72
-)
-
 // Authenticate validates credentials and returns the matching user.
 func (m *Manager) Authenticate(ctx context.Context, username, password string) (*models.User, error) {
-	// Reject over-long credentials up front — before the user lookup or any
-	// bcrypt work — so a giant password payload can't be used to exhaust CPU.
-	if len(username) > maxAuthUsernameLen || len(password) > maxAuthPasswordLen {
-		return nil, errors.New("invalid credentials")
-	}
 	u, err := m.userByUsername(ctx, username)
 	if err != nil {
 		// Compare against a real hash so an unknown user costs the same time as a
