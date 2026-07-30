@@ -41,25 +41,55 @@ func New(pool *pgxpool.Pool) *Handler {
 
 // Input length policy (constants + valid*Length helpers) lives in validation.go.
 
-// passwordBreached reports whether a new password appears in a known breach.
-// If the check is disabled the password is allowed. If the HIBP API is
-// unreachable the outcome follows FailClosedOnBreach: fail open by default (a
-// change isn't held hostage to a third-party service) or reject when set to
-// fail closed. The failure is logged either way.
-func (h *Handler) passwordBreached(ctx context.Context, password string) bool {
+// breachResult is the outcome of a new-password breach check.
+type breachResult int
+
+const (
+	breachOK          breachResult = iota // safe (or the check is disabled / failed open)
+	breachFound                           // the password appears in a known breach
+	breachUnavailable                     // the check couldn't run and policy is fail-closed
+)
+
+// checkPasswordBreach classifies a new password. If the check is disabled the
+// password is allowed. If the HIBP API is unreachable the outcome follows
+// FailClosedOnBreach: fail open by default (a change isn't held hostage to a
+// third-party service) or report "unavailable" when set to fail closed. The
+// failure is logged either way.
+func (h *Handler) checkPasswordBreach(ctx context.Context, password string) breachResult {
 	if !h.CheckBreachedPasswords {
-		return false
+		return breachOK
 	}
 	n, err := auth.BreachedPasswordCount(ctx, h.hibpClient, password)
 	if err != nil {
 		if h.FailClosedOnBreach {
 			slog.Warn("breached-password check unavailable, rejecting (fail-closed)", "err", err)
-			return true
+			return breachUnavailable
 		}
 		slog.Warn("breached-password check unavailable, allowing (fail-open)", "err", err)
+		return breachOK
+	}
+	if n > 0 {
+		return breachFound
+	}
+	return breachOK
+}
+
+// rejectBreachedPassword runs the breach check and, if the password must be
+// rejected, writes the appropriate response and returns true (so the caller
+// returns). A confirmed breach is a 400 with a clear message; an unavailable
+// check under a fail-closed policy is a 503 (try again) — never mislabelled as
+// a known breach.
+func (h *Handler) rejectBreachedPassword(w http.ResponseWriter, r *http.Request, password string) bool {
+	switch h.checkPasswordBreach(r.Context(), password) {
+	case breachFound:
+		writeError(w, http.StatusBadRequest, "this password has appeared in a known data breach; please choose another")
+		return true
+	case breachUnavailable:
+		writeError(w, http.StatusServiceUnavailable, "could not verify the password against the breach database; please try again shortly")
+		return true
+	default:
 		return false
 	}
-	return n > 0
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

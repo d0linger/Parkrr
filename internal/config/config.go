@@ -90,7 +90,7 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("PARKRR_SESSION_SECRET must be set (use a long random string)")
 	}
 	if len(cfg.SessionSecret) < 32 {
-		return nil, fmt.Errorf("PARKRR_SESSION_SECRET must be at least 32 bytes of high-entropy randomness (e.g. `openssl rand -base64 48`)")
+		return nil, fmt.Errorf("PARKRR_SESSION_SECRET must be at least 32 bytes long; only the length is enforced, so supply a random value (e.g. `openssl rand -base64 48`) — its entropy is your responsibility")
 	}
 
 	return cfg, nil

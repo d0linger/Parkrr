@@ -74,9 +74,7 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "email is too long")
 		return
 	}
-	if h.passwordBreached(r.Context(), req.Password) {
-		writeError(w, http.StatusBadRequest,
-			"this password has appeared in a known data breach; please choose another")
+	if h.rejectBreachedPassword(w, r, req.Password) {
 		return
 	}
 	role, ok := normalizeRole(req.Role)
@@ -144,9 +142,7 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "password must be between 8 and 72 bytes")
 			return
 		}
-		if h.passwordBreached(r.Context(), req.Password) {
-			writeError(w, http.StatusBadRequest,
-				"this password has appeared in a known data breach; please choose another")
+		if h.rejectBreachedPassword(w, r, req.Password) {
 			return
 		}
 	}
