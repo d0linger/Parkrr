@@ -53,5 +53,17 @@ func TestLimitRequestBody(t *testing.T) {
 		if reached {
 			t.Fatalf("%s: max+1: handler should not have run", ct)
 		}
+
+		// Unknown-length body (ContentLength = -1): the upfront check can't fire, so
+		// the handler runs and it's the capped read (MaxBytesReader) that rejects it.
+		reached = false
+		req = httptest.NewRequest(http.MethodPost, "/x", bytes.NewReader(bytes.Repeat([]byte("a"), maxRequestBody+1)))
+		req.ContentLength = -1
+		req.Header.Set("Content-Type", ct)
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusRequestEntityTooLarge || !reached {
+			t.Fatalf("%s: unknown-length max+1: want handler-read 413, got %d (reached=%v)", ct, rec.Code, reached)
+		}
 	}
 }
