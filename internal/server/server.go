@@ -198,12 +198,33 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	})
 
 	// Middleware chain (outermost first): access log -> metrics -> rate limit ->
-	// security headers -> routes.
-	chain := securityHeaders(authMgr, mux)
+	// security headers -> body limit -> routes.
+	chain := securityHeaders(authMgr, limitRequestBody(mux))
 	chain = rateLimit(authMgr, rateLimitPerMin, stop, chain)
 	chain = metricsMiddleware(mux, chain)
 	chain = requestLogger(authMgr, chain)
 	return chain, nil
+}
+
+// maxRequestBody caps every request body as a DoS backstop. It sits ABOVE the
+// 8 MiB photo-upload cap (handlers.maxPhotoBytes) so legitimate uploads still
+// pass, while JSON bodies stay further limited to 1 MiB in decodeJSON. A request
+// that declares more is rejected with 413 before any read; MaxBytesReader caps
+// the actual read for chunked/undeclared bodies.
+const maxRequestBody = 9 << 20 // 9 MiB
+
+// limitRequestBody rejects over-large request bodies with 413 and caps the read.
+func limitRequestBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength > maxRequestBody {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // securityHeaders wraps a handler with sensible default security headers.
