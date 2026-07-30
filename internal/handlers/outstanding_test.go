@@ -80,8 +80,13 @@ func TestOutstandingByPersonMatchesStats(t *testing.T) {
 	if bal < 100000 {
 		t.Fatalf("expected open balance ≥ 100000 while unpaid, got %.2f", bal)
 	}
-	if got := outstanding()[personID]; math.Abs(got-bal) > 0.01 {
-		t.Errorf("outstanding %.2f != stats balance %.2f", got, bal)
+	// PersonStats and OutstandingByPerson are separate handler calls, each taking
+	// its own time.Now(); a monthly charge accrues continuously (CostInRange uses
+	// fractional days), so between the two calls the amount grows a hair and can
+	// land on opposite sides of a rounding cent. Allow a few cents of that timing
+	// noise — a real divergence between the two views would be euro-scale.
+	if got := outstanding()[personID]; math.Abs(got-bal) > 0.05 {
+		t.Errorf("outstanding %.2f != stats balance %.2f (beyond timing noise)", got, bal)
 	}
 
 	// Settling clears the balance in both views.

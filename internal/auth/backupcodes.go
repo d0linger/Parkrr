@@ -24,7 +24,11 @@ func hashCode(code string) string {
 func (m *Manager) GenerateBackupCodes(ctx context.Context, userID int64) ([]string, error) {
 	codes := make([]string, 0, backupCodeCount)
 	for i := 0; i < backupCodeCount; i++ {
-		codes = append(codes, randomCode())
+		c, err := randomCode()
+		if err != nil {
+			return nil, err
+		}
+		codes = append(codes, c)
 	}
 
 	batch := make([][]any, 0, len(codes))
@@ -81,9 +85,11 @@ func (m *Manager) RemainingBackupCodes(ctx context.Context, userID int64) (int, 
 	return n, err
 }
 
-func randomCode() string {
+func randomCode() (string, error) {
 	b := make([]byte, 8)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
 	var sb strings.Builder
 	for i, v := range b {
 		if i == 4 {
@@ -91,5 +97,5 @@ func randomCode() string {
 		}
 		sb.WriteByte(codeAlphabet[int(v)%len(codeAlphabet)])
 	}
-	return sb.String()
+	return sb.String(), nil
 }
