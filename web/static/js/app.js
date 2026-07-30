@@ -697,6 +697,63 @@
     // Selected dashboard year; null = current year (server default). Kept across
     // re-renders so slider toggles etc. don't reset the view.
     let dashYear = null;
+    // Umsatz year-over-year compare mode, persisted: A = growth vs same window last
+    // year, B = share of the full previous year, C = projected full-year vs last year.
+    let yoyMode = (() => { try { return localStorage.getItem('parkrr-yoy') || 'A'; } catch (e) { return 'A'; } })();
+    const YOY_MODE_TITLE = {
+        A: 'Wachstum ggü. dem gleichen Zeitraum im Vorjahr',
+        B: 'Anteil am kompletten Vorjahresumsatz (keine Wachstumsrate)',
+        C: 'Hochrechnung aufs Gesamtjahr, verglichen mit dem Vorjahr gesamt',
+    };
+    // Fraction of the given year elapsed, aligned with the API's revenue numerator:
+    // Overview accrues through until := now.AddDate(0,0,1) (now + 1 day, continuous),
+    // so the projection denominator must use the same +1-day cutoff — otherwise the
+    // year looks less elapsed than the numerator implies and the projection runs high.
+    // 1 for a past year, ~0 for a future one.
+    function yearElapsedFraction(year) {
+        const now = new Date();
+        const curYear = now.getUTCFullYear();
+        if (year < curYear) return 1;
+        if (year > curYear) return 0.01;
+        const start = Date.UTC(year, 0, 1);
+        const cutoff = now.getTime() + 86400000; // now + 1 day, matching the API cutoff
+        const total = ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0) ? 366 : 365;
+        return Math.min(Math.max((cutoff - start) / 86400000, 1) / total, 1);
+    }
+    // The Umsatz delta for the chosen compare mode. Returns {txt,cls,title,label}
+    // or null when there's nothing sensible to compare.
+    function yoyDelta(ov, mode) {
+        const thisY = Number(ov.accrued_this_year) || 0;
+        const prevW = Number(ov.accrued_prev_year) || 0; // same window last year
+        const prevF = Number(ov.accrued_prev_full) || 0; // full previous calendar year
+        const lbl = (suffix) => 'Umsatz ' + ov.year + ' · ' + suffix;
+        if (mode === 'B') {
+            if (prevF <= 0) return null;
+            const share = Math.round((thisY / prevF) * 100);
+            return { txt: share + ' %', cls: share >= 100 ? 'up' : 'flat',
+                title: 'Anteil am kompletten Vorjahr (' + eur(prevF) + ') — keine Wachstumsrate', label: lbl('% vom Vorjahr') };
+        }
+        if (mode === 'C') {
+            if (prevF <= 0) return null;
+            const proj = thisY / yearElapsedFraction(ov.year);
+            const pct = Math.round(((proj - prevF) / prevF) * 100);
+            const txt = (pct > 999 ? '▲ >+999' : pct >= 0 ? '▲ +' + pct : '▼ ' + Math.abs(pct)) + ' %';
+            return { txt, cls: pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat',
+                title: 'Hochrechnung ≈ ' + eur(proj) + ' ggü. Vorjahr gesamt (' + eur(prevF) + ')', label: lbl('Prognose ggü. ' + (ov.year - 1)) };
+        }
+        // Mode A (default): growth vs the same window last year. A tiny prior-year
+        // base makes the ratio explode, so fall back to the absolute € gain (or
+        // "neu" when there was no prior-year window at all).
+        if (prevW <= 0) {
+            return thisY > 0 ? { txt: '▲ neu', cls: 'up', title: 'kein Vorjahres-Zeitraum zum Vergleich', label: lbl('ggü. ' + (ov.year - 1)) } : null;
+        }
+        const pct = Math.round(((thisY - prevW) / prevW) * 100);
+        const cls = pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat';
+        const txt = (pct > 999 || prevW < 0.10 * thisY)
+            ? '▲ +' + eur(thisY - prevW)
+            : pct >= 0 ? '▲ +' + pct + ' %' : '▼ ' + Math.abs(pct) + ' %';
+        return { txt, cls, title: 'ggü. gleichem Zeitraum ' + (ov.year - 1), label: lbl('ggü. ' + (ov.year - 1)) };
+    }
     routes.dashboard = async (page) => {
         const ov = await api.get('/overview' + (dashYear ? '?year=' + dashYear : ''));
         dashYear = ov.year;
@@ -730,25 +787,24 @@
             el('div', { class: 'dash-hero-num' }, eur(ov.outstanding_total)),
             el('div', { class: 'dash-hero-sub' }, 'Stand heute · offene Salden zum Nachfassen')));
         const umsatz = stat(eur(ov.accrued_this_year), 'Umsatz ' + ov.year, { icon: 'trend', tone: 'teal' });
-        const prev = ov.accrued_prev_year;
-        if (prev != null && prev > 0) {
-            const pct = Math.round(((ov.accrued_this_year - prev) / prev) * 100);
-            const cls = pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat';
-            // Compare like-for-like: year-to-date vs the same window last year. If
-            // the business barely existed in that window (e.g. started mid-year),
-            // the base is tiny and the ratio explodes — cap the display so it reads
-            // ">+999 %" instead of an absurd figure.
-            const txt = pct > 999 ? '▲ >+999 %'
-                : pct > 0 ? '▲ +' + pct + ' %'
-                    : pct < 0 ? '▼ ' + Math.abs(pct) + ' %'
-                        : '± 0 %';
-            umsatz.querySelector('.value').append(el('span', { class: 'yoy ' + cls, title: 'ggü. gleichem Zeitraum ' + (ov.year - 1) }, ' ' + txt));
-            umsatz.querySelector('.label').textContent = 'Umsatz ' + ov.year + ' · ggü. ' + (ov.year - 1);
+        const yd = yoyDelta(ov, yoyMode);
+        if (yd) {
+            umsatz.querySelector('.value').append(el('span', { class: 'yoy ' + yd.cls, title: yd.title }, ' ' + yd.txt));
+            umsatz.querySelector('.label').textContent = yd.label;
         }
         page.append(el('div', { class: 'stat-grid' },
             umsatz,
             stat(eur(ov.paid_total), 'Bezahlt', { icon: 'check', tone: 'green' }),
         ));
+        // Compare-mode switch for the Umsatz delta — only when there is a prior year
+        // to compare against. Choice is persisted across visits.
+        if ((Number(ov.accrued_prev_year) || 0) > 0 || (Number(ov.accrued_prev_full) || 0) > 0) {
+            const modeBtns = [['A', 'Zeitraum'], ['B', '% Vorjahr'], ['C', 'Prognose']].map(([m, lbl]) =>
+                el('button', { class: 'yoy-mode' + (yoyMode === m ? ' active' : ''), type: 'button',
+                    'aria-pressed': String(yoyMode === m), title: YOY_MODE_TITLE[m],
+                    onclick: () => { yoyMode = m; try { localStorage.setItem('parkrr-yoy', m); } catch (e) { /* storage blocked */ } render(); } }, lbl));
+            page.append(el('div', { class: 'yoy-modes', role: 'group', 'aria-label': 'Vergleichsmodus Umsatz' }, ...modeBtns));
+        }
         page.append(el('div', { class: 'stat-grid' },
             stat(ov.total_persons, 'Personen', { icon: 'users' }),
             stat(ov.active_vehicles, 'aktiv eingestellt', { icon: 'warehouse' }),

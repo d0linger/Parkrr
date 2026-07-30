@@ -1116,3 +1116,10 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .archive-section > .card:has(.controls-row)::before{ left:6px; }
 .archive-section .seg-mini:not(.pay){ min-width:0; max-width:100%; overflow-x:auto; scrollbar-width:none; }
 .archive-section .seg-mini:not(.pay)::-webkit-scrollbar{ display:none; }
+
+/* Umsatz year-over-year compare-mode switch */
+.yoy-modes{ display:inline-flex; gap:2px; background:var(--bg-elev-2); border:1px solid var(--border); border-radius:999px; padding:2px; margin:.1rem 0 .8rem; }
+.yoy-mode{ border:0; background:none; color:var(--text-muted); font-family:var(--font-mono); font-weight:700; font-size:.6rem; letter-spacing:.04em; text-transform:uppercase; padding:.3rem .62rem; border-radius:999px; cursor:pointer; white-space:nowrap; }
+.yoy-mode.active{ background:var(--grad); color:#04231f; }
+.yoy-mode:hover:not(.active){ color:var(--text); }
+.yoy-mode:focus-visible{ outline:2px solid var(--primary); outline-offset:2px; }

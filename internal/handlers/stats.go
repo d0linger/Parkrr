@@ -342,6 +342,7 @@ type overviewResponse struct {
 	TotalCategories  int            `json:"total_categories"`
 	AccruedThisYear  float64        `json:"accrued_this_year"`
 	AccruedPrevYear  float64        `json:"accrued_prev_year"` // same window one year earlier, for a YoY delta
+	AccruedPrevFull  float64        `json:"accrued_prev_full"` // full previous calendar year, for "% of last year" / projection modes
 	AccruedTotal     float64        `json:"accrued_total"`
 	PaidTotal        float64        `json:"paid_total"`
 	OutstandingTotal float64        `json:"outstanding_total"`
@@ -444,7 +445,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	paidChargesByPerson := map[int64]float64{}
 	// Extra charges are revenue too: accrue the one-off charges into the year
 	// windows and per month (by charge date) to fold into the Umsatz figures.
-	var chargeThisYear, chargePrevYear float64
+	var chargeThisYear, chargePrevYear, chargePrevFull float64
 	chargeByMonth := make([]float64, 12)
 	for crows.Next() {
 		var pid int64
@@ -467,6 +468,9 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		if !chargedOn.Before(prevStart) && chargedOn.Before(prevEnd) {
 			chargePrevYear += t
 		}
+		if !chargedOn.Before(prevStart) && chargedOn.Before(yearStart) {
+			chargePrevFull += t
+		}
 	}
 	crows.Close()
 	if cerr := crows.Err(); cerr != nil {
@@ -488,6 +492,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 			p := list[i].AsPeriod()
 			chargeThisYear += p.CostInRange(yearStart, yearEnd)
 			chargePrevYear += p.CostInRange(prevStart, prevEnd)
+			chargePrevFull += p.CostInRange(prevStart, yearStart)
 		}
 		recM := recurringMonthly(list, resp.Year, now)
 		for m := range chargeByMonth {
@@ -517,6 +522,8 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		resp.AccruedThisYear += yAcc
 		pAcc, _ := personRent(ag, vs, cats, prevStart, prevEnd)
 		resp.AccruedPrevYear += pAcc
+		fAcc, _ := personRent(ag, vs, cats, prevStart, yearStart)
+		resp.AccruedPrevFull += fAcc
 		pm := personMonthly(ag, vs, cats, resp.Year, now)
 		for m := range resp.RevenueByMonth {
 			resp.RevenueByMonth[m] = round2(resp.RevenueByMonth[m] + pm[m])
@@ -546,6 +553,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	resp.AccruedTotal = round2(resp.AccruedTotal + totalCharges)
 	resp.AccruedThisYear = round2(resp.AccruedThisYear + chargeThisYear)
 	resp.AccruedPrevYear = round2(resp.AccruedPrevYear + chargePrevYear)
+	resp.AccruedPrevFull = round2(resp.AccruedPrevFull + chargePrevFull)
 	for m := range resp.RevenueByMonth {
 		resp.RevenueByMonth[m] = round2(resp.RevenueByMonth[m] + chargeByMonth[m])
 	}
