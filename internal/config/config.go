@@ -49,6 +49,15 @@ type Config struct {
 	BackupDir           string // if set, scheduled backups are written here
 	BackupIntervalHours int    // scheduled-backup interval (default 24)
 	BackupKeep          int    // scheduled backups to retain (default 14)
+
+	// S3-compatible off-site backup target (optional).
+	S3Endpoint  string
+	S3Bucket    string
+	S3AccessKey string
+	S3SecretKey string
+	S3Region    string
+	S3Prefix    string
+	S3UseSSL    bool
 }
 
 // Load reads configuration from the environment, applying sensible defaults.
@@ -82,6 +91,14 @@ func Load() (*Config, error) {
 		BackupDir:           os.Getenv("PARKRR_BACKUP_DIR"),
 		BackupIntervalHours: getenvInt("PARKRR_BACKUP_INTERVAL_HOURS", 24),
 		BackupKeep:          getenvInt("PARKRR_BACKUP_KEEP", 14),
+
+		S3Endpoint:  os.Getenv("PARKRR_S3_ENDPOINT"),
+		S3Bucket:    os.Getenv("PARKRR_S3_BUCKET"),
+		S3AccessKey: os.Getenv("PARKRR_S3_ACCESS_KEY"),
+		S3SecretKey: os.Getenv("PARKRR_S3_SECRET_KEY"),
+		S3Region:    os.Getenv("PARKRR_S3_REGION"),
+		S3Prefix:    getenv("PARKRR_S3_PREFIX", "parkrr/"),
+		S3UseSSL:    getenvBool("PARKRR_S3_USE_SSL", true),
 	}
 
 	// Allow assembling the DB URL from discrete parts (docker-compose friendly).

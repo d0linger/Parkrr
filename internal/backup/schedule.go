@@ -9,11 +9,11 @@ import (
 	"time"
 )
 
-// StartScheduled writes an encrypted backup into dir every intervalHours and
-// keeps the newest `keep` files. It blocks until stop is closed, so run it in a
-// goroutine. A no-op if key or dir is empty.
-func StartScheduled(stop <-chan struct{}, dbURL, key, dir string, intervalHours, keep int) {
-	if key == "" || dir == "" {
+// StartScheduled writes an encrypted backup to dir and/or an S3 bucket every
+// intervalHours, keeping the newest `keep`. Blocks until stop is closed, so run
+// it in a goroutine. A no-op unless a key and at least one target are set.
+func StartScheduled(stop <-chan struct{}, dbURL, key, dir string, intervalHours, keep int, s3 S3Config) {
+	if key == "" || (dir == "" && !s3.Enabled()) {
 		return
 	}
 	if intervalHours < 1 {
@@ -28,13 +28,13 @@ func StartScheduled(stop <-chan struct{}, dbURL, key, dir string, intervalHours,
 		case <-stop:
 			return
 		case <-timer.C:
-			runScheduled(dbURL, key, dir, keep)
+			runScheduled(dbURL, key, dir, keep, s3)
 			timer.Reset(interval)
 		}
 	}
 }
 
-func runScheduled(dbURL, key, dir string, keep int) {
+func runScheduled(dbURL, key, dir string, keep int, s3 S3Config) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
@@ -48,13 +48,23 @@ func runScheduled(dbURL, key, dir string, keep int) {
 		slog.Error("scheduled backup: encrypt failed", "err", err)
 		return
 	}
-	name := filepath.Join(dir, "parkrr-"+time.Now().Format("2006-01-02-150405")+".dump.enc")
-	if err := os.WriteFile(name, enc, 0o600); err != nil {
-		slog.Error("scheduled backup: write failed", "err", err, "path", name)
-		return
+	name := "parkrr-" + time.Now().Format("2006-01-02-150405") + ".dump.enc"
+	if dir != "" {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, enc, 0o600); err != nil {
+			slog.Error("scheduled backup: write failed", "err", err, "path", p)
+		} else {
+			slog.Info("scheduled backup written", "path", p, "bytes", len(enc))
+			prune(dir, keep)
+		}
 	}
-	slog.Info("scheduled backup written", "path", name, "bytes", len(enc))
-	prune(dir, keep)
+	if s3.Enabled() {
+		if err := UploadS3(ctx, s3, name, enc, keep); err != nil {
+			slog.Error("scheduled backup: S3 upload failed", "err", err)
+		} else {
+			slog.Info("scheduled backup uploaded to S3", "name", name, "bucket", s3.Bucket)
+		}
+	}
 }
 
 // prune keeps only the newest `keep` timestamped backups in dir.

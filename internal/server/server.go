@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/preining/parkrr/internal/auth"
+	"github.com/preining/parkrr/internal/backup"
 	"github.com/preining/parkrr/internal/handlers"
 	"github.com/preining/parkrr/internal/models"
 	"github.com/preining/parkrr/web"
@@ -24,13 +25,14 @@ import (
 // New builds the top-level HTTP handler with all routes registered. Background
 // goroutines started here (rate-limiter cleanup, login-throttle cleanup) run
 // until stop is closed.
-func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, checkBreachedPasswords, failClosedOnBreach bool, backupKey, dbURL, backupDir string, stop <-chan struct{}) (http.Handler, error) {
+func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, checkBreachedPasswords, failClosedOnBreach bool, backupKey, dbURL, backupDir string, s3 backup.S3Config, stop <-chan struct{}) (http.Handler, error) {
 	h := handlers.New(pool)
 	h.CheckBreachedPasswords = checkBreachedPasswords
 	h.FailClosedOnBreach = failClosedOnBreach
 	h.BackupKey = backupKey
 	h.DatabaseURL = dbURL
 	h.BackupDir = backupDir
+	h.S3 = s3
 	ah := handlers.NewAuthHandler(h, authMgr, wa, stop)
 
 	// Archive vehicles of finished-and-settled Pauschalen in the background.
@@ -148,6 +150,9 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/backup/file/{name}", admin(hf(h.BackupDownloadFile)))
 	mux.Handle("POST /api/backup/validate", admin(hf(h.BackupValidate)))
 	mux.Handle("POST /api/backup/restore", admin(hf(h.BackupRestore)))
+	mux.Handle("POST /api/backup/s3", admin(hf(h.CreateBackupS3)))
+	mux.Handle("GET /api/backup/s3/file/{name}", admin(hf(h.BackupS3Download)))
+	mux.Handle("POST /api/backup/restore-s3", admin(hf(h.BackupRestoreS3)))
 
 	// --- Health, readiness and metrics ---
 	registerObservability(mux, pool, metricsToken)

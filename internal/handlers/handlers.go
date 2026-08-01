@@ -16,6 +16,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/preining/parkrr/internal/backup"
+
 	"github.com/preining/parkrr/internal/auth"
 )
 
@@ -33,6 +35,7 @@ type Handler struct {
 	BackupKey   string
 	DatabaseURL string
 	BackupDir   string
+	S3          backup.S3Config
 	hibpClient  *http.Client
 }
 

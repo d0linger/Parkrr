@@ -2534,6 +2534,29 @@
         }
         page.append(el('div', { class: 'card', style: 'margin-top:1rem' }, el('h3', {}, 'Geplante Sicherungen'), sched));
 
+        // 2b · S3 (off-site)
+        const s3box = el('div', {});
+        if (!st.s3) {
+            s3box.append(el('div', { class: 'card-meta' }, 'Nicht konfiguriert. Setze PARKRR_S3_ENDPOINT / _BUCKET / _ACCESS_KEY / _SECRET_KEY (generisch S3-kompatibel: AWS S3, Backblaze B2, Wasabi, MinIO).'));
+        } else {
+            s3box.append(el('div', { class: 'card-row', style: 'align-items:center;margin-bottom:.5rem' },
+                el('div', { style: 'flex:1;min-width:0' }, el('div', { class: 'card-meta' }, 'Bucket: ' + esc(st.s3_bucket))),
+                st.enabled ? el('button', { class: 'btn btn-primary btn-sm', onclick: (e) => uploadToS3(e.currentTarget) }, 'Jetzt in S3 sichern') : null));
+            if (!st.s3_files.length) {
+                s3box.append(el('div', { class: 'card-meta' }, 'Noch keine Objekte im Bucket.'));
+            } else {
+                for (const f of st.s3_files) {
+                    s3box.append(el('div', { class: 'card-row', style: 'border-top:1px solid var(--border);padding:.45rem 0;align-items:center;gap:.4rem' },
+                        el('div', { style: 'flex:1;min-width:0' },
+                            el('div', { style: 'font-weight:600;font-size:.85rem;word-break:break-all' }, esc(f.name)),
+                            el('div', { class: 'card-meta' }, new Date(f.modified).toLocaleString('de-DE') + ' · ' + fmtBytes(f.size))),
+                        el('a', { class: 'btn btn-ghost btn-sm', href: '/api/backup/s3/file/' + encodeURIComponent(f.name), download: f.name }, 'Download'),
+                        el('button', { class: 'btn btn-ghost btn-sm', onclick: () => restoreFromS3(f.name) }, 'Restore')));
+                }
+            }
+        }
+        page.append(el('div', { class: 'card', style: 'margin-top:1rem' }, el('h3', {}, 'S3-Sicherung (extern)'), s3box));
+
         // 3 · Restore (upload + key + validate + confirmed, atomic restore)
         page.append(backupRestoreCard());
 
@@ -2590,6 +2613,37 @@
             toast('Wiederhergestellt — bitte neu anmelden', 'success');
             setTimeout(() => logout(), 1800);
         } catch (e) { toast(e.message, 'error'); btn.disabled = false; btn.textContent = o; }
+    }
+    async function uploadToS3(btn) {
+        const o = btn.textContent; btn.disabled = true; btn.textContent = 'Lade hoch …';
+        try {
+            const res = await fetch('/api/backup/s3', { method: 'POST', headers: { 'X-CSRF-Token': getCookie('parkrr_csrf') }, credentials: 'same-origin' });
+            if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'S3-Upload fehlgeschlagen'); }
+            toast('In S3 gesichert', 'success'); render();
+        } catch (e) { toast(e.message, 'error'); btn.disabled = false; btn.textContent = o; }
+    }
+    async function restoreFromS3(name) {
+        const data = await formModal({
+            title: 'Aus S3 wiederherstellen',
+            submitLabel: 'Wiederherstellen',
+            fields: [
+                { name: 'key', label: 'Backup-Schlüssel', type: 'password', required: true },
+                { name: 'confirm', label: 'Zum Bestätigen RESTORE eingeben', required: true, help: 'Überschreibt die gesamte Datenbank — atomar (rollt bei Fehler zurück).' },
+            ],
+        });
+        if (!data) return;
+        if (data.confirm !== 'RESTORE') { toast('Zum Bestätigen RESTORE eingeben', 'error'); return; }
+        try {
+            const res = await fetch('/api/backup/restore-s3', {
+                method: 'POST',
+                headers: { 'X-CSRF-Token': getCookie('parkrr_csrf'), 'Content-Type': 'application/x-www-form-urlencoded' },
+                credentials: 'same-origin',
+                body: new URLSearchParams({ name, key: data.key, confirm: 'RESTORE' }).toString(),
+            });
+            if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Restore fehlgeschlagen'); }
+            toast('Wiederhergestellt — bitte neu anmelden', 'success');
+            setTimeout(() => logout(), 1800);
+        } catch (e) { toast(e.message, 'error'); }
     }
     // Expandable user card: name + role/2FA badges in the header; the panel holds a
     // quick password reset, a full edit, and a clearly separated "Gefahrenzone" for

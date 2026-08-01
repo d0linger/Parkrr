@@ -135,17 +135,23 @@ func run() error {
 	cleanupStop := make(chan struct{})
 	defer close(cleanupStop)
 
+	s3 := backup.S3Config{
+		Endpoint: cfg.S3Endpoint, Bucket: cfg.S3Bucket,
+		AccessKey: cfg.S3AccessKey, SecretKey: cfg.S3SecretKey,
+		Region: cfg.S3Region, Prefix: cfg.S3Prefix, UseSSL: cfg.S3UseSSL,
+	}
 	handler, err := server.New(pool, authMgr, webAuthn, cfg.RateLimitPerMin, cfg.MetricsToken,
-		cfg.CheckBreachedPasswords, cfg.FailClosedOnBreach, cfg.BackupKey, cfg.DatabaseURL, cfg.BackupDir, cleanupStop)
+		cfg.CheckBreachedPasswords, cfg.FailClosedOnBreach, cfg.BackupKey, cfg.DatabaseURL, cfg.BackupDir, s3, cleanupStop)
 	if err != nil {
 		return err
 	}
 
-	// Scheduled encrypted backups to a mounted directory (opt-in via env).
-	if cfg.BackupKey != "" && cfg.BackupDir != "" {
+	// Scheduled encrypted backups to a mounted directory and/or S3 (opt-in via env).
+	if cfg.BackupKey != "" && (cfg.BackupDir != "" || s3.Enabled()) {
 		go backup.StartScheduled(cleanupStop, cfg.DatabaseURL, cfg.BackupKey, cfg.BackupDir,
-			cfg.BackupIntervalHours, cfg.BackupKeep)
-		slog.Info("scheduled backups enabled", "dir", cfg.BackupDir, "interval_h", cfg.BackupIntervalHours, "keep", cfg.BackupKeep)
+			cfg.BackupIntervalHours, cfg.BackupKeep, s3)
+		slog.Info("scheduled backups enabled", "dir", cfg.BackupDir, "s3", s3.Enabled(),
+			"interval_h", cfg.BackupIntervalHours, "keep", cfg.BackupKeep)
 	}
 
 	go server.StartSessionCleanup(authMgr, cleanupStop)
