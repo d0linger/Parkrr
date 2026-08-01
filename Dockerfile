@@ -31,7 +31,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 FROM alpine:3.20
 
 RUN apk add --no-cache postgresql16-client ca-certificates tzdata \
-    && adduser -D -H -u 10001 parkrr
+    && adduser -D -H -u 10001 parkrr \
+    # Default backup directory, owned by the app user so a named volume mounted
+    # here (docker-compose) inherits writable ownership for the non-root process.
+    && mkdir -p /backups && chown parkrr /backups
 
 WORKDIR /app
 COPY --from=build /out/parkrr /app/parkrr

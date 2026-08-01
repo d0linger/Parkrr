@@ -59,11 +59,13 @@ services:
       # --- Ops ---
       PARKRR_RATE_LIMIT_PER_MIN: ${PARKRR_RATE_LIMIT_PER_MIN:-600}
       PARKRR_AUDIT_RETENTION_DAYS: ${PARKRR_AUDIT_RETENTION_DAYS:-365}
-      # Encrypted backups. Set PARKRR_BACKUP_KEY to enable the on-demand download;
-      # additionally set PARKRR_BACKUP_DIR (mount a writable volume) for scheduled ones.
-      # The schedule (cron) and retention are edited in the Backup tab, not via env.
+      # Encrypted backups. Set PARKRR_BACKUP_KEY to enable them (on-demand download
+      # + scheduled). Scheduled backups default to the /backups volume below, which
+      # lives next to the DB volume — convenient, but a copy beside the database it
+      # protects is not an off-site backup: also configure S3 for 3-2-1. The
+      # schedule (cron) and retention are edited in the Backup tab, not via env.
       PARKRR_BACKUP_KEY: ${PARKRR_BACKUP_KEY:-}
-      PARKRR_BACKUP_DIR: ${PARKRR_BACKUP_DIR:-}
+      PARKRR_BACKUP_DIR: ${PARKRR_BACKUP_DIR:-/backups}
       # Optional off-site S3-compatible target (AWS S3 / Backblaze B2 / Wasabi / MinIO).
       PARKRR_S3_ENDPOINT: ${PARKRR_S3_ENDPOINT:-}
       PARKRR_S3_BUCKET: ${PARKRR_S3_BUCKET:-}
@@ -83,11 +85,15 @@ services:
       start_period: 20s
     ports:
       - "${PARKRR_HTTP_PORT:-8080}:8080"
+    # Scheduled encrypted backups land here, in a named volume next to the DB's.
+    volumes:
+      - parkrr-backups:/backups
     networks:
       - parkrr-net
 
 volumes:
   parkrr-db-data:
+  parkrr-backups:
 
 networks:
   parkrr-net:

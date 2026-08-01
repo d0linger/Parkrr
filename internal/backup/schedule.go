@@ -40,6 +40,7 @@ func RunVolume(ctx context.Context, pool *pgxpool.Pool, dbURL, key, dir string, 
 		_ = recordVolume(ctx, pool, time.Now(), 0, false, false)
 		return 0, err
 	}
+	_ = os.MkdirAll(dir, 0o700) // ensure the target exists; WriteFile surfaces real errors
 	p := filepath.Join(dir, backupName(time.Now()))
 	if err := os.WriteFile(p, enc, 0o600); err != nil {
 		_ = recordVolume(ctx, pool, time.Now(), 0, false, false)
