@@ -7,7 +7,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io/fs"
+	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -206,11 +208,31 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 // routes). Extracted from New so the wiring — including the request-body limit —
 // is testable without a live database pool.
 func buildChain(authMgr *auth.Manager, mux *http.ServeMux, rateLimitPerMin int, stop <-chan struct{}) http.Handler {
-	chain := securityHeaders(authMgr, limitRequestBody(mux))
+	// recoverPanics wraps the router directly (innermost) so a handler panic is
+	// turned into a normal 500 return — which the outer metrics/log middleware
+	// then record — instead of an unlogged, unmeasured dropped connection.
+	chain := securityHeaders(authMgr, limitRequestBody(recoverPanics(mux)))
 	chain = rateLimit(authMgr, rateLimitPerMin, stop, chain)
 	chain = metricsMiddleware(mux, chain)
 	chain = requestLogger(authMgr, chain)
 	return chain
+}
+
+// recoverPanics converts a handler panic into a logged 500 (with stack + request
+// context) instead of a silently aborted connection that emits no log or metric.
+func recoverPanics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("panic recovered in handler", "err", rec,
+					"method", r.Method, "path", r.URL.Path, "stack", string(debug.Stack()))
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"error":"internal server error"}`))
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // maxRequestBody caps every request body as a DoS backstop. It sits ABOVE the

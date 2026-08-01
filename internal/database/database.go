@@ -24,6 +24,12 @@ func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	cfg.MaxConns = 10
 	cfg.MinConns = 1
 	cfg.MaxConnLifetime = time.Hour
+	// Server-side backstop: no single statement may run unbounded and pin a
+	// pooled connection, even if a handler forgets a context deadline.
+	if cfg.ConnConfig.RuntimeParams == nil {
+		cfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	cfg.ConnConfig.RuntimeParams["statement_timeout"] = "10000" // ms
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

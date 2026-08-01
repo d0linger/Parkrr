@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -669,5 +670,7 @@ func vehicleLabel(label, plate string) string {
 }
 
 func round2(f float64) float64 {
-	return float64(int64(f*100+0.5)) / 100
+	// math.Round is half-away-from-zero, so negative (overpaid) balances round
+	// correctly; the old int64(f*100+0.5) truncated toward zero for negatives.
+	return math.Round(f*100) / 100
 }

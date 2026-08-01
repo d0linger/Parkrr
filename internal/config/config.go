@@ -17,9 +17,10 @@ type Config struct {
 	DatabaseURL string
 
 	// Admin bootstrap (created/updated on startup from env)
-	AdminUsername string
-	AdminEmail    string
-	AdminPassword string
+	AdminUsername      string
+	AdminEmail         string
+	AdminPassword      string
+	AdminPasswordForce bool // re-apply AdminPassword on every boot (default false: don't clobber a UI change)
 
 	// Security
 	SessionSecret         string
@@ -52,6 +53,7 @@ func Load() (*Config, error) {
 		AdminUsername:         getenv("PARKRR_ADMIN_USERNAME", "admin"),
 		AdminEmail:            getenv("PARKRR_ADMIN_EMAIL", "admin@example.com"),
 		AdminPassword:         os.Getenv("PARKRR_ADMIN_PASSWORD"),
+		AdminPasswordForce:    getenvBool("PARKRR_ADMIN_PASSWORD_FORCE", false),
 		SessionSecret:         os.Getenv("PARKRR_SESSION_SECRET"),
 		SessionMaxAge:         getenvInt("PARKRR_SESSION_MAX_AGE", 60*60*24*7),
 		SessionSliding:        getenvBool("PARKRR_SESSION_SLIDING", false),
