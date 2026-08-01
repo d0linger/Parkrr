@@ -275,6 +275,11 @@ func (h *Handler) validateCharge(ctx context.Context, req *chargeRequest) (time.
 	if !validNameLength(req.Description) {
 		return time.Time{}, "description is too long", nil
 	}
+	if trim(req.ChargedOn) != "" {
+		if !validDateLength(req.ChargedOn) {
+			return time.Time{}, "charged_on is too long", nil
+		}
+	}
 	if req.Quantity <= 0 {
 		req.Quantity = 1
 	}

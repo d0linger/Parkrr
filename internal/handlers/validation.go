@@ -24,6 +24,7 @@ const (
 	maxTOTPCodeLen = 20
 	minPasswordLen = 8
 	maxPasswordLen = 72
+	maxDateLen     = 20
 )
 
 // validUsernameLength reports whether s is a non-empty username within the
@@ -68,4 +69,9 @@ func validTOTPCodeLength(s string) bool {
 // minPasswordLen and maxPasswordLen bytes).
 func validPasswordLength(pw string) bool {
 	return len(pw) >= minPasswordLen && len(pw) <= maxPasswordLen
+}
+
+// validDateLength reports whether s is within the date length cap.
+func validDateLength(s string) bool {
+	return len(s) <= maxDateLen
 }

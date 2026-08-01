@@ -17,6 +17,7 @@ func TestInputLengthValidation(t *testing.T) {
 	longNote := strings.Repeat("c", maxNoteLen+1)
 	longPhone := strings.Repeat("d", maxPhoneLen+1)
 	longAddress := strings.Repeat("e", maxAddressLen+1)
+	longDate := strings.Repeat("f", maxDateLen+1)
 
 	tests := []struct {
 		name       string
@@ -162,6 +163,70 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "notes is too long",
 		},
+		{
+			name:       "CreateVehicle: Start Date too long",
+			path:       "/api/vehicles",
+			method:     "POST",
+			body:       vehicleRequest{PersonID: 1, CategoryID: 1, Label: "My Car", StartDate: longDate},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "start_date is too long",
+		},
+		{
+			name:       "CreateAgreement: Start Date too long",
+			path:       "/api/persons/1/agreements",
+			method:     "POST",
+			body:       agreementRequest{Amount: floatPtr(10.0), StartDate: longDate},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "start_date is too long",
+		},
+		{
+			name:       "CreateAgreement: End Date too long",
+			path:       "/api/persons/1/agreements",
+			method:     "POST",
+			body:       agreementRequest{Amount: floatPtr(10.0), StartDate: "2023-01-01", EndDate: &longDate},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "end_date is too long",
+		},
+		{
+			name:       "CreateRecurringCharge: Start Date too long",
+			path:       "/api/persons/1/recurring",
+			method:     "POST",
+			body:       recurringRequest{Description: "rent", Amount: floatPtr(10.0), Period: "monthly", StartDate: longDate},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "start_date is too long",
+		},
+		{
+			name:       "CreateRecurringCharge: End Date too long",
+			path:       "/api/persons/1/recurring",
+			method:     "POST",
+			body:       recurringRequest{Description: "rent", Amount: floatPtr(10.0), Period: "monthly", StartDate: "2023-01-01", EndDate: &longDate},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "end_date is too long",
+		},
+		{
+			name:       "ChangeVehicleStatus: Date too long",
+			path:       "/api/vehicles/1/status",
+			method:     "POST",
+			body:       statusRequest{Status: "collected", Date: longDate},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "date is too long",
+		},
+		{
+			name:       "CreateCharge: Charged On too long",
+			path:       "/api/charges",
+			method:     "POST",
+			body:       chargeRequest{PersonID: 1, Description: "parking", ChargedOn: longDate},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "charged_on is too long",
+		},
+		{
+			name:       "DuplicateVehicle: Start Date too long",
+			path:       "/api/vehicles/1/duplicate",
+			method:     "POST",
+			body:       duplicateRequest{StartDate: longDate},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "start_date is too long",
+		},
 	}
 
 	for _, tt := range tests {
@@ -177,22 +242,27 @@ func TestInputLengthValidation(t *testing.T) {
 				h.CreateCategory(w, req)
 			case "CreateServiceType: Name too long":
 				h.CreateServiceType(w, req)
-			case "CreateCharge: Description too long":
+			case "CreateCharge: Description too long", "CreateCharge: Charged On too long":
 				h.CreateCharge(w, req)
 			case "CreateUser: Email too long":
 				h.CreateUser(w, req)
 			case "UpdateUser: Email too long":
 				req.SetPathValue("id", "1")
 				h.UpdateUser(w, req)
-			case "CreateAgreement: NewVehicles Label too long", "CreateAgreement: NewVehicles LicensePlate too long", "CreateAgreement: EditVehicles Label too long", "CreateAgreement: EditVehicles LicensePlate too long":
+			case "CreateAgreement: NewVehicles Label too long", "CreateAgreement: NewVehicles LicensePlate too long", "CreateAgreement: EditVehicles Label too long", "CreateAgreement: EditVehicles LicensePlate too long", "CreateAgreement: Start Date too long", "CreateAgreement: End Date too long":
 				req.SetPathValue("id", "1")
 				h.CreateAgreement(w, req)
-			case "CreateRecurringCharge: Description too long":
+			case "CreateRecurringCharge: Description too long", "CreateRecurringCharge: Start Date too long", "CreateRecurringCharge: End Date too long":
 				req.SetPathValue("id", "1")
 				h.CreateRecurringCharge(w, req)
-			case "ChangeVehicleStatus: Note too long":
+			case "ChangeVehicleStatus: Note too long", "ChangeVehicleStatus: Date too long":
 				req.SetPathValue("id", "1")
 				h.ChangeVehicleStatus(w, req)
+			case "CreateVehicle: Start Date too long":
+				h.CreateVehicle(w, req)
+			case "DuplicateVehicle: Start Date too long":
+				req.SetPathValue("id", "1")
+				h.DuplicateVehicle(w, req)
 			}
 
 			if w.Code != tt.wantStatus {
