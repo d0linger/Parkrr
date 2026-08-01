@@ -147,6 +147,8 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/audit", admin(hf(h.ListAudit)))
 	mux.Handle("POST /api/backup", admin(hf(h.CreateBackup)))
 	mux.Handle("GET /api/backup/status", admin(hf(h.BackupStatus)))
+	mux.Handle("POST /api/backup/schedule", admin(hf(h.SaveBackupSchedule)))
+	mux.Handle("POST /api/backup/run", admin(hf(h.RunScheduledBackup)))
 	mux.Handle("GET /api/backup/file/{name}", admin(hf(h.BackupDownloadFile)))
 	mux.Handle("POST /api/backup/validate", admin(hf(h.BackupValidate)))
 	mux.Handle("POST /api/backup/restore", admin(hf(h.BackupRestore)))

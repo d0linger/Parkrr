@@ -44,11 +44,11 @@ type Config struct {
 	CheckBreachedPasswords bool // check new passwords against the HIBP range API
 	FailClosedOnBreach     bool // if the HIBP check is unavailable, reject the password (default false = allow)
 
-	// Backup (encrypted pg_dump). Enabled only when BackupKey is set.
-	BackupKey           string // AES-256-GCM passphrase (separate from SessionSecret)
-	BackupDir           string // if set, scheduled backups are written here
-	BackupIntervalHours int    // scheduled-backup interval (default 24)
-	BackupKeep          int    // scheduled backups to retain (default 14)
+	// Backup (encrypted pg_dump). Enabled only when BackupKey is set. The
+	// schedule and retention are stored in the DB (backup_settings) and edited in
+	// the Backup tab, not via env.
+	BackupKey string // AES-256-GCM passphrase (separate from SessionSecret)
+	BackupDir string // if set, scheduled backups are written here
 
 	// S3-compatible off-site backup target (optional).
 	S3Endpoint  string
@@ -87,10 +87,8 @@ func Load() (*Config, error) {
 		CheckBreachedPasswords: getenvBool("PARKRR_CHECK_BREACHED_PASSWORDS", true),
 		FailClosedOnBreach:     getenvBool("PARKRR_BREACH_CHECK_FAIL_CLOSED", false),
 
-		BackupKey:           os.Getenv("PARKRR_BACKUP_KEY"),
-		BackupDir:           os.Getenv("PARKRR_BACKUP_DIR"),
-		BackupIntervalHours: getenvInt("PARKRR_BACKUP_INTERVAL_HOURS", 24),
-		BackupKeep:          getenvInt("PARKRR_BACKUP_KEEP", 14),
+		BackupKey: os.Getenv("PARKRR_BACKUP_KEY"),
+		BackupDir: os.Getenv("PARKRR_BACKUP_DIR"),
 
 		S3Endpoint:  os.Getenv("PARKRR_S3_ENDPOINT"),
 		S3Bucket:    os.Getenv("PARKRR_S3_BUCKET"),

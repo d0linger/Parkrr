@@ -16,16 +16,22 @@ type AuthHandler struct {
 	Auth     *auth.Manager
 	WebAuthn *auth.WebAuthnService // nil when passkeys are disabled
 	Limiter  *auth.LoginLimiter
+	// IPLimiter throttles failures per client IP regardless of username, so
+	// password-spraying (one guess against many accounts from one host) trips a
+	// lockout even though each username+IP key stays under the per-account
+	// threshold. Its cap is higher to tolerate a few users behind one NAT.
+	IPLimiter *auth.LoginLimiter
 }
 
 // NewAuthHandler constructs an AuthHandler. The background login-throttle
 // cleanup goroutine runs until stop is closed.
 func NewAuthHandler(h *Handler, mgr *auth.Manager, wa *auth.WebAuthnService, stop <-chan struct{}) *AuthHandler {
 	ah := &AuthHandler{
-		Handler:  h,
-		Auth:     mgr,
-		WebAuthn: wa,
-		Limiter:  auth.NewLoginLimiter(5, 10*time.Minute, 15*time.Minute),
+		Handler:   h,
+		Auth:      mgr,
+		WebAuthn:  wa,
+		Limiter:   auth.NewLoginLimiter(5, 10*time.Minute, 15*time.Minute),
+		IPLimiter: auth.NewLoginLimiter(20, 10*time.Minute, 15*time.Minute),
 	}
 	go func() {
 		t := time.NewTicker(10 * time.Minute)
@@ -36,6 +42,7 @@ func NewAuthHandler(h *Handler, mgr *auth.Manager, wa *auth.WebAuthnService, sto
 				return
 			case <-t.C:
 				ah.Limiter.Cleanup()
+				ah.IPLimiter.Cleanup()
 			}
 		}
 	}()
@@ -48,20 +55,43 @@ type loginRequest struct {
 	TOTPCode string `json:"totp_code"`
 }
 
-// checkRateLimit blocks if the username+IP is currently throttled.
-func (h *AuthHandler) checkRateLimit(w http.ResponseWriter, r *http.Request, username string) (string, bool) {
-	ip := h.Auth.ClientIP(r)
-	// Usernames are case-insensitive in the database; ensure the throttle
-	// key reflects this so variations in casing cannot bypass the lockout.
-	key := strings.ToLower(username) + "|" + ip
-	if ok, wait := h.Limiter.Allowed(key); !ok {
+// checkRateLimit blocks if the username+IP key is currently throttled. It
+// returns the username+IP key and the client IP for recording the outcome.
+// Usernames are lower-cased so casing variants can't bypass the lockout. The
+// per-IP spray throttle is applied only on the public login path (ipThrottled),
+// not on post-auth endpoints that also use this helper.
+func (h *AuthHandler) checkRateLimit(w http.ResponseWriter, r *http.Request, username string) (key, ip string, ok bool) {
+	ip = h.Auth.ClientIP(r)
+	key = strings.ToLower(username) + "|" + ip
+	if allowed, wait := h.Limiter.Allowed(key); !allowed {
 		w.Header().Set("Retry-After", formatSeconds(wait))
 		slog.Warn("throttle active", "user", username, "ip", ip, "path", r.URL.Path)
-		writeError(w, http.StatusTooManyRequests,
-			"too many attempts, try again in "+formatMinutes(wait))
-		return key, false
+		writeError(w, http.StatusTooManyRequests, "too many attempts, try again in "+formatMinutes(wait))
+		return key, ip, false
 	}
-	return key, true
+	return key, ip, true
+}
+
+// ipThrottled blocks (and 429s) when the client IP has tripped the per-IP
+// spray throttle. Used only on the public login endpoint so that one host
+// spraying one password across many usernames trips a lockout even though no
+// single username+IP key reaches its own threshold.
+func (h *AuthHandler) ipThrottled(w http.ResponseWriter, r *http.Request) (ip string, blocked bool) {
+	ip = h.Auth.ClientIP(r)
+	if allowed, wait := h.IPLimiter.Allowed(ip); !allowed {
+		w.Header().Set("Retry-After", formatSeconds(wait))
+		slog.Warn("throttle active (ip)", "ip", ip, "path", r.URL.Path)
+		writeError(w, http.StatusTooManyRequests, "too many attempts, try again in "+formatMinutes(wait))
+		return ip, true
+	}
+	return ip, false
+}
+
+// recordLoginFailure counts a failed login against both the per-account and the
+// per-IP throttle. Called only from the public login path.
+func (h *AuthHandler) recordLoginFailure(key, ip string) {
+	h.Limiter.RecordFailure(key)
+	h.IPLimiter.RecordFailure(ip)
 }
 
 // Login authenticates a user (with optional TOTP) and starts a session.
@@ -78,15 +108,20 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
-	key, ok := h.checkRateLimit(w, r, req.Username)
+	// Per-IP spray throttle first (independent of username), then the per-account
+	// lockout. Both apply only to this public login endpoint.
+	if _, blocked := h.ipThrottled(w, r); blocked {
+		return
+	}
+	key, ip, ok := h.checkRateLimit(w, r, req.Username)
 	if !ok {
 		return
 	}
 
 	u, err := h.Auth.Authenticate(r.Context(), req.Username, req.Password)
 	if err != nil {
-		h.Limiter.RecordFailure(key)
-		slog.Warn("login failed", "user", req.Username, "ip", h.Auth.ClientIP(r), "reason", "bad credentials")
+		h.recordLoginFailure(key, ip)
+		slog.Warn("login failed", "user", req.Username, "ip", ip, "reason", "bad credentials")
 		writeError(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
@@ -106,8 +141,8 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 			ok = h.Auth.ConsumeBackupCode(r.Context(), u.ID, code)
 		}
 		if !ok {
-			h.Limiter.RecordFailure(key)
-			slog.Warn("login failed", "user", u.Username, "ip", h.Auth.ClientIP(r), "reason", "bad 2fa code")
+			h.recordLoginFailure(key, ip)
+			slog.Warn("login failed", "user", u.Username, "ip", ip, "reason", "bad 2fa code")
 			writeJSON(w, http.StatusUnauthorized, map[string]any{
 				"error":         "invalid two-factor code",
 				"totp_required": true,
@@ -116,6 +151,10 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Reset only the per-account key on success. The per-IP spray counter is
+	// deliberately NOT reset here: otherwise one legitimate login from a shared
+	// egress IP would hand a co-located sprayer a fresh budget. It decays on its
+	// own via the failure window.
 	h.Limiter.Reset(key)
 	if err := h.Auth.CreateSession(r.Context(), w, r, u.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create session")
@@ -182,7 +221,7 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	// (cheap, local bcrypt) BEFORE spending an outbound HIBP breach lookup on
 	// the candidate password — otherwise the endpoint drives external requests
 	// from arbitrary input before any throttle applies.
-	key, ok := h.checkRateLimit(w, r, u.Username)
+	key, _, ok := h.checkRateLimit(w, r, u.Username)
 	if !ok {
 		return
 	}

@@ -43,8 +43,9 @@ func (h *Handler) CreateBackup(w http.ResponseWriter, r *http.Request) {
 	streamBackup(w, name, enc)
 }
 
-// BackupStatus reports whether backups are configured and lists the scheduled
-// files in the backup directory (newest first).
+// BackupStatus reports the full Backup-tab state: what's configured, the
+// GUI-editable cron schedule and retention, the runtime status (last runs,
+// sizes, verify), the schema version, and the file listings (newest first).
 func (h *Handler) BackupStatus(w http.ResponseWriter, r *http.Request) {
 	type file struct {
 		Name     string    `json:"name"`
@@ -52,15 +53,30 @@ func (h *Handler) BackupStatus(w http.ResponseWriter, r *http.Request) {
 		Modified time.Time `json:"modified"`
 	}
 	resp := struct {
-		Enabled   bool   `json:"enabled"`   // PARKRR_BACKUP_KEY is set
-		Scheduled bool   `json:"scheduled"` // a backup directory is configured
-		Dir       string `json:"dir"`
-		Files     []file `json:"files"`
-		S3        bool   `json:"s3"` // an S3 target is configured
-		S3Bucket  string `json:"s3_bucket"`
-		S3Files   []file `json:"s3_files"`
+		Enabled       bool            `json:"enabled"`   // PARKRR_BACKUP_KEY is set
+		Scheduled     bool            `json:"scheduled"` // a backup directory is configured
+		Dir           string          `json:"dir"`
+		SchemaVersion string          `json:"schema_version"`
+		Settings      backup.Settings `json:"settings"`
+		Status        backup.Status   `json:"status"`
+		Files         []file          `json:"files"`
+		S3            bool            `json:"s3"` // an S3 target is configured
+		S3Bucket      string          `json:"s3_bucket"`
+		S3Files       []file          `json:"s3_files"`
 	}{Enabled: h.BackupKey != "", Scheduled: h.BackupDir != "", Dir: h.BackupDir, Files: []file{},
-		S3: h.S3.Enabled(), S3Bucket: h.S3.Bucket, S3Files: []file{}}
+		S3: h.S3.Enabled(), S3Bucket: h.S3.Bucket, S3Files: []file{},
+		SchemaVersion: backup.SchemaVersion(r.Context(), h.Pool)}
+
+	if s, err := backup.LoadSettings(r.Context(), h.Pool); err == nil {
+		resp.Settings = s
+	} else {
+		slog.Warn("backup: load settings failed", "err", err)
+	}
+	if s, err := backup.LoadStatus(r.Context(), h.Pool); err == nil {
+		resp.Status = s
+	} else {
+		slog.Warn("backup: load status failed", "err", err)
+	}
 
 	if h.BackupDir != "" {
 		matches, _ := filepath.Glob(filepath.Join(h.BackupDir, "parkrr-*.dump.enc"))
@@ -81,6 +97,87 @@ func (h *Handler) BackupStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// SaveBackupSchedule updates the GUI-editable cron schedule and retention. Crons
+// are validated (empty = off); the running scheduler picks up the change on its
+// next tick (it reloads the settings each minute).
+func (h *Handler) SaveBackupSchedule(w http.ResponseWriter, r *http.Request) {
+	var in backup.Settings
+	if err := decodeJSON(r, &in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	in.VolumeCron = trim(in.VolumeCron)
+	in.S3Cron = trim(in.S3Cron)
+	if !backup.ValidCron(in.VolumeCron) {
+		writeError(w, http.StatusBadRequest, "volume cron is not a valid 5-field cron expression")
+		return
+	}
+	if !backup.ValidCron(in.S3Cron) {
+		writeError(w, http.StatusBadRequest, "S3 cron is not a valid 5-field cron expression")
+		return
+	}
+	if in.VolumeKeep < 0 || in.S3Keep < 0 {
+		writeError(w, http.StatusBadRequest, "retention count must not be negative")
+		return
+	}
+	if err := backup.SaveSettings(r.Context(), h.Pool, in); err != nil {
+		slog.Error("backup: save schedule failed", "err", err)
+		writeError(w, http.StatusInternalServerError, "could not save the schedule")
+		return
+	}
+	h.audit(r, "backup", "system", 0, "updated the backup schedule (volume '"+in.VolumeCron+"', S3 '"+in.S3Cron+"')")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
+}
+
+// RunScheduledBackup runs the configured scheduled targets (volume and/or S3)
+// immediately, using the DB retention settings, and records the outcome. This is
+// the "Jetzt sichern" action in the schedule section (distinct from the on-demand
+// browser download in CreateBackup).
+func (h *Handler) RunScheduledBackup(w http.ResponseWriter, r *http.Request) {
+	if h.BackupKey == "" {
+		writeError(w, http.StatusServiceUnavailable, "backup is not configured (set PARKRR_BACKUP_KEY)")
+		return
+	}
+	if h.BackupDir == "" && !h.S3.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "no scheduled target configured (set PARKRR_BACKUP_DIR and/or S3)")
+		return
+	}
+	settings, err := backup.LoadSettings(r.Context(), h.Pool)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load the schedule")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
+	defer cancel()
+
+	ran := []string{}
+	var firstErr error
+	if h.BackupDir != "" {
+		if _, err := backup.RunVolume(ctx, h.Pool, h.DatabaseURL, h.BackupKey, h.BackupDir, settings.VolumeKeep); err != nil {
+			slog.Error("run-now volume backup failed", "err", err)
+			firstErr = err
+		} else {
+			ran = append(ran, "Volume")
+		}
+	}
+	if h.S3.Enabled() {
+		if _, err := backup.RunS3(ctx, h.Pool, h.DatabaseURL, h.BackupKey, h.S3, settings.S3Keep); err != nil {
+			slog.Error("run-now S3 backup failed", "err", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		} else {
+			ran = append(ran, "S3")
+		}
+	}
+	if len(ran) == 0 {
+		writeError(w, http.StatusInternalServerError, "backup failed")
+		return
+	}
+	h.audit(r, "backup", "system", 0, "ran scheduled backup now ("+strings.Join(ran, ", ")+")")
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "ran": ran, "partial": firstErr != nil})
 }
 
 // safeBackupName guards against path traversal: base name only, expected shape.
@@ -184,19 +281,9 @@ func (h *Handler) CreateBackupS3(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
 	defer cancel()
-	dump, err := backup.Dump(ctx, h.DatabaseURL)
+	// keep=0: a manual upload never prunes. RunS3 records the status row.
+	name, err := backup.RunS3(ctx, h.Pool, h.DatabaseURL, h.BackupKey, h.S3, 0)
 	if err != nil {
-		slog.Error("backup: pg_dump failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "backup failed")
-		return
-	}
-	enc, err := backup.Encrypt(dump, h.BackupKey)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "backup encryption failed")
-		return
-	}
-	name := "parkrr-" + time.Now().Format("2006-01-02-150405") + ".dump.enc"
-	if err := backup.UploadS3(ctx, h.S3, name, enc, 0); err != nil {
 		slog.Error("backup: S3 upload failed", "err", err)
 		writeError(w, http.StatusBadGateway, "S3 upload failed")
 		return

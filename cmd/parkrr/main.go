@@ -146,12 +146,12 @@ func run() error {
 		return err
 	}
 
-	// Scheduled encrypted backups to a mounted directory and/or S3 (opt-in via env).
+	// Scheduled encrypted backups driven by the DB-stored cron schedule
+	// (backup_settings, editable in the Backup tab). Opt-in via env: a key plus at
+	// least one target (a mounted directory and/or S3).
 	if cfg.BackupKey != "" && (cfg.BackupDir != "" || s3.Enabled()) {
-		go backup.StartScheduled(cleanupStop, cfg.DatabaseURL, cfg.BackupKey, cfg.BackupDir,
-			cfg.BackupIntervalHours, cfg.BackupKeep, s3)
-		slog.Info("scheduled backups enabled", "dir", cfg.BackupDir, "s3", s3.Enabled(),
-			"interval_h", cfg.BackupIntervalHours, "keep", cfg.BackupKeep)
+		go backup.StartScheduler(cleanupStop, pool, cfg.DatabaseURL, cfg.BackupKey, cfg.BackupDir, s3)
+		slog.Info("scheduled backups enabled", "dir", cfg.BackupDir, "s3", s3.Enabled())
 	}
 
 	go server.StartSessionCleanup(authMgr, cleanupStop)

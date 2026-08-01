@@ -66,7 +66,7 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Throttle: a 6-digit code is otherwise brute-forceable during enrolment.
-	key, ok := h.checkRateLimit(w, r, u.Username)
+	key, _, ok := h.checkRateLimit(w, r, u.Username)
 	if !ok {
 		return
 	}
@@ -111,7 +111,7 @@ func (h *AuthHandler) TOTPDisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, ok := h.checkRateLimit(w, r, u.Username)
+	key, _, ok := h.checkRateLimit(w, r, u.Username)
 	if !ok {
 		return
 	}
@@ -166,7 +166,7 @@ func (h *AuthHandler) TOTPRegenerateBackup(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	key, ok := h.checkRateLimit(w, r, u.Username)
+	key, _, ok := h.checkRateLimit(w, r, u.Username)
 	if !ok {
 		return
 	}

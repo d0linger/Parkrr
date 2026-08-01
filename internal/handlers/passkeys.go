@@ -118,7 +118,7 @@ func (h *AuthHandler) PasskeyRegisterFinish(w http.ResponseWriter, r *http.Reque
 	u, _ := auth.UserFrom(r.Context())
 	// Throttle: cap repeated failed attestation verifications (CPU-heavy) per
 	// user, matching the TOTP-enable ceremony.
-	key, ok := h.checkRateLimit(w, r, u.Username)
+	key, _, ok := h.checkRateLimit(w, r, u.Username)
 	if !ok {
 		return
 	}
