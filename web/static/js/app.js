@@ -2466,7 +2466,49 @@
             sorts: [{ label: 'Name A–Z', cmp: (a, b) => a.username.localeCompare(b.username) }],
             render: (u) => userCard(u),
         });
+        page.append(backupCard());
     };
+    // Admin: one-tap encrypted database backup (downloads a pg_dump sealed with
+    // AES-256-GCM). Restore is a deliberate CLI step: `parkrr restore <datei>`.
+    function backupCard() {
+        const btn = el('button', { class: 'btn btn-primary', onclick: (e) => downloadBackup(e.currentTarget) },
+            'Backup jetzt herunterladen');
+        return el('div', { class: 'card', style: 'margin-top:1rem' },
+            el('h3', {}, 'Datenbank-Sicherung'),
+            el('div', { class: 'card-meta', style: 'margin:.3rem 0 .7rem' },
+                'Verschlüsselter Voll-Export (pg_dump · AES-256-GCM). Datei sicher und off-box aufbewahren. ' +
+                'Wiederherstellen über die Kommandozeile: parkrr restore <datei>. Braucht PARKRR_BACKUP_KEY.'),
+            btn);
+    }
+    async function downloadBackup(btn) {
+        const orig = btn.textContent;
+        btn.disabled = true; btn.textContent = 'Sichere …';
+        try {
+            const res = await fetch('/api/backup', {
+                method: 'POST',
+                headers: { 'X-CSRF-Token': getCookie('parkrr_csrf') },
+                credentials: 'same-origin',
+            });
+            if (!res.ok) {
+                let msg = 'Backup fehlgeschlagen';
+                try { const j = await res.json(); if (j && j.error) msg = j.error; } catch (e) { /* non-JSON */ }
+                throw new Error(msg);
+            }
+            const blob = await res.blob();
+            const cd = res.headers.get('Content-Disposition') || '';
+            const m = cd.match(/filename="([^"]+)"/);
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = m ? m[1] : 'parkrr-backup.dump.enc';
+            document.body.append(a); a.click(); a.remove();
+            URL.revokeObjectURL(url);
+            toast('Backup heruntergeladen', 'success');
+        } catch (e) {
+            toast(e.message, 'error');
+        } finally {
+            btn.disabled = false; btn.textContent = orig;
+        }
+    }
     // Expandable user card: name + role/2FA badges in the header; the panel holds a
     // quick password reset, a full edit, and a clearly separated "Gefahrenzone" for
     // the destructive actions (2FA reset, delete) so they can't be mis-tapped.

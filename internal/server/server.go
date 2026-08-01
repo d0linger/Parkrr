@@ -24,10 +24,12 @@ import (
 // New builds the top-level HTTP handler with all routes registered. Background
 // goroutines started here (rate-limiter cleanup, login-throttle cleanup) run
 // until stop is closed.
-func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, checkBreachedPasswords, failClosedOnBreach bool, stop <-chan struct{}) (http.Handler, error) {
+func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, checkBreachedPasswords, failClosedOnBreach bool, backupKey, dbURL string, stop <-chan struct{}) (http.Handler, error) {
 	h := handlers.New(pool)
 	h.CheckBreachedPasswords = checkBreachedPasswords
 	h.FailClosedOnBreach = failClosedOnBreach
+	h.BackupKey = backupKey
+	h.DatabaseURL = dbURL
 	ah := handlers.NewAuthHandler(h, authMgr, wa, stop)
 
 	// Archive vehicles of finished-and-settled Pauschalen in the background.
@@ -140,6 +142,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("DELETE /api/users/{id}", admin(hf(h.DeleteUser)))
 	mux.Handle("POST /api/users/{id}/reset-2fa", admin(hf(h.ResetUserTOTP)))
 	mux.Handle("GET /api/audit", admin(hf(h.ListAudit)))
+	mux.Handle("POST /api/backup", admin(hf(h.CreateBackup)))
 
 	// --- Health, readiness and metrics ---
 	registerObservability(mux, pool, metricsToken)

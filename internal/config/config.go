@@ -43,6 +43,12 @@ type Config struct {
 	// Account security
 	CheckBreachedPasswords bool // check new passwords against the HIBP range API
 	FailClosedOnBreach     bool // if the HIBP check is unavailable, reject the password (default false = allow)
+
+	// Backup (encrypted pg_dump). Enabled only when BackupKey is set.
+	BackupKey           string // AES-256-GCM passphrase (separate from SessionSecret)
+	BackupDir           string // if set, scheduled backups are written here
+	BackupIntervalHours int    // scheduled-backup interval (default 24)
+	BackupKeep          int    // scheduled backups to retain (default 14)
 }
 
 // Load reads configuration from the environment, applying sensible defaults.
@@ -71,6 +77,11 @@ func Load() (*Config, error) {
 
 		CheckBreachedPasswords: getenvBool("PARKRR_CHECK_BREACHED_PASSWORDS", true),
 		FailClosedOnBreach:     getenvBool("PARKRR_BREACH_CHECK_FAIL_CLOSED", false),
+
+		BackupKey:           os.Getenv("PARKRR_BACKUP_KEY"),
+		BackupDir:           os.Getenv("PARKRR_BACKUP_DIR"),
+		BackupIntervalHours: getenvInt("PARKRR_BACKUP_INTERVAL_HOURS", 24),
+		BackupKeep:          getenvInt("PARKRR_BACKUP_KEEP", 14),
 	}
 
 	// Allow assembling the DB URL from discrete parts (docker-compose friendly).

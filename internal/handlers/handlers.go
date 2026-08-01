@@ -28,7 +28,11 @@ type Handler struct {
 	// FailClosedOnBreach rejects a new password when the HIBP check can't run
 	// (default false = fail open, allowing the change).
 	FailClosedOnBreach bool
-	hibpClient         *http.Client
+	// BackupKey (if set) enables the encrypted-backup endpoint; DatabaseURL is
+	// the connection string handed to pg_dump.
+	BackupKey   string
+	DatabaseURL string
+	hibpClient  *http.Client
 }
 
 // New constructs a Handler.

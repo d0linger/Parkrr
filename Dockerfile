@@ -25,15 +25,21 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o /out/parkrr ./cmd/parkrr
 
 # ---------- Runtime stage ----------
-FROM gcr.io/distroless/static-debian12:nonroot
+# Alpine (not distroless) so pg_dump/pg_restore are available for the encrypted
+# backup feature; pinned to major 16 to match the postgres:16 server. Runs as a
+# dedicated non-root user.
+FROM alpine:3.20
+
+RUN apk add --no-cache postgresql16-client ca-certificates tzdata \
+    && adduser -D -H -u 10001 parkrr
 
 WORKDIR /app
 COPY --from=build /out/parkrr /app/parkrr
 
 EXPOSE 8080
-USER nonroot:nonroot
+USER parkrr
 
-# The distroless image has no shell/curl, so the binary probes itself.
+# The binary probes itself (no curl needed).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD ["/app/parkrr", "healthcheck"]
 

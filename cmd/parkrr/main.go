@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/preining/parkrr/internal/auth"
+	"github.com/preining/parkrr/internal/backup"
 	"github.com/preining/parkrr/internal/config"
 	"github.com/preining/parkrr/internal/database"
 	"github.com/preining/parkrr/internal/server"
@@ -24,6 +25,10 @@ func main() {
 	// image has no shell/curl, so the binary probes itself over HTTP.
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		os.Exit(healthcheck())
+	}
+	// "parkrr restore <file>" decrypts and pg_restores a backup (destructive).
+	if len(os.Args) > 1 && os.Args[1] == "restore" {
+		os.Exit(runRestore(os.Args[2:]))
 	}
 	setupLogging()
 	if err := run(); err != nil {
@@ -131,9 +136,16 @@ func run() error {
 	defer close(cleanupStop)
 
 	handler, err := server.New(pool, authMgr, webAuthn, cfg.RateLimitPerMin, cfg.MetricsToken,
-		cfg.CheckBreachedPasswords, cfg.FailClosedOnBreach, cleanupStop)
+		cfg.CheckBreachedPasswords, cfg.FailClosedOnBreach, cfg.BackupKey, cfg.DatabaseURL, cleanupStop)
 	if err != nil {
 		return err
+	}
+
+	// Scheduled encrypted backups to a mounted directory (opt-in via env).
+	if cfg.BackupKey != "" && cfg.BackupDir != "" {
+		go backup.StartScheduled(cleanupStop, cfg.DatabaseURL, cfg.BackupKey, cfg.BackupDir,
+			cfg.BackupIntervalHours, cfg.BackupKeep)
+		slog.Info("scheduled backups enabled", "dir", cfg.BackupDir, "interval_h", cfg.BackupIntervalHours, "keep", cfg.BackupKeep)
 	}
 
 	go server.StartSessionCleanup(authMgr, cleanupStop)
