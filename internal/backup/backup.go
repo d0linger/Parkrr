@@ -15,7 +15,52 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 )
+
+// ArchiveInfo is the header metadata of a validated backup (no DB access needed).
+type ArchiveInfo struct {
+	Created string `json:"created"` // "... created at ..." from the archive TOC
+	Entries int    `json:"entries"` // number of TOC entries
+}
+
+// Validate decrypts a backup and confirms it is a readable pg_dump custom-format
+// archive, returning header metadata — WITHOUT touching any database.
+func Validate(enc []byte, key string) (ArchiveInfo, error) {
+	var info ArchiveInfo
+	plain, err := Decrypt(enc, key)
+	if err != nil {
+		return info, err
+	}
+	tmp, err := os.CreateTemp("", "parkrr-validate-*.dump")
+	if err != nil {
+		return info, err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(plain); err != nil {
+		tmp.Close()
+		return info, err
+	}
+	if err := tmp.Close(); err != nil {
+		return info, err
+	}
+	out, err := exec.Command("pg_restore", "--list", tmp.Name()).Output()
+	if err != nil {
+		return info, fmt.Errorf("not a valid pg_dump archive: %w", err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, ";") {
+			if i := strings.Index(line, "created at "); i >= 0 {
+				info.Created = strings.TrimSpace(line[i+len("created at "):])
+			}
+			continue
+		}
+		if strings.TrimSpace(line) != "" {
+			info.Entries++
+		}
+	}
+	return info, nil
+}
 
 // keyContext domain-separates the backup key from any other SHA-256-derived key.
 const keyContext = "parkrr-backup-v1:"
@@ -100,8 +145,10 @@ func Restore(ctx context.Context, dbURL string, enc []byte, key string) error {
 		return fmt.Errorf("not a valid pg_dump archive: %w", err)
 	}
 	var errb bytes.Buffer
+	// --single-transaction makes the whole restore atomic: any error rolls back
+	// entirely, so a failed restore never leaves the DB half-wiped.
 	cmd := exec.CommandContext(ctx, "pg_restore",
-		"--clean", "--if-exists", "--no-owner", "--no-privileges", "--exit-on-error",
+		"--single-transaction", "--clean", "--if-exists", "--no-owner", "--no-privileges",
 		"--dbname="+dbURL, tmp.Name())
 	cmd.Stderr = &errb
 	if err := cmd.Run(); err != nil {

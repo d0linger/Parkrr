@@ -24,12 +24,13 @@ import (
 // New builds the top-level HTTP handler with all routes registered. Background
 // goroutines started here (rate-limiter cleanup, login-throttle cleanup) run
 // until stop is closed.
-func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, checkBreachedPasswords, failClosedOnBreach bool, backupKey, dbURL string, stop <-chan struct{}) (http.Handler, error) {
+func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, checkBreachedPasswords, failClosedOnBreach bool, backupKey, dbURL, backupDir string, stop <-chan struct{}) (http.Handler, error) {
 	h := handlers.New(pool)
 	h.CheckBreachedPasswords = checkBreachedPasswords
 	h.FailClosedOnBreach = failClosedOnBreach
 	h.BackupKey = backupKey
 	h.DatabaseURL = dbURL
+	h.BackupDir = backupDir
 	ah := handlers.NewAuthHandler(h, authMgr, wa, stop)
 
 	// Archive vehicles of finished-and-settled Pauschalen in the background.
@@ -143,6 +144,10 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/users/{id}/reset-2fa", admin(hf(h.ResetUserTOTP)))
 	mux.Handle("GET /api/audit", admin(hf(h.ListAudit)))
 	mux.Handle("POST /api/backup", admin(hf(h.CreateBackup)))
+	mux.Handle("GET /api/backup/status", admin(hf(h.BackupStatus)))
+	mux.Handle("GET /api/backup/file/{name}", admin(hf(h.BackupDownloadFile)))
+	mux.Handle("POST /api/backup/validate", admin(hf(h.BackupValidate)))
+	mux.Handle("POST /api/backup/restore", admin(hf(h.BackupRestore)))
 
 	// --- Health, readiness and metrics ---
 	registerObservability(mux, pool, metricsToken)

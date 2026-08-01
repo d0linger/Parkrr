@@ -2466,20 +2466,7 @@
             sorts: [{ label: 'Name A–Z', cmp: (a, b) => a.username.localeCompare(b.username) }],
             render: (u) => userCard(u),
         });
-        page.append(backupCard());
     };
-    // Admin: one-tap encrypted database backup (downloads a pg_dump sealed with
-    // AES-256-GCM). Restore is a deliberate CLI step: `parkrr restore <datei>`.
-    function backupCard() {
-        const btn = el('button', { class: 'btn btn-primary', onclick: (e) => downloadBackup(e.currentTarget) },
-            'Backup jetzt herunterladen');
-        return el('div', { class: 'card', style: 'margin-top:1rem' },
-            el('h3', {}, 'Datenbank-Sicherung'),
-            el('div', { class: 'card-meta', style: 'margin:.3rem 0 .7rem' },
-                'Verschlüsselter Voll-Export (pg_dump · AES-256-GCM). Datei sicher und off-box aufbewahren. ' +
-                'Wiederherstellen über die Kommandozeile: parkrr restore <datei>. Braucht PARKRR_BACKUP_KEY.'),
-            btn);
-    }
     async function downloadBackup(btn) {
         const orig = btn.textContent;
         btn.disabled = true; btn.textContent = 'Sichere …';
@@ -2508,6 +2495,101 @@
         } finally {
             btn.disabled = false; btn.textContent = orig;
         }
+    }
+    const fmtBytes = (n) => { n = Number(n) || 0; if (n < 1024) return n + ' B'; if (n < 1048576) return (n / 1024).toFixed(1) + ' KB'; return (n / 1048576).toFixed(1) + ' MB'; };
+
+    // ---------- BACKUP (admin) ----------
+    routes.backup = async (page) => {
+        if (!isAdmin()) { page.innerHTML = ''; page.append(emptyState('shield', 'Nur für Administratoren.')); return; }
+        page.innerHTML = '';
+        page.append(el('div', { class: 'detail-head' },
+            el('button', { class: 'back-btn', onclick: () => navigate('dashboard') }, '‹'),
+            el('h2', { style: 'margin:0' }, 'Datensicherung')));
+        let st = { enabled: false, scheduled: false, dir: '', files: [] };
+        try { st = (await api.get('/backup/status')) || st; } catch (e) { /* keep defaults */ }
+
+        // 1 · On-demand download
+        page.append(el('div', { class: 'card' },
+            el('h3', {}, 'Sofort-Sicherung'),
+            el('div', { class: 'card-meta', style: 'margin:.3rem 0 .7rem' }, st.enabled
+                ? 'Verschlüsselter Voll-Export (pg_dump · AES-256-GCM) als Download. Off-box aufbewahren (2. Platte / NAS).'
+                : 'Nicht aktiviert — setze PARKRR_BACKUP_KEY, um Sicherungen zu erzeugen.'),
+            st.enabled ? el('button', { class: 'btn btn-primary', onclick: (e) => downloadBackup(e.currentTarget) }, 'Backup jetzt herunterladen') : null));
+
+        // 2 · Scheduled backups (volume)
+        const sched = el('div', {});
+        if (!st.scheduled) {
+            sched.append(el('div', { class: 'card-meta' }, 'Nicht konfiguriert. Setze PARKRR_BACKUP_DIR (gemountetes, für den App-Nutzer schreibbares Volume) für automatische Sicherungen mit Rotation.'));
+        } else if (!st.files.length) {
+            sched.append(el('div', { class: 'card-meta' }, 'Verzeichnis: ' + esc(st.dir) + ' — noch keine Dateien.'));
+        } else {
+            sched.append(el('div', { class: 'card-meta', style: 'margin-bottom:.5rem' }, 'Verzeichnis: ' + esc(st.dir)));
+            for (const f of st.files) {
+                sched.append(el('div', { class: 'card-row', style: 'border-top:1px solid var(--border);padding:.45rem 0;align-items:center' },
+                    el('div', { style: 'flex:1;min-width:0' },
+                        el('div', { style: 'font-weight:600;font-size:.85rem;word-break:break-all' }, esc(f.name)),
+                        el('div', { class: 'card-meta' }, new Date(f.modified).toLocaleString('de-DE') + ' · ' + fmtBytes(f.size))),
+                    el('a', { class: 'btn btn-ghost btn-sm', href: '/api/backup/file/' + encodeURIComponent(f.name), download: f.name }, 'Download')));
+            }
+        }
+        page.append(el('div', { class: 'card', style: 'margin-top:1rem' }, el('h3', {}, 'Geplante Sicherungen'), sched));
+
+        // 3 · Restore (upload + key + validate + confirmed, atomic restore)
+        page.append(backupRestoreCard());
+
+        // 4 · Key & notes
+        page.append(el('div', { class: 'card', style: 'margin-top:1rem' },
+            el('h3', {}, 'Schlüssel & Hinweise'),
+            el('ul', { class: 'card-meta', style: 'margin:.4rem 0 0;padding-left:1.1rem;line-height:1.6' },
+                el('li', {}, 'Der Verschlüsselungs-Schlüssel wird als Umgebungsvariable ', el('b', {}, 'PARKRR_BACKUP_KEY'), ' gesetzt (getrennt vom Session-Secret), nie in der App gespeichert.'),
+                el('li', {}, 'Beim Wiederherstellen gibst du den Schlüssel erneut ein, der zu der jeweiligen Datei passt.'),
+                el('li', {}, 'Für beliebig große Backups: Restore per Kommandozeile ', el('code', {}, 'parkrr restore <datei.dump.enc>'), '.'))));
+    };
+    function backupRestoreCard() {
+        const fileIn = el('input', { type: 'file', accept: '.enc' });
+        const keyIn = el('input', { type: 'password', placeholder: 'Backup-Schlüssel', autocomplete: 'off' });
+        const confirmIn = el('input', { type: 'text', placeholder: 'RESTORE', autocomplete: 'off' });
+        const result = el('div', { class: 'card-meta', style: 'margin:.5rem 0' });
+        const restoreBtn = el('button', { class: 'btn btn-danger', disabled: true, onclick: (e) => restoreBackup(fileIn, keyIn, confirmIn, e.currentTarget) }, 'Wiederherstellen');
+        const validateBtn = el('button', { class: 'btn btn-ghost', onclick: () => validateBackup(fileIn, keyIn, result, restoreBtn) }, 'Validieren');
+        // Re-validation is required after any change, so the restore stays gated.
+        const invalidate = () => { restoreBtn.disabled = true; result.textContent = ''; };
+        fileIn.addEventListener('change', invalidate); keyIn.addEventListener('input', invalidate);
+        return el('div', { class: 'card', style: 'margin-top:1rem' },
+            el('h3', {}, 'Wiederherstellen'),
+            el('div', { class: 'card-meta', style: 'margin:.3rem 0 .6rem;color:var(--accent-text);font-weight:600' },
+                '⚠ Überschreibt die gesamte aktuelle Datenbank. Atomar (rollt bei Fehler komplett zurück). Erst validieren.'),
+            el('label', {}, 'Backup-Datei (.dump.enc)'), fileIn,
+            el('label', {}, 'Schlüssel'), keyIn,
+            el('div', { style: 'margin-top:.6rem' }, validateBtn),
+            result,
+            el('label', {}, 'Zum Bestätigen RESTORE eingeben'), confirmIn,
+            el('div', { style: 'margin-top:.6rem' }, restoreBtn));
+    }
+    async function validateBackup(fileIn, keyIn, result, restoreBtn) {
+        if (!fileIn.files[0]) { toast('Bitte eine Backup-Datei wählen', 'error'); return; }
+        if (!keyIn.value) { toast('Bitte den Schlüssel eingeben', 'error'); return; }
+        result.textContent = 'Prüfe …';
+        const fd = new FormData(); fd.append('file', fileIn.files[0]); fd.append('key', keyIn.value);
+        try {
+            const res = await fetch('/api/backup/validate', { method: 'POST', headers: { 'X-CSRF-Token': getCookie('parkrr_csrf') }, credentials: 'same-origin', body: fd });
+            if (!res.ok) { const j = await res.json().catch(() => ({})); result.textContent = '✗ ' + (j.error || 'Ungültig'); restoreBtn.disabled = true; return; }
+            const info = await res.json();
+            result.textContent = '✓ Gültiges Backup · erstellt ' + (info.created || '?') + ' · ' + info.entries + ' Objekte';
+            restoreBtn.disabled = false;
+        } catch (e) { result.textContent = '✗ ' + e.message; restoreBtn.disabled = true; }
+    }
+    async function restoreBackup(fileIn, keyIn, confirmIn, btn) {
+        if (confirmIn.value !== 'RESTORE') { toast('Zum Bestätigen RESTORE eingeben', 'error'); return; }
+        if (!await confirmDialog('Datenbank überschreiben?', 'Die gesamte aktuelle Datenbank wird durch das Backup ersetzt. Das lässt sich nicht rückgängig machen. Du wirst danach neu angemeldet.', 'Wiederherstellen')) return;
+        const o = btn.textContent; btn.disabled = true; btn.textContent = 'Stelle wieder her …';
+        const fd = new FormData(); fd.append('file', fileIn.files[0]); fd.append('key', keyIn.value); fd.append('confirm', 'RESTORE');
+        try {
+            const res = await fetch('/api/backup/restore', { method: 'POST', headers: { 'X-CSRF-Token': getCookie('parkrr_csrf') }, credentials: 'same-origin', body: fd });
+            if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Restore fehlgeschlagen'); }
+            toast('Wiederhergestellt — bitte neu anmelden', 'success');
+            setTimeout(() => logout(), 1800);
+        } catch (e) { toast(e.message, 'error'); btn.disabled = false; btn.textContent = o; }
     }
     // Expandable user card: name + role/2FA badges in the header; the panel holds a
     // quick password reset, a full edit, and a clearly separated "Gefahrenzone" for
@@ -2904,6 +2986,7 @@
         body.append(item('settings', 'Einstellungen', () => navigate('settings')));
         if (isAdmin()) body.append(item('users', 'Benutzer', () => navigate('users')));
         if (isAdmin()) body.append(item('log', 'Audit-Log', () => navigate('audit')));
+        if (isAdmin()) body.append(item('archive', 'Datensicherung', () => navigate('backup')));
         body.append(item('theme', 'Design wechseln', () => toggleTheme()));
         body.append(item('logout', 'Abmelden', () => logout(), 'danger'));
         dlg.showModal();

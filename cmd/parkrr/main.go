@@ -136,7 +136,7 @@ func run() error {
 	defer close(cleanupStop)
 
 	handler, err := server.New(pool, authMgr, webAuthn, cfg.RateLimitPerMin, cfg.MetricsToken,
-		cfg.CheckBreachedPasswords, cfg.FailClosedOnBreach, cfg.BackupKey, cfg.DatabaseURL, cleanupStop)
+		cfg.CheckBreachedPasswords, cfg.FailClosedOnBreach, cfg.BackupKey, cfg.DatabaseURL, cfg.BackupDir, cleanupStop)
 	if err != nil {
 		return err
 	}

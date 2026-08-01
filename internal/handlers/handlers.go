@@ -29,9 +29,10 @@ type Handler struct {
 	// (default false = fail open, allowing the change).
 	FailClosedOnBreach bool
 	// BackupKey (if set) enables the encrypted-backup endpoint; DatabaseURL is
-	// the connection string handed to pg_dump.
+	// the connection string handed to pg_dump; BackupDir holds scheduled backups.
 	BackupKey   string
 	DatabaseURL string
+	BackupDir   string
 	hibpClient  *http.Client
 }
 
