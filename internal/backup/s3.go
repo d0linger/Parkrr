@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"path"
 	"sort"
 	"strings"
@@ -109,10 +110,16 @@ func DownloadS3(ctx context.Context, c S3Config, name string) ([]byte, error) {
 
 func pruneS3(ctx context.Context, cl *minio.Client, c S3Config, keep int) {
 	objs, err := listWith(ctx, cl, c)
-	if err != nil || len(objs) <= keep {
+	if err != nil {
+		slog.Warn("backup: S3 prune list failed", "bucket", c.Bucket, "err", err)
+		return
+	}
+	if len(objs) <= keep {
 		return
 	}
 	for _, old := range objs[keep:] {
-		_ = cl.RemoveObject(ctx, c.Bucket, c.objectKey(old.Name), minio.RemoveObjectOptions{})
+		if err := cl.RemoveObject(ctx, c.Bucket, c.objectKey(old.Name), minio.RemoveObjectOptions{}); err != nil {
+			slog.Warn("backup: S3 prune remove failed", "bucket", c.Bucket, "object", old.Name, "err", err)
+		}
 	}
 }

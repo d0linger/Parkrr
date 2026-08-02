@@ -68,6 +68,26 @@ func NextRuns(expr string, k int) []time.Time {
 	return out
 }
 
+// describeDescriptor renders a German description of a cron @-descriptor
+// (@daily, @hourly, @every 1h30m, …), all accepted by cron.ParseStandard.
+func describeDescriptor(expr string) string {
+	switch strings.ToLower(strings.Fields(expr)[0]) {
+	case "@yearly", "@annually":
+		return "Jährlich am 1. Januar um 00:00 Uhr."
+	case "@monthly":
+		return "Monatlich am 1. um 00:00 Uhr."
+	case "@weekly":
+		return "Wöchentlich (Sonntag um 00:00 Uhr)."
+	case "@daily", "@midnight":
+		return "Täglich um 00:00 Uhr."
+	case "@hourly":
+		return "Stündlich."
+	case "@every":
+		return "Alle " + strings.TrimSpace(expr[len("@every"):]) + "."
+	}
+	return "Zeitplan: " + expr
+}
+
 var cronDOW = []string{"Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"}
 
 // DescribeCron renders a short German description of a 5-field cron, matching the
@@ -79,6 +99,11 @@ func DescribeCron(expr string) string {
 	}
 	if !ValidCron(expr) {
 		return "Ungültiger Cron-Ausdruck."
+	}
+	// ParseStandard also accepts @-descriptors (@daily, @every 1h, …); describe
+	// those rather than mislabeling a valid expression as invalid below.
+	if strings.HasPrefix(expr, "@") {
+		return describeDescriptor(expr)
 	}
 	p := strings.Fields(expr)
 	if len(p) != 5 {

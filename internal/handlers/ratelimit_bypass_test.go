@@ -71,7 +71,7 @@ func TestLoginSprayingTrippedPerIP(t *testing.T) {
 	// stays at one failure, well under its own limit of 5). The IP is not blocked
 	// yet, so ipThrottled passes.
 	for i, user := range []string{"alice", "bob", "carol"} {
-		if _, blocked := ah.ipThrottled(httptest.NewRecorder(), req()); blocked {
+		if ah.ipThrottled(httptest.NewRecorder(), req()) {
 			t.Fatalf("attempt %d should not be IP-blocked yet", i)
 		}
 		key, cip, ok := ah.checkRateLimit(httptest.NewRecorder(), req(), user)
@@ -84,10 +84,35 @@ func TestLoginSprayingTrippedPerIP(t *testing.T) {
 	// A fourth attempt from the same IP is now blocked by the per-IP throttle,
 	// regardless of the (fresh) username.
 	rec := httptest.NewRecorder()
-	if _, blocked := ah.ipThrottled(rec, req()); !blocked {
+	if !ah.ipThrottled(rec, req()) {
 		t.Fatal("spraying: the IP should be locked after 3 failures across usernames")
 	}
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected 429 from the IP throttle, got %d", rec.Code)
+	}
+}
+
+// Resetting the per-account limiter on a successful login must NOT clear the
+// per-IP spray counter — otherwise one legit login from a shared egress IP would
+// hand a co-located sprayer a fresh budget.
+func TestSuccessfulLoginDoesNotResetIPThrottle(t *testing.T) {
+	ah := &AuthHandler{
+		Handler:   &Handler{},
+		Auth:      &auth.Manager{},
+		Limiter:   auth.NewLoginLimiter(5, time.Minute, time.Minute),
+		IPLimiter: auth.NewLoginLimiter(3, time.Minute, time.Minute),
+	}
+	ip := "7.7.7.7"
+	key := "someuser|" + ip
+	for i := 0; i < 3; i++ {
+		ah.recordLoginFailure(key, ip)
+	}
+	if allowed, _ := ah.IPLimiter.Allowed(ip); allowed {
+		t.Fatal("IP should be locked after 3 failures")
+	}
+	// Simulate a successful login for a different account from the same IP.
+	ah.Limiter.Reset(key)
+	if allowed, _ := ah.IPLimiter.Allowed(ip); allowed {
+		t.Error("resetting the per-account limiter must not unlock the per-IP throttle")
 	}
 }

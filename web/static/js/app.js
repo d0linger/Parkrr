@@ -2636,7 +2636,11 @@
                 controls.append(el('label', { class: 'sched-lbl' }, 'Alle N Stunden'), num);
             } else {
                 const raw = el('input', { type: 'text', value: f.raw || '', placeholder: '0 3 * * *', spellcheck: 'false', autocapitalize: 'off', autocomplete: 'off' });
-                raw.addEventListener('input', () => { f.raw = raw.value; refresh(); });
+                // Debounce: a hand-typed expression can be valid-but-unsatisfiable
+                // (e.g. "0 0 30 2 *"), making the next-runs scan walk up to a year —
+                // don't run it on every keystroke.
+                let rawTimer;
+                raw.addEventListener('input', () => { f.raw = raw.value; clearTimeout(rawTimer); rawTimer = setTimeout(refresh, 200); });
                 controls.append(el('label', { class: 'sched-lbl' }, 'Cron (Min Std Tag Mon Wtag)'), raw);
             }
         }

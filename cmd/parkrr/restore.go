@@ -39,7 +39,10 @@ func runRestore(args []string) int {
 		fmt.Fprintln(os.Stderr, "PARKRR_BACKUP_KEY is not set — cannot decrypt the backup")
 		return 1
 	}
-	enc, err := os.ReadFile(file) //nolint:gosec // operator-supplied path, run intentionally
+	// #nosec G304 G703 -- `file` is a path an operator passes on the command line
+	// to a manually-run, intentionally destructive restore; there is no fixed root
+	// to confine it to.
+	enc, err := os.ReadFile(file)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "read backup:", err)
 		return 1

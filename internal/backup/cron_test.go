@@ -28,6 +28,9 @@ func TestDescribeCron(t *testing.T) {
 		"0 5 * * 0":   "Jeden Sonntag um 05:00 Uhr.",
 		"0 5 * * 1":   "Jeden Montag um 05:00 Uhr.",
 		"0 2 1 * *":   "Monatlich am 1. um 02:00 Uhr.",
+		"@daily":      "Täglich um 00:00 Uhr.",
+		"@hourly":     "Stündlich.",
+		"@every 6h":   "Alle 6h.",
 		"bad":         "Ungültiger Cron-Ausdruck.",
 	}
 	for expr, want := range cases {

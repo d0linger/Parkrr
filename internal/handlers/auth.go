@@ -20,6 +20,12 @@ type AuthHandler struct {
 	// password-spraying (one guess against many accounts from one host) trips a
 	// lockout even though each username+IP key stays under the per-account
 	// threshold. Its cap is higher to tolerate a few users behind one NAT.
+	//
+	// Known limitation (accepted): both counters are keyed on the client IP, so an
+	// attacker who rotates source addresses (botnet, proxy pool) evades them. That
+	// is out of scope for an in-memory single-instance throttle; broader
+	// credential-stuffing defense (breached-password checks, per-account lockout,
+	// 2FA, passkeys) is layered on top and does not depend on the source IP.
 	IPLimiter *auth.LoginLimiter
 }
 
@@ -76,15 +82,15 @@ func (h *AuthHandler) checkRateLimit(w http.ResponseWriter, r *http.Request, use
 // spray throttle. Used only on the public login endpoint so that one host
 // spraying one password across many usernames trips a lockout even though no
 // single username+IP key reaches its own threshold.
-func (h *AuthHandler) ipThrottled(w http.ResponseWriter, r *http.Request) (ip string, blocked bool) {
-	ip = h.Auth.ClientIP(r)
+func (h *AuthHandler) ipThrottled(w http.ResponseWriter, r *http.Request) bool {
+	ip := h.Auth.ClientIP(r)
 	if allowed, wait := h.IPLimiter.Allowed(ip); !allowed {
 		w.Header().Set("Retry-After", formatSeconds(wait))
 		slog.Warn("throttle active (ip)", "ip", ip, "path", r.URL.Path)
 		writeError(w, http.StatusTooManyRequests, "too many attempts, try again in "+formatMinutes(wait))
-		return ip, true
+		return true
 	}
-	return ip, false
+	return false
 }
 
 // recordLoginFailure counts a failed login against both the per-account and the
@@ -110,7 +116,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	// Per-IP spray throttle first (independent of username), then the per-account
 	// lockout. Both apply only to this public login endpoint.
-	if _, blocked := h.ipThrottled(w, r); blocked {
+	if h.ipThrottled(w, r) {
 		return
 	}
 	key, ip, ok := h.checkRateLimit(w, r, req.Username)

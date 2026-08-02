@@ -70,6 +70,20 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	defer conn.Release()
 
+	// The pool sets a 10s statement_timeout as a per-request backstop, but that
+	// must not apply to migrations (a large DDL/backfill can legitimately run
+	// longer) or to the advisory-lock wait (which blocks until a peer finishes
+	// migrating). Lift it for this connection and restore it before release so the
+	// pooled connection returns to the default.
+	if _, err := conn.Exec(ctx, `SET statement_timeout = 0`); err != nil {
+		return fmt.Errorf("relax statement timeout for migrations: %w", err)
+	}
+	defer func() {
+		resetCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = conn.Exec(resetCtx, `SET statement_timeout = 10000`)
+	}()
+
 	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLockKey); err != nil {
 		return fmt.Errorf("acquire migration lock: %w", err)
 	}

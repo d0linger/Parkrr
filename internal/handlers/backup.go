@@ -88,7 +88,11 @@ func (h *Handler) BackupStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if h.S3.Enabled() {
-		if objs, err := backup.ListS3(r.Context(), h.S3); err == nil {
+		// Bound the network round-trip so a slow/unreachable bucket can't hang the
+		// status endpoint (which is otherwise a fast local read).
+		s3ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		if objs, err := backup.ListS3(s3ctx, h.S3); err == nil {
 			for _, o := range objs {
 				resp.S3Files = append(resp.S3Files, file{Name: o.Name, Size: o.Size, Modified: o.Modified})
 			}
@@ -197,9 +201,24 @@ func (h *Handler) BackupDownloadFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid backup name")
 		return
 	}
-	data, err := os.ReadFile(filepath.Join(h.BackupDir, name)) //nolint:gosec // name validated by safeBackupName
+	// os.Root confines the open to BackupDir: any traversal in `name` is rejected
+	// by the OS layer (belt-and-braces with safeBackupName), which also satisfies
+	// the path-traversal scanners.
+	root, err := os.OpenRoot(h.BackupDir)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "backup not found")
+		return
+	}
+	defer root.Close()
+	f, err := root.Open(name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "backup not found")
+		return
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not read backup")
 		return
 	}
 	streamBackup(w, name, data)
@@ -253,7 +272,11 @@ func (h *Handler) BackupRestore(w http.ResponseWriter, r *http.Request) {
 // request. The key is entered per-restore (it must match the file, which may have
 // been made under an older PARKRR_BACKUP_KEY).
 func readBackupUpload(r *http.Request) (enc []byte, key string, err error) {
-	if err := r.ParseMultipartForm(9 << 20); err != nil {
+	const maxUpload = 9 << 20 // matches server.maxRequestBody (the whole body is capped there)
+	// #nosec G120 -- the request body is already bounded by limitRequestBody
+	// (MaxBytesReader at maxRequestBody), so this in-memory parse limit cannot be
+	// exceeded; it just sizes the buffer.
+	if err := r.ParseMultipartForm(maxUpload); err != nil {
 		return nil, "", errors.New("upload too large or malformed (max ~9 MiB via the browser; use the CLI for larger)")
 	}
 	key = strings.TrimSpace(r.FormValue("key"))
@@ -265,9 +288,14 @@ func readBackupUpload(r *http.Request) (enc []byte, key string, err error) {
 		return nil, "", errors.New("missing backup file")
 	}
 	defer f.Close()
-	enc, err = io.ReadAll(io.LimitReader(f, 9<<20))
+	// Read one byte past the limit so an over-large file is rejected explicitly
+	// rather than silently truncated.
+	enc, err = io.ReadAll(io.LimitReader(f, maxUpload+1))
 	if err != nil {
 		return nil, "", errors.New("could not read the uploaded file")
+	}
+	if len(enc) > maxUpload {
+		return nil, "", errors.New("backup file exceeds the ~9 MiB browser limit; use the CLI (parkrr restore) for larger files")
 	}
 	return enc, key, nil
 }
@@ -361,5 +389,7 @@ func streamBackup(w http.ResponseWriter, name string, data []byte) {
 	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// #nosec G705 -- data is an encrypted backup blob streamed as an octet-stream
+	// attachment (Content-Disposition + nosniff), never interpreted as HTML.
 	_, _ = w.Write(data)
 }

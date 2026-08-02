@@ -120,6 +120,11 @@ func Load() (*Config, error) {
 	if len(cfg.SessionSecret) < 32 {
 		return nil, fmt.Errorf("PARKRR_SESSION_SECRET must be at least 32 bytes long; only the length is enforced, so supply a random value (e.g. `openssl rand -base64 48`) — its entropy is your responsibility")
 	}
+	// The backup key is optional (empty = backups disabled), but when set it must
+	// be as strong as the session secret — it protects every database dump.
+	if cfg.BackupKey != "" && len(cfg.BackupKey) < 32 {
+		return nil, fmt.Errorf("PARKRR_BACKUP_KEY must be at least 32 bytes long when set (supply a random value, e.g. `openssl rand -base64 48`)")
+	}
 
 	return cfg, nil
 }

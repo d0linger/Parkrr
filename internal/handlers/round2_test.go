@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestRound2HalfAwayFromZero locks the half-away-from-zero behaviour — the old
+// TestRound2HalfAwayFromZero locks the half-away-from-zero behavior — the old
 // int64(f*100+0.5) truncated negative (overpaid) balances toward zero.
 func TestRound2HalfAwayFromZero(t *testing.T) {
 	cases := []struct{ in, want float64 }{

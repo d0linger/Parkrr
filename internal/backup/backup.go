@@ -38,12 +38,14 @@ func Validate(enc []byte, key string) (ArchiveInfo, error) {
 	}
 	defer os.Remove(tmp.Name())
 	if _, err := tmp.Write(plain); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return info, err
 	}
 	if err := tmp.Close(); err != nil {
 		return info, err
 	}
+	// #nosec G204 -- fixed command "pg_restore"; the only argument is a temp file
+	// path we created, not user input.
 	out, err := exec.Command("pg_restore", "--list", tmp.Name()).Output()
 	if err != nil {
 		return info, fmt.Errorf("not a valid pg_dump archive: %w", err)
@@ -81,6 +83,8 @@ func aead(key string) (cipher.AEAD, error) {
 // database at dbURL. Requires pg_dump on PATH (matching the server's major).
 func Dump(ctx context.Context, dbURL string) ([]byte, error) {
 	var out, errb bytes.Buffer
+	// #nosec G204 -- fixed command "pg_dump"; dbURL comes from operator config
+	// (PARKRR_DATABASE_URL/PARKRR_DB_*), never from a request.
 	cmd := exec.CommandContext(ctx, "pg_dump", "--format=custom", "--no-owner", "--no-privileges", "--dbname="+dbURL)
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
@@ -134,19 +138,22 @@ func Restore(ctx context.Context, dbURL string, enc []byte, key string) error {
 	}
 	defer os.Remove(tmp.Name())
 	if _, err := tmp.Write(plain); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
 	// Validate the archive header before touching the database.
+	// #nosec G204 -- fixed command "pg_restore"; the argument is a temp file we created.
 	if err := exec.CommandContext(ctx, "pg_restore", "--list", tmp.Name()).Run(); err != nil {
 		return fmt.Errorf("not a valid pg_dump archive: %w", err)
 	}
 	var errb bytes.Buffer
 	// --single-transaction makes the whole restore atomic: any error rolls back
 	// entirely, so a failed restore never leaves the DB half-wiped.
+	// #nosec G204 -- fixed command "pg_restore"; dbURL is operator config and the
+	// final argument is a temp file we created, neither is request input.
 	cmd := exec.CommandContext(ctx, "pg_restore",
 		"--single-transaction", "--clean", "--if-exists", "--no-owner", "--no-privileges",
 		"--dbname="+dbURL, tmp.Name())

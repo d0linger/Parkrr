@@ -235,20 +235,47 @@ func buildChain(authMgr *auth.Manager, mux *http.ServeMux, rateLimitPerMin int, 
 
 // recoverPanics converts a handler panic into a logged 500 (with stack + request
 // context) instead of a silently aborted connection that emits no log or metric.
+// It only emits the 500 body when the handler hasn't already started the response
+// (a panic mid-stream, e.g. in streamBackup, must not append a JSON error or
+// re-send headers). Unwrap() exposes the underlying writer so http.Response
+// Controller can still reach optional interfaces (Flusher/Hijacker).
 func recoverPanics(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rw := &panicResponseWriter{ResponseWriter: w}
 		defer func() {
 			if rec := recover(); rec != nil {
 				slog.Error("panic recovered in handler", "err", rec,
 					"method", r.Method, "path", r.URL.Path, "stack", string(debug.Stack()))
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusInternalServerError)
-				_, _ = w.Write([]byte(`{"error":"internal server error"}`))
+				if !rw.started {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusInternalServerError)
+					_, _ = w.Write([]byte(`{"error":"internal server error"}`))
+				}
 			}
 		}()
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(rw, r)
 	})
 }
+
+// panicResponseWriter tracks whether the response has started so recoverPanics
+// can tell an unstarted request (safe to send a 500) from one already streaming.
+type panicResponseWriter struct {
+	http.ResponseWriter
+	started bool
+}
+
+func (w *panicResponseWriter) WriteHeader(code int) {
+	w.started = true
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *panicResponseWriter) Write(b []byte) (int, error) {
+	w.started = true
+	return w.ResponseWriter.Write(b)
+}
+
+// Unwrap lets http.ResponseController find optional interfaces on the wrapped writer.
+func (w *panicResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // maxRequestBody caps every request body as a DoS backstop. It sits ABOVE the
 // 8 MiB photo-upload cap (handlers.maxPhotoBytes) so legitimate uploads still
