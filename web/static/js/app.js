@@ -954,6 +954,8 @@
         ]);
         let payments = [];
         try { payments = (await api.get('/persons/' + id + '/payments')) || []; } catch (e) { /* keep empty */ }
+        let invoices = [];
+        try { invoices = (await api.get('/persons/' + id + '/invoices')) || []; } catch (e) { /* keep empty */ }
         const recs = stats.recurring_charges || [];
         // Per-vehicle summary of bound extra costs (one-off total + recurring
         // accrued), surfaced on the vehicle cards and their Pauschale nesting.
@@ -1058,6 +1060,15 @@
         if (!payments.length) page.append(el('p', { class: 'muted' }, 'Noch keine Zahlungen erfasst.'));
         else payments.forEach((p) => page.append(paymentRow(id, p)));
 
+        // Rechnungen (fortlaufend nummeriert, unveränderlich)
+        const rz = el('div', { class: 'page-head section-head' },
+            el('div', { class: 'sec-group' }, el('h3', { class: 'sec-eyebrow' }, 'Rechnungen'),
+                invoices.length ? el('span', { class: 'sec-count' }, invoices.length) : null));
+        if (canBill()) rz.append(el('button', { class: 'btn btn-primary btn-sm', onclick: (e) => createInvoiceFor(id, e.currentTarget) }, '+ Rechnung'));
+        page.append(rz);
+        if (!invoices.length) page.append(el('p', { class: 'muted' }, 'Noch keine Rechnungen. „+ Rechnung" erstellt eine aus den offenen Einzelposten.'));
+        else invoices.forEach((iv) => page.append(invoiceRow(iv)));
+
         // statistics at the bottom, below the actionable sections
         const chartCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Kosten pro Monat · ' + stats.year));
         chartCard.append(chartBars(stats.monthly_accrued, MONTHS));
@@ -1135,6 +1146,137 @@
             },
         });
     }
+
+    // ---------- Rechnungen (invoices) ----------
+    const fmtQty = (q) => Number(q).toLocaleString('de-DE', { maximumFractionDigits: 2 });
+    const fmtRate = (r) => Number(r).toLocaleString('de-DE', { maximumFractionDigits: 2 });
+    function invoiceRow(iv) {
+        return el('a', { class: 'card pay-row inv-link', href: '#/invoices/' + iv.id },
+            el('div', { class: 'pay-main' },
+                el('div', { class: 'pay-method' }, 'Rechnung ' + esc(iv.number)),
+                el('div', { class: 'pay-date' }, new Date(iv.issued_on).toLocaleDateString('de-DE') + (iv.kleinunternehmer ? '' : ' · inkl. USt'))),
+            el('div', { class: 'pay-amt', style: 'color:var(--text)' }, eur(iv.total)));
+    }
+    async function createInvoiceFor(personId, btn) {
+        if (!await confirmDialog('Rechnung erstellen?', 'Erstellt eine fortlaufend nummerierte Rechnung aus allen offenen Einzelposten (Gefährte + Einmal-Zusatzkosten). Rechnungen sind unveränderlich.', 'Erstellen')) return;
+        const o = btn.textContent; btn.disabled = true; btn.textContent = 'Erstelle …';
+        try {
+            const iv = await api.post('/persons/' + personId + '/invoices', {});
+            toast('Rechnung ' + iv.number + ' erstellt', 'success');
+            location.hash = '#/invoices/' + iv.id;
+        } catch (e) { toast(e.message, 'error'); btn.disabled = false; btn.textContent = o; }
+    }
+    const metaRow = (l, v) => el('div', { class: 'inv-metarow' }, el('span', { class: 'inv-muted' }, l), el('span', {}, v));
+    const totRow = (l, v, strong) => el('div', { class: 'inv-totrow' + (strong ? ' strong' : '') }, el('span', {}, l), el('span', { class: 'num' }, v));
+    function invoiceDocument(iv) {
+        const s = iv.seller || {}, b = iv.buyer || {};
+        const doc = el('div', { class: 'invoice-doc' });
+        doc.append(el('div', { class: 'inv-head' },
+            el('div', { class: 'inv-seller' },
+                el('div', { class: 'inv-seller-name' }, esc(s.name || 'Aussteller')),
+                s.address ? el('div', { class: 'inv-muted pre' }, esc(s.address)) : null,
+                s.uid ? el('div', { class: 'inv-muted' }, 'UID: ' + esc(s.uid)) : null),
+            el('div', { class: 'inv-title' }, el('div', { class: 'inv-h' }, 'RECHNUNG'), el('div', { class: 'inv-num' }, esc(iv.number)))));
+        doc.append(el('div', { class: 'inv-parties' },
+            el('div', {}, el('div', { class: 'inv-label' }, 'Rechnung an'),
+                el('div', { class: 'inv-strong' }, esc(b.name || '')),
+                b.address ? el('div', { class: 'inv-muted pre' }, esc(b.address)) : null),
+            el('div', { class: 'inv-meta' },
+                metaRow('Rechnungsdatum', new Date(iv.issued_on).toLocaleDateString('de-DE')),
+                iv.due_on ? metaRow('Fällig bis', new Date(iv.due_on).toLocaleDateString('de-DE')) : null,
+                metaRow('Rechnungsnr.', esc(iv.number)))));
+        const tb = el('tbody', {});
+        (iv.items || []).forEach((it) => tb.append(el('tr', {},
+            el('td', {}, String(it.pos)), el('td', {}, esc(it.description)),
+            el('td', { class: 'r' }, fmtQty(it.quantity)),
+            el('td', { class: 'r' }, eur(it.unit_amount)),
+            el('td', { class: 'r' }, eur(it.line_total)))));
+        doc.append(el('table', { class: 'inv-table' },
+            el('thead', {}, el('tr', {}, el('th', {}, 'Pos'), el('th', {}, 'Beschreibung'),
+                el('th', { class: 'r' }, 'Menge'), el('th', { class: 'r' }, iv.kleinunternehmer ? 'Betrag' : 'Netto'), el('th', { class: 'r' }, 'Summe'))),
+            tb));
+        const tot = el('div', { class: 'inv-totals' });
+        if (iv.kleinunternehmer) {
+            tot.append(totRow('Gesamt', eur(iv.total), true));
+        } else {
+            tot.append(totRow('Netto', eur(iv.subtotal)));
+            tot.append(totRow('USt ' + fmtRate(iv.ust_rate) + ' %', eur(iv.tax_amount)));
+            tot.append(totRow('Gesamt (brutto)', eur(iv.total), true));
+        }
+        doc.append(tot);
+        if (iv.kleinunternehmer) doc.append(el('div', { class: 'inv-note' }, 'Umsatzsteuerbefreit gemäß § 6 Abs. 1 Z 27 UStG (Kleinunternehmer).'));
+        if (s.iban) doc.append(el('div', { class: 'inv-pay' }, 'Zahlbar auf: ' + esc(s.iban) + (s.bic ? ' · BIC ' + esc(s.bic) : '')));
+        if (iv.note) doc.append(el('div', { class: 'inv-note' }, esc(iv.note)));
+        if (s.footer) doc.append(el('div', { class: 'inv-footer' }, esc(s.footer)));
+        return doc;
+    }
+    routes.invoices = async (page, id) => {
+        if (!id) { page.innerHTML = ''; page.append(emptyState('receipt', 'Keine Rechnung gewählt.')); return; }
+        const iv = await api.get('/invoices/' + id);
+        page.innerHTML = '';
+        page.append(el('div', { class: 'detail-head no-print' },
+            el('button', { class: 'back-btn', onclick: () => history.back(), 'aria-label': 'Zurück' }, '‹'),
+            el('h2', { style: 'margin:0;flex:1' }, 'Rechnung ' + esc(iv.number)),
+            el('button', { class: 'btn btn-primary btn-sm', onclick: () => window.print() }, icon('receipt', 15), ' Drucken / PDF')));
+        page.append(invoiceDocument(iv));
+    };
+
+    // ---------- Rechnungs-Einstellungen (admin) ----------
+    routes.billing = async (page) => {
+        if (!isAdmin()) { page.innerHTML = ''; page.append(emptyState('shield', 'Nur für Administratoren.')); return; }
+        const s = (await api.get('/billing/settings')) || {};
+        page.innerHTML = '';
+        page.append(el('div', { class: 'detail-head' },
+            el('button', { class: 'back-btn', onclick: () => navigate('dashboard'), 'aria-label': 'Zurück' }, '‹'),
+            el('h2', { style: 'margin:0' }, 'Rechnungs-Einstellungen')));
+
+        const field = (label, input, help) => el('div', { class: 'bill-field' },
+            el('label', {}, label), input, help ? el('div', { class: 'card-meta' }, help) : null);
+        const inp = (name, val, attrs = {}) => el('input', Object.assign({ id: 'bs_' + name, value: val ?? '' }, attrs));
+
+        const seller = el('div', { class: 'card' }, el('h3', {}, 'Aussteller'),
+            field('Name / Firma', inp('seller_name', s.seller_name)),
+            field('Adresse', el('textarea', { id: 'bs_seller_address', rows: '2' }, s.seller_address || '')),
+            field('UID-Nummer (ATU…)', inp('seller_uid', s.seller_uid), 'Pflicht bei USt-Ausweis.'));
+
+        const klCheck = el('input', { type: 'checkbox', id: 'bs_klein' });
+        klCheck.checked = s.kleinunternehmer !== false;
+        const rateSel = el('select', { id: 'bs_rate' },
+            ...[20, 13, 10].map((r) => { const o = el('option', { value: String(r) }, r + ' %'); if (Number(s.ust_rate) === r) o.selected = true; return o; }));
+        const rateWrap = field('USt-Satz', rateSel, 'Österreich: 20 % (Regelsatz, u. a. Einstellplatz), 13 %, 10 %.');
+        const applyKl = () => { rateWrap.style.display = klCheck.checked ? 'none' : ''; };
+        klCheck.addEventListener('change', applyKl);
+        const tax = el('div', { class: 'card' }, el('h3', {}, 'Steuer'),
+            el('label', { class: 'switch' }, klCheck, el('span', { class: 'track' }), el('span', {}, 'Kleinunternehmer (§ 6 Abs 1 Z 27 UStG – keine USt)')),
+            rateWrap);
+        applyKl();
+
+        const numbering = el('div', { class: 'card' }, el('h3', {}, 'Nummerierung & Zahlung'),
+            field('Rechnungsnr.-Präfix', inp('prefix', s.invoice_prefix, { placeholder: '2026-' })),
+            field('Nächste Nummer', inp('next_no', s.next_invoice_no ?? 1, { type: 'number', min: '1' }), 'Kann nur vorwärts gesetzt werden.'),
+            field('Stellen (Nullen)', inp('pad', s.number_pad ?? 4, { type: 'number', min: '1', max: '10' })),
+            field('Zahlungsziel (Tage)', inp('terms', s.payment_terms_days ?? 14, { type: 'number', min: '0' })),
+            field('IBAN', inp('iban', s.iban)),
+            field('BIC', inp('bic', s.bic)),
+            field('Fußnote', el('textarea', { id: 'bs_footer', rows: '2' }, s.footer_note || '')));
+
+        const saveBtn = el('button', { class: 'btn btn-primary' }, 'Einstellungen speichern');
+        saveBtn.addEventListener('click', async () => {
+            const val = (id) => (document.getElementById(id) || {}).value;
+            const payload = {
+                seller_name: val('bs_seller_name'), seller_address: val('bs_seller_address'), seller_uid: val('bs_seller_uid'),
+                kleinunternehmer: klCheck.checked, ust_rate: Number(rateSel.value),
+                invoice_prefix: val('bs_prefix'), next_invoice_no: Number(val('bs_next_no')) || 1,
+                number_pad: Number(val('bs_pad')) || 4, payment_terms_days: Number(val('bs_terms')) || 0,
+                iban: val('bs_iban'), bic: val('bs_bic'), footer_note: val('bs_footer'),
+            };
+            saveBtn.disabled = true;
+            try { await api.post('/billing/settings', payload); toast('Gespeichert', 'success'); }
+            catch (e) { toast(e.message, 'error'); }
+            saveBtn.disabled = false;
+        });
+        page.append(seller, tax, numbering, el('div', { style: 'margin-top:1rem' }, saveBtn));
+    };
 
     // ================= VEHICLES =================
     routes.vehicles = async (page) => {
@@ -3009,7 +3151,7 @@
 
     // ================= AUDIT (admin) =================
     const AUDIT_ACTIONS = { create: 'Erstellt', update: 'Geändert', delete: 'Gelöscht', login: 'Login', logout: 'Logout' };
-    const AUDIT_ENTITIES = { person: 'Person', vehicle: 'Gefährt', category: 'Tarif', service: 'Dienst', charge: 'Zusatzkosten', payment: 'Zahlung', user: 'Benutzer', photo: 'Foto', passkey: 'Passkey' };
+    const AUDIT_ENTITIES = { person: 'Person', vehicle: 'Gefährt', category: 'Tarif', service: 'Dienst', charge: 'Zusatzkosten', payment: 'Zahlung', invoice: 'Rechnung', billing: 'Rechnungs-Einstellungen', user: 'Benutzer', photo: 'Foto', passkey: 'Passkey' };
 
     function fmtAuditVal(x) {
         if (x === null || x === undefined || x === '') return '∅';
@@ -3325,6 +3467,7 @@
         body.append(item('settings', 'Einstellungen', () => navigate('settings')));
         if (isAdmin()) body.append(item('users', 'Benutzer', () => navigate('users')));
         if (isAdmin()) body.append(item('log', 'Audit-Log', () => navigate('audit')));
+        if (isAdmin()) body.append(item('receipt', 'Rechnungen', () => navigate('billing')));
         if (isAdmin()) body.append(item('archive', 'Backup', () => navigate('backup')));
         body.append(item('theme', 'Design wechseln', () => toggleTheme()));
         body.append(item('logout', 'Abmelden', () => logout(), 'danger'));

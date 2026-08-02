@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -78,20 +79,30 @@ type paymentRequest struct {
 	Allocate bool `json:"allocate"`
 }
 
-// allocateToOpenItems marks a person's open, individually-owed items paid oldest
-// first, consuming up to `amount`. It settles standalone one-off charges and
-// uncovered vehicles (whole items only — no partial); Pauschale/recurring
-// periods keep their own sliders. Reuses the same paid updates as the manual
-// toggles, so the (toggle-based) balance stays the single source of truth.
-// Returns the number of items settled.
-func (h *Handler) allocateToOpenItems(r *http.Request, personID int64, amount float64) (int, error) {
+// owedItem is one open, individually-owed position (a standalone vehicle's rent
+// or a standalone one-off charge). It carries both the settlement fields and the
+// line fields an invoice needs.
+type owedItem struct {
+	Date       time.Time
+	Kind       string // "vehicle" | "charge"
+	ID         int64
+	Label      string
+	Quantity   float64
+	UnitAmount float64
+	LineTotal  float64
+}
+
+// openOwedItems enumerates a person's open individually-owed positions, oldest
+// first: uncovered active vehicles (rent) and standalone unpaid one-off charges.
+// Pauschale-covered vehicles and per-period Pauschale/recurring costs are left to
+// their own settlement.
+func (h *Handler) openOwedItems(r *http.Request, personID int64) ([]owedItem, error) {
 	ctx := r.Context()
 	now := time.Now()
 
-	// Vehicles bound to a Pauschale settle via that Pauschale — never here.
 	ags, err := h.loadAgreements(ctx, personID, now)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	covered := map[int64]bool{}
 	for i := range ags {
@@ -100,67 +111,87 @@ func (h *Handler) allocateToOpenItems(r *http.Request, personID int64, amount fl
 		}
 	}
 
-	type owedItem struct {
-		date time.Time
-		owed float64
-		kind string // "vehicle" | "charge"
-		id   int64
-	}
 	var items []owedItem
-
 	vehicles, _, err := h.loadVehiclesWithCategories(r, personID)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	for i := range vehicles {
 		v := &vehicles[i]
 		if v.Paid || v.Archived || covered[v.ID] || v.AccruedCost <= 0.005 {
 			continue
 		}
-		items = append(items, owedItem{v.StartDate, v.AccruedCost, "vehicle", v.ID})
+		label := strings.TrimSpace(v.Label)
+		if label == "" {
+			label = strings.TrimSpace(v.LicensePlate)
+		}
+		if label == "" {
+			label = v.CategoryName
+		}
+		items = append(items, owedItem{
+			Date: v.StartDate, Kind: "vehicle", ID: v.ID,
+			Label:    "Einstellplatz: " + label + " (ab " + v.StartDate.Format("02.01.2006") + ")",
+			Quantity: 1, UnitAmount: v.AccruedCost, LineTotal: v.AccruedCost,
+		})
 	}
 
 	rows, err := h.Pool.Query(ctx,
-		`SELECT id, amount*quantity, charged_on FROM charges
+		`SELECT id, description, quantity, amount, charged_on FROM charges
 		   WHERE person_id=$1 AND vehicle_id IS NULL AND NOT paid`, personID)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var it owedItem
-		it.kind = "charge"
-		if err := rows.Scan(&it.id, &it.owed, &it.date); err != nil {
-			return 0, err
+		var desc string
+		var qty, unit float64
+		if err := rows.Scan(&it.ID, &desc, &qty, &unit, &it.Date); err != nil {
+			return nil, err
 		}
-		if it.owed > 0.005 {
+		if qty <= 0 {
+			qty = 1
+		}
+		it.Kind, it.Label, it.Quantity, it.UnitAmount, it.LineTotal = "charge", desc, qty, unit, round2(unit*qty)
+		if it.LineTotal > 0.005 {
 			items = append(items, it)
 		}
 	}
 	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Date.Before(items[j].Date) })
+	return items, nil
+}
+
+// allocateToOpenItems marks a person's open, individually-owed items paid oldest
+// first, consuming up to `amount` (whole items only — no partial). Reuses the
+// same paid updates as the manual toggles, so the (toggle-based) balance stays
+// the single source of truth. Returns the number of items settled.
+func (h *Handler) allocateToOpenItems(r *http.Request, personID int64, amount float64) (int, error) {
+	items, err := h.openOwedItems(r, personID)
+	if err != nil {
 		return 0, err
 	}
-
-	sort.Slice(items, func(i, j int) bool { return items[i].date.Before(items[j].date) })
-
+	ctx := r.Context()
 	remaining := amount
 	settled := 0
 	for _, it := range items {
-		if remaining+0.005 < it.owed { // strict oldest-first: stop at the first item that doesn't fit
+		if remaining+0.005 < it.LineTotal { // strict oldest-first: stop at the first item that doesn't fit
 			break
 		}
-		switch it.kind {
+		switch it.Kind {
 		case "vehicle":
-			if _, err := h.Pool.Exec(ctx, `UPDATE vehicles SET paid=true, updated_at=now() WHERE id=$1`, it.id); err != nil {
+			if _, err := h.Pool.Exec(ctx, `UPDATE vehicles SET paid=true, updated_at=now() WHERE id=$1`, it.ID); err != nil {
 				return settled, err
 			}
-			h.autoArchiveIfClosed(r, it.id)
+			h.autoArchiveIfClosed(r, it.ID)
 		case "charge":
-			if _, err := h.Pool.Exec(ctx, `UPDATE charges SET paid=true WHERE id=$1 AND vehicle_id IS NULL`, it.id); err != nil {
+			if _, err := h.Pool.Exec(ctx, `UPDATE charges SET paid=true WHERE id=$1 AND vehicle_id IS NULL`, it.ID); err != nil {
 				return settled, err
 			}
 		}
-		remaining -= it.owed
+		remaining -= it.LineTotal
 		settled++
 	}
 	return settled, nil

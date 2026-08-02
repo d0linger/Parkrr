@@ -38,6 +38,10 @@ func testHandler(t *testing.T) *Handler {
 }
 
 func cleanupPersons(t *testing.T, pool *pgxpool.Pool) {
+	// Invoices are ON DELETE RESTRICT (immutable records), so drop any test
+	// invoices before their persons; payments cascade with the person.
+	_, _ = pool.Exec(context.Background(),
+		`DELETE FROM invoices WHERE person_id IN (SELECT id FROM persons WHERE last_name = 'Integration')`)
 	if _, err := pool.Exec(context.Background(),
 		`DELETE FROM persons WHERE last_name = 'Integration'`); err != nil {
 		t.Logf("cleanup: %v", err)
