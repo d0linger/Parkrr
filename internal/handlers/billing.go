@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/preining/parkrr/internal/auth"
+	"github.com/preining/parkrr/internal/models"
 )
 
 // billingSettings is the GUI-editable invoicing configuration (one row, id=1).
@@ -139,6 +141,117 @@ type createInvoiceRequest struct {
 	Note string `json:"note"`
 }
 
+// invoiceLines composes the full list of a person's open positions for an
+// invoice — everything they owe, not just the boolean-settled items: standalone
+// vehicle rent, standalone AND vehicle-bound unsettled one-off charges, open
+// Pauschalen, and the open recurring total. The line totals sum to the person's
+// open balance.
+func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, error) {
+	ctx := r.Context()
+	now := time.Now()
+	until := now.AddDate(0, 0, 1)
+
+	vehicles, _, err := h.loadVehiclesWithCategories(r, personID)
+	if err != nil {
+		return nil, err
+	}
+	ags, err := h.loadAgreements(ctx, personID, now)
+	if err != nil {
+		return nil, err
+	}
+	setFlatRateCoverage(vehicles, map[int64][]models.FlatRatePeriod{personID: ags}, now)
+	vehPaid := vehiclePaidMap(vehicles)
+	vehLabel := func(vid int64) string {
+		for i := range vehicles {
+			if vehicles[i].ID == vid {
+				v := &vehicles[i]
+				if s := strings.TrimSpace(v.Label); s != "" {
+					return s
+				}
+				if s := strings.TrimSpace(v.LicensePlate); s != "" {
+					return s
+				}
+				return v.CategoryName
+			}
+		}
+		return "Gefährt"
+	}
+
+	// Standalone vehicles (open rent) + standalone one-off charges.
+	lines, err := h.openOwedItems(r, personID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Vehicle-bound one-off charges not settled via their vehicle/Pauschale.
+	crows, err := h.Pool.Query(ctx,
+		`SELECT id, description, quantity, amount, charged_on, vehicle_id
+		   FROM charges WHERE person_id=$1 AND vehicle_id IS NOT NULL AND NOT paid`, personID)
+	if err != nil {
+		return nil, err
+	}
+	type bound struct {
+		id          int64
+		desc        string
+		qty, amount float64
+		on          time.Time
+		vid         int64
+	}
+	var bcs []bound
+	for crows.Next() {
+		var b bound
+		if err := crows.Scan(&b.id, &b.desc, &b.qty, &b.amount, &b.on, &b.vid); err != nil {
+			crows.Close()
+			return nil, err
+		}
+		bcs = append(bcs, b)
+	}
+	crows.Close()
+	if crows.Err() != nil {
+		return nil, crows.Err()
+	}
+	for _, b := range bcs {
+		vid := b.vid
+		if chargeSettled(ags, &vid, b.on, false, vehPaid[vid]) {
+			continue
+		}
+		if b.qty <= 0 {
+			b.qty = 1
+		}
+		lt := round2(b.amount * b.qty)
+		if lt <= 0.005 {
+			continue
+		}
+		lines = append(lines, owedItem{Kind: "charge", ID: b.id, Label: vehLabel(vid) + ": " + b.desc, Quantity: b.qty, UnitAmount: b.amount, LineTotal: lt})
+	}
+
+	// Open Pauschalen (flat-rate): unpaid accrued per agreement.
+	for i := range ags {
+		a := &ags[i]
+		owed := round2(a.CostInRange(a.StartDate, until) - float64(a.PaidCentsInRange(a.StartDate, until))/100)
+		if owed <= 0.005 {
+			continue
+		}
+		label := "Pauschale"
+		if s := strings.TrimSpace(a.Note); s != "" {
+			label += ": " + s
+		}
+		lines = append(lines, owedItem{Kind: "agreement", ID: a.ID, Label: label, Quantity: 1, UnitAmount: owed, LineTotal: owed})
+	}
+
+	// Recurring extra costs: the open amount as one aggregate line.
+	recurs, err := h.loadRecurringCharges(ctx, personID, ags, vehPaid, now)
+	if err != nil {
+		return nil, err
+	}
+	recAccrued, recPaid := recurringSums(recurs, ags, vehPaid, now)
+	if recOpen := round2(recAccrued - recPaid); recOpen > 0.005 {
+		lines = append(lines, owedItem{Kind: "recurring", ID: 0, Label: "Wiederkehrende Nebenkosten (offen)", Quantity: 1, UnitAmount: recOpen, LineTotal: recOpen})
+	}
+
+	return lines, nil
+}
+
 // CreateInvoice issues an invoice for a person's open positions. It allocates the
 // next gapless number, snapshots seller/buyer + tax, and stores the line items —
 // all in one transaction so a failure never burns a number. Austrian tax: no USt
@@ -156,7 +269,7 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items, err := h.openOwedItems(r, pid)
+	items, err := h.invoiceLines(r, pid)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not read open positions")
 		return
