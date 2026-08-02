@@ -1121,14 +1121,17 @@
                 { name: 'paid_on', label: 'Datum', type: 'date', value: today() },
                 { name: 'method', label: 'Methode', type: 'select', value: 'bar', options: PAY_METHODS.map((m) => ({ value: m.v, label: m.l })) },
                 { name: 'note', label: 'Notiz (optional)', value: '' },
+                { name: 'allocate', label: 'Offene Posten begleichen (älteste zuerst)', type: 'checkbox', value: true },
             ],
             onRender: (body) => segmentedField(body, 'method', PAY_METHODS),
             save: async (data) => {
                 if (!(Number(data.amount) > 0)) { toast('Betrag muss größer als 0 sein', 'error'); throw new Error('invalid amount'); }
-                await api.post('/persons/' + personId + '/payments', {
+                const res = await api.post('/persons/' + personId + '/payments', {
                     amount: Number(data.amount), paid_on: data.paid_on, method: data.method, note: data.note || '',
+                    allocate: !!data.allocate,
                 });
-                toast('Zahlung erfasst', 'success'); render();
+                const n = res && res.settled;
+                toast(n ? `Zahlung erfasst · ${n} Posten beglichen` : 'Zahlung erfasst', 'success'); render();
             },
         });
     }

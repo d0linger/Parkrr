@@ -77,6 +77,67 @@ func TestCreateAndListPayment(t *testing.T) {
 	}
 }
 
+// TestPaymentAllocationOldestFirst records a payment with allocate=true and
+// asserts it settles the oldest open standalone charge first, stopping when the
+// remaining amount no longer covers the next item.
+func TestPaymentAllocationOldestFirst(t *testing.T) {
+	h := testHandler(t)
+	pid := createIntegrationPerson(t, h)
+
+	mkCharge := func(desc string, amount float64, on string) int64 {
+		body, _ := json.Marshal(map[string]any{
+			"person_id": pid, "description": desc, "amount": amount, "quantity": 1, "charged_on": on,
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/charges", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		h.CreateCharge(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create charge: %d %s", rec.Code, rec.Body.String())
+		}
+		var out struct {
+			ID int64 `json:"id"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return out.ID
+	}
+	older := mkCharge("older", 50, "2026-01-10")
+	newer := mkCharge("newer", 80, "2026-06-10")
+
+	// 60 € covers the 50 € older charge; 10 € left can't cover the 80 € newer one.
+	rec := postPayment(t, h, pid, map[string]any{"amount": 60, "method": "bar", "allocate": true})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("payment: %d %s", rec.Code, rec.Body.String())
+	}
+	var res struct {
+		Settled int `json:"settled"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &res)
+	if res.Settled != 1 {
+		t.Errorf("expected 1 item settled, got %d", res.Settled)
+	}
+
+	paid := map[int64]bool{}
+	rows, err := h.Pool.Query(t.Context(), `SELECT id, paid FROM charges WHERE person_id=$1`, pid)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var p bool
+		if err := rows.Scan(&id, &p); err != nil {
+			t.Fatal(err)
+		}
+		paid[id] = p
+	}
+	if !paid[older] {
+		t.Error("oldest charge should be settled")
+	}
+	if paid[newer] {
+		t.Error("newer charge should remain open (amount exhausted)")
+	}
+}
+
 func TestCreatePaymentValidation(t *testing.T) {
 	h := testHandler(t)
 	pid := createIntegrationPerson(t, h)

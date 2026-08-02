@@ -3,7 +3,9 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -71,6 +73,97 @@ type paymentRequest struct {
 	Method    string  `json:"method"`
 	Note      string  `json:"note"`
 	VehicleID *int64  `json:"vehicle_id"`
+	// Allocate, when true, marks the person's open individually-owed items paid,
+	// oldest first, consuming up to Amount (Phase-2 FIFO settlement).
+	Allocate bool `json:"allocate"`
+}
+
+// allocateToOpenItems marks a person's open, individually-owed items paid oldest
+// first, consuming up to `amount`. It settles standalone one-off charges and
+// uncovered vehicles (whole items only — no partial); Pauschale/recurring
+// periods keep their own sliders. Reuses the same paid updates as the manual
+// toggles, so the (toggle-based) balance stays the single source of truth.
+// Returns the number of items settled.
+func (h *Handler) allocateToOpenItems(r *http.Request, personID int64, amount float64) (int, error) {
+	ctx := r.Context()
+	now := time.Now()
+
+	// Vehicles bound to a Pauschale settle via that Pauschale — never here.
+	ags, err := h.loadAgreements(ctx, personID, now)
+	if err != nil {
+		return 0, err
+	}
+	covered := map[int64]bool{}
+	for i := range ags {
+		for _, vid := range ags[i].VehicleIDs {
+			covered[vid] = true
+		}
+	}
+
+	type owedItem struct {
+		date time.Time
+		owed float64
+		kind string // "vehicle" | "charge"
+		id   int64
+	}
+	var items []owedItem
+
+	vehicles, _, err := h.loadVehiclesWithCategories(r, personID)
+	if err != nil {
+		return 0, err
+	}
+	for i := range vehicles {
+		v := &vehicles[i]
+		if v.Paid || v.Archived || covered[v.ID] || v.AccruedCost <= 0.005 {
+			continue
+		}
+		items = append(items, owedItem{v.StartDate, v.AccruedCost, "vehicle", v.ID})
+	}
+
+	rows, err := h.Pool.Query(ctx,
+		`SELECT id, amount*quantity, charged_on FROM charges
+		   WHERE person_id=$1 AND vehicle_id IS NULL AND NOT paid`, personID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var it owedItem
+		it.kind = "charge"
+		if err := rows.Scan(&it.id, &it.owed, &it.date); err != nil {
+			return 0, err
+		}
+		if it.owed > 0.005 {
+			items = append(items, it)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	sort.Slice(items, func(i, j int) bool { return items[i].date.Before(items[j].date) })
+
+	remaining := amount
+	settled := 0
+	for _, it := range items {
+		if remaining+0.005 < it.owed { // strict oldest-first: stop at the first item that doesn't fit
+			break
+		}
+		switch it.kind {
+		case "vehicle":
+			if _, err := h.Pool.Exec(ctx, `UPDATE vehicles SET paid=true, updated_at=now() WHERE id=$1`, it.id); err != nil {
+				return settled, err
+			}
+			h.autoArchiveIfClosed(r, it.id)
+		case "charge":
+			if _, err := h.Pool.Exec(ctx, `UPDATE charges SET paid=true WHERE id=$1 AND vehicle_id IS NULL`, it.id); err != nil {
+				return settled, err
+			}
+		}
+		remaining -= it.owed
+		settled++
+	}
+	return settled, nil
 }
 
 // validatePayment normalizes and checks a payment request, returning the parsed
@@ -150,7 +243,21 @@ func (h *Handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r, "create", "payment", p.ID, fmt.Sprintf("recorded payment %.2f € (%s)", p.Amount, p.Method))
-	writeJSON(w, http.StatusCreated, p)
+
+	settled := 0
+	if req.Allocate {
+		if n, aerr := h.allocateToOpenItems(r, id, req.Amount); aerr != nil {
+			slog.Warn("payment allocation failed", "payment_id", p.ID, "err", aerr)
+		} else if n > 0 {
+			settled = n
+			h.audit(r, "update", "payment", p.ID, fmt.Sprintf("allocated payment to %d open item(s), oldest first", n))
+		}
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id": p.ID, "person_id": p.PersonID, "amount": p.Amount, "paid_on": p.PaidOn,
+		"method": p.Method, "note": p.Note, "vehicle_id": p.VehicleID, "created_at": p.CreatedAt,
+		"settled": settled,
+	})
 }
 
 // DeletePayment removes a recorded payment (editor role).
