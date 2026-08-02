@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 )
 
@@ -80,22 +81,66 @@ func aead(key string) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
-// dbExecEnv splits a Postgres connection URL into a credential-free DSN and the
+// dbExecEnv splits a Postgres connection string into a password-free DSN and the
 // environment for the libpq tool, moving any password out of the command line
-// (argv is readable via /proc/<pid>/cmdline) into PGPASSWORD. On a parse failure
-// or a URL without a password it returns the original DSN and a nil env (the
-// child then inherits the parent environment).
+// (argv is readable via /proc/<pid>/cmdline) into PGPASSWORD. It handles both
+// forms libpq/pgx accept: URLs (password in the userinfo and/or a `password`
+// query parameter) and keyword/value DSNs (`host=... password=...`). When no
+// password is found it returns the original DSN and a nil env (the child then
+// inherits the parent environment).
 func dbExecEnv(dbURL string) (dsn string, env []string) {
-	u, err := url.Parse(dbURL)
-	if err != nil || u.User == nil {
-		return dbURL, nil
+	withPassword := func(clean, pw string) (string, []string) {
+		if pw == "" {
+			return clean, nil
+		}
+		return clean, append(os.Environ(), "PGPASSWORD="+pw)
 	}
-	pw, ok := u.User.Password()
-	if !ok {
-		return dbURL, nil
+
+	if strings.Contains(dbURL, "://") { // URL form
+		u, err := url.Parse(dbURL)
+		if err != nil {
+			return dbURL, nil
+		}
+		pw := ""
+		if u.User != nil {
+			if p, ok := u.User.Password(); ok {
+				pw = p
+				u.User = url.User(u.User.Username()) // keep the user, drop the password
+			}
+		}
+		// libpq also accepts the password as a query parameter.
+		if q := u.Query(); q.Get("password") != "" {
+			if pw == "" {
+				pw = q.Get("password")
+			}
+			q.Del("password")
+			u.RawQuery = q.Encode()
+		}
+		return withPassword(u.String(), pw)
 	}
-	u.User = url.User(u.User.Username()) // keep the user, drop the password
-	return u.String(), append(os.Environ(), "PGPASSWORD="+pw)
+
+	// Keyword/value DSN form: redact a `password=...` token (unquoted or
+	// single-quoted) into PGPASSWORD.
+	if m := kvPasswordRe.FindStringSubmatch(dbURL); m != nil {
+		clean := strings.TrimSpace(kvPasswordRe.ReplaceAllString(dbURL, "$1"))
+		return withPassword(clean, unquoteLibpq(m[2]))
+	}
+	return dbURL, nil
+}
+
+// kvPasswordRe matches a libpq keyword/value `password=` token, capturing the
+// leading boundary ($1) and the value ($2, unquoted or single-quoted).
+var kvPasswordRe = regexp.MustCompile(`(?i)(^|\s)password\s*=\s*('(?:[^'\\]|\\.)*'|[^\s]+)`)
+
+// unquoteLibpq removes libpq single-quoting (\' and \\ escapes) from a value.
+func unquoteLibpq(s string) string {
+	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
+		inner := s[1 : len(s)-1]
+		inner = strings.ReplaceAll(inner, `\'`, `'`)
+		inner = strings.ReplaceAll(inner, `\\`, `\`)
+		return inner
+	}
+	return s
 }
 
 // Dump produces a PostgreSQL custom-format dump (pg_restore-compatible) of the
