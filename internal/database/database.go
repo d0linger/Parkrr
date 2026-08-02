@@ -81,7 +81,11 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	defer func() {
 		resetCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_, _ = conn.Exec(resetCtx, `SET statement_timeout = 10000`)
+		if _, err := conn.Exec(resetCtx, `SET statement_timeout = 10000`); err != nil {
+			// Couldn't restore the cap: close the underlying connection so the pool
+			// discards it on Release rather than handing out an unbounded one.
+			_ = conn.Conn().Close(resetCtx)
+		}
 	}()
 
 	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLockKey); err != nil {

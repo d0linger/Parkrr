@@ -110,7 +110,8 @@ func TestSuccessfulLoginDoesNotResetIPThrottle(t *testing.T) {
 	if allowed, _ := ah.IPLimiter.Allowed(ip); allowed {
 		t.Fatal("IP should be locked after 3 failures")
 	}
-	// Simulate a successful login for a different account from the same IP.
+	// A successful login resets the per-account key (the same key that accrued
+	// the failures above) — the per-IP counter must stay untouched.
 	ah.Limiter.Reset(key)
 	if allowed, _ := ah.IPLimiter.Allowed(ip); allowed {
 		t.Error("resetting the per-account limiter must not unlock the per-IP throttle")

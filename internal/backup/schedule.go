@@ -48,7 +48,7 @@ func RunVolume(ctx context.Context, pool *pgxpool.Pool, dbURL, key, dir string, 
 	}
 	// Verify the just-written archive is decryptable and structurally restorable.
 	tested := false
-	if _, verr := Validate(enc, key); verr != nil {
+	if _, verr := Validate(ctx, enc, key); verr != nil {
 		slog.Warn("backup: archive verify failed", "path", p, "err", verr)
 	} else {
 		tested = true

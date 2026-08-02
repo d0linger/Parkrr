@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -26,7 +27,7 @@ type ArchiveInfo struct {
 
 // Validate decrypts a backup and confirms it is a readable pg_dump custom-format
 // archive, returning header metadata — WITHOUT touching any database.
-func Validate(enc []byte, key string) (ArchiveInfo, error) {
+func Validate(ctx context.Context, enc []byte, key string) (ArchiveInfo, error) {
 	var info ArchiveInfo
 	plain, err := Decrypt(enc, key)
 	if err != nil {
@@ -46,7 +47,7 @@ func Validate(enc []byte, key string) (ArchiveInfo, error) {
 	}
 	// #nosec G204 -- fixed command "pg_restore"; the only argument is a temp file
 	// path we created, not user input.
-	out, err := exec.Command("pg_restore", "--list", tmp.Name()).Output()
+	out, err := exec.CommandContext(ctx, "pg_restore", "--list", tmp.Name()).Output()
 	if err != nil {
 		return info, fmt.Errorf("not a valid pg_dump archive: %w", err)
 	}
@@ -79,13 +80,34 @@ func aead(key string) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
+// dbExecEnv splits a Postgres connection URL into a credential-free DSN and the
+// environment for the libpq tool, moving any password out of the command line
+// (argv is readable via /proc/<pid>/cmdline) into PGPASSWORD. On a parse failure
+// or a URL without a password it returns the original DSN and a nil env (the
+// child then inherits the parent environment).
+func dbExecEnv(dbURL string) (dsn string, env []string) {
+	u, err := url.Parse(dbURL)
+	if err != nil || u.User == nil {
+		return dbURL, nil
+	}
+	pw, ok := u.User.Password()
+	if !ok {
+		return dbURL, nil
+	}
+	u.User = url.User(u.User.Username()) // keep the user, drop the password
+	return u.String(), append(os.Environ(), "PGPASSWORD="+pw)
+}
+
 // Dump produces a PostgreSQL custom-format dump (pg_restore-compatible) of the
 // database at dbURL. Requires pg_dump on PATH (matching the server's major).
 func Dump(ctx context.Context, dbURL string) ([]byte, error) {
 	var out, errb bytes.Buffer
+	dsn, env := dbExecEnv(dbURL)
 	// #nosec G204 -- fixed command "pg_dump"; dbURL comes from operator config
-	// (PARKRR_DATABASE_URL/PARKRR_DB_*), never from a request.
-	cmd := exec.CommandContext(ctx, "pg_dump", "--format=custom", "--no-owner", "--no-privileges", "--dbname="+dbURL)
+	// (PARKRR_DATABASE_URL/PARKRR_DB_*), never from a request. The password is
+	// passed via PGPASSWORD, not on the command line.
+	cmd := exec.CommandContext(ctx, "pg_dump", "--format=custom", "--no-owner", "--no-privileges", "--dbname="+dsn)
+	cmd.Env = env // nil => inherit the parent environment
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
 	if err := cmd.Run(); err != nil {
@@ -150,13 +172,16 @@ func Restore(ctx context.Context, dbURL string, enc []byte, key string) error {
 		return fmt.Errorf("not a valid pg_dump archive: %w", err)
 	}
 	var errb bytes.Buffer
+	dsn, env := dbExecEnv(dbURL)
 	// --single-transaction makes the whole restore atomic: any error rolls back
 	// entirely, so a failed restore never leaves the DB half-wiped.
 	// #nosec G204 -- fixed command "pg_restore"; dbURL is operator config and the
-	// final argument is a temp file we created, neither is request input.
+	// final argument is a temp file we created, neither is request input. The
+	// password is passed via PGPASSWORD, not on the command line.
 	cmd := exec.CommandContext(ctx, "pg_restore",
 		"--single-transaction", "--clean", "--if-exists", "--no-owner", "--no-privileges",
-		"--dbname="+dbURL, tmp.Name())
+		"--dbname="+dsn, tmp.Name())
+	cmd.Env = env
 	cmd.Stderr = &errb
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("pg_restore failed: %w: %s", err, errb.String())

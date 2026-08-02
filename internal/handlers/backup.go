@@ -232,7 +232,9 @@ func (h *Handler) BackupValidate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	info, err := backup.Validate(enc, key)
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	info, err := backup.Validate(ctx, enc, key)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -253,12 +255,12 @@ func (h *Handler) BackupRestore(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "type RESTORE to confirm the (destructive) restore")
 		return
 	}
-	if _, err := backup.Validate(enc, key); err != nil {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
+	defer cancel()
+	if _, err := backup.Validate(ctx, enc, key); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
-	defer cancel()
 	if err := backup.Restore(ctx, h.DatabaseURL, enc, key); err != nil {
 		slog.Error("backup restore failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "restore failed: "+err.Error())
@@ -371,7 +373,7 @@ func (h *Handler) BackupRestoreS3(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "backup not found in S3")
 		return
 	}
-	if _, err := backup.Validate(enc, key); err != nil {
+	if _, err := backup.Validate(ctx, enc, key); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

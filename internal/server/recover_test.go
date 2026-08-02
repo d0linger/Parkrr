@@ -42,3 +42,21 @@ func TestRecoverPanicsAfterResponseStarted(t *testing.T) {
 		t.Errorf("recovery must not append to a started response, got %q", body)
 	}
 }
+
+// TestRecoverPanicsImplicitHeader covers the same guard when the handler writes
+// the body WITHOUT an explicit WriteHeader (the first Write implies 200) — the
+// wrapper must still mark the response started and not overwrite it with a 500.
+func TestRecoverPanicsImplicitHeader(t *testing.T) {
+	h := recoverPanics(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("partial"))
+		panic("boom after implicit header")
+	}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("implicit header: want 200 preserved, got %d", rec.Code)
+	}
+	if body := rec.Body.String(); body != "partial" {
+		t.Errorf("recovery must not append to a started response, got %q", body)
+	}
+}
