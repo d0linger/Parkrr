@@ -164,7 +164,7 @@ func chargePaid(t *testing.T, h *Handler, id int64) bool {
 
 func personCreditVal(t *testing.T, h *Handler, pid int64) float64 {
 	t.Helper()
-	return h.personCredit(t.Context(), pid)
+	return h.personCredit(httptest.NewRequest(http.MethodGet, "/", nil), pid)
 }
 
 // TestPaymentExplicitSelectionAndDelete: an explicit selection stamps exactly the
@@ -190,9 +190,10 @@ func TestPaymentExplicitSelectionAndDelete(t *testing.T) {
 	if res.Settled != 1 || !chargePaid(t, h, newer) || chargePaid(t, h, older) {
 		t.Fatalf("explicit selection wrong: settled=%d newerPaid=%v olderPaid=%v", res.Settled, chargePaid(t, h, newer), chargePaid(t, h, older))
 	}
-	// 200 paid, 80 allocated -> 120 Guthaben.
-	if c := personCreditVal(t, h, pid); c != 120 {
-		t.Errorf("expected Guthaben 120, got %.2f", c)
+	// True overpayment: paid 200, owed 130 (both charges) -> Guthaben 70 (NOT 120:
+	// the unstamped 50 charge is still a real cost, not credit).
+	if c := personCreditVal(t, h, pid); c != 70 {
+		t.Errorf("expected Guthaben 70, got %.2f", c)
 	}
 	// Delete the payment -> the newer charge reverts to open, credit clears.
 	dreq := httptest.NewRequest(http.MethodDelete, "/api/payments/"+strconv.FormatInt(res.ID, 10), nil)

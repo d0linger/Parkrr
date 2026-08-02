@@ -248,9 +248,45 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 		resp.PaymentsTotal = round2(resp.PaymentsTotal)
 		resp.PaymentsYear = round2(resp.PaymentsYear)
 	}
-	resp.Credit = h.personCredit(r.Context(), id)
+	// Guthaben = true overpayment: money received beyond EVERYTHING owed (rent +
+	// all charges + recurring), not the unallocated remainder — otherwise costs
+	// that settle without an allocation (vehicle-bound charges, Pauschale/recurring
+	// periods) would masquerade as credit.
+	if resp.Credit = round2(resp.PaymentsTotal - (resp.TotalAccrued + resp.TotalCharges)); resp.Credit < 0 {
+		resp.Credit = 0
+	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// personAccruedTotal returns a person's total accrued cost (rent + one-off
+// charges + recurring), the same "Aufgelaufen" PersonStats reports. Used where
+// only the total is needed (Guthaben / apply-credit).
+func (h *Handler) personAccruedTotal(r *http.Request, id int64) (float64, error) {
+	ctx := r.Context()
+	now := time.Now()
+	vehicles, cats, err := h.loadVehiclesWithCategories(r, id)
+	if err != nil {
+		return 0, err
+	}
+	ags, err := h.loadAgreements(ctx, id, now)
+	if err != nil {
+		return 0, err
+	}
+	setFlatRateCoverage(vehicles, map[int64][]models.FlatRatePeriod{id: ags}, now)
+	until := now.AddDate(0, 0, 1)
+	rentAccrued, _ := personRent(ags, vehicles, cats, time.Time{}, until)
+	vehPaid := vehiclePaidMap(vehicles)
+	recurs, err := h.loadRecurringCharges(ctx, id, ags, vehPaid, now)
+	if err != nil {
+		return 0, err
+	}
+	totalCharges, _, err := h.personChargeSums(ctx, id, ags, vehPaid)
+	if err != nil {
+		return 0, err
+	}
+	recAccrued, _ := recurringSums(recurs, ags, vehPaid, now)
+	return round2(rentAccrued + totalCharges + recAccrued), nil
 }
 
 // outstandingByPerson computes every person's open balance in one batched pass,

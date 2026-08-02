@@ -427,22 +427,29 @@ func (h *Handler) OpenItems(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// personCredit returns a person's Guthaben: total payments minus what has been
-// allocated to items.
-func (h *Handler) personCredit(ctx context.Context, personID int64) float64 {
-	var credit float64
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT COALESCE(SUM(p.amount),0)
-		      - COALESCE((SELECT SUM(a.amount) FROM payment_allocations a
-		                    JOIN payments p2 ON p2.id = a.payment_id
-		                   WHERE p2.person_id = $1),0)
-		   FROM payments p WHERE p.person_id = $1`, personID).Scan(&credit)
-	return round2(credit)
+// personCredit returns a person's Guthaben: the true overpayment, money received
+// beyond everything owed (rent + all charges + recurring). Not the unallocated
+// remainder — costs that settle without an allocation (vehicle-bound charges,
+// Pauschale/recurring periods) must not look like credit.
+func (h *Handler) personCredit(r *http.Request, personID int64) float64 {
+	var payments float64
+	_ = h.Pool.QueryRow(r.Context(),
+		`SELECT COALESCE(SUM(amount),0) FROM payments WHERE person_id=$1`, personID).Scan(&payments)
+	accrued, err := h.personAccruedTotal(r, personID)
+	if err != nil {
+		return 0
+	}
+	if c := round2(payments - accrued); c > 0 {
+		return c
+	}
+	return 0
 }
 
-// ApplyCredit draws a person's Guthaben (unallocated payment remainders) against
-// their currently-open items, oldest first — stamping each and linking it to the
-// payment(s) whose remainder covers it. Returns how many items were settled.
+// ApplyCredit stamps a person's currently-open items (oldest first) that their
+// payments already cover but which weren't stamped yet — i.e. draws down the
+// Guthaben. The budget is the paid amount minus the cost already covered
+// (Aufgelaufen − offene Posten), so items are stamped only up to what was really
+// paid. Each stamped item is linked to the person's latest payment for revert.
 func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
@@ -450,74 +457,48 @@ func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	// Payments with unallocated remainder, oldest first.
-	prows, err := h.Pool.Query(ctx,
-		`SELECT p.id, p.amount - COALESCE(SUM(a.amount),0) AS rem
-		   FROM payments p LEFT JOIN payment_allocations a ON a.payment_id = p.id
-		  WHERE p.person_id = $1
-		  GROUP BY p.id, p.amount, p.paid_on
-		 HAVING p.amount - COALESCE(SUM(a.amount),0) > 0.005
-		  ORDER BY p.paid_on, p.id`, id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	type rem struct {
-		id  int64
-		rem float64
-	}
-	var rems []rem
-	for prows.Next() {
-		var rm rem
-		if err := prows.Scan(&rm.id, &rm.rem); err != nil {
-			prows.Close()
-			writeError(w, http.StatusInternalServerError, "query failed")
-			return
-		}
-		rems = append(rems, rm)
-	}
-	prows.Close()
-
 	items, err := h.openOwedItems(r, id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
+	if len(items) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"settled": 0})
+		return
+	}
+	accrued, err := h.personAccruedTotal(r, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	var openTotal, paymentsTotal float64
+	for _, it := range items {
+		openTotal += it.LineTotal
+	}
+	_ = h.Pool.QueryRow(ctx, `SELECT COALESCE(SUM(amount),0) FROM payments WHERE person_id=$1`, id).Scan(&paymentsTotal)
+	var latestPayment int64
+	_ = h.Pool.QueryRow(ctx, `SELECT id FROM payments WHERE person_id=$1 ORDER BY paid_on DESC, id DESC LIMIT 1`, id).Scan(&latestPayment)
 
+	// budget = money paid that isn't already tied up in non-open (covered) costs.
+	budget := round2(paymentsTotal - round2(accrued-openTotal))
 	settled := 0
 	for _, it := range items {
-		var avail float64
-		for _, rm := range rems {
-			avail += rm.rem
-		}
-		if avail+0.005 < it.LineTotal {
-			break // not enough credit left to cover this (oldest) item
+		if budget+0.005 < it.LineTotal {
+			break // not enough paid to cover this (oldest) open item
 		}
 		if err := h.settleOne(r, it); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not apply credit")
 			return
 		}
-		need := it.LineTotal
-		for i := range rems {
-			if need <= 0.005 {
-				break
-			}
-			if rems[i].rem <= 0.005 {
-				continue
-			}
-			take := rems[i].rem
-			if take > need {
-				take = need
-			}
+		if latestPayment > 0 {
 			if _, err := h.Pool.Exec(ctx,
 				`INSERT INTO payment_allocations (payment_id, kind, ref_id, amount) VALUES ($1,$2,$3,$4)`,
-				rems[i].id, it.Kind, it.ID, round2(take)); err != nil {
+				latestPayment, it.Kind, it.ID, it.LineTotal); err != nil {
 				writeError(w, http.StatusInternalServerError, "could not apply credit")
 				return
 			}
-			rems[i].rem -= take
-			need -= take
 		}
+		budget -= it.LineTotal
 		settled++
 	}
 	if settled > 0 {
