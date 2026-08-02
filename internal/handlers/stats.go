@@ -20,6 +20,8 @@ type personStatsResponse struct {
 	TotalCharges     float64                  `json:"total_charges"`
 	TotalPaid        float64                  `json:"total_paid"`
 	Balance          float64                  `json:"balance"`
+	PaymentsTotal    float64                  `json:"payments_total"` // recorded money-in (all time)
+	PaymentsYear     float64                  `json:"payments_year"`  // recorded money-in in the selected year
 	ActiveVehicles   int                      `json:"active_vehicles"`
 	TotalVehicles    int                      `json:"total_vehicles"`
 	Year             int                      `json:"year"`
@@ -235,6 +237,17 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	resp.TotalPaid = round2(rentPaid + paidCharges + recPaid)
 	resp.Balance = round2(resp.TotalAccrued + resp.TotalCharges - resp.TotalPaid)
 
+	// Recorded payments (money-in log) — independent of the per-item paid flags
+	// above; powers the Kontoauszug.
+	if perr := h.Pool.QueryRow(r.Context(),
+		`SELECT COALESCE(SUM(amount),0),
+		        COALESCE(SUM(amount) FILTER (WHERE EXTRACT(YEAR FROM paid_on) = $2),0)
+		   FROM payments WHERE person_id=$1`, id, year,
+	).Scan(&resp.PaymentsTotal, &resp.PaymentsYear); perr == nil {
+		resp.PaymentsTotal = round2(resp.PaymentsTotal)
+		resp.PaymentsYear = round2(resp.PaymentsYear)
+	}
+
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -350,6 +363,9 @@ type overviewResponse struct {
 	StatusCounts     map[string]int `json:"status_counts"`
 	RevenueByMonth   []float64      `json:"revenue_by_month"`
 	ChargesByMonth   []float64      `json:"charges_by_month"`
+	PaymentsThisYear float64        `json:"payments_this_year"` // recorded money-in in the selected year
+	PaymentsTotal    float64        `json:"payments_total"`     // recorded money-in (all time)
+	PaymentsByMonth  []float64      `json:"payments_by_month"`  // recorded money-in per month of the selected year
 	// TopOutstanding lists the persons with the largest open balance, so the
 	// dashboard can point straight at who to follow up with.
 	TopOutstanding []personOutstanding `json:"top_outstanding"`
@@ -574,6 +590,29 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 
 	resp.PaidTotal = round2(paidRent + paidCharges)
 	resp.OutstandingTotal = round2(resp.AccruedTotal - resp.PaidTotal)
+
+	// Recorded payments (money-in log): total, this-year, and per month for the
+	// selected year — independent of the paid-flag balance math above.
+	resp.PaymentsByMonth = make([]float64, 12)
+	if prows, perr := h.Pool.Query(ctx, `SELECT amount, paid_on FROM payments`); perr == nil {
+		defer prows.Close()
+		for prows.Next() {
+			var amt float64
+			var on time.Time
+			if prows.Scan(&amt, &on) == nil {
+				resp.PaymentsTotal += amt
+				if !on.Before(yearStart) && on.Before(yearEnd) {
+					resp.PaymentsThisYear += amt
+					resp.PaymentsByMonth[int(on.Month())-1] += amt
+				}
+			}
+		}
+	}
+	resp.PaymentsTotal = round2(resp.PaymentsTotal)
+	resp.PaymentsThisYear = round2(resp.PaymentsThisYear)
+	for m := range resp.PaymentsByMonth {
+		resp.PaymentsByMonth[m] = round2(resp.PaymentsByMonth[m])
+	}
 
 	writeJSON(w, http.StatusOK, resp)
 }

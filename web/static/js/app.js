@@ -551,6 +551,7 @@
         trend: '<path d="M4 15l5-5 3 3 6-7"/><path d="M16 6h3v3"/>',
         check: '<circle cx="12" cy="12" r="8.2"/><path d="M8.5 12.3l2.3 2.3 4.6-4.9"/>',
         clock: '<circle cx="12" cy="12" r="8.2"/><path d="M12 7.5V12l3 2"/>',
+        receipt: '<path d="M6 3h12v18l-2.2-1.3-2 1.3-2-1.3-2 1.3-2-1.3L6 21V3Z"/><path d="M9.2 8.5h5.6M9.2 12h5.6"/>',
     };
     function statIcon(key) {
         const p = STAT_ICONS[key];
@@ -803,10 +804,14 @@
             umsatz.querySelector('.value').append(el('span', { class: 'yoy ' + yd.cls, title: yd.title }, ' ' + yd.txt));
             umsatz.querySelector('.label').textContent = yd.label;
         }
-        page.append(el('div', { class: 'stat-grid' },
-            umsatz,
-            stat(eur(ov.paid_total), 'Bezahlt', { icon: 'check', tone: 'green' }),
-        ));
+        // "Eingegangen" = recorded payments (money-in log); surfaced next to Umsatz
+        // once any payment exists, distinct from "Bezahlt" (the paid-flag total).
+        const moneyRow = el('div', { class: 'stat-grid' }, umsatz);
+        if ((Number(ov.payments_this_year) || 0) > 0 || (Number(ov.payments_total) || 0) > 0) {
+            moneyRow.append(stat(eur(ov.payments_this_year), 'Eingegangen ' + ov.year, { icon: 'receipt', tone: 'teal' }));
+        }
+        moneyRow.append(stat(eur(ov.paid_total), 'Bezahlt', { icon: 'check', tone: 'green' }));
+        page.append(moneyRow);
         // Compare-mode switch for the Umsatz delta — only when there is a prior year
         // to compare against. Choice is persisted across visits.
         if ((Number(ov.accrued_prev_year) || 0) > 0 || (Number(ov.accrued_prev_full) || 0) > 0) {
@@ -947,6 +952,8 @@
         const [vehicles, charges] = await Promise.all([
             api.get('/vehicles?person_id=' + id), api.get('/charges?person_id=' + id),
         ]);
+        let payments = [];
+        try { payments = (await api.get('/persons/' + id + '/payments')) || []; } catch (e) { /* keep empty */ }
         const recs = stats.recurring_charges || [];
         // Per-vehicle summary of bound extra costs (one-off total + recurring
         // accrued), surfaced on the vehicle cards and their Pauschale nesting.
@@ -1038,6 +1045,19 @@
             if (charges.length) page.append(financeList(charges));
         }
 
+        // Zahlungen (recorded money-in). A dedicated log + Kontoauszug, separate
+        // from the per-item "bezahlt" toggle above (which drives the Saldo).
+        const pz = el('div', { class: 'page-head section-head' },
+            el('div', { class: 'sec-group' }, el('h3', { class: 'sec-eyebrow' }, 'Zahlungen'),
+                payments.length ? el('span', { class: 'sec-count' }, payments.length) : null));
+        if (canBill()) pz.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => paymentForm(id, stats) }, '+ Zahlung'));
+        page.append(pz);
+        page.append(el('div', { class: 'card konto' },
+            kontoFig('Eingegangen ' + stats.year, eur(stats.payments_year), 'in'),
+            kontoFig('Eingegangen gesamt', eur(stats.payments_total), '')));
+        if (!payments.length) page.append(el('p', { class: 'muted' }, 'Noch keine Zahlungen erfasst.'));
+        else payments.forEach((p) => page.append(paymentRow(id, p)));
+
         // statistics at the bottom, below the actionable sections
         const chartCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Kosten pro Monat · ' + stats.year));
         chartCard.append(chartBars(stats.monthly_accrued, MONTHS));
@@ -1068,6 +1088,50 @@
             page.append(yc);
         }
     };
+
+    // ---------- Payments (Zahlungen / Kontoauszug) ----------
+    const PAY_METHODS = [{ v: 'bar', l: 'Bar' }, { v: 'ueberweisung', l: 'Überweisung' }, { v: 'paypal', l: 'PayPal' }, { v: 'sonstiges', l: 'Sonstiges' }];
+    const payMethodLabel = (m) => (PAY_METHODS.find((x) => x.v === m) || { l: m }).l;
+    function kontoFig(label, value, tone) {
+        return el('div', { class: 'konto-fig' + (tone ? ' tone-' + tone : '') },
+            el('div', { class: 'konto-v' }, value),
+            el('div', { class: 'konto-l' }, label));
+    }
+    function paymentRow(personId, p) {
+        const meta = new Date(p.paid_on).toLocaleDateString('de-DE') + (p.note ? ' · ' + p.note : '');
+        const row = el('div', { class: 'card pay-row' },
+            el('div', { class: 'pay-main' },
+                el('div', { class: 'pay-method' }, payMethodLabel(p.method)),
+                el('div', { class: 'pay-date' }, meta)),
+            el('div', { class: 'pay-amt' }, eur(p.amount)));
+        if (canBill()) row.append(el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Zahlung löschen', onclick: (e) => delPayment(p, e.currentTarget.closest('.card')) }, icon('trash', 15)));
+        return row;
+    }
+    function delPayment(p, node) {
+        deleteWithUndo('Zahlung löschen?',
+            eur(p.amount) + ' vom ' + new Date(p.paid_on).toLocaleDateString('de-DE') + ' wird entfernt.',
+            () => api.del('/payments/' + p.id), () => render(), node);
+    }
+    async function paymentForm(personId, stats) {
+        const open = Math.max(0, Number(stats && stats.balance) || 0);
+        await formModal({
+            title: 'Zahlung erfassen',
+            fields: [
+                { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', required: true, value: open ? open.toFixed(2) : '', help: open ? 'Vorausgefüllt: offener Saldo – für Teilzahlung anpassen.' : '' },
+                { name: 'paid_on', label: 'Datum', type: 'date', value: today() },
+                { name: 'method', label: 'Methode', type: 'select', value: 'bar', options: PAY_METHODS.map((m) => ({ value: m.v, label: m.l })) },
+                { name: 'note', label: 'Notiz (optional)', value: '' },
+            ],
+            onRender: (body) => segmentedField(body, 'method', PAY_METHODS),
+            save: async (data) => {
+                if (!(Number(data.amount) > 0)) { toast('Betrag muss größer als 0 sein', 'error'); throw new Error('invalid amount'); }
+                await api.post('/persons/' + personId + '/payments', {
+                    amount: Number(data.amount), paid_on: data.paid_on, method: data.method, note: data.note || '',
+                });
+                toast('Zahlung erfasst', 'success'); render();
+            },
+        });
+    }
 
     // ================= VEHICLES =================
     routes.vehicles = async (page) => {
@@ -2942,7 +3006,7 @@
 
     // ================= AUDIT (admin) =================
     const AUDIT_ACTIONS = { create: 'Erstellt', update: 'Geändert', delete: 'Gelöscht', login: 'Login', logout: 'Logout' };
-    const AUDIT_ENTITIES = { person: 'Person', vehicle: 'Gefährt', category: 'Tarif', service: 'Dienst', charge: 'Zusatzkosten', user: 'Benutzer', photo: 'Foto', passkey: 'Passkey' };
+    const AUDIT_ENTITIES = { person: 'Person', vehicle: 'Gefährt', category: 'Tarif', service: 'Dienst', charge: 'Zusatzkosten', payment: 'Zahlung', user: 'Benutzer', photo: 'Foto', passkey: 'Passkey' };
 
     function fmtAuditVal(x) {
         if (x === null || x === undefined || x === '') return '∅';

@@ -687,7 +687,7 @@ textarea { resize: vertical; min-height: 72px; }
 .archive-section .seg-mini button { padding: 0.26rem 0.5rem; font-size: 0.72rem; }
 
 /* ---------- Segmented control ---------- */
-.segments { display: inline-flex; background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 999px; padding: 3px; margin-bottom: 1rem; }
+.segments { display: inline-flex; flex-wrap: wrap; max-width: 100%; background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 999px; padding: 3px; margin-bottom: 1rem; }
 .segments button {
     border: none; background: none; color: var(--text-muted); font-family: inherit;
     padding: 0.4rem 1rem; border-radius: 999px; cursor: pointer; font-weight: 600; font-size: 0.9rem;
@@ -1152,3 +1152,15 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .sched-keep{ display:flex; align-items:center; gap:.5rem; margin-top:.5rem; }
 .sched-keep input{ width:5rem; }
 .sched-actions{ display:flex; flex-wrap:wrap; gap:.5rem; margin-top:.9rem; }
+
+/* Zahlungen / Kontoauszug (payments) */
+.konto{ display:flex; gap:.7rem; }
+.konto-fig{ flex:1; min-width:0; }
+.konto-fig .konto-v{ font-size:1.15rem; font-weight:750; letter-spacing:-.01em; font-variant-numeric:tabular-nums; }
+.konto-fig.tone-in .konto-v{ color:var(--success-text, var(--success)); }
+.konto-fig .konto-l{ font-size:.62rem; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--text-muted); margin-top:.15rem; }
+.pay-row{ display:flex; align-items:center; gap:.6rem; }
+.pay-row .pay-main{ flex:1; min-width:0; }
+.pay-row .pay-method{ font-weight:650; font-size:.9rem; }
+.pay-row .pay-date{ font-size:.75rem; color:var(--text-muted); word-break:break-word; }
+.pay-row .pay-amt{ font-weight:750; font-size:.98rem; font-variant-numeric:tabular-nums; color:var(--success-text, var(--success)); white-space:nowrap; }
