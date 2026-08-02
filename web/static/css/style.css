@@ -1202,3 +1202,14 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
     #page{ padding:0 !important; }
     .invoice-doc{ box-shadow:none; border-radius:0; max-width:none; padding:0; }
 }
+
+/* Zahlungs-Zuordnung (allocation picker) */
+.alloc-box{ margin-top:.4rem; border-top:1px solid var(--card-border); padding-top:.5rem; }
+.alloc-auto{ margin-bottom:.4rem; }
+.alloc-list{ display:flex; flex-direction:column; gap:.3rem; }
+.alloc-item{ display:flex; align-items:center; gap:.55rem; border:1px solid var(--card-border); border-radius:10px; padding:.45rem .6rem; background:var(--bg-elev); cursor:pointer; }
+.alloc-item input{ width:auto; margin:0; flex:none; }
+.alloc-item .ai-m{ flex:1; min-width:0; font-size:.85rem; font-weight:600; }
+.alloc-item .ai-a{ font-variant-numeric:tabular-nums; font-weight:700; font-size:.85rem; white-space:nowrap; }
+.alloc-foot{ display:flex; justify-content:space-between; font-size:.8rem; color:var(--text-muted); margin-top:.5rem; padding:0 .1rem; }
+.alloc-foot .is-credit{ color:var(--success-text, var(--success)); font-weight:700; }

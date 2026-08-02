@@ -85,6 +85,8 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/persons/{id}/payments", authed(hf(h.ListPayments)))
 	mux.Handle("POST /api/persons/{id}/payments", editor(hf(h.CreatePayment)))
 	mux.Handle("DELETE /api/payments/{id}", editor(hf(h.DeletePayment)))
+	mux.Handle("GET /api/persons/{id}/open-items", authed(hf(h.OpenItems)))
+	mux.Handle("POST /api/persons/{id}/apply-credit", editor(hf(h.ApplyCredit)))
 
 	// --- Invoicing (Rechnungen) ---
 	mux.Handle("GET /api/billing/settings", admin(hf(h.GetBillingSettings)))

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -68,15 +69,23 @@ func (h *Handler) ListPayments(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+type allocRef struct {
+	Kind string `json:"kind"` // "vehicle" | "charge"
+	ID   int64  `json:"id"`
+}
+
 type paymentRequest struct {
 	Amount    float64 `json:"amount"`
 	PaidOn    string  `json:"paid_on"`
 	Method    string  `json:"method"`
 	Note      string  `json:"note"`
 	VehicleID *int64  `json:"vehicle_id"`
-	// Allocate, when true, marks the person's open individually-owed items paid,
-	// oldest first, consuming up to Amount (Phase-2 FIFO settlement).
-	Allocate bool `json:"allocate"`
+	// Allocate (auto) marks open items paid oldest first up to Amount. Allocations
+	// (explicit) settles exactly the chosen open items. Either way, each settled
+	// item is linked to this payment (payment_allocations); the unallocated
+	// remainder becomes the person's Guthaben.
+	Allocate    bool       `json:"allocate"`
+	Allocations []allocRef `json:"allocations"`
 }
 
 // owedItem is one open, individually-owed position (a standalone vehicle's rent
@@ -164,32 +173,67 @@ func (h *Handler) openOwedItems(r *http.Request, personID int64) ([]owedItem, er
 	return items, nil
 }
 
-// allocateToOpenItems marks a person's open, individually-owed items paid oldest
-// first, consuming up to `amount` (whole items only — no partial). Reuses the
-// same paid updates as the manual toggles, so the (toggle-based) balance stays
-// the single source of truth. Returns the number of items settled.
-func (h *Handler) allocateToOpenItems(r *http.Request, personID int64, amount float64) (int, error) {
+// settleOne flips the existing paid toggle for one open item (reusing the same
+// updates as the manual sliders, so there is no parallel paid state).
+func (h *Handler) settleOne(r *http.Request, it owedItem) error {
+	switch it.Kind {
+	case "vehicle":
+		if _, err := h.Pool.Exec(r.Context(), `UPDATE vehicles SET paid=true, updated_at=now() WHERE id=$1`, it.ID); err != nil {
+			return err
+		}
+		h.autoArchiveIfClosed(r, it.ID)
+	case "charge":
+		if _, err := h.Pool.Exec(r.Context(), `UPDATE charges SET paid=true WHERE id=$1 AND vehicle_id IS NULL`, it.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// settlePayment applies a freshly-recorded payment to the person's open items:
+// explicit selection (req.Allocations) or auto oldest-first (req.Allocate), whole
+// items only. Each settled item is linked to the payment (payment_allocations)
+// and its existing paid toggle is flipped; the leftover amount stays as the
+// payment's unallocated remainder (Guthaben). Returns the number settled.
+func (h *Handler) settlePayment(r *http.Request, paymentID, personID int64, req *paymentRequest) (int, error) {
 	items, err := h.openOwedItems(r, personID)
 	if err != nil {
 		return 0, err
 	}
-	ctx := r.Context()
-	remaining := amount
-	settled := 0
-	for _, it := range items {
-		if remaining+0.005 < it.LineTotal { // strict oldest-first: stop at the first item that doesn't fit
-			break
+	// Choose targets in the person's oldest-first order.
+	var targets []owedItem
+	strict := false
+	if len(req.Allocations) > 0 {
+		want := map[string]bool{}
+		for _, a := range req.Allocations {
+			want[a.Kind+":"+strconv.FormatInt(a.ID, 10)] = true
 		}
-		switch it.Kind {
-		case "vehicle":
-			if _, err := h.Pool.Exec(ctx, `UPDATE vehicles SET paid=true, updated_at=now() WHERE id=$1`, it.ID); err != nil {
-				return settled, err
+		for _, it := range items {
+			if want[it.Kind+":"+strconv.FormatInt(it.ID, 10)] {
+				targets = append(targets, it)
 			}
-			h.autoArchiveIfClosed(r, it.ID)
-		case "charge":
-			if _, err := h.Pool.Exec(ctx, `UPDATE charges SET paid=true WHERE id=$1 AND vehicle_id IS NULL`, it.ID); err != nil {
-				return settled, err
+		}
+	} else if req.Allocate {
+		targets = items
+		strict = true // auto: stop at the first item the amount can't cover
+	}
+
+	remaining := req.Amount
+	settled := 0
+	for _, it := range targets {
+		if remaining+0.005 < it.LineTotal {
+			if strict {
+				break
 			}
+			continue // explicit: skip an unaffordable pick, still settle the rest
+		}
+		if err := h.settleOne(r, it); err != nil {
+			return settled, err
+		}
+		if _, err := h.Pool.Exec(r.Context(),
+			`INSERT INTO payment_allocations (payment_id, kind, ref_id, amount) VALUES ($1,$2,$3,$4)`,
+			paymentID, it.Kind, it.ID, it.LineTotal); err != nil {
+			return settled, err
 		}
 		remaining -= it.LineTotal
 		settled++
@@ -276,12 +320,12 @@ func (h *Handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 	h.audit(r, "create", "payment", p.ID, fmt.Sprintf("recorded payment %.2f € (%s)", p.Amount, p.Method))
 
 	settled := 0
-	if req.Allocate {
-		if n, aerr := h.allocateToOpenItems(r, id, req.Amount); aerr != nil {
+	if req.Allocate || len(req.Allocations) > 0 {
+		if n, aerr := h.settlePayment(r, p.ID, id, &req); aerr != nil {
 			slog.Warn("payment allocation failed", "payment_id", p.ID, "err", aerr)
 		} else if n > 0 {
 			settled = n
-			h.audit(r, "update", "payment", p.ID, fmt.Sprintf("allocated payment to %d open item(s), oldest first", n))
+			h.audit(r, "update", "payment", p.ID, fmt.Sprintf("stamped %d position(s) as paid", n))
 		}
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -291,14 +335,44 @@ func (h *Handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// DeletePayment removes a recorded payment (editor role).
+// DeletePayment removes a recorded payment (editor role) and reverts the items
+// it stamped: for each of its allocations, if no OTHER payment still covers that
+// item, its paid toggle is cleared. Manually-toggled items (no allocation) are
+// never touched. The allocations themselves cascade with the payment.
 func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM payments WHERE id=$1`, id)
+	ctx := r.Context()
+	// Revert the items this payment stamped, before the allocations cascade away.
+	rows, err := h.Pool.Query(ctx, `SELECT kind, ref_id FROM payment_allocations WHERE payment_id=$1`, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete payment")
+		return
+	}
+	type ref struct {
+		kind string
+		id   int64
+	}
+	var refs []ref
+	for rows.Next() {
+		var rf ref
+		if err := rows.Scan(&rf.kind, &rf.id); err != nil {
+			rows.Close()
+			writeError(w, http.StatusInternalServerError, "could not delete payment")
+			return
+		}
+		refs = append(refs, rf)
+	}
+	rows.Close()
+	if rows.Err() != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete payment")
+		return
+	}
+
+	ct, err := h.Pool.Exec(ctx, `DELETE FROM payments WHERE id=$1`, id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete payment")
 		return
@@ -307,6 +381,147 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "payment not found")
 		return
 	}
-	h.audit(r, "delete", "payment", id, "deleted payment")
+	for _, rf := range refs {
+		var others int
+		if err := h.Pool.QueryRow(ctx,
+			`SELECT count(*) FROM payment_allocations WHERE kind=$1 AND ref_id=$2`, rf.kind, rf.id).Scan(&others); err != nil {
+			continue
+		}
+		if others > 0 {
+			continue // another payment still covers it
+		}
+		switch rf.kind {
+		case "vehicle":
+			_, _ = h.Pool.Exec(ctx, `UPDATE vehicles SET paid=false, updated_at=now() WHERE id=$1`, rf.id)
+		case "charge":
+			_, _ = h.Pool.Exec(ctx, `UPDATE charges SET paid=false WHERE id=$1 AND vehicle_id IS NULL`, rf.id)
+		}
+	}
+	h.audit(r, "delete", "payment", id, "deleted payment (reverted its stamped positions)")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// OpenItems returns a person's open individually-owed positions (for the payment
+// dialog's selection list).
+func (h *Handler) OpenItems(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	items, err := h.openOwedItems(r, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	type openItem struct {
+		Kind  string  `json:"kind"`
+		ID    int64   `json:"id"`
+		Label string  `json:"label"`
+		Owed  float64 `json:"owed"`
+	}
+	out := make([]openItem, 0, len(items))
+	for _, it := range items {
+		out = append(out, openItem{Kind: it.Kind, ID: it.ID, Label: it.Label, Owed: it.LineTotal})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// personCredit returns a person's Guthaben: total payments minus what has been
+// allocated to items.
+func (h *Handler) personCredit(ctx context.Context, personID int64) float64 {
+	var credit float64
+	_ = h.Pool.QueryRow(ctx,
+		`SELECT COALESCE(SUM(p.amount),0)
+		      - COALESCE((SELECT SUM(a.amount) FROM payment_allocations a
+		                    JOIN payments p2 ON p2.id = a.payment_id
+		                   WHERE p2.person_id = $1),0)
+		   FROM payments p WHERE p.person_id = $1`, personID).Scan(&credit)
+	return round2(credit)
+}
+
+// ApplyCredit draws a person's Guthaben (unallocated payment remainders) against
+// their currently-open items, oldest first — stamping each and linking it to the
+// payment(s) whose remainder covers it. Returns how many items were settled.
+func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	ctx := r.Context()
+	// Payments with unallocated remainder, oldest first.
+	prows, err := h.Pool.Query(ctx,
+		`SELECT p.id, p.amount - COALESCE(SUM(a.amount),0) AS rem
+		   FROM payments p LEFT JOIN payment_allocations a ON a.payment_id = p.id
+		  WHERE p.person_id = $1
+		  GROUP BY p.id, p.amount, p.paid_on
+		 HAVING p.amount - COALESCE(SUM(a.amount),0) > 0.005
+		  ORDER BY p.paid_on, p.id`, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	type rem struct {
+		id  int64
+		rem float64
+	}
+	var rems []rem
+	for prows.Next() {
+		var rm rem
+		if err := prows.Scan(&rm.id, &rm.rem); err != nil {
+			prows.Close()
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		rems = append(rems, rm)
+	}
+	prows.Close()
+
+	items, err := h.openOwedItems(r, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+
+	settled := 0
+	for _, it := range items {
+		var avail float64
+		for _, rm := range rems {
+			avail += rm.rem
+		}
+		if avail+0.005 < it.LineTotal {
+			break // not enough credit left to cover this (oldest) item
+		}
+		if err := h.settleOne(r, it); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not apply credit")
+			return
+		}
+		need := it.LineTotal
+		for i := range rems {
+			if need <= 0.005 {
+				break
+			}
+			if rems[i].rem <= 0.005 {
+				continue
+			}
+			take := rems[i].rem
+			if take > need {
+				take = need
+			}
+			if _, err := h.Pool.Exec(ctx,
+				`INSERT INTO payment_allocations (payment_id, kind, ref_id, amount) VALUES ($1,$2,$3,$4)`,
+				rems[i].id, it.Kind, it.ID, round2(take)); err != nil {
+				writeError(w, http.StatusInternalServerError, "could not apply credit")
+				return
+			}
+			rems[i].rem -= take
+			need -= take
+		}
+		settled++
+	}
+	if settled > 0 {
+		h.audit(r, "update", "payment", 0, fmt.Sprintf("applied Guthaben to %d open position(s)", settled))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"settled": settled})
 }

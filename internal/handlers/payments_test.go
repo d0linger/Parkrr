@@ -138,6 +138,112 @@ func TestPaymentAllocationOldestFirst(t *testing.T) {
 	}
 }
 
+func mkChargeP(t *testing.T, h *Handler, pid int64, desc string, amount float64, on string) int64 {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"person_id": pid, "description": desc, "amount": amount, "quantity": 1, "charged_on": on})
+	rec := httptest.NewRecorder()
+	h.CreateCharge(rec, httptest.NewRequest(http.MethodPost, "/api/charges", bytes.NewReader(body)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("charge: %d %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		ID int64 `json:"id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	return out.ID
+}
+
+func chargePaid(t *testing.T, h *Handler, id int64) bool {
+	t.Helper()
+	var paid bool
+	if err := h.Pool.QueryRow(t.Context(), `SELECT paid FROM charges WHERE id=$1`, id).Scan(&paid); err != nil {
+		t.Fatalf("charge paid: %v", err)
+	}
+	return paid
+}
+
+func personCreditVal(t *testing.T, h *Handler, pid int64) float64 {
+	t.Helper()
+	return h.personCredit(t.Context(), pid)
+}
+
+// TestPaymentExplicitSelectionAndDelete: an explicit selection stamps exactly the
+// chosen item; deleting the payment reverts it (interdependence).
+func TestPaymentExplicitSelectionAndDelete(t *testing.T) {
+	h := testHandler(t)
+	pid := createIntegrationPerson(t, h)
+	older := mkChargeP(t, h, pid, "older", 50, "2026-01-10")
+	newer := mkChargeP(t, h, pid, "newer", 80, "2026-06-10")
+
+	rec := postPayment(t, h, pid, map[string]any{
+		"amount": 200, "method": "bar",
+		"allocations": []map[string]any{{"kind": "charge", "id": newer}},
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("payment: %d %s", rec.Code, rec.Body.String())
+	}
+	var res struct {
+		ID      int64 `json:"id"`
+		Settled int   `json:"settled"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &res)
+	if res.Settled != 1 || !chargePaid(t, h, newer) || chargePaid(t, h, older) {
+		t.Fatalf("explicit selection wrong: settled=%d newerPaid=%v olderPaid=%v", res.Settled, chargePaid(t, h, newer), chargePaid(t, h, older))
+	}
+	// 200 paid, 80 allocated -> 120 Guthaben.
+	if c := personCreditVal(t, h, pid); c != 120 {
+		t.Errorf("expected Guthaben 120, got %.2f", c)
+	}
+	// Delete the payment -> the newer charge reverts to open, credit clears.
+	dreq := httptest.NewRequest(http.MethodDelete, "/api/payments/"+strconv.FormatInt(res.ID, 10), nil)
+	dreq.SetPathValue("id", strconv.FormatInt(res.ID, 10))
+	drec := httptest.NewRecorder()
+	h.DeletePayment(drec, dreq)
+	if drec.Code != http.StatusOK {
+		t.Fatalf("delete: %d", drec.Code)
+	}
+	if chargePaid(t, h, newer) {
+		t.Error("newer charge should revert to open after payment delete")
+	}
+	if c := personCreditVal(t, h, pid); c != 0 {
+		t.Errorf("expected Guthaben 0 after delete, got %.2f", c)
+	}
+}
+
+// TestOverpaymentAndApplyCredit: overpaying leaves Guthaben; applying it later
+// settles a newly-open item.
+func TestOverpaymentAndApplyCredit(t *testing.T) {
+	h := testHandler(t)
+	pid := createIntegrationPerson(t, h)
+	c1 := mkChargeP(t, h, pid, "first", 100, "2026-01-10")
+
+	rec := postPayment(t, h, pid, map[string]any{"amount": 250, "method": "ueberweisung", "allocate": true})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("payment: %d %s", rec.Code, rec.Body.String())
+	}
+	if !chargePaid(t, h, c1) {
+		t.Error("first charge should be stamped")
+	}
+	if c := personCreditVal(t, h, pid); c != 150 {
+		t.Fatalf("expected Guthaben 150, got %.2f", c)
+	}
+
+	c2 := mkChargeP(t, h, pid, "later", 120, "2026-06-10")
+	areq := httptest.NewRequest(http.MethodPost, "/api/persons/"+strconv.FormatInt(pid, 10)+"/apply-credit", nil)
+	areq.SetPathValue("id", strconv.FormatInt(pid, 10))
+	arec := httptest.NewRecorder()
+	h.ApplyCredit(arec, areq)
+	if arec.Code != http.StatusOK {
+		t.Fatalf("apply-credit: %d %s", arec.Code, arec.Body.String())
+	}
+	if !chargePaid(t, h, c2) {
+		t.Error("apply-credit should stamp the newly-open charge from Guthaben")
+	}
+	if c := personCreditVal(t, h, pid); c != 30 {
+		t.Errorf("expected Guthaben 30 after applying, got %.2f", c)
+	}
+}
+
 func TestCreatePaymentValidation(t *testing.T) {
 	h := testHandler(t)
 	pid := createIntegrationPerson(t, h)

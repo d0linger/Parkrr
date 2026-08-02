@@ -1054,9 +1054,18 @@
                 payments.length ? el('span', { class: 'sec-count' }, payments.length) : null));
         if (canBill()) pz.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => paymentForm(id, stats) }, '+ Zahlung'));
         page.append(pz);
-        page.append(el('div', { class: 'card konto' },
+        const kontoCard = el('div', { class: 'card konto' },
             kontoFig('Eingegangen ' + stats.year, eur(stats.payments_year), 'in'),
-            kontoFig('Eingegangen gesamt', eur(stats.payments_total), '')));
+            kontoFig('Eingegangen gesamt', eur(stats.payments_total), ''));
+        if ((Number(stats.credit) || 0) > 0.005) {
+            kontoCard.append(kontoFig('Guthaben', eur(stats.credit), 'in'));
+        }
+        page.append(kontoCard);
+        if ((Number(stats.credit) || 0) > 0.005 && canBill()) {
+            page.append(el('div', { class: 'card-row', style: 'margin:-.3rem 0 .2rem;align-items:center;gap:.5rem' },
+                el('div', { class: 'card-meta', style: 'flex:1' }, 'Guthaben ' + eur(stats.credit) + ' verfügbar.'),
+                el('button', { class: 'btn btn-ghost btn-sm', onclick: (e) => applyCredit(id, e.currentTarget) }, 'Guthaben anrechnen')));
+        }
         if (!payments.length) page.append(el('p', { class: 'muted' }, 'Noch keine Zahlungen erfasst.'));
         else payments.forEach((p) => page.append(paymentRow(id, p)));
 
@@ -1125,26 +1134,79 @@
     }
     async function paymentForm(personId, stats) {
         const open = Math.max(0, Number(stats && stats.balance) || 0);
+        let items = [];
+        try { items = (await api.get('/persons/' + personId + '/open-items')) || []; } catch (e) { /* keep empty */ }
+        // Selection state: default = automatic (oldest first), everything ticked.
+        const sel = { auto: true, checked: new Set(items.map((i) => i.kind + ':' + i.id)) };
+
         await formModal({
             title: 'Zahlung erfassen',
             fields: [
-                { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', required: true, value: open ? open.toFixed(2) : '', help: open ? 'Vorausgefüllt: offener Saldo – für Teilzahlung anpassen.' : '' },
+                { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', required: true, value: open ? open.toFixed(2) : '', help: open ? 'Vorausgefüllt: offener Saldo – für Teil-/Vorauszahlung anpassen.' : '' },
                 { name: 'paid_on', label: 'Datum', type: 'date', value: today() },
                 { name: 'method', label: 'Methode', type: 'select', value: 'bar', options: PAY_METHODS.map((m) => ({ value: m.v, label: m.l })) },
                 { name: 'note', label: 'Notiz (optional)', value: '' },
-                { name: 'allocate', label: 'Offene Posten begleichen (älteste zuerst)', type: 'checkbox', value: true },
             ],
-            onRender: (body) => segmentedField(body, 'method', PAY_METHODS),
+            onRender: (body) => {
+                segmentedField(body, 'method', PAY_METHODS);
+                const amountEl = () => body.querySelector('#f_amount');
+                const box = el('div', { class: 'alloc-box' });
+                const foot = el('div', { class: 'alloc-foot' });
+                const list = el('div', { class: 'alloc-list' });
+
+                const refresh = () => {
+                    const amt = Number(amountEl().value) || 0;
+                    let selTotal = 0;
+                    items.forEach((it) => { if (sel.checked.has(it.kind + ':' + it.id)) selTotal += Number(it.owed) || 0; });
+                    list.style.display = sel.auto ? 'none' : '';
+                    const covered = sel.auto ? Math.min(amt, items.reduce((s, i) => s + (Number(i.owed) || 0), 0)) : Math.min(amt, selTotal);
+                    const credit = Math.max(0, amt - covered);
+                    foot.innerHTML = '';
+                    foot.append(el('span', {}, sel.auto ? 'Automatisch – älteste zuerst' : ('Zugeordnet ' + eur(covered))));
+                    foot.append(el('span', { class: credit > 0.005 ? 'is-credit' : '' }, credit > 0.005 ? ('Guthaben ' + eur(credit)) : 'Rest ' + eur(0)));
+                };
+
+                const autoChk = el('input', { type: 'checkbox' }); autoChk.checked = true;
+                autoChk.addEventListener('change', () => { sel.auto = autoChk.checked; refresh(); });
+                box.append(el('label', { class: 'switch alloc-auto' }, autoChk, el('span', { class: 'track' }), el('span', {}, 'Automatisch – offene Posten älteste zuerst begleichen')));
+
+                if (!items.length) {
+                    box.append(el('div', { class: 'card-meta', style: 'margin:.3rem 0' }, 'Keine offenen Einzelposten – der Betrag wird als Guthaben verbucht.'));
+                } else {
+                    items.forEach((it) => {
+                        const key = it.kind + ':' + it.id;
+                        const cb = el('input', { type: 'checkbox' }); cb.checked = true;
+                        cb.addEventListener('change', () => { if (cb.checked) sel.checked.add(key); else sel.checked.delete(key); refresh(); });
+                        list.append(el('label', { class: 'alloc-item' }, cb,
+                            el('span', { class: 'ai-m' }, esc(it.label)),
+                            el('span', { class: 'ai-a' }, eur(it.owed))));
+                    });
+                    box.append(list);
+                }
+                box.append(foot);
+                body.append(box);
+                amountEl().addEventListener('input', refresh);
+                refresh();
+            },
             save: async (data) => {
                 if (!(Number(data.amount) > 0)) { toast('Betrag muss größer als 0 sein', 'error'); throw new Error('invalid amount'); }
-                const res = await api.post('/persons/' + personId + '/payments', {
-                    amount: Number(data.amount), paid_on: data.paid_on, method: data.method, note: data.note || '',
-                    allocate: !!data.allocate,
-                });
+                const payload = { amount: Number(data.amount), paid_on: data.paid_on, method: data.method, note: data.note || '' };
+                if (sel.auto) payload.allocate = true;
+                else payload.allocations = [...sel.checked].map((k) => { const [kind, id] = k.split(':'); return { kind, id: Number(id) }; });
+                const res = await api.post('/persons/' + personId + '/payments', payload);
                 const n = res && res.settled;
-                toast(n ? `Zahlung erfasst · ${n} Posten beglichen` : 'Zahlung erfasst', 'success'); render();
+                toast(n ? `Zahlung erfasst · ${n} Posten abgestempelt` : 'Zahlung erfasst', 'success'); render();
             },
         });
+    }
+    async function applyCredit(personId, btn) {
+        const o = btn.textContent; btn.disabled = true; btn.textContent = 'Rechne an …';
+        try {
+            const r = await api.post('/persons/' + personId + '/apply-credit', {});
+            const n = r && r.settled;
+            toast(n ? `Guthaben angerechnet · ${n} Posten abgestempelt` : 'Kein offener Posten zum Anrechnen', n ? 'success' : 'error');
+            render();
+        } catch (e) { toast(e.message, 'error'); btn.disabled = false; btn.textContent = o; }
     }
 
     // ---------- Rechnungen (invoices) ----------

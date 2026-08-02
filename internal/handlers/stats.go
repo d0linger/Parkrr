@@ -22,6 +22,7 @@ type personStatsResponse struct {
 	Balance          float64                  `json:"balance"`
 	PaymentsTotal    float64                  `json:"payments_total"` // recorded money-in (all time)
 	PaymentsYear     float64                  `json:"payments_year"`  // recorded money-in in the selected year
+	Credit           float64                  `json:"credit"`         // Guthaben: payments not (yet) allocated to items
 	ActiveVehicles   int                      `json:"active_vehicles"`
 	TotalVehicles    int                      `json:"total_vehicles"`
 	Year             int                      `json:"year"`
@@ -247,6 +248,7 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 		resp.PaymentsTotal = round2(resp.PaymentsTotal)
 		resp.PaymentsYear = round2(resp.PaymentsYear)
 	}
+	resp.Credit = h.personCredit(r.Context(), id)
 
 	writeJSON(w, http.StatusOK, resp)
 }
