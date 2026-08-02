@@ -2467,6 +2467,402 @@
             render: (u) => userCard(u),
         });
     };
+    async function downloadBackup(btn) {
+        const orig = btn.textContent;
+        btn.disabled = true; btn.textContent = 'Sichere …';
+        try {
+            const res = await fetch('/api/backup', {
+                method: 'POST',
+                headers: { 'X-CSRF-Token': getCookie('parkrr_csrf') },
+                credentials: 'same-origin',
+            });
+            if (!res.ok) {
+                let msg = 'Backup fehlgeschlagen';
+                try { const j = await res.json(); if (j && j.error) msg = j.error; } catch (e) { /* non-JSON */ }
+                throw new Error(msg);
+            }
+            const blob = await res.blob();
+            const cd = res.headers.get('Content-Disposition') || '';
+            const m = cd.match(/filename="([^"]+)"/);
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = m ? m[1] : 'parkrr-backup.dump.enc';
+            document.body.append(a); a.click(); a.remove();
+            URL.revokeObjectURL(url);
+            toast('Backup heruntergeladen', 'success');
+        } catch (e) {
+            toast(e.message, 'error');
+        } finally {
+            btn.disabled = false; btn.textContent = orig;
+        }
+    }
+    const fmtBytes = (n) => { n = Number(n) || 0; if (n < 1024) return n + ' B'; if (n < 1048576) return (n / 1024).toFixed(1) + ' KB'; return (n / 1048576).toFixed(1) + ' MB'; };
+
+    // ---------- BACKUP (admin) ----------
+    // ---- cron helpers (client twins of internal/backup/cron.go) ----
+    const CRON_DOW = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'];
+    const pad2 = (n) => String(n).padStart(2, '0');
+    function cronFieldSet(f, lo, hi) {
+        const out = new Set();
+        for (const part of String(f).split(',')) {
+            let step = 1, range = part;
+            const sl = part.indexOf('/');
+            if (sl >= 0) { step = parseInt(part.slice(sl + 1), 10); range = part.slice(0, sl); if (!(step >= 1)) return null; }
+            let a, b;
+            if (range === '*') { a = lo; b = hi; }
+            else if (range.indexOf('-') >= 0) { const q = range.split('-'); a = parseInt(q[0], 10); b = parseInt(q[1], 10); }
+            else { a = parseInt(range, 10); b = (sl >= 0) ? hi : a; }
+            if (!Number.isInteger(a) || !Number.isInteger(b) || a < lo || b > hi || a > b) return null;
+            for (let v = a; v <= b; v += step) out.add(v);
+        }
+        return out.size ? out : null;
+    }
+    function cronParse(expr) {
+        const p = String(expr).trim().split(/\s+/);
+        if (p.length !== 5) return null;
+        const bounds = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 6]];
+        const sets = [];
+        for (let i = 0; i < 5; i++) { const s = cronFieldSet(p[i], bounds[i][0], bounds[i][1]); if (!s) return null; sets.push(s); }
+        // robfig's ParseStandard treats "*" and "*/n" alike for the day-of-month
+        // vs day-of-week AND/OR decision — mirror that so the preview matches.
+        const starBit = (f) => /^\*(\/\d+)?$/.test(f);
+        return { sets, domStar: starBit(p[2]), dowStar: starBit(p[4]) };
+    }
+    function cronNext(expr, from) {
+        const c = cronParse(expr); if (!c) return null;
+        const [minS, hrS, domS, monS, dowS] = c.sets;
+        const d = new Date(from.getTime()); d.setSeconds(0, 0); d.setMinutes(d.getMinutes() + 1);
+        for (let i = 0; i < 527040; i++) { // ~366 days of minutes
+            if (minS.has(d.getMinutes()) && hrS.has(d.getHours()) && monS.has(d.getMonth() + 1)) {
+                const domM = domS.has(d.getDate()), dowM = dowS.has(d.getDay());
+                const dayOK = (c.domStar && c.dowStar) ? true : (c.domStar ? dowM : (c.dowStar ? domM : (domM || dowM)));
+                if (dayOK) return new Date(d.getTime());
+            }
+            d.setMinutes(d.getMinutes() + 1);
+        }
+        return null;
+    }
+    function cronNextRuns(expr, k) {
+        const out = []; let t = new Date();
+        for (let i = 0; i < k; i++) { const n = cronNext(expr, t); if (!n) break; out.push(n); t = n; }
+        return out;
+    }
+    function describeCron(expr) {
+        expr = String(expr || '').trim();
+        if (!expr) return 'Aus — kein automatisches Backup.';
+        const p = expr.split(/\s+/);
+        if (p.length !== 5 || !cronParse(expr)) return 'Ungültiger Cron-Ausdruck.';
+        const [mi, hr, dom, mon, dow] = p;
+        const isNum = (s) => /^\d+$/.test(s);
+        const at = () => pad2(+hr) + ':' + pad2(+mi);
+        if (mi === '0' && /^\*\/\d+$/.test(hr) && dom === '*' && mon === '*' && dow === '*') return 'Alle ' + hr.slice(2) + ' Stunden.';
+        if (isNum(mi) && isNum(hr)) {
+            if (dom === '*' && mon === '*' && dow !== '*' && isNum(dow)) return 'Jeden ' + CRON_DOW[((+dow % 7) + 7) % 7] + ' um ' + at() + ' Uhr.';
+            if (dom !== '*' && mon === '*' && dow === '*' && isNum(dom)) return 'Monatlich am ' + (+dom) + '. um ' + at() + ' Uhr.';
+            if (dom === '*' && mon === '*' && dow === '*') return 'Täglich um ' + at() + ' Uhr.';
+        }
+        return 'Cron: ' + expr;
+    }
+    const fmtWhen = (iso) => iso ? new Date(iso).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' }) : '—';
+
+    // Parse a saved cron into the editor form (mode + fields); unrecognised shapes
+    // fall back to the raw "Cron" mode so any expression stays editable.
+    function cronToForm(expr) {
+        expr = String(expr || '').trim();
+        const f = { on: !!expr, mode: 'daily', time: '03:00', hours: 6, dow: '0', raw: expr };
+        if (!expr) return f;
+        f.mode = 'cron';
+        const p = expr.split(/\s+/);
+        if (p.length === 5 && cronParse(expr)) {
+            const [mi, hr, dom, mon, dow] = p; const isNum = (s) => /^\d+$/.test(s);
+            if (mi === '0' && /^\*\/\d+$/.test(hr) && dom === '*' && mon === '*' && dow === '*') { f.mode = 'hours'; f.hours = +hr.slice(2); }
+            else if (isNum(mi) && isNum(hr) && dom === '*' && mon === '*' && dow !== '*' && isNum(dow)) { f.mode = 'weekly'; f.dow = dow; f.time = pad2(+hr) + ':' + pad2(+mi); }
+            else if (isNum(mi) && isNum(hr) && dom === '*' && mon === '*' && dow === '*') { f.mode = 'daily'; f.time = pad2(+hr) + ':' + pad2(+mi); }
+        }
+        return f;
+    }
+    function formToCron(f) {
+        if (!f.on) return '';
+        if (f.mode === 'daily') { const [h, m] = f.time.split(':'); return (+m) + ' ' + (+h) + ' * * *'; }
+        if (f.mode === 'hours') { return '0 */' + f.hours + ' * * *'; }
+        if (f.mode === 'weekly') { const [h, m] = f.time.split(':'); return (+m) + ' ' + (+h) + ' * * ' + f.dow; }
+        return String(f.raw || '').trim();
+    }
+
+    // ---------- BACKUP tab (admin) ----------
+    const CRON_MODES = [['daily', 'Täglich'], ['hours', 'Alle N Std.'], ['weekly', 'Wöchentlich'], ['cron', 'Cron']];
+    // A per-target schedule editor (Volume or S3): mode tabs + fields, a live cron
+    // string, a plain-language description, the next runs, and a retention count.
+    function scheduleColumn(label, iconKey, expr, keep, configured, note) {
+        const f = cronToForm(expr);
+        const keepIn = el('input', { type: 'number', min: '0', step: '1', value: String(keep ?? 0), 'aria-label': 'Behalten' });
+        const controls = el('div', { class: 'sched-controls' });
+        const cronOut = el('code', { class: 'sched-cron' });
+        const descOut = el('div', { class: 'card-meta' });
+        const runsOut = el('div', { class: 'sched-runs' });
+        const tabsWrap = el('div', { class: 'seg-tabs', role: 'tablist', 'aria-label': label + ' Modus' });
+        const bodyWrap = el('div', {});
+
+        function renderRuns(cron) {
+            runsOut.innerHTML = '';
+            if (!cron) { runsOut.append(el('span', { class: 'card-meta' }, '—')); return; }
+            const runs = cronNextRuns(cron, 3);
+            if (!runs.length) { runsOut.append(el('span', { class: 'card-meta' }, 'Keine bevorstehenden Läufe.')); return; }
+            runsOut.append(el('div', { class: 'card-meta', style: 'margin-bottom:.15rem' }, 'Nächste Läufe:'));
+            for (const r of runs) runsOut.append(el('div', { class: 'sched-run' }, r.toLocaleString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })));
+        }
+        function refresh() {
+            const cron = formToCron(f);
+            cronOut.textContent = cron || '(aus)';
+            descOut.textContent = describeCron(cron);
+            renderRuns(cron);
+        }
+        function renderControls() {
+            controls.innerHTML = '';
+            if (!f.on) return;
+            if (f.mode === 'weekly') {
+                const sel = el('select', { 'aria-label': 'Wochentag' });
+                CRON_DOW.forEach((d, i) => { const o = el('option', { value: String(i) }, d); if (String(i) === f.dow) o.selected = true; sel.append(o); });
+                sel.addEventListener('change', () => { f.dow = sel.value; refresh(); });
+                controls.append(el('label', { class: 'sched-lbl' }, 'Wochentag'), sel);
+            }
+            if (f.mode === 'daily' || f.mode === 'weekly') {
+                const time = el('input', { type: 'time', value: f.time });
+                time.addEventListener('input', () => { f.time = time.value || '03:00'; refresh(); });
+                controls.append(el('label', { class: 'sched-lbl' }, 'Uhrzeit'), time);
+            } else if (f.mode === 'hours') {
+                const num = el('input', { type: 'number', min: '1', max: '24', value: String(f.hours) });
+                num.addEventListener('input', () => { f.hours = Math.min(24, Math.max(1, +num.value || 1)); refresh(); });
+                controls.append(el('label', { class: 'sched-lbl' }, 'Alle N Stunden'), num);
+            } else {
+                const raw = el('input', { type: 'text', value: f.raw || '', placeholder: '0 3 * * *', spellcheck: 'false', autocapitalize: 'off', autocomplete: 'off' });
+                // Debounce: a hand-typed expression can be valid-but-unsatisfiable
+                // (e.g. "0 0 30 2 *"), making the next-runs scan walk up to a year —
+                // don't run it on every keystroke.
+                let rawTimer;
+                raw.addEventListener('input', () => { f.raw = raw.value; clearTimeout(rawTimer); rawTimer = setTimeout(refresh, 200); });
+                controls.append(el('label', { class: 'sched-lbl' }, 'Cron (Min Std Tag Mon Wtag)'), raw);
+            }
+        }
+        function renderTabs() {
+            tabsWrap.innerHTML = '';
+            for (const [m, lbl] of CRON_MODES) {
+                const b = el('button', { type: 'button', role: 'tab', class: 'seg-tab' + (f.mode === m ? ' active' : ''), 'aria-selected': String(f.mode === m) }, lbl);
+                b.addEventListener('click', () => { if (m === 'cron' && !f.raw) f.raw = formToCron({ ...f, mode: (f.mode === 'cron' ? 'daily' : f.mode) }); f.mode = m; renderTabs(); renderControls(); refresh(); });
+                tabsWrap.append(b);
+            }
+        }
+        const toggle = el('input', { type: 'checkbox' });
+        toggle.checked = f.on;
+        function applyOn() { bodyWrap.style.display = f.on ? '' : 'none'; refresh(); }
+        toggle.addEventListener('change', () => { f.on = toggle.checked; applyOn(); });
+
+        bodyWrap.append(tabsWrap, controls,
+            el('div', { class: 'sched-preview' }, cronOut, descOut, runsOut),
+            el('div', { class: 'sched-keep' }, el('label', { class: 'sched-lbl' }, 'Behalten (Anzahl · 0 = alle)'), keepIn));
+        renderTabs(); renderControls(); refresh(); applyOn();
+
+        const col = el('div', { class: 'sched-col' + (configured ? '' : ' is-off') },
+            el('div', { class: 'sched-col-head' },
+                el('span', { class: 'sched-col-title' }, icon(iconKey, 16), ' ', el('b', {}, label)),
+                el('label', { class: 'sched-switch' }, toggle, el('span', {}, 'Automatisch'))));
+        if (!configured && note) col.append(el('div', { class: 'card-meta', style: 'margin:.2rem 0 .4rem' }, note));
+        col.append(bodyWrap);
+        return { node: col, read: () => ({ cron: formToCron(f), keep: Math.max(0, parseInt(keepIn.value, 10) || 0) }) };
+    }
+    function scheduleCard(st) {
+        const s = st.settings || {};
+        const volCol = scheduleColumn('Volume', 'archive', s.volume_cron || '', s.volume_keep ?? 14, !!st.scheduled,
+            'Kein Volume gemountet — setze PARKRR_BACKUP_DIR. Der Zeitplan lässt sich trotzdem speichern.');
+        const s3Col = scheduleColumn('S3', 'box', s.s3_cron || '', s.s3_keep ?? 0, !!st.s3,
+            'Kein S3 konfiguriert — setze PARKRR_S3_* (Env). Der Zeitplan lässt sich trotzdem speichern.');
+        const saveBtn = el('button', { class: 'btn btn-primary' }, 'Zeitplan speichern');
+        const runBtn = el('button', { class: 'btn btn-ghost' }, 'Jetzt sichern');
+        saveBtn.addEventListener('click', () => saveSchedule(volCol.read(), s3Col.read(), saveBtn));
+        runBtn.addEventListener('click', () => runScheduledNow(runBtn));
+        if (!(st.scheduled || st.s3)) runBtn.disabled = true;
+        return el('div', { class: 'card', style: 'margin-top:1rem' },
+            el('h3', {}, 'Zeitplan · Cron'),
+            el('div', { class: 'card-meta', style: 'margin:.2rem 0 .7rem' }, 'Automatische verschlüsselte Sicherungen. Der Scheduler übernimmt Änderungen binnen einer Minute.'),
+            el('div', { class: 'sched-grid' }, volCol.node, s3Col.node),
+            el('div', { class: 'sched-actions' }, saveBtn, runBtn));
+    }
+    async function saveSchedule(vol, s3, btn) {
+        const o = btn.textContent; btn.disabled = true; btn.textContent = 'Speichere …';
+        try {
+            await api.post('/backup/schedule', { volume_cron: vol.cron, volume_keep: vol.keep, s3_cron: s3.cron, s3_keep: s3.keep });
+            toast('Zeitplan gespeichert', 'success');
+        } catch (e) { toast(e.message, 'error'); }
+        btn.disabled = false; btn.textContent = o;
+    }
+    async function runScheduledNow(btn) {
+        const o = btn.textContent; btn.disabled = true; btn.textContent = 'Sichere …';
+        try {
+            const r = await api.post('/backup/run');
+            const partial = r && r.partial;
+            toast(partial ? 'Teilweise gesichert (' + ((r.ran || []).join(', ')) + ')' : 'Sicherung erstellt', partial ? 'error' : 'success');
+            render();
+        } catch (e) { toast(e.message, 'error'); btn.disabled = false; btn.textContent = o; }
+    }
+    function backupStatRow(st) {
+        const s = st.status || {};
+        return el('div', { class: 'stat-grid', style: 'margin-top:1rem' },
+            stat(fmtWhen(s.last_volume_at), 'Letztes Volume-Backup', { icon: 'warehouse', tone: s.last_volume_ok ? 'green' : (s.last_volume_at ? 'amber' : undefined) }),
+            stat(s.last_volume_size ? fmtBytes(s.last_volume_size) : '—', 'Größe', { icon: 'trend' }),
+            stat(fmtWhen(s.restore_tested_at), 'Archiv geprüft', { icon: 'check', tone: s.restore_tested_at ? 'teal' : undefined }),
+            stat(st.schema_version || '—', 'Schema-Stand', { icon: 'clock' }));
+    }
+    function backupFileRow(f, base, onRestore) {
+        const row = el('div', { class: 'card-row', style: 'border-top:1px solid var(--border);padding:.45rem 0;align-items:center;gap:.4rem' },
+            el('div', { style: 'flex:1;min-width:0' },
+                el('div', { style: 'font-weight:600;font-size:.85rem;word-break:break-all' }, esc(f.name)),
+                el('div', { class: 'card-meta' }, new Date(f.modified).toLocaleString('de-DE') + ' · ' + fmtBytes(f.size))),
+            el('a', { class: 'btn btn-ghost btn-sm', href: base + encodeURIComponent(f.name), download: f.name }, 'Download'));
+        if (onRestore) row.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: onRestore }, 'Restore'));
+        return row;
+    }
+    routes.backup = async (page) => {
+        if (!isAdmin()) { page.innerHTML = ''; page.append(emptyState('shield', 'Nur für Administratoren.')); return; }
+        page.innerHTML = '';
+        page.append(el('div', { class: 'detail-head' },
+            el('button', { class: 'back-btn', onclick: () => navigate('dashboard') }, '‹'),
+            el('h2', { style: 'margin:0' }, 'Backup')));
+        let st = { enabled: false, scheduled: false, s3: false, dir: '', schema_version: '', settings: {}, status: {}, files: [], s3_files: [] };
+        try { st = (await api.get('/backup/status')) || st; } catch (e) { /* keep defaults */ }
+
+        if (!st.enabled) {
+            page.append(el('div', { class: 'card' },
+                el('h3', {}, 'Nicht aktiviert'),
+                el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Setze die Umgebungsvariable PARKRR_BACKUP_KEY (AES-256-GCM-Schlüssel, getrennt vom Session-Secret), um Sicherungen zu erzeugen.')));
+            return;
+        }
+
+        // Stat row
+        page.append(backupStatRow(st));
+
+        // On-demand download
+        page.append(el('div', { class: 'card', style: 'margin-top:1rem' },
+            el('h3', {}, 'Sofort-Sicherung'),
+            el('div', { class: 'card-meta', style: 'margin:.3rem 0 .7rem' }, 'Verschlüsselter Voll-Export (pg_dump · AES-256-GCM) als Download. Off-box aufbewahren (2. Platte / NAS).'),
+            el('button', { class: 'btn btn-primary', onclick: (e) => downloadBackup(e.currentTarget) }, 'Sofort herunterladen')));
+
+        // Schedule (cron)
+        page.append(scheduleCard(st));
+
+        // Volume file list
+        const sched = el('div', {});
+        if (!st.scheduled) {
+            sched.append(el('div', { class: 'card-meta' }, 'Kein Volume gemountet. Setze PARKRR_BACKUP_DIR (schreibbares Volume) für lokale Sicherungen mit Rotation.'));
+        } else if (!st.files.length) {
+            sched.append(el('div', { class: 'card-meta' }, 'Verzeichnis: ' + esc(st.dir) + ' — noch keine Dateien.'));
+        } else {
+            sched.append(el('div', { class: 'card-meta', style: 'margin-bottom:.5rem' }, 'Verzeichnis: ' + esc(st.dir)));
+            for (const f of st.files) sched.append(backupFileRow(f, '/api/backup/file/'));
+        }
+        page.append(el('div', { class: 'card', style: 'margin-top:1rem' }, el('h3', {}, 'Volume-Backups'), sched));
+
+        // S3 (off-site)
+        const s3box = el('div', {});
+        if (!st.s3) {
+            s3box.append(el('div', { class: 'card-meta' }, 'Nicht konfiguriert. Setze PARKRR_S3_ENDPOINT / _BUCKET / _ACCESS_KEY / _SECRET_KEY (S3-kompatibel: AWS S3, Backblaze B2, Wasabi, MinIO).'));
+        } else {
+            s3box.append(el('div', { class: 'card-row', style: 'align-items:center;margin-bottom:.5rem' },
+                el('div', { style: 'flex:1;min-width:0' }, el('div', { class: 'card-meta' }, 'Bucket: ' + esc(st.s3_bucket))),
+                el('button', { class: 'btn btn-primary btn-sm', onclick: (e) => uploadToS3(e.currentTarget) }, 'Jetzt in S3 sichern')));
+            if (!st.s3_files.length) s3box.append(el('div', { class: 'card-meta' }, 'Noch keine Objekte im Bucket.'));
+            else for (const f of st.s3_files) s3box.append(backupFileRow(f, '/api/backup/s3/file/', () => restoreFromS3(f.name)));
+        }
+        page.append(el('div', { class: 'card', style: 'margin-top:1rem' }, el('h3', {}, 'S3-Sicherung (extern)'), s3box));
+
+        // Restore (upload + key + validate + confirmed, atomic restore)
+        page.append(backupRestoreCard());
+
+        // Key & notes
+        page.append(el('div', { class: 'card', style: 'margin-top:1rem' },
+            el('h3', {}, 'Schlüssel & Hinweise'),
+            el('ul', { class: 'card-meta', style: 'margin:.4rem 0 0;padding-left:1.1rem;line-height:1.6' },
+                el('li', {}, 'Der Verschlüsselungs-Schlüssel wird als Umgebungsvariable ', el('b', {}, 'PARKRR_BACKUP_KEY'), ' gesetzt (getrennt vom Session-Secret), nie in der App gespeichert.'),
+                el('li', {}, 'Beim Wiederherstellen gibst du den Schlüssel erneut ein, der zu der jeweiligen Datei passt.'),
+                el('li', {}, '„Archiv geprüft" heißt: das zuletzt geschriebene Volume-Backup wurde entschlüsselt und sein Inhaltsverzeichnis gelesen (pg_restore --list).'),
+                el('li', {}, 'Für beliebig große Backups: Restore per Kommandozeile ', el('code', {}, 'parkrr restore <datei.dump.enc>'), '.'))));
+    };
+    function backupRestoreCard() {
+        const fileIn = el('input', { type: 'file', accept: '.enc' });
+        const keyIn = el('input', { type: 'password', placeholder: 'Backup-Schlüssel', autocomplete: 'off' });
+        const confirmIn = el('input', { type: 'text', placeholder: 'RESTORE', autocomplete: 'off' });
+        const result = el('div', { class: 'card-meta', style: 'margin:.5rem 0' });
+        const restoreBtn = el('button', { class: 'btn btn-danger', disabled: true, onclick: (e) => restoreBackup(fileIn, keyIn, confirmIn, e.currentTarget) }, 'Wiederherstellen');
+        const validateBtn = el('button', { class: 'btn btn-ghost', onclick: () => validateBackup(fileIn, keyIn, result, restoreBtn) }, 'Validieren');
+        // Re-validation is required after any change, so the restore stays gated.
+        const invalidate = () => { restoreBtn.disabled = true; result.textContent = ''; };
+        fileIn.addEventListener('change', invalidate); keyIn.addEventListener('input', invalidate);
+        return el('div', { class: 'card', style: 'margin-top:1rem' },
+            el('h3', {}, 'Wiederherstellen'),
+            el('div', { class: 'card-meta', style: 'margin:.3rem 0 .6rem;color:var(--accent-text);font-weight:600' },
+                '⚠ Überschreibt die gesamte aktuelle Datenbank. Atomar (rollt bei Fehler komplett zurück). Erst validieren.'),
+            el('label', {}, 'Backup-Datei (.dump.enc)'), fileIn,
+            el('label', {}, 'Schlüssel'), keyIn,
+            el('div', { style: 'margin-top:.6rem' }, validateBtn),
+            result,
+            el('label', {}, 'Zum Bestätigen RESTORE eingeben'), confirmIn,
+            el('div', { style: 'margin-top:.6rem' }, restoreBtn));
+    }
+    async function validateBackup(fileIn, keyIn, result, restoreBtn) {
+        if (!fileIn.files[0]) { toast('Bitte eine Backup-Datei wählen', 'error'); return; }
+        if (!keyIn.value) { toast('Bitte den Schlüssel eingeben', 'error'); return; }
+        result.textContent = 'Prüfe …';
+        const fd = new FormData(); fd.append('file', fileIn.files[0]); fd.append('key', keyIn.value);
+        try {
+            const res = await fetch('/api/backup/validate', { method: 'POST', headers: { 'X-CSRF-Token': getCookie('parkrr_csrf') }, credentials: 'same-origin', body: fd });
+            if (!res.ok) { const j = await res.json().catch(() => ({})); result.textContent = '✗ ' + (j.error || 'Ungültig'); restoreBtn.disabled = true; return; }
+            const info = await res.json();
+            result.textContent = '✓ Gültiges Backup · erstellt ' + (info.created || '?') + ' · ' + info.entries + ' Objekte';
+            restoreBtn.disabled = false;
+        } catch (e) { result.textContent = '✗ ' + e.message; restoreBtn.disabled = true; }
+    }
+    async function restoreBackup(fileIn, keyIn, confirmIn, btn) {
+        if (confirmIn.value !== 'RESTORE') { toast('Zum Bestätigen RESTORE eingeben', 'error'); return; }
+        if (!await confirmDialog('Datenbank überschreiben?', 'Die gesamte aktuelle Datenbank wird durch das Backup ersetzt. Das lässt sich nicht rückgängig machen. Du wirst danach neu angemeldet.', 'Wiederherstellen')) return;
+        const o = btn.textContent; btn.disabled = true; btn.textContent = 'Stelle wieder her …';
+        const fd = new FormData(); fd.append('file', fileIn.files[0]); fd.append('key', keyIn.value); fd.append('confirm', 'RESTORE');
+        try {
+            const res = await fetch('/api/backup/restore', { method: 'POST', headers: { 'X-CSRF-Token': getCookie('parkrr_csrf') }, credentials: 'same-origin', body: fd });
+            if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Restore fehlgeschlagen'); }
+            toast('Wiederhergestellt — bitte neu anmelden', 'success');
+            setTimeout(() => logout(), 1800);
+        } catch (e) { toast(e.message, 'error'); btn.disabled = false; btn.textContent = o; }
+    }
+    async function uploadToS3(btn) {
+        const o = btn.textContent; btn.disabled = true; btn.textContent = 'Lade hoch …';
+        try {
+            const res = await fetch('/api/backup/s3', { method: 'POST', headers: { 'X-CSRF-Token': getCookie('parkrr_csrf') }, credentials: 'same-origin' });
+            if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'S3-Upload fehlgeschlagen'); }
+            toast('In S3 gesichert', 'success'); render();
+        } catch (e) { toast(e.message, 'error'); btn.disabled = false; btn.textContent = o; }
+    }
+    async function restoreFromS3(name) {
+        const data = await formModal({
+            title: 'Aus S3 wiederherstellen',
+            submitLabel: 'Wiederherstellen',
+            fields: [
+                { name: 'key', label: 'Backup-Schlüssel', type: 'password', required: true },
+                { name: 'confirm', label: 'Zum Bestätigen RESTORE eingeben', required: true, help: 'Überschreibt die gesamte Datenbank — atomar (rollt bei Fehler zurück).' },
+            ],
+        });
+        if (!data) return;
+        if (data.confirm !== 'RESTORE') { toast('Zum Bestätigen RESTORE eingeben', 'error'); return; }
+        try {
+            const res = await fetch('/api/backup/restore-s3', {
+                method: 'POST',
+                headers: { 'X-CSRF-Token': getCookie('parkrr_csrf'), 'Content-Type': 'application/x-www-form-urlencoded' },
+                credentials: 'same-origin',
+                body: new URLSearchParams({ name, key: data.key, confirm: 'RESTORE' }).toString(),
+            });
+            if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Restore fehlgeschlagen'); }
+            toast('Wiederhergestellt — bitte neu anmelden', 'success');
+            setTimeout(() => logout(), 1800);
+        } catch (e) { toast(e.message, 'error'); }
+    }
     // Expandable user card: name + role/2FA badges in the header; the panel holds a
     // quick password reset, a full edit, and a clearly separated "Gefahrenzone" for
     // the destructive actions (2FA reset, delete) so they can't be mis-tapped.
@@ -2862,6 +3258,7 @@
         body.append(item('settings', 'Einstellungen', () => navigate('settings')));
         if (isAdmin()) body.append(item('users', 'Benutzer', () => navigate('users')));
         if (isAdmin()) body.append(item('log', 'Audit-Log', () => navigate('audit')));
+        if (isAdmin()) body.append(item('archive', 'Backup', () => navigate('backup')));
         body.append(item('theme', 'Design wechseln', () => toggleTheme()));
         body.append(item('logout', 'Abmelden', () => logout(), 'danger'));
         dlg.showModal();

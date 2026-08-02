@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -108,7 +109,8 @@ func registerObservability(mux *http.ServeMux, pool *pgxpool.Pool, metricsToken 
 	reg := registerMetrics(pool)
 	promHandler := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 	mux.Handle("GET /metrics", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if metricsToken != "" && r.Header.Get("Authorization") != "Bearer "+metricsToken {
+		if metricsToken != "" && subtle.ConstantTimeCompare(
+			[]byte(r.Header.Get("Authorization")), []byte("Bearer "+metricsToken)) != 1 {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}

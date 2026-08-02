@@ -7,6 +7,7 @@ import (
 	"image/png"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -174,7 +175,14 @@ func (h *Handler) GetPhoto(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "photo not found")
 		return
 	}
+	// Never trust the stored type on output — serve only image types the uploader
+	// is allowed to produce, so a future bad row can't be rendered as inline HTML.
+	ct = strings.ToLower(strings.TrimSpace(ct))
+	if ct != "image/jpeg" && ct != "image/png" {
+		ct = "application/octet-stream"
+	}
 	w.Header().Set("Content-Type", ct)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Disposition", "inline")
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	_, _ = w.Write(data)

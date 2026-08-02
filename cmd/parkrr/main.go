@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/preining/parkrr/internal/auth"
+	"github.com/preining/parkrr/internal/backup"
 	"github.com/preining/parkrr/internal/config"
 	"github.com/preining/parkrr/internal/database"
 	"github.com/preining/parkrr/internal/server"
@@ -24,6 +25,10 @@ func main() {
 	// image has no shell/curl, so the binary probes itself over HTTP.
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		os.Exit(healthcheck())
+	}
+	// "parkrr restore <file>" decrypts and pg_restores a backup (destructive).
+	if len(os.Args) > 1 && os.Args[1] == "restore" {
+		os.Exit(runRestore(os.Args[2:]))
 	}
 	setupLogging()
 	if err := run(); err != nil {
@@ -130,10 +135,23 @@ func run() error {
 	cleanupStop := make(chan struct{})
 	defer close(cleanupStop)
 
+	s3 := backup.S3Config{
+		Endpoint: cfg.S3Endpoint, Bucket: cfg.S3Bucket,
+		AccessKey: cfg.S3AccessKey, SecretKey: cfg.S3SecretKey,
+		Region: cfg.S3Region, Prefix: cfg.S3Prefix, UseSSL: cfg.S3UseSSL,
+	}
 	handler, err := server.New(pool, authMgr, webAuthn, cfg.RateLimitPerMin, cfg.MetricsToken,
-		cfg.CheckBreachedPasswords, cfg.FailClosedOnBreach, cleanupStop)
+		cfg.CheckBreachedPasswords, cfg.FailClosedOnBreach, cfg.BackupKey, cfg.DatabaseURL, cfg.BackupDir, s3, cleanupStop)
 	if err != nil {
 		return err
+	}
+
+	// Scheduled encrypted backups driven by the DB-stored cron schedule
+	// (backup_settings, editable in the Backup tab). Opt-in via env: a key plus at
+	// least one target (a mounted directory and/or S3).
+	if cfg.BackupKey != "" && (cfg.BackupDir != "" || s3.Enabled()) {
+		go backup.StartScheduler(cleanupStop, pool, cfg.DatabaseURL, cfg.BackupKey, cfg.BackupDir, s3)
+		slog.Info("scheduled backups enabled", "dir", cfg.BackupDir, "s3", s3.Enabled())
 	}
 
 	go server.StartSessionCleanup(authMgr, cleanupStop)

@@ -7,13 +7,16 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io/fs"
+	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/preining/parkrr/internal/auth"
+	"github.com/preining/parkrr/internal/backup"
 	"github.com/preining/parkrr/internal/handlers"
 	"github.com/preining/parkrr/internal/models"
 	"github.com/preining/parkrr/web"
@@ -22,10 +25,14 @@ import (
 // New builds the top-level HTTP handler with all routes registered. Background
 // goroutines started here (rate-limiter cleanup, login-throttle cleanup) run
 // until stop is closed.
-func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, checkBreachedPasswords, failClosedOnBreach bool, stop <-chan struct{}) (http.Handler, error) {
+func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, checkBreachedPasswords, failClosedOnBreach bool, backupKey, dbURL, backupDir string, s3 backup.S3Config, stop <-chan struct{}) (http.Handler, error) {
 	h := handlers.New(pool)
 	h.CheckBreachedPasswords = checkBreachedPasswords
 	h.FailClosedOnBreach = failClosedOnBreach
+	h.BackupKey = backupKey
+	h.DatabaseURL = dbURL
+	h.BackupDir = backupDir
+	h.S3 = s3
 	ah := handlers.NewAuthHandler(h, authMgr, wa, stop)
 
 	// Archive vehicles of finished-and-settled Pauschalen in the background.
@@ -138,6 +145,16 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("DELETE /api/users/{id}", admin(hf(h.DeleteUser)))
 	mux.Handle("POST /api/users/{id}/reset-2fa", admin(hf(h.ResetUserTOTP)))
 	mux.Handle("GET /api/audit", admin(hf(h.ListAudit)))
+	mux.Handle("POST /api/backup", admin(hf(h.CreateBackup)))
+	mux.Handle("GET /api/backup/status", admin(hf(h.BackupStatus)))
+	mux.Handle("POST /api/backup/schedule", admin(hf(h.SaveBackupSchedule)))
+	mux.Handle("POST /api/backup/run", admin(hf(h.RunScheduledBackup)))
+	mux.Handle("GET /api/backup/file/{name}", admin(hf(h.BackupDownloadFile)))
+	mux.Handle("POST /api/backup/validate", admin(hf(h.BackupValidate)))
+	mux.Handle("POST /api/backup/restore", admin(hf(h.BackupRestore)))
+	mux.Handle("POST /api/backup/s3", admin(hf(h.CreateBackupS3)))
+	mux.Handle("GET /api/backup/s3/file/{name}", admin(hf(h.BackupS3Download)))
+	mux.Handle("POST /api/backup/restore-s3", admin(hf(h.BackupRestoreS3)))
 
 	// --- Health, readiness and metrics ---
 	registerObservability(mux, pool, metricsToken)
@@ -206,12 +223,59 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 // routes). Extracted from New so the wiring — including the request-body limit —
 // is testable without a live database pool.
 func buildChain(authMgr *auth.Manager, mux *http.ServeMux, rateLimitPerMin int, stop <-chan struct{}) http.Handler {
-	chain := securityHeaders(authMgr, limitRequestBody(mux))
+	// recoverPanics wraps the router directly (innermost) so a handler panic is
+	// turned into a normal 500 return — which the outer metrics/log middleware
+	// then record — instead of an unlogged, unmeasured dropped connection.
+	chain := securityHeaders(authMgr, limitRequestBody(recoverPanics(mux)))
 	chain = rateLimit(authMgr, rateLimitPerMin, stop, chain)
 	chain = metricsMiddleware(mux, chain)
 	chain = requestLogger(authMgr, chain)
 	return chain
 }
+
+// recoverPanics converts a handler panic into a logged 500 (with stack + request
+// context) instead of a silently aborted connection that emits no log or metric.
+// It only emits the 500 body when the handler hasn't already started the response
+// (a panic mid-stream, e.g. in streamBackup, must not append a JSON error or
+// re-send headers). Unwrap() exposes the underlying writer so http.Response
+// Controller can still reach optional interfaces (Flusher/Hijacker).
+func recoverPanics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rw := &panicResponseWriter{ResponseWriter: w}
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("panic recovered in handler", "err", rec,
+					"method", r.Method, "path", r.URL.Path, "stack", string(debug.Stack()))
+				if !rw.started {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusInternalServerError)
+					_, _ = w.Write([]byte(`{"error":"internal server error"}`))
+				}
+			}
+		}()
+		next.ServeHTTP(rw, r)
+	})
+}
+
+// panicResponseWriter tracks whether the response has started so recoverPanics
+// can tell an unstarted request (safe to send a 500) from one already streaming.
+type panicResponseWriter struct {
+	http.ResponseWriter
+	started bool
+}
+
+func (w *panicResponseWriter) WriteHeader(code int) {
+	w.started = true
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *panicResponseWriter) Write(b []byte) (int, error) {
+	w.started = true
+	return w.ResponseWriter.Write(b)
+}
+
+// Unwrap lets http.ResponseController find optional interfaces on the wrapped writer.
+func (w *panicResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // maxRequestBody caps every request body as a DoS backstop. It sits ABOVE the
 // 8 MiB photo-upload cap (handlers.maxPhotoBytes) so legitimate uploads still

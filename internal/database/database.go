@@ -24,6 +24,12 @@ func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	cfg.MaxConns = 10
 	cfg.MinConns = 1
 	cfg.MaxConnLifetime = time.Hour
+	// Server-side backstop: no single statement may run unbounded and pin a
+	// pooled connection, even if a handler forgets a context deadline.
+	if cfg.ConnConfig.RuntimeParams == nil {
+		cfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	cfg.ConnConfig.RuntimeParams["statement_timeout"] = "10000" // ms
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
@@ -63,6 +69,24 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		return fmt.Errorf("acquire migration connection: %w", err)
 	}
 	defer conn.Release()
+
+	// The pool sets a 10s statement_timeout as a per-request backstop, but that
+	// must not apply to migrations (a large DDL/backfill can legitimately run
+	// longer) or to the advisory-lock wait (which blocks until a peer finishes
+	// migrating). Lift it for this connection and restore it before release so the
+	// pooled connection returns to the default.
+	if _, err := conn.Exec(ctx, `SET statement_timeout = 0`); err != nil {
+		return fmt.Errorf("relax statement timeout for migrations: %w", err)
+	}
+	defer func() {
+		resetCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := conn.Exec(resetCtx, `SET statement_timeout = 10000`); err != nil {
+			// Couldn't restore the cap: close the underlying connection so the pool
+			// discards it on Release rather than handing out an unbounded one.
+			_ = conn.Conn().Close(resetCtx)
+		}
+	}()
 
 	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLockKey); err != nil {
 		return fmt.Errorf("acquire migration lock: %w", err)
