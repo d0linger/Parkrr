@@ -28,7 +28,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # Alpine (not distroless) so pg_dump/pg_restore are available for the encrypted
 # backup feature; pinned to major 16 to match the postgres:16 server. Runs as a
 # dedicated non-root user.
-FROM alpine:3.20
+FROM alpine:3.24
 
 RUN apk add --no-cache postgresql16-client ca-certificates tzdata \
     && adduser -D -H -u 10001 parkrr \
