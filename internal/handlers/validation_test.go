@@ -49,6 +49,11 @@ func TestLengthPredicates(t *testing.T) {
 		{"password min", validPasswordLength, rep(minPasswordLen), true},
 		{"password max", validPasswordLength, rep(maxPasswordLen), true},
 		{"password max+1", validPasswordLength, rep(maxPasswordLen + 1), false},
+
+		// date: 0..maxDateLen
+		{"date empty", validDateLength, "", true},
+		{"date max", validDateLength, rep(maxDateLen), true},
+		{"date max+1", validDateLength, rep(maxDateLen + 1), false},
 	}
 	for _, tc := range cases {
 		if got := tc.fn(tc.in); got != tc.want {

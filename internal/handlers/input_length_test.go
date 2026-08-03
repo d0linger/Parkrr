@@ -162,6 +162,38 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "notes is too long",
 		},
+		{
+			name:       "CreateVehicle: StartDate too long",
+			path:       "/api/vehicles",
+			method:     "POST",
+			body:       vehicleRequest{PersonID: 1, CategoryID: 1, StartDate: strings.Repeat("2", maxDateLen+1)},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "start_date is too long",
+		},
+		{
+			name:       "CreateAgreement: StartDate too long",
+			path:       "/api/persons/1/agreements",
+			method:     "POST",
+			body:       agreementRequest{Amount: floatPtr(100), StartDate: strings.Repeat("2", maxDateLen+1)},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "start_date is too long",
+		},
+		{
+			name:       "CreateCharge: ChargedOn too long",
+			path:       "/api/charges",
+			method:     "POST",
+			body:       chargeRequest{PersonID: 1, Description: "Valid Desc", ChargedOn: strings.Repeat("2", maxDateLen+1)},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "charged_on is too long",
+		},
+		{
+			name:       "CreateRecurringCharge: StartDate too long",
+			path:       "/api/persons/1/recurring",
+			method:     "POST",
+			body:       recurringRequest{Description: "Valid Desc", Amount: floatPtr(10), Period: "monthly", StartDate: strings.Repeat("2", maxDateLen+1)},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "start_date is too long",
+		},
 	}
 
 	for _, tt := range tests {
@@ -193,6 +225,16 @@ func TestInputLengthValidation(t *testing.T) {
 			case "ChangeVehicleStatus: Note too long":
 				req.SetPathValue("id", "1")
 				h.ChangeVehicleStatus(w, req)
+			case "CreateVehicle: StartDate too long":
+				h.CreateVehicle(w, req)
+			case "CreateAgreement: StartDate too long":
+				req.SetPathValue("id", "1")
+				h.CreateAgreement(w, req)
+			case "CreateCharge: ChargedOn too long":
+				h.CreateCharge(w, req)
+			case "CreateRecurringCharge: StartDate too long":
+				req.SetPathValue("id", "1")
+				h.CreateRecurringCharge(w, req)
 			}
 
 			if w.Code != tt.wantStatus {

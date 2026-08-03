@@ -24,7 +24,13 @@ const (
 	maxTOTPCodeLen = 20
 	minPasswordLen = 8
 	maxPasswordLen = 72
+	maxDateLen     = 20
 )
+
+// validDateLength reports whether s is a date within the length cap.
+func validDateLength(s string) bool {
+	return len(s) <= maxDateLen
+}
 
 // validUsernameLength reports whether s is a non-empty username within the
 // length cap. Bounding it protects the rate limiter (which keys on the

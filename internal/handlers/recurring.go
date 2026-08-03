@@ -237,12 +237,18 @@ func (req *recurringRequest) parse() (desc, period string, amount float64, start
 	default:
 		return "", "", 0, time.Time{}, nil, "period must be monthly or yearly"
 	}
+	if !validDateLength(trim(req.StartDate)) {
+		return "", "", 0, time.Time{}, nil, "start_date is too long"
+	}
 	s, err := time.Parse(dateLayout, trim(req.StartDate))
 	if err != nil {
 		return "", "", 0, time.Time{}, nil, "start_date must be YYYY-MM-DD"
 	}
 	start = s
 	if req.EndDate != nil && trim(*req.EndDate) != "" {
+		if !validDateLength(trim(*req.EndDate)) {
+			return "", "", 0, time.Time{}, nil, "end_date is too long"
+		}
 		e, eerr := time.Parse(dateLayout, trim(*req.EndDate))
 		if eerr != nil {
 			return "", "", 0, time.Time{}, nil, "end_date must be YYYY-MM-DD"

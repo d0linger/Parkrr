@@ -27,3 +27,8 @@
 *Vulnerability:* Although vehicle notes were restricted on creation/modification, the vehicle status change endpoint accepted an unrestricted `Note` field for logging the transition in the history database. This allowed users with editor permissions to bypass length controls and submit massive string payloads.
 *Learning:* Input sanitization and length bounds must be applied to text fields across all mutating endpoints, including transition/history logs, to prevent DB bloat and DoS/memory pressure.
 *Prevention:* Enforce the centralized note length validator (`validNoteLength`) on all endpoints receiving text notes or transition details.
+
+## 2026-08-10 - [Denial of Service (DoS) Risk in Unvalidated Date String Parsing]
+*Vulnerability:* The application accepted user-supplied date string parameters across multiple mutating endpoints (vehicles, agreements, charges, recurring charges) and parsed them directly using `time.Parse` without prior length validation. This created a potential Denial of Service (DoS) vector where an attacker could send massive, multi-megabyte string payloads, leading to high CPU/memory consumption.
+*Learning:* Standard parser libraries (like Go's `time.Parse`) can be expensive when processing malformed or extremely long inputs. Validating the length of input parameters at the boundary is a critical layer of defense-in-depth to protect resources.
+*Prevention:* Always enforce strict maximum lengths on date strings (such as 20 characters) at the handler validation layer before running parsing routines.
