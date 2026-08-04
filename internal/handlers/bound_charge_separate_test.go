@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -81,5 +82,96 @@ func TestBoundChargeBilledDespitePauschale(t *testing.T) {
 	}
 	if !hasExtra {
 		t.Errorf("bound Zusatzkosten (60) must be billed despite the paid Pauschale; items=%+v", full.Items)
+	}
+}
+
+// TestBoundChargeBilledDespiteVehiclePaid (#B): a bound Zusatzkosten must still be
+// billed after the vehicle's own "bezahlt" toggle — the rent toggle settles rent,
+// not the separate extra. Before the fix vehPaid dropped it from the invoice while
+// the balance still owed it (uncollectable).
+func TestBoundChargeBilledDespiteVehiclePaid(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	vid := mkStoredVehicle(t, h, pid, 30, "2026-01-01")
+
+	// A bound one-off extra.
+	chBody, _ := json.Marshal(map[string]any{
+		"person_id": pid, "vehicle_id": vid, "description": "Sonderreinigung", "amount": 60, "quantity": 1, "charged_on": "2026-05-01",
+	})
+	chrec := httptest.NewRecorder()
+	h.CreateCharge(chrec, httptest.NewRequest(http.MethodPost, "/api/charges", bytes.NewReader(chBody)))
+	if chrec.Code != http.StatusCreated {
+		t.Fatalf("bound charge: %d %s", chrec.Code, chrec.Body.String())
+	}
+
+	// Mark the VEHICLE paid (its rent), which must not absorb the extra.
+	pbody, _ := json.Marshal(map[string]any{"paid": true})
+	preq := httptest.NewRequest(http.MethodPost, "/api/vehicles/"+strconv.FormatInt(vid, 10)+"/paid", bytes.NewReader(pbody))
+	preq.SetPathValue("id", strconv.FormatInt(vid, 10))
+	preq.Header.Set("Content-Type", "application/json")
+	prec := httptest.NewRecorder()
+	h.MarkPaid(prec, preq)
+	if prec.Code != http.StatusOK {
+		t.Fatalf("markpaid: %d %s", prec.Code, prec.Body.String())
+	}
+
+	iv := createInvoice(t, h, pid)
+	full := getInvoiceT(t, h, iv.ID)
+	hasExtra := false
+	for _, it := range full.Items {
+		if it.LineTotal == 60 {
+			hasExtra = true
+		}
+	}
+	if !hasExtra {
+		t.Errorf("bound Zusatzkosten (60) must be billed despite the paid vehicle; items=%+v", full.Items)
+	}
+}
+
+// TestBoundRecurringBilledDespitePauschale (#A): a vehicle-bound recurring
+// Nebenkosten on a PAID-Pauschale-covered vehicle must be billed — the flat rate
+// covers only rent, not the recurring extra. Before the fix the covering Pauschale
+// absorbed it, leaving it owed in the balance but never invoiceable.
+func TestBoundRecurringBilledDespitePauschale(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	vid := mkStoredVehicle(t, h, pid, 30, firstOfMonthMonthsAgo(3).Format("2006-01-02"))
+
+	// A PAID Pauschale fully covering the vehicle (rent settled).
+	agBody, _ := json.Marshal(map[string]any{
+		"amount": 30, "period": "monthly", "start_date": firstOfMonthMonthsAgo(3).Format("2006-01-02"),
+		"vehicle_ids": []int64{vid}, "paid": true,
+	})
+	arec := httptest.NewRecorder()
+	areq := httptest.NewRequest(http.MethodPost, "/api/persons/"+strconv.FormatInt(pid, 10)+"/agreements", bytes.NewReader(agBody))
+	areq.SetPathValue("id", strconv.FormatInt(pid, 10))
+	h.CreateAgreement(arec, areq)
+	if arec.Code != http.StatusOK && arec.Code != http.StatusCreated {
+		t.Fatalf("agreement: %d %s", arec.Code, arec.Body.String())
+	}
+
+	// A recurring Nebenkosten bound to that covered vehicle: 20/month.
+	amt := 20.0
+	rcBody, _ := json.Marshal(recurringRequest{
+		Description: "Versicherung", Amount: &amt, Period: "monthly",
+		StartDate: firstOfMonthMonthsAgo(3).Format("2006-01-02"), VehicleID: &vid,
+	})
+	rrec := httptest.NewRecorder()
+	rreq := httptest.NewRequest(http.MethodPost, "/api/persons/"+strconv.FormatInt(pid, 10)+"/recurring", bytes.NewReader(rcBody))
+	rreq.SetPathValue("id", strconv.FormatInt(pid, 10))
+	rreq.Header.Set("Content-Type", "application/json")
+	h.CreateRecurringCharge(rrec, rreq)
+	if rrec.Code != http.StatusOK && rrec.Code != http.StatusCreated {
+		t.Fatalf("recurring: %d %s", rrec.Code, rrec.Body.String())
+	}
+
+	// Rent covered (Pauschale, paid) + Pauschale paid → invoice bills ONLY the
+	// recurring extra: 3 completed months × 20 = 60.
+	iv := createInvoice(t, h, pid)
+	if math.Abs(iv.Subtotal-60) > 0.05 {
+		full := getInvoiceT(t, h, iv.ID)
+		t.Errorf("bound recurring must be billed despite the paid Pauschale: expected 60, got %.2f; items=%+v", iv.Subtotal, full.Items)
 	}
 }

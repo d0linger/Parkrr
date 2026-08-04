@@ -273,13 +273,11 @@ func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, err
 	}
 	for _, b := range bcs {
 		vid := b.vid
-		// A one-off Zusatzkosten is billed separately from the flat rate: a covering
-		// Pauschale settles only the base rent, never the extra (Option A). It drops
-		// out only when individually settled — its own paid flag (already filtered by
-		// the NOT paid query) or an explicit vehicle-paid toggle.
-		if vehPaid[vid] {
-			continue
-		}
+		// A one-off Zusatzkosten is billed separately from the flat rate (Option A):
+		// neither a covering Pauschale NOR the vehicle's own "bezahlt" toggle settles
+		// the extra — it drops out only via its own paid flag (already filtered by the
+		// NOT paid query) or by paying the invoice. Otherwise a vehicle-paid toggle
+		// would un-bill it while the balance still owes it (uncollectable).
 		if b.qty <= 0 {
 			b.qty = 1
 		}
@@ -323,26 +321,20 @@ func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, err
 		if s := strings.TrimSpace(rc.Description); s != "" {
 			label = s
 		}
-		var paidFor func(key string, start time.Time, cost float64) float64
 		if rc.VehicleID != nil {
 			label = vehLabel(*rc.VehicleID) + ": " + label
-			vid := rc.VehicleID
-			vp := vehPaid[*rc.VehicleID]
-			paidFor = func(_ string, start time.Time, cost float64) float64 {
-				if chargeSettled(ags, vid, start, false, vp) {
-					return cost
-				}
-				return 0
+		}
+		// Option A: a Pauschale never settles a recurring Nebenkosten — bound and
+		// person-level alike settle only via their own per-period flags (or by paying
+		// the invoice). Coverage no longer zeroes the line, so a covered bound
+		// Nebenkosten is billed instead of owing forever in the balance.
+		paidSet := periodKeySet(rc.PaidPeriods)
+		rcp := rc
+		paidFor := func(key string, _ time.Time, cost float64) float64 {
+			if rcp.Paid || paidSet[key] {
+				return cost
 			}
-		} else {
-			paidSet := periodKeySet(rc.PaidPeriods)
-			rcp := rc
-			paidFor = func(key string, _ time.Time, cost float64) float64 {
-				if rcp.Paid || paidSet[key] {
-					return cost
-				}
-				return rcp.PaidFixed[key]
-			}
+			return rcp.PaidFixed[key]
 		}
 		lines = append(lines, periodOwedLines(p, now, "recurring", rc.ID, label, locked, paidFor)...)
 	}
