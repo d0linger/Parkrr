@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"time"
 )
 
 // newAEAD derives an AES-256-GCM cipher from the application session secret.
@@ -73,4 +74,15 @@ func (m *Manager) ValidateEncryptedTOTP(encoded, code string) bool {
 		return false
 	}
 	return ValidateTOTP(secret, code)
+}
+
+// ValidateEncryptedTOTPStep decrypts the stored secret and checks the code,
+// returning the matched 30-second time-step for replay protection (see
+// ValidateTOTPStep).
+func (m *Manager) ValidateEncryptedTOTPStep(encoded, code string, now time.Time) (int64, bool) {
+	secret, err := m.decrypt(encoded)
+	if err != nil {
+		return 0, false
+	}
+	return ValidateTOTPStep(secret, code, now)
 }
