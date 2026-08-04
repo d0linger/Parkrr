@@ -148,7 +148,13 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 			// A code from an already-used (or older) step affects no row -> rejected.
 			ct, uerr := h.Pool.Exec(r.Context(),
 				`UPDATE users SET last_totp_step=$1 WHERE id=$2 AND last_totp_step < $1`, step, u.ID)
-			if uerr == nil && ct.RowsAffected() == 1 {
+			if uerr != nil {
+				// Fail closed on a DB error rather than mislabelling a valid code as a
+				// replay and counting it toward the account lockout.
+				writeError(w, http.StatusInternalServerError, "could not verify two-factor code")
+				return
+			}
+			if ct.RowsAffected() == 1 {
 				ok = true
 			} else {
 				slog.Warn("login failed", "user", u.Username, "ip", ip, "reason", "2fa code replay")

@@ -221,17 +221,13 @@ func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, err
 
 	// Uncovered vehicle rent: one line per COMPLETED sub-period, locked per period
 	// (like Pauschalen) so a once-invoiced vehicle still bills its future rent and
-	// the running period is deferred. Pauschale-covered vehicles bill via the
-	// Pauschale; a paid vehicle nets to zero.
-	covered := map[int64]bool{}
-	for i := range ags {
-		for _, vid := range ags[i].VehicleIDs {
-			covered[vid] = true
-		}
-	}
+	// the running period is deferred. A Pauschale-covered vehicle bills via the
+	// Pauschale (FlatRateCovered set by setFlatRateCoverage above — it honors
+	// person-wide agreements with empty VehicleIDs and the start-date guard, unlike
+	// a raw VehicleIDs scan); a paid vehicle nets to zero.
 	for i := range vehicles {
 		v := &vehicles[i]
-		if v.Archived || covered[v.ID] {
+		if v.Archived || v.FlatRateCovered {
 			continue
 		}
 		vp := models.FlatRatePeriod{

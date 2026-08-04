@@ -184,6 +184,48 @@ func TestVehicleRentBilledPerCompletedPeriodThenLocked(t *testing.T) {
 	}
 }
 
+// TestPersonWidePauschaleNoDoubleBill is the review regression for finding #1: a
+// person-wide Pauschale (empty vehicle_ids = covers ALL vehicles) must suppress the
+// individual rent of every vehicle — otherwise the invoice bills both the Pauschale
+// and each vehicle's Einstellplatz, and the slider lists phantom owed rent.
+func TestPersonWidePauschaleNoDoubleBill(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+
+	start := firstOfMonthMonthsAgo(3).Format("2006-01-02")
+	// A vehicle on a €30/mo tariff...
+	mkStoredVehicle(t, h, pid, 30, start)
+	// ...and a person-wide €100/mo Pauschale (no vehicle_ids -> all vehicles).
+	agBody, _ := json.Marshal(map[string]any{"amount": 100, "period": "monthly", "start_date": start})
+	arec := httptest.NewRecorder()
+	areq := httptest.NewRequest(http.MethodPost, "/api/persons/"+strconv.FormatInt(pid, 10)+"/agreements", bytes.NewReader(agBody))
+	areq.SetPathValue("id", strconv.FormatInt(pid, 10))
+	h.CreateAgreement(arec, areq)
+	if arec.Code != http.StatusOK && arec.Code != http.StatusCreated {
+		t.Fatalf("agreement: %d %s", arec.Code, arec.Body.String())
+	}
+
+	// The open balance is Pauschale-only (vehicle covered): the invoice must match it,
+	// i.e. bill 3×100 for the completed months and NO €30 Einstellplatz line.
+	iv := createInvoice(t, h, pid)
+	full := getInvoiceT(t, h, iv.ID)
+	if math.Abs(iv.Subtotal-300) > 0.05 {
+		t.Fatalf("person-wide Pauschale must bill 3×100=300 with no vehicle rent, got %.2f; items=%+v",
+			iv.Subtotal, full.Items)
+	}
+	for _, it := range full.Items {
+		if strings.Contains(it.Description, "Einstellplatz") {
+			t.Errorf("covered vehicle rent must not be billed: %q", it.Description)
+		}
+	}
+
+	// The covered vehicle must also not appear as a phantom owed item on the slider.
+	if s := personStatsT(t, h, pid); s.Balance < -0.05 || s.Credit > 0.05 {
+		t.Errorf("no phantom credit expected, balance=%.2f credit=%.2f", s.Balance, s.Credit)
+	}
+}
+
 // TestVehicleSliderInertAfterInvoicing (#3): once a vehicle has been invoiced,
 // its "bezahlt" slider must not mint an auto-payment on top of the open invoice —
 // the invoiced vehicle drops off the manual money path (settle via the invoice).

@@ -128,12 +128,6 @@ func (h *Handler) openOwedItems(r *http.Request, personID int64) ([]owedItem, er
 	if err != nil {
 		return nil, err
 	}
-	covered := map[int64]bool{}
-	for i := range ags {
-		for _, vid := range ags[i].VehicleIDs {
-			covered[vid] = true
-		}
-	}
 
 	var items []owedItem
 	vehicles, _, err := h.loadVehiclesWithCategories(r, personID)
@@ -142,7 +136,10 @@ func (h *Handler) openOwedItems(r *http.Request, personID int64) ([]owedItem, er
 	}
 	for i := range vehicles {
 		v := &vehicles[i]
-		if v.Paid || v.Archived || covered[v.ID] || v.AccruedCost <= 0.005 {
+		// coveringAgreements honors person-wide agreements (empty VehicleIDs = all)
+		// and the start-date guard — a raw VehicleIDs scan would miss both and list
+		// covered rent as individually owed.
+		if v.Paid || v.Archived || v.AccruedCost <= 0.005 || len(coveringAgreements(ags, v.ID, v.StartDate)) > 0 {
 			continue
 		}
 		label := strings.TrimSpace(v.Label)
