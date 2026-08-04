@@ -240,7 +240,11 @@ func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, err
 	}
 	for _, b := range bcs {
 		vid := b.vid
-		if chargeSettled(ags, &vid, b.on, false, vehPaid[vid]) {
+		// A one-off Zusatzkosten is billed separately from the flat rate: a covering
+		// Pauschale settles only the base rent, never the extra (Option A). It drops
+		// out only when individually settled — its own paid flag (already filtered by
+		// the NOT paid query) or an explicit vehicle-paid toggle.
+		if vehPaid[vid] {
 			continue
 		}
 		if b.qty <= 0 {
