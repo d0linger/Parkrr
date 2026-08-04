@@ -75,11 +75,10 @@ type allocRef struct {
 }
 
 type paymentRequest struct {
-	Amount    float64 `json:"amount"`
-	PaidOn    string  `json:"paid_on"`
-	Method    string  `json:"method"`
-	Note      string  `json:"note"`
-	VehicleID *int64  `json:"vehicle_id"`
+	Amount float64 `json:"amount"`
+	PaidOn string  `json:"paid_on"`
+	Method string  `json:"method"`
+	Note   string  `json:"note"`
 	// Allocate (auto) marks open items paid oldest first up to Amount. Allocations
 	// (explicit) settles exactly the chosen open items. Either way, each settled
 	// item is linked to this payment (payment_allocations); the unallocated
@@ -259,16 +258,6 @@ func (h *Handler) validatePayment(ctx context.Context, personID int64, req *paym
 	if !validNameLength(req.Note) {
 		return time.Time{}, "note is too long", nil
 	}
-	if req.VehicleID != nil {
-		var owner int64
-		err := h.Pool.QueryRow(ctx, `SELECT person_id FROM vehicles WHERE id=$1`, *req.VehicleID).Scan(&owner)
-		if err == pgx.ErrNoRows || (err == nil && owner != personID) {
-			return time.Time{}, "vehicle does not belong to that person", nil
-		}
-		if err != nil {
-			return time.Time{}, "", err
-		}
-	}
 	paidOn := time.Now()
 	if trim(req.PaidOn) != "" {
 		t, perr := time.Parse(dateLayout, trim(req.PaidOn))
@@ -306,12 +295,12 @@ func (h *Handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 		createdBy = &u.ID
 	}
 	p, err := scanPayment(h.Pool.QueryRow(r.Context(),
-		`INSERT INTO payments (person_id, amount, paid_on, method, note, vehicle_id, created_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING `+paymentColumns,
-		id, req.Amount, paidOn, req.Method, req.Note, req.VehicleID, createdBy))
+		`INSERT INTO payments (person_id, amount, paid_on, method, note, created_by)
+		 VALUES ($1,$2,$3,$4,$5,$6) RETURNING `+paymentColumns,
+		id, req.Amount, paidOn, req.Method, req.Note, createdBy))
 	if err != nil {
 		if isForeignKeyViolation(err) {
-			writeError(w, http.StatusBadRequest, "person or vehicle does not exist")
+			writeError(w, http.StatusBadRequest, "person does not exist")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "could not record payment")

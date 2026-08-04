@@ -844,6 +844,23 @@
             page.append(oweCard);
         }
 
+        // Überfällige Rechnungen — Mahnwesen light: wen mahnen, ein Tap zur Rechnung.
+        let overdue = [];
+        try { overdue = (await api.get('/invoices/overdue')) || []; } catch (e) { /* ignore */ }
+        if (overdue.length) {
+            const odCard = el('div', { class: 'owe-card' });
+            const odTotal = overdue.reduce((s, o) => s + (Number(o.open_amount) || 0), 0);
+            odCard.append(el('div', { class: 'owe-head' },
+                el('span', { class: 'sec-eyebrow', style: 'color:var(--danger)' }, 'Überfällige Rechnungen'),
+                el('span', { class: 'muted', style: 'font-size:.75rem' }, overdue.length + ' · ' + eur(odTotal) + ' offen')));
+            overdue.slice(0, 6).forEach((o) => {
+                odCard.append(el('a', { class: 'owe-row', href: '#/invoices/' + o.id, style: 'text-decoration:none' },
+                    el('span', { class: 'owe-nm' }, esc(o.person_name), el('span', { class: 'muted', style: 'font-size:.72rem;margin-left:.4rem' }, 'Nr ' + esc(o.number) + ' · ' + o.days_overdue + ' Tg. überfällig')),
+                    el('span', { class: 'owe-amt', style: 'color:var(--danger)' }, eur(o.open_amount), el('span', { class: 'owe-chev' }, '›'))));
+            });
+            page.append(odCard);
+        }
+
         // Revenue chart
         const revCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Umsatz pro Monat · ' + ov.year));
         revCard.append(chartLine(ov.revenue_by_month, MONTHS));

@@ -420,3 +420,39 @@ func TestPayCanceledInvoiceRejected(t *testing.T) {
 		t.Errorf("paying a canceled invoice must be rejected (400), got %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestOverdueInvoices (Mahnwesen light): an unpaid invoice past its due date
+// appears in the overdue list and drops off once paid.
+func TestOverdueInvoices(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	chargeFor(t, h, pid, 100)
+	iv := createInvoice(t, h, pid)
+	if _, err := h.Pool.Exec(t.Context(), `UPDATE invoices SET due_on = CURRENT_DATE - 5 WHERE id=$1`, iv.ID); err != nil {
+		t.Fatalf("set due: %v", err)
+	}
+	list := func() *overdueInvoice {
+		rec := httptest.NewRecorder()
+		h.OverdueInvoices(rec, httptest.NewRequest(http.MethodGet, "/api/invoices/overdue", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("overdue: %d", rec.Code)
+		}
+		var o []overdueInvoice
+		_ = json.Unmarshal(rec.Body.Bytes(), &o)
+		for i := range o {
+			if o[i].ID == iv.ID {
+				return &o[i]
+			}
+		}
+		return nil
+	}
+	got := list()
+	if got == nil || got.DaysOverdue != 5 || got.OpenAmount != 100 {
+		t.Fatalf("overdue invoice wrong: %+v", got)
+	}
+	payInvoices(t, h, pid, map[string]any{"amount": 100, "method": "bar", "auto": true})
+	if list() != nil {
+		t.Error("a paid invoice must drop off the overdue list")
+	}
+}

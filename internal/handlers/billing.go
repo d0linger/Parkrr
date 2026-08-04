@@ -741,6 +741,53 @@ func (h *Handler) PayInvoices(w http.ResponseWriter, r *http.Request) {
 
 var errInvoiceNotOpen = fmt.Errorf("invoice not open")
 
+// overdueInvoice is one row of the dunning ("Mahnwesen") view.
+type overdueInvoice struct {
+	ID          int64     `json:"id"`
+	Number      string    `json:"number"`
+	PersonID    int64     `json:"person_id"`
+	PersonName  string    `json:"person_name"`
+	DueOn       time.Time `json:"due_on"`
+	Total       float64   `json:"total"`
+	OpenAmount  float64   `json:"open_amount"`
+	Status      string    `json:"status"`
+	DaysOverdue int       `json:"days_overdue"`
+}
+
+// OverdueInvoices lists non-canceled, unpaid/partly-paid invoices whose due date
+// has passed — the "who do I need to chase" list (Mahnwesen light).
+func (h *Handler) OverdueInvoices(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.Pool.Query(r.Context(),
+		`SELECT i.id, i.number, i.person_id, trim(p.first_name || ' ' || p.last_name),
+		        i.due_on, i.total, i.paid_amount, (CURRENT_DATE - i.due_on) AS days
+		   FROM invoices i JOIN persons p ON p.id = i.person_id
+		  WHERE NOT i.canceled AND i.cancels_id IS NULL AND i.due_on IS NOT NULL
+		    AND i.due_on < CURRENT_DATE AND (i.total - i.paid_amount) > 0.005
+		  ORDER BY i.due_on`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+	out := []overdueInvoice{}
+	for rows.Next() {
+		var o overdueInvoice
+		var paid float64
+		if err := rows.Scan(&o.ID, &o.Number, &o.PersonID, &o.PersonName, &o.DueOn, &o.Total, &paid, &o.DaysOverdue); err != nil {
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		o.OpenAmount = round2(o.Total - paid)
+		o.Status = invoiceStatus(o.Total, paid, false, nil)
+		out = append(out, o)
+	}
+	if rows.Err() != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func loadBillingSettingsTx(ctx context.Context, tx pgx.Tx) (billingSettings, error) {
 	var s billingSettings
 	err := tx.QueryRow(ctx,
