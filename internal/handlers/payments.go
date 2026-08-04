@@ -190,10 +190,21 @@ func (h *Handler) openOwedItems(r *http.Request, personID int64) ([]owedItem, er
 	if err != nil {
 		return nil, err
 	}
+	// Drop any position an active invoice already billed so it can't be settled a
+	// second time via the slider / an allocation. A position is locked at the
+	// (kind, ref) level regardless of period: a wholesale charge or ANY invoiced
+	// vehicle period takes the item off the manual money path — settle via the
+	// invoice instead.
 	if len(locked) > 0 {
+		lockedRef := map[string]bool{}
+		for k := range locked {
+			if idx := strings.LastIndex(k, ":"); idx >= 0 {
+				lockedRef[k[:idx]] = true
+			}
+		}
 		kept := items[:0]
 		for _, it := range items {
-			if locked[lockKey(it.Kind, it.ID, "")] {
+			if lockedRef[it.Kind+":"+strconv.FormatInt(it.ID, 10)] {
 				continue
 			}
 			kept = append(kept, it)

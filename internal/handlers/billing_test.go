@@ -184,11 +184,15 @@ func TestInvoiceTotalMatchesBalanceWithBoundCharge(t *testing.T) {
 	if !hasBound {
 		t.Errorf("invoice must include the 60 € bound charge; items: %+v", fiv.Items)
 	}
-	// The line sum (subtotal) equals the open balance regardless of any USt added
-	// on top. Tolerance covers cross-call timing (two time.Now() samples of the
-	// continuous rent accrual) + per-line vs total rounding (0.05, as elsewhere).
-	if diff := iv.Subtotal - st.Balance; diff > 0.05 || diff < -0.05 {
-		t.Errorf("invoice line sum %.2f must equal open balance %.2f", iv.Subtotal, st.Balance)
+	// Vehicle rent is now billed per COMPLETED period (B1-Rest / #3), so the
+	// invoice covers the discrete bound charge in full plus every completed month —
+	// everything except the still-running current month. The open balance additionally
+	// carries that running month's accrual, so balance − subtotal is exactly the
+	// current month's rent: positive and below one whole month (30 €).
+	diff := st.Balance - iv.Subtotal
+	if diff < -0.05 || diff > 30.05 {
+		t.Errorf("balance %.2f minus subtotal %.2f must equal only the running month's rent (0..30), got %.2f",
+			st.Balance, iv.Subtotal, diff)
 	}
 }
 

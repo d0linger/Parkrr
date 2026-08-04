@@ -205,10 +205,47 @@ func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, err
 		return nil, err
 	}
 
-	// Standalone vehicles (open rent) + standalone one-off charges.
-	lines, err := h.openOwedItems(r, personID)
+	// Standalone one-off charges (the vehicle rent is rebuilt per period below, so
+	// drop openOwedItems' wholesale vehicle lines here).
+	owed, err := h.openOwedItems(r, personID)
 	if err != nil {
 		return nil, err
+	}
+	var lines []owedItem
+	for _, it := range owed {
+		if it.Kind == "vehicle" {
+			continue
+		}
+		lines = append(lines, it)
+	}
+
+	// Uncovered vehicle rent: one line per COMPLETED sub-period, locked per period
+	// (like Pauschalen) so a once-invoiced vehicle still bills its future rent and
+	// the running period is deferred. Pauschale-covered vehicles bill via the
+	// Pauschale; a paid vehicle nets to zero.
+	covered := map[int64]bool{}
+	for i := range ags {
+		for _, vid := range ags[i].VehicleIDs {
+			covered[vid] = true
+		}
+	}
+	for i := range vehicles {
+		v := &vehicles[i]
+		if v.Archived || covered[v.ID] {
+			continue
+		}
+		vp := models.FlatRatePeriod{
+			Amount: v.EffectiveRate, Period: v.BillingPeriod,
+			StartDate: v.StartDate, EndDate: v.EndDate, Paid: v.Paid,
+		}
+		paid := v.Paid
+		lines = append(lines, periodOwedLines(vp, now, "vehicle", v.ID, "Einstellplatz: "+vehLabel(v.ID), locked,
+			func(_ string, _ time.Time, cost float64) float64 {
+				if paid {
+					return cost
+				}
+				return 0
+			})...)
 	}
 
 	// Vehicle-bound one-off charges not settled via their vehicle/Pauschale.
@@ -314,12 +351,13 @@ func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, err
 		lines = append(lines, periodOwedLines(p, now, "recurring", rc.ID, label, locked, paidFor)...)
 	}
 
-	// Discrete positions (vehicles, one-off charges incl. vehicle-bound) an active
-	// invoice already billed are dropped so nothing is invoiced twice (period "").
+	// One-off charges (standalone + vehicle-bound) an active invoice already billed
+	// are dropped so nothing is invoiced twice (they lock wholesale, period "").
+	// Vehicles and the periodic kinds are already locked per period above.
 	if len(locked) > 0 {
 		kept := lines[:0]
 		for _, it := range lines {
-			if (it.Kind == "vehicle" || it.Kind == "charge") && locked[lockKey(it.Kind, it.ID, "")] {
+			if it.Kind == "charge" && locked[lockKey(it.Kind, it.ID, "")] {
 				continue
 			}
 			kept = append(kept, it)
