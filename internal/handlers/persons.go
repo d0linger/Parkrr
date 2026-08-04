@@ -172,6 +172,13 @@ func (h *Handler) DeletePerson(w http.ResponseWriter, r *http.Request) {
 	}
 	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM persons WHERE id = $1`, id)
 	if err != nil {
+		if isForeignKeyViolation(err) {
+			// Invoices reference the person (ON DELETE RESTRICT) for immutability —
+			// a person with issued invoices must be kept (storniere statt löschen).
+			writeError(w, http.StatusConflict,
+				"Person hat ausgestellte Rechnungen und kann nicht gelöscht werden (Storno statt Löschen).")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete person")
 		return
 	}

@@ -51,8 +51,18 @@ func saveBilling(t *testing.T, h *Handler, payload map[string]any) {
 	}
 }
 
+// compliantSeller sets the §11-UStG mandatory seller fields so invoices are issuable.
+func compliantSeller(t *testing.T, h *Handler) {
+	t.Helper()
+	saveBilling(t, h, map[string]any{
+		"seller_name": "Parkrr e.U.", "seller_address": "Musterstr. 1, 1010 Wien",
+		"kleinunternehmer": true, "number_pad": 4,
+	})
+}
+
 func TestInvoiceKleinunternehmerAndUSt(t *testing.T) {
 	h := testHandler(t)
+	compliantSeller(t, h)
 
 	// Kleinunternehmer (default): no USt, total == sum of lines.
 	p1 := createIntegrationPerson(t, h)
@@ -67,7 +77,7 @@ func TestInvoiceKleinunternehmerAndUSt(t *testing.T) {
 
 	// Switch to USt 20 %: tax on top of the net line totals.
 	saveBilling(t, h, map[string]any{
-		"seller_name": "Test GmbH", "seller_uid": "ATU12345678",
+		"seller_name": "Test GmbH", "seller_address": "Musterstr. 1, 1010 Wien", "seller_uid": "ATU12345678",
 		"kleinunternehmer": false, "ust_rate": 20, "number_pad": 4,
 	})
 	p2 := createIntegrationPerson(t, h)
@@ -106,6 +116,7 @@ func TestInvoiceKleinunternehmerAndUSt(t *testing.T) {
 // person's open balance, not just the standalone items.
 func TestInvoiceTotalMatchesBalanceWithBoundCharge(t *testing.T) {
 	h := testHandler(t)
+	compliantSeller(t, h)
 	pid := createIntegrationPerson(t, h)
 
 	// A tariff (unique name so repeated runs don't collide) + a stored vehicle.
@@ -190,5 +201,103 @@ func TestInvoiceRejectsNoOpenPositions(t *testing.T) {
 	h.CreateInvoice(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for no open positions, got %d", rec.Code)
+	}
+}
+
+func issueInvoiceRec(t *testing.T, h *Handler, pid int64) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/persons/"+strconv.FormatInt(pid, 10)+"/invoices", bytes.NewReader([]byte(`{}`)))
+	req.SetPathValue("id", strconv.FormatInt(pid, 10))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.CreateInvoice(rec, req)
+	return rec
+}
+
+// TC#4 — §11/§14 UStG: an invoice must not be issued when a mandatory field is
+// missing (here: the seller name/address), and must not burn a number.
+func TestInvoiceComplianceRefusal(t *testing.T) {
+	h := testHandler(t)
+	// Deliberately reset seller data to blank (Kleinunternehmer, no name/address).
+	if _, err := h.Pool.Exec(t.Context(), `UPDATE billing_settings SET seller_name='', seller_address='' WHERE id=1`); err != nil {
+		t.Fatalf("reset settings: %v", err)
+	}
+	pid := createIntegrationPerson(t, h)
+	chargeFor(t, h, pid, 100)
+
+	var noBefore int
+	_ = h.Pool.QueryRow(t.Context(), `SELECT next_invoice_no FROM billing_settings WHERE id=1`).Scan(&noBefore)
+
+	rec := issueInvoiceRec(t, h, pid)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 for missing §11 fields, got %d %s", rec.Code, rec.Body.String())
+	}
+	var noAfter int
+	_ = h.Pool.QueryRow(t.Context(), `SELECT next_invoice_no FROM billing_settings WHERE id=1`).Scan(&noAfter)
+	if noAfter != noBefore {
+		t.Errorf("a refused invoice must not consume a number (%d -> %d)", noBefore, noAfter)
+	}
+}
+
+// TC#1/B1 — Fakturier-Sperre: the same position can't be invoiced twice.
+func TestNoDoubleInvoicing(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	chargeFor(t, h, pid, 100)
+
+	first := createInvoice(t, h, pid) // 201, locks the charge
+	if first.Total != 100 {
+		t.Fatalf("first invoice total %v", first.Total)
+	}
+	// Second run: the charge is locked -> no open positions -> 400.
+	rec := issueInvoiceRec(t, h, pid)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 (nothing left to invoice), got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TC — Storno/Unveränderbarkeit: cancel creates a negated counter-document,
+// marks the original canceled, releases the position so it can be re-invoiced,
+// and a Storno can't itself be canceled.
+func TestInvoiceStorno(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	chargeFor(t, h, pid, 100)
+	orig := createInvoice(t, h, pid)
+
+	// Cancel it.
+	creq := httptest.NewRequest(http.MethodPost, "/api/invoices/"+strconv.FormatInt(orig.ID, 10)+"/cancel", nil)
+	creq.SetPathValue("id", strconv.FormatInt(orig.ID, 10))
+	crec := httptest.NewRecorder()
+	h.CancelInvoice(crec, creq)
+	if crec.Code != http.StatusOK {
+		t.Fatalf("cancel: %d %s", crec.Code, crec.Body.String())
+	}
+	var storno invoice
+	_ = json.Unmarshal(crec.Body.Bytes(), &storno)
+	if storno.Total != -100 || storno.CancelsID == nil || *storno.CancelsID != orig.ID {
+		t.Fatalf("storno document wrong: %+v", storno)
+	}
+
+	// Original is now canceled, and the position is released -> re-invoiceable.
+	var canceled bool
+	_ = h.Pool.QueryRow(t.Context(), `SELECT canceled FROM invoices WHERE id=$1`, orig.ID).Scan(&canceled)
+	if !canceled {
+		t.Error("original invoice must be marked canceled")
+	}
+	again := createInvoice(t, h, pid) // works again because the charge was released
+	if again.Total != 100 {
+		t.Errorf("released position should be re-invoiceable, got %+v", again)
+	}
+
+	// A Storno document cannot itself be canceled.
+	c2 := httptest.NewRequest(http.MethodPost, "/api/invoices/"+strconv.FormatInt(storno.ID, 10)+"/cancel", nil)
+	c2.SetPathValue("id", strconv.FormatInt(storno.ID, 10))
+	c2rec := httptest.NewRecorder()
+	h.CancelInvoice(c2rec, c2)
+	if c2rec.Code != http.StatusBadRequest {
+		t.Errorf("canceling a Storno must be rejected (400), got %d", c2rec.Code)
 	}
 }

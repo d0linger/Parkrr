@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -134,6 +135,8 @@ type invoice struct {
 	Seller           map[string]any `json:"seller"`
 	Buyer            map[string]any `json:"buyer"`
 	Note             string         `json:"note"`
+	Canceled         bool           `json:"canceled"`             // storniert (immutable original, superseded)
+	CancelsID        *int64         `json:"cancels_id,omitempty"` // set on a Storno document -> the original
 	Items            []invoiceItem  `json:"items,omitempty"`
 }
 
@@ -249,7 +252,76 @@ func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, err
 		lines = append(lines, owedItem{Kind: "recurring", ID: 0, Label: "Wiederkehrende Nebenkosten (offen)", Quantity: 1, UnitAmount: recOpen, LineTotal: recOpen})
 	}
 
+	// Fakturier-Sperre: drop discrete positions (vehicles, one-off charges) that an
+	// active (non-canceled) invoice already billed, so nothing is invoiced twice.
+	// Pauschale/recurring are periodic and not yet locked (see migration 026).
+	locked, err := h.lockedPositions(ctx, personID)
+	if err != nil {
+		return nil, err
+	}
+	if len(locked) > 0 {
+		kept := lines[:0]
+		for _, it := range lines {
+			if (it.Kind == "vehicle" || it.Kind == "charge") && locked[it.Kind+":"+strconv.FormatInt(it.ID, 10)] {
+				continue
+			}
+			kept = append(kept, it)
+		}
+		lines = kept
+	}
 	return lines, nil
+}
+
+// lockedPositions returns the set "kind:ref_id" of positions already billed by a
+// non-canceled invoice of the person.
+func (h *Handler) lockedPositions(ctx context.Context, personID int64) (map[string]bool, error) {
+	rows, err := h.Pool.Query(ctx,
+		`SELECT s.kind, s.ref_id FROM invoice_source s
+		    JOIN invoices i ON i.id = s.invoice_id
+		   WHERE i.person_id = $1 AND NOT i.canceled`, personID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var kind string
+		var ref int64
+		if err := rows.Scan(&kind, &ref); err != nil {
+			return nil, err
+		}
+		out[kind+":"+strconv.FormatInt(ref, 10)] = true
+	}
+	return out, rows.Err()
+}
+
+// invoiceComplianceError checks the §11 UStG (AT) mandatory invoice fields and
+// returns a non-empty message naming what's missing, so an incomplete/non-compliant
+// invoice is never issued (GoBD/BAO: Richtigkeit & Vollständigkeit).
+func invoiceComplianceError(s billingSettings, buyerName string) string {
+	var missing []string
+	if strings.TrimSpace(s.SellerName) == "" {
+		missing = append(missing, "Name des Ausstellers")
+	}
+	if strings.TrimSpace(s.SellerAddress) == "" {
+		missing = append(missing, "Anschrift des Ausstellers")
+	}
+	if strings.TrimSpace(buyerName) == "" {
+		missing = append(missing, "Name des Leistungsempfängers")
+	}
+	if !s.Kleinunternehmer {
+		if strings.TrimSpace(s.SellerUID) == "" {
+			missing = append(missing, "UID-Nummer (bei USt-Ausweis Pflicht)")
+		}
+		if !austrianRates[s.UStRate] {
+			missing = append(missing, "gültiger USt-Satz (20/13/10)")
+		}
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return "Rechnung nicht ausstellbar – Pflichtangaben fehlen (§ 11 UStG): " + strings.Join(missing, ", ") +
+		". Bitte unter Rechnungen → Einstellungen ergänzen."
 }
 
 // CreateInvoice issues an invoice for a person's open positions. It allocates the
@@ -284,6 +356,17 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 		`SELECT first_name, last_name, COALESCE(address,'') FROM persons WHERE id=$1`, pid,
 	).Scan(&person.First, &person.Last, &person.Address); err != nil {
 		writeError(w, http.StatusNotFound, "person not found")
+		return
+	}
+
+	// §11 UStG mandatory-field check BEFORE burning a number.
+	settings, err := h.loadBillingSettings(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load billing settings")
+		return
+	}
+	if msg := invoiceComplianceError(settings, trim(person.First+" "+person.Last)); msg != "" {
+		writeError(w, http.StatusUnprocessableEntity, msg)
 		return
 	}
 
@@ -347,6 +430,14 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 				invID, i+1, it.Label, it.Quantity, it.UnitAmount, it.LineTotal); err != nil {
 				return err
 			}
+			// Lock discrete positions so they can't be invoiced again (released on Storno).
+			if it.Kind == "vehicle" || it.Kind == "charge" {
+				if _, err := tx.Exec(r.Context(),
+					`INSERT INTO invoice_source (invoice_id, kind, ref_id) VALUES ($1,$2,$3)`,
+					invID, it.Kind, it.ID); err != nil {
+					return err
+				}
+			}
 		}
 		out = invoice{ID: invID, Number: number, PersonID: pid, IssuedOn: issued, DueOn: due,
 			Subtotal: subtotal, UStRate: rate, TaxAmount: tax, Total: total,
@@ -359,6 +450,122 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit(r, "create", "invoice", out.ID, "issued invoice "+out.Number+" ("+fmt.Sprintf("%.2f €", out.Total)+")")
 	writeJSON(w, http.StatusCreated, out)
+}
+
+// CancelInvoice issues a Storno (cancelling document) for an invoice: no delete
+// (Unveränderbarkeit) — a new numbered document mirrors the original with negated
+// amounts, points at it via cancels_id, marks the original canceled, and releases
+// its locked positions so they can be re-invoiced.
+func (h *Handler) CancelInvoice(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var o struct {
+		number                        string
+		personID                      int64
+		subtotal, ustRate, tax, total float64
+		klein, canceled               bool
+		sellerJSON, buyerJSON         []byte
+		cancelsID                     *int64
+	}
+	if err := h.Pool.QueryRow(r.Context(),
+		`SELECT number, person_id, subtotal, ust_rate, tax_amount, total, kleinunternehmer,
+		        seller_snapshot, buyer_snapshot, canceled, cancels_id FROM invoices WHERE id=$1`, id,
+	).Scan(&o.number, &o.personID, &o.subtotal, &o.ustRate, &o.tax, &o.total, &o.klein,
+		&o.sellerJSON, &o.buyerJSON, &o.canceled, &o.cancelsID); err != nil {
+		writeError(w, http.StatusNotFound, "invoice not found")
+		return
+	}
+	if o.canceled {
+		writeError(w, http.StatusConflict, "Rechnung ist bereits storniert")
+		return
+	}
+	if o.cancelsID != nil {
+		writeError(w, http.StatusBadRequest, "ein Storno-Beleg kann nicht storniert werden")
+		return
+	}
+	var createdBy *int64
+	if u, ok := auth.UserFrom(r.Context()); ok {
+		createdBy = &u.ID
+	}
+
+	// Read the original items up front (single-conn tx can't interleave query+exec).
+	type row struct {
+		pos                  int
+		desc                 string
+		qty, unit, lineTotal float64
+	}
+	var origItems []row
+	irows, err := h.Pool.Query(r.Context(),
+		`SELECT pos, description, quantity, unit_amount, line_total FROM invoice_items WHERE invoice_id=$1 ORDER BY pos`, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	for irows.Next() {
+		var it row
+		if err := irows.Scan(&it.pos, &it.desc, &it.qty, &it.unit, &it.lineTotal); err != nil {
+			irows.Close()
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		origItems = append(origItems, it)
+	}
+	irows.Close()
+	if irows.Err() != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+
+	note := "Storno zu Rechnung " + o.number
+	var out invoice
+	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		s, err := loadBillingSettingsTx(r.Context(), tx)
+		if err != nil {
+			return err
+		}
+		number := s.InvoicePrefix + fmt.Sprintf("%0*d", s.NumberPad, s.NextInvoiceNo)
+		if _, err := tx.Exec(r.Context(), `UPDATE billing_settings SET next_invoice_no = next_invoice_no + 1 WHERE id=1`); err != nil {
+			return err
+		}
+		issued := time.Now()
+		var stornoID int64
+		if err := tx.QueryRow(r.Context(),
+			`INSERT INTO invoices (number, person_id, issued_on, subtotal, ust_rate, tax_amount, total,
+			        kleinunternehmer, seller_snapshot, buyer_snapshot, note, cancels_id, created_by)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+			number, o.personID, issued, -o.subtotal, o.ustRate, -o.tax, -o.total, o.klein,
+			string(o.sellerJSON), string(o.buyerJSON), note, id, createdBy,
+		).Scan(&stornoID); err != nil {
+			return err
+		}
+		for _, it := range origItems {
+			if _, err := tx.Exec(r.Context(),
+				`INSERT INTO invoice_items (invoice_id, pos, description, quantity, unit_amount, line_total)
+				 VALUES ($1,$2,$3,$4,$5,$6)`,
+				stornoID, it.pos, it.desc, it.qty, -it.unit, -it.lineTotal); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(r.Context(), `UPDATE invoices SET canceled=true WHERE id=$1`, id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(r.Context(), `DELETE FROM invoice_source WHERE invoice_id=$1`, id); err != nil {
+			return err
+		}
+		out = invoice{ID: stornoID, Number: number, PersonID: o.personID, IssuedOn: issued,
+			Subtotal: -o.subtotal, UStRate: o.ustRate, TaxAmount: -o.tax, Total: -o.total,
+			Kleinunternehmer: o.klein, Note: note, CancelsID: &id}
+		return nil
+	})
+	if txErr != nil {
+		writeError(w, http.StatusInternalServerError, "could not cancel invoice")
+		return
+	}
+	h.audit(r, "update", "invoice", id, "storniert – Gegenbeleg "+out.Number)
+	writeJSON(w, http.StatusOK, out)
 }
 
 func loadBillingSettingsTx(ctx context.Context, tx pgx.Tx) (billingSettings, error) {
@@ -380,7 +587,7 @@ func (h *Handler) ListInvoices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := h.Pool.Query(r.Context(),
-		`SELECT id, number, issued_on, due_on, subtotal, ust_rate, tax_amount, total, kleinunternehmer
+		`SELECT id, number, issued_on, due_on, subtotal, ust_rate, tax_amount, total, kleinunternehmer, canceled, cancels_id
 		   FROM invoices WHERE person_id=$1 ORDER BY issued_on DESC, id DESC`, pid)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -392,7 +599,7 @@ func (h *Handler) ListInvoices(w http.ResponseWriter, r *http.Request) {
 		var iv invoice
 		iv.PersonID = pid
 		if err := rows.Scan(&iv.ID, &iv.Number, &iv.IssuedOn, &iv.DueOn, &iv.Subtotal,
-			&iv.UStRate, &iv.TaxAmount, &iv.Total, &iv.Kleinunternehmer); err != nil {
+			&iv.UStRate, &iv.TaxAmount, &iv.Total, &iv.Kleinunternehmer, &iv.Canceled, &iv.CancelsID); err != nil {
 			writeError(w, http.StatusInternalServerError, "query failed")
 			return
 		}
@@ -417,10 +624,11 @@ func (h *Handler) GetInvoice(w http.ResponseWriter, r *http.Request) {
 	var sellerJSON, buyerJSON []byte
 	if err := h.Pool.QueryRow(r.Context(),
 		`SELECT id, number, person_id, issued_on, due_on, subtotal, ust_rate, tax_amount, total,
-		        kleinunternehmer, seller_snapshot, buyer_snapshot, note
+		        kleinunternehmer, seller_snapshot, buyer_snapshot, note, canceled, cancels_id
 		   FROM invoices WHERE id=$1`, id,
 	).Scan(&iv.ID, &iv.Number, &iv.PersonID, &iv.IssuedOn, &iv.DueOn, &iv.Subtotal, &iv.UStRate,
-		&iv.TaxAmount, &iv.Total, &iv.Kleinunternehmer, &sellerJSON, &buyerJSON, &iv.Note); err != nil {
+		&iv.TaxAmount, &iv.Total, &iv.Kleinunternehmer, &sellerJSON, &buyerJSON, &iv.Note,
+		&iv.Canceled, &iv.CancelsID); err != nil {
 		writeError(w, http.StatusNotFound, "invoice not found")
 		return
 	}
