@@ -346,60 +346,103 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	// Revert the items this payment stamped, before the allocations cascade away.
-	rows, err := h.Pool.Query(ctx, `SELECT kind, ref_id FROM payment_allocations WHERE payment_id=$1`, id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not delete payment")
-		return
-	}
 	type ref struct {
 		kind string
 		id   int64
 	}
-	var refs []ref
-	for rows.Next() {
-		var rf ref
-		if err := rows.Scan(&rf.kind, &rf.id); err != nil {
-			rows.Close()
-			writeError(w, http.StatusInternalServerError, "could not delete payment")
-			return
+	type invPay struct {
+		invoiceID int64
+		amount    float64
+	}
+	deleted := false
+	txErr := pgx.BeginFunc(ctx, h.Pool, func(tx pgx.Tx) error {
+		// Position toggles this payment stamped, and invoice allocations it funded.
+		var refs []ref
+		prows, err := tx.Query(ctx, `SELECT kind, ref_id FROM payment_allocations WHERE payment_id=$1`, id)
+		if err != nil {
+			return err
 		}
-		refs = append(refs, rf)
-	}
-	rows.Close()
-	if rows.Err() != nil {
-		writeError(w, http.StatusInternalServerError, "could not delete payment")
-		return
-	}
+		for prows.Next() {
+			var rf ref
+			if err := prows.Scan(&rf.kind, &rf.id); err != nil {
+				prows.Close()
+				return err
+			}
+			refs = append(refs, rf)
+		}
+		prows.Close()
+		if err := prows.Err(); err != nil {
+			return err
+		}
+		var invPays []invPay
+		irows, err := tx.Query(ctx, `SELECT invoice_id, amount FROM invoice_payments WHERE payment_id=$1`, id)
+		if err != nil {
+			return err
+		}
+		for irows.Next() {
+			var ip invPay
+			if err := irows.Scan(&ip.invoiceID, &ip.amount); err != nil {
+				irows.Close()
+				return err
+			}
+			invPays = append(invPays, ip)
+		}
+		irows.Close()
+		if err := irows.Err(); err != nil {
+			return err
+		}
 
-	ct, err := h.Pool.Exec(ctx, `DELETE FROM payments WHERE id=$1`, id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not delete payment")
-		return
-	}
-	if ct.RowsAffected() == 0 {
+		ct, err := tx.Exec(ctx, `DELETE FROM payments WHERE id=$1`, id) // cascades allocations + invoice_payments
+		if err != nil {
+			return err
+		}
+		if ct.RowsAffected() == 0 {
+			return errPaymentNotFound
+		}
+		deleted = true
+		// Un-stamp positions no longer covered by any payment.
+		for _, rf := range refs {
+			var others int
+			if err := tx.QueryRow(ctx,
+				`SELECT count(*) FROM payment_allocations WHERE kind=$1 AND ref_id=$2`, rf.kind, rf.id).Scan(&others); err != nil {
+				return err
+			}
+			if others > 0 {
+				continue
+			}
+			switch rf.kind {
+			case "vehicle":
+				if _, err := tx.Exec(ctx, `UPDATE vehicles SET paid=false, updated_at=now() WHERE id=$1`, rf.id); err != nil {
+					return err
+				}
+			case "charge":
+				if _, err := tx.Exec(ctx, `UPDATE charges SET paid=false WHERE id=$1 AND vehicle_id IS NULL`, rf.id); err != nil {
+					return err
+				}
+			}
+		}
+		// Give back the amount to each invoice this payment covered.
+		for _, ip := range invPays {
+			if _, err := tx.Exec(ctx,
+				`UPDATE invoices SET paid_amount = GREATEST(0, paid_amount - $1) WHERE id=$2`, ip.amount, ip.invoiceID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if txErr == errPaymentNotFound || (txErr == nil && !deleted) {
 		writeError(w, http.StatusNotFound, "payment not found")
 		return
 	}
-	for _, rf := range refs {
-		var others int
-		if err := h.Pool.QueryRow(ctx,
-			`SELECT count(*) FROM payment_allocations WHERE kind=$1 AND ref_id=$2`, rf.kind, rf.id).Scan(&others); err != nil {
-			continue
-		}
-		if others > 0 {
-			continue // another payment still covers it
-		}
-		switch rf.kind {
-		case "vehicle":
-			_, _ = h.Pool.Exec(ctx, `UPDATE vehicles SET paid=false, updated_at=now() WHERE id=$1`, rf.id)
-		case "charge":
-			_, _ = h.Pool.Exec(ctx, `UPDATE charges SET paid=false WHERE id=$1 AND vehicle_id IS NULL`, rf.id)
-		}
+	if txErr != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete payment")
+		return
 	}
-	h.audit(r, "delete", "payment", id, "deleted payment (reverted its stamped positions)")
+	h.audit(r, "delete", "payment", id, "deleted payment (reverted stamps + invoice allocations)")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
+
+var errPaymentNotFound = fmt.Errorf("payment not found")
 
 // OpenItems returns a person's open individually-owed positions (for the payment
 // dialog's selection list).

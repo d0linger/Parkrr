@@ -1212,12 +1212,48 @@
     // ---------- Rechnungen (invoices) ----------
     const fmtQty = (q) => Number(q).toLocaleString('de-DE', { maximumFractionDigits: 2 });
     const fmtRate = (r) => Number(r).toLocaleString('de-DE', { maximumFractionDigits: 2 });
+    const INV_STATUS = { offen: ['offen', 'warn'], teilbezahlt: ['teilbezahlt', 'warn'], bezahlt: ['bezahlt', 'ok'], storniert: ['storniert', 'muted'], storno: ['Storno', 'muted'] };
+    function invStatusBadge(iv) {
+        const [label, tone] = INV_STATUS[iv.status] || [iv.status || '', 'muted'];
+        return el('span', { class: 'inv-badge ' + tone }, label);
+    }
     function invoiceRow(iv) {
+        const neg = iv.status === 'storno' || Number(iv.total) < 0;
         return el('a', { class: 'card pay-row inv-link', href: '#/invoices/' + iv.id },
             el('div', { class: 'pay-main' },
-                el('div', { class: 'pay-method' }, 'Rechnung ' + esc(iv.number)),
-                el('div', { class: 'pay-date' }, new Date(iv.issued_on).toLocaleDateString('de-DE') + (iv.kleinunternehmer ? '' : ' · inkl. USt'))),
-            el('div', { class: 'pay-amt', style: 'color:var(--text)' }, eur(iv.total)));
+                el('div', { class: 'pay-method' }, 'Rechnung ' + esc(iv.number), ' ', invStatusBadge(iv)),
+                el('div', { class: 'pay-date' }, new Date(iv.issued_on).toLocaleDateString('de-DE')
+                    + (iv.kleinunternehmer ? '' : ' · inkl. USt')
+                    + (iv.status === 'teilbezahlt' ? ' · offen ' + eur(iv.open_amount) : ''))),
+            el('div', { class: 'pay-amt', style: neg ? 'color:var(--danger)' : 'color:var(--text)' }, eur(iv.total)));
+    }
+    async function payInvoiceFor(iv) {
+        await formModal({
+            title: 'Rechnung ' + iv.number + ' bezahlen',
+            fields: [
+                { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', required: true, value: Number(iv.open_amount).toFixed(2), help: 'Offen: ' + eur(iv.open_amount) + ' – für Teilzahlung anpassen.' },
+                { name: 'paid_on', label: 'Datum', type: 'date', value: today() },
+                { name: 'method', label: 'Methode', type: 'select', value: 'bar', options: PAY_METHODS.map((m) => ({ value: m.v, label: m.l })) },
+            ],
+            onRender: (body) => segmentedField(body, 'method', PAY_METHODS),
+            save: async (d) => {
+                if (!(Number(d.amount) > 0)) { toast('Betrag muss größer als 0 sein', 'error'); throw new Error('invalid amount'); }
+                const r = await api.post('/persons/' + iv.person_id + '/pay-invoices', {
+                    amount: Number(d.amount), paid_on: d.paid_on, method: d.method,
+                    allocations: [{ invoice_id: iv.id, amount: Number(d.amount) }],
+                });
+                toast((r && r.guthaben > 0.005) ? ('Bezahlt · Guthaben ' + eur(r.guthaben)) : 'Rechnung bezahlt', 'success');
+                render();
+            },
+        });
+    }
+    async function stornoInvoice(iv) {
+        if (!await confirmDialog('Rechnung stornieren?', 'Erstellt einen unveränderlichen Storno-Gegenbeleg (§ Unveränderbarkeit). Die abgerechneten Positionen werden wieder fakturierbar.', 'Stornieren')) return;
+        try {
+            const st = await api.post('/invoices/' + iv.id + '/cancel', {});
+            toast('Storniert · Gegenbeleg ' + st.number, 'success');
+            location.hash = '#/invoices/' + st.id;
+        } catch (e) { toast(e.message, 'error'); }
     }
     async function createInvoiceFor(personId, btn) {
         if (!await confirmDialog('Rechnung erstellen?', 'Erstellt eine fortlaufend nummerierte Rechnung aus allen offenen Einzelposten (Gefährte + Einmal-Zusatzkosten). Rechnungen sind unveränderlich.', 'Erstellen')) return;
@@ -1278,8 +1314,13 @@
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head no-print' },
             el('button', { class: 'back-btn', onclick: () => history.back(), 'aria-label': 'Zurück' }, '‹'),
-            el('h2', { style: 'margin:0;flex:1' }, 'Rechnung ' + esc(iv.number)),
-            el('button', { class: 'btn btn-primary btn-sm', onclick: () => window.print() }, icon('receipt', 15), ' Drucken / PDF')));
+            el('h2', { style: 'margin:0;flex:1' }, 'Rechnung ' + esc(iv.number), ' ', invStatusBadge(iv)),
+            (canBill() && (iv.status === 'offen' || iv.status === 'teilbezahlt')) ? el('button', { class: 'btn btn-primary btn-sm', onclick: () => payInvoiceFor(iv) }, 'Bezahlen') : null,
+            (canBill() && !iv.canceled && iv.status !== 'storno') ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => stornoInvoice(iv) }, 'Storno') : null,
+            el('button', { class: 'btn btn-ghost btn-sm', onclick: () => window.print() }, icon('receipt', 15), ' Drucken / PDF')));
+        if (iv.status === 'teilbezahlt' || iv.status === 'bezahlt') {
+            page.append(el('div', { class: 'card-meta no-print', style: 'margin:-.3rem 0 .4rem' }, 'Bezahlt ' + eur(iv.paid_amount) + ' von ' + eur(iv.total) + (iv.open_amount > 0.005 ? ' · offen ' + eur(iv.open_amount) : '')));
+        }
         page.append(invoiceDocument(iv));
     };
 

@@ -301,3 +301,122 @@ func TestInvoiceStorno(t *testing.T) {
 		t.Errorf("canceling a Storno must be rejected (400), got %d", c2rec.Code)
 	}
 }
+
+// --- P2: pay invoices (OP) ---
+
+type payResult struct {
+	PaymentID int64   `json:"payment_id"`
+	Allocated float64 `json:"allocated"`
+	Guthaben  float64 `json:"guthaben"`
+	Invoices  int     `json:"invoices_settled"`
+}
+
+func payInvoicesRec(t *testing.T, h *Handler, pid int64, payload map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/persons/"+strconv.FormatInt(pid, 10)+"/pay-invoices", bytes.NewReader(body))
+	req.SetPathValue("id", strconv.FormatInt(pid, 10))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.PayInvoices(rec, req)
+	return rec
+}
+func payInvoices(t *testing.T, h *Handler, pid int64, payload map[string]any) payResult {
+	t.Helper()
+	rec := payInvoicesRec(t, h, pid, payload)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("pay-invoices: %d %s", rec.Code, rec.Body.String())
+	}
+	var r payResult
+	_ = json.Unmarshal(rec.Body.Bytes(), &r)
+	return r
+}
+func getInvoiceT(t *testing.T, h *Handler, id int64) invoice {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/invoices/"+strconv.FormatInt(id, 10), nil)
+	req.SetPathValue("id", strconv.FormatInt(id, 10))
+	rec := httptest.NewRecorder()
+	h.GetInvoice(rec, req)
+	var iv invoice
+	_ = json.Unmarshal(rec.Body.Bytes(), &iv)
+	return iv
+}
+
+// TestPayInvoiceLifecycle: partial -> teilbezahlt, full -> bezahlt, overpay ->
+// Guthaben; open_amount / invoiced_open track it; and Guthaben stays payments−accrued.
+func TestPayInvoiceLifecycle(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	chargeFor(t, h, pid, 100)
+	iv := createInvoice(t, h, pid) // total 100
+
+	r1 := payInvoices(t, h, pid, map[string]any{"amount": 40, "method": "ueberweisung", "auto": true})
+	if r1.Allocated != 40 || r1.Guthaben != 0 {
+		t.Fatalf("partial payment result wrong: %+v", r1)
+	}
+	iv1 := getInvoiceT(t, h, iv.ID)
+	if iv1.Status != "teilbezahlt" || iv1.OpenAmount != 60 || iv1.PaidAmount != 40 {
+		t.Errorf("teilbezahlt state wrong: %+v", iv1)
+	}
+
+	// Overpay: 100 more -> invoice fully paid (caps at 60 open), 40 stays as Guthaben.
+	r2 := payInvoices(t, h, pid, map[string]any{"amount": 100, "method": "bar", "auto": true})
+	if r2.Allocated != 60 || r2.Guthaben != 40 {
+		t.Fatalf("overpay result wrong: %+v", r2)
+	}
+	iv2 := getInvoiceT(t, h, iv.ID)
+	if iv2.Status != "bezahlt" || iv2.OpenAmount != 0 {
+		t.Errorf("bezahlt state wrong: %+v", iv2)
+	}
+}
+
+// TestPayInvoiceDeleteReverts (B3): deleting the payment restores the invoice
+// atomically to open.
+func TestPayInvoiceDeleteReverts(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	chargeFor(t, h, pid, 100)
+	iv := createInvoice(t, h, pid)
+
+	r := payInvoices(t, h, pid, map[string]any{"amount": 100, "method": "bar", "auto": true})
+	if s := getInvoiceT(t, h, iv.ID).Status; s != "bezahlt" {
+		t.Fatalf("expected bezahlt, got %s", s)
+	}
+	dreq := httptest.NewRequest(http.MethodDelete, "/api/payments/"+strconv.FormatInt(r.PaymentID, 10), nil)
+	dreq.SetPathValue("id", strconv.FormatInt(r.PaymentID, 10))
+	drec := httptest.NewRecorder()
+	h.DeletePayment(drec, dreq)
+	if drec.Code != http.StatusOK {
+		t.Fatalf("delete payment: %d %s", drec.Code, drec.Body.String())
+	}
+	back := getInvoiceT(t, h, iv.ID)
+	if back.Status != "offen" || back.PaidAmount != 0 {
+		t.Errorf("invoice must revert to open after payment delete: %+v", back)
+	}
+}
+
+// TestPayCanceledInvoiceRejected: a canceled invoice can't be paid explicitly.
+func TestPayCanceledInvoiceRejected(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	chargeFor(t, h, pid, 100)
+	iv := createInvoice(t, h, pid)
+
+	creq := httptest.NewRequest(http.MethodPost, "/api/invoices/"+strconv.FormatInt(iv.ID, 10)+"/cancel", nil)
+	creq.SetPathValue("id", strconv.FormatInt(iv.ID, 10))
+	crec := httptest.NewRecorder()
+	h.CancelInvoice(crec, creq)
+	if crec.Code != http.StatusOK {
+		t.Fatalf("cancel: %d", crec.Code)
+	}
+	rec := payInvoicesRec(t, h, pid, map[string]any{
+		"amount": 100, "method": "bar",
+		"allocations": []map[string]any{{"invoice_id": iv.ID, "amount": 100}},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("paying a canceled invoice must be rejected (400), got %d %s", rec.Code, rec.Body.String())
+	}
+}

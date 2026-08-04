@@ -95,6 +95,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/persons/{id}/invoices", editor(hf(h.CreateInvoice)))
 	mux.Handle("GET /api/invoices/{id}", authed(hf(h.GetInvoice)))
 	mux.Handle("POST /api/invoices/{id}/cancel", editor(hf(h.CancelInvoice)))
+	mux.Handle("POST /api/persons/{id}/pay-invoices", editor(hf(h.PayInvoices)))
 
 	// --- Flat-rate agreements (Pauschale-Einträge) ---
 	mux.Handle("GET /api/persons/{id}/agreements", authed(hf(h.ListAgreements)))

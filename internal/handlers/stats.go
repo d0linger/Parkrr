@@ -23,6 +23,7 @@ type personStatsResponse struct {
 	PaymentsTotal    float64                  `json:"payments_total"` // recorded money-in (all time)
 	PaymentsYear     float64                  `json:"payments_year"`  // recorded money-in in the selected year
 	Credit           float64                  `json:"credit"`         // Guthaben: payments not (yet) allocated to items
+	InvoicedOpen     float64                  `json:"invoiced_open"`  // Σ open_amount of the person's non-canceled invoices (OP)
 	ActiveVehicles   int                      `json:"active_vehicles"`
 	TotalVehicles    int                      `json:"total_vehicles"`
 	Year             int                      `json:"year"`
@@ -255,6 +256,12 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	if resp.Credit = round2(resp.PaymentsTotal - (resp.TotalAccrued + resp.TotalCharges)); resp.Credit < 0 {
 		resp.Credit = 0
 	}
+	// Offen fakturiert: the sum of the person's open invoices (the OP view).
+	_ = h.Pool.QueryRow(r.Context(),
+		`SELECT COALESCE(SUM(total - paid_amount),0) FROM invoices
+		   WHERE person_id=$1 AND NOT canceled AND cancels_id IS NULL AND (total - paid_amount) > 0.005`, id,
+	).Scan(&resp.InvoicedOpen)
+	resp.InvoicedOpen = round2(resp.InvoicedOpen)
 
 	writeJSON(w, http.StatusOK, resp)
 }

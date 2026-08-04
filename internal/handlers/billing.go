@@ -137,7 +137,26 @@ type invoice struct {
 	Note             string         `json:"note"`
 	Canceled         bool           `json:"canceled"`             // storniert (immutable original, superseded)
 	CancelsID        *int64         `json:"cancels_id,omitempty"` // set on a Storno document -> the original
+	PaidAmount       float64        `json:"paid_amount"`          // sum of payments allocated to this invoice
+	OpenAmount       float64        `json:"open_amount"`          // total - paid_amount (the open item)
+	Status           string         `json:"status"`               // offen | teilbezahlt | bezahlt | storniert | storno
 	Items            []invoiceItem  `json:"items,omitempty"`
+}
+
+// invoiceStatus derives the OP status from the amounts and lifecycle flags.
+func invoiceStatus(total, paid float64, canceled bool, cancelsID *int64) string {
+	switch {
+	case cancelsID != nil:
+		return "storno" // the counter-document itself
+	case canceled:
+		return "storniert"
+	case total > 0.005 && paid+0.005 >= total:
+		return "bezahlt"
+	case paid > 0.005:
+		return "teilbezahlt"
+	default:
+		return "offen"
+	}
 }
 
 type createInvoiceRequest struct {
@@ -549,10 +568,14 @@ func (h *Handler) CancelInvoice(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		}
-		if _, err := tx.Exec(r.Context(), `UPDATE invoices SET canceled=true WHERE id=$1`, id); err != nil {
+		if _, err := tx.Exec(r.Context(), `UPDATE invoices SET canceled=true, paid_amount=0 WHERE id=$1`, id); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(r.Context(), `DELETE FROM invoice_source WHERE invoice_id=$1`, id); err != nil {
+			return err
+		}
+		// Release any payments tied to the original -> back to on-account (Guthaben).
+		if _, err := tx.Exec(r.Context(), `DELETE FROM invoice_payments WHERE invoice_id=$1`, id); err != nil {
 			return err
 		}
 		out = invoice{ID: stornoID, Number: number, PersonID: o.personID, IssuedOn: issued,
@@ -567,6 +590,156 @@ func (h *Handler) CancelInvoice(w http.ResponseWriter, r *http.Request) {
 	h.audit(r, "update", "invoice", id, "storniert – Gegenbeleg "+out.Number)
 	writeJSON(w, http.StatusOK, out)
 }
+
+type invoiceAlloc struct {
+	InvoiceID int64   `json:"invoice_id"`
+	Amount    float64 `json:"amount"`
+}
+
+type payInvoicesRequest struct {
+	Amount      float64        `json:"amount"`
+	PaidOn      string         `json:"paid_on"`
+	Method      string         `json:"method"`
+	Note        string         `json:"note"`
+	Auto        bool           `json:"auto"`        // allocate oldest-first across open invoices
+	Allocations []invoiceAlloc `json:"allocations"` // explicit per-invoice
+}
+
+// PayInvoices records a payment and allocates it to the person's open invoices —
+// the whole thing in ONE transaction. Paying an invoice settles every position on
+// it (rent, Pauschale, recurring, charges) at once. Any amount beyond the open
+// invoices stays as the person's Guthaben (on-account). Guthaben itself is still
+// payments − accrued (unchanged), so this never double-counts.
+func (h *Handler) PayInvoices(w http.ResponseWriter, r *http.Request) {
+	pid, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req payInvoicesRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	pr := paymentRequest{Amount: req.Amount, Method: req.Method, Note: req.Note, PaidOn: req.PaidOn}
+	paidOn, badMsg, serr := h.validatePayment(r.Context(), pid, &pr)
+	if serr != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if badMsg != "" {
+		writeError(w, http.StatusBadRequest, badMsg)
+		return
+	}
+	explicit := map[int64]float64{}
+	for _, a := range req.Allocations {
+		explicit[a.InvoiceID] = a.Amount
+	}
+
+	var createdBy *int64
+	if u, ok := auth.UserFrom(r.Context()); ok {
+		createdBy = &u.ID
+	}
+
+	type result struct {
+		PaymentID int64   `json:"payment_id"`
+		Allocated float64 `json:"allocated"`
+		Guthaben  float64 `json:"guthaben"`
+		Invoices  int     `json:"invoices_settled"`
+	}
+	var out result
+	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(r.Context(),
+			`INSERT INTO payments (person_id, amount, paid_on, method, note, created_by)
+			 VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+			pid, pr.Amount, paidOn, pr.Method, pr.Note, createdBy).Scan(&out.PaymentID); err != nil {
+			return err
+		}
+		// Lock the person's open invoices, oldest first.
+		rows, err := tx.Query(r.Context(),
+			`SELECT id, total, paid_amount FROM invoices
+			  WHERE person_id=$1 AND NOT canceled AND cancels_id IS NULL AND (total - paid_amount) > 0.005
+			  ORDER BY issued_on, id FOR UPDATE`, pid)
+		if err != nil {
+			return err
+		}
+		type inv struct {
+			id          int64
+			total, paid float64
+		}
+		var open []inv
+		for rows.Next() {
+			var iv inv
+			if err := rows.Scan(&iv.id, &iv.total, &iv.paid); err != nil {
+				rows.Close()
+				return err
+			}
+			open = append(open, iv)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		openSet := map[int64]bool{}
+		for _, iv := range open {
+			openSet[iv.id] = true
+		}
+		for id := range explicit {
+			if !openSet[id] {
+				return errInvoiceNotOpen
+			}
+		}
+
+		remaining := pr.Amount
+		for _, iv := range open {
+			if remaining < 0.005 {
+				break
+			}
+			if len(explicit) > 0 {
+				if _, ok := explicit[iv.id]; !ok {
+					continue // explicit selection: skip unchosen invoices
+				}
+			}
+			pay := round2(iv.total - iv.paid)
+			if pay > remaining {
+				pay = round2(remaining)
+			}
+			if amt, ok := explicit[iv.id]; ok && amt > 0 && amt < pay {
+				pay = round2(amt)
+			}
+			if pay < 0.005 {
+				continue
+			}
+			if _, err := tx.Exec(r.Context(),
+				`INSERT INTO invoice_payments (invoice_id, payment_id, amount) VALUES ($1,$2,$3)`,
+				iv.id, out.PaymentID, pay); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(r.Context(),
+				`UPDATE invoices SET paid_amount = paid_amount + $1 WHERE id=$2`, pay, iv.id); err != nil {
+				return err
+			}
+			remaining -= pay
+			out.Invoices++
+		}
+		out.Allocated = round2(pr.Amount - remaining)
+		out.Guthaben = round2(remaining)
+		return nil
+	})
+	if txErr != nil {
+		if txErr == errInvoiceNotOpen {
+			writeError(w, http.StatusBadRequest, "eine gewählte Rechnung ist nicht offen (storniert/bezahlt/fremd)")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "could not record payment")
+		return
+	}
+	h.audit(r, "create", "payment", out.PaymentID,
+		fmt.Sprintf("Zahlung %.2f € auf %d Rechnung(en) (Guthaben %.2f €)", pr.Amount, out.Invoices, out.Guthaben))
+	writeJSON(w, http.StatusCreated, out)
+}
+
+var errInvoiceNotOpen = fmt.Errorf("invoice not open")
 
 func loadBillingSettingsTx(ctx context.Context, tx pgx.Tx) (billingSettings, error) {
 	var s billingSettings
@@ -587,7 +760,7 @@ func (h *Handler) ListInvoices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := h.Pool.Query(r.Context(),
-		`SELECT id, number, issued_on, due_on, subtotal, ust_rate, tax_amount, total, kleinunternehmer, canceled, cancels_id
+		`SELECT id, number, issued_on, due_on, subtotal, ust_rate, tax_amount, total, kleinunternehmer, canceled, cancels_id, paid_amount
 		   FROM invoices WHERE person_id=$1 ORDER BY issued_on DESC, id DESC`, pid)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -599,10 +772,12 @@ func (h *Handler) ListInvoices(w http.ResponseWriter, r *http.Request) {
 		var iv invoice
 		iv.PersonID = pid
 		if err := rows.Scan(&iv.ID, &iv.Number, &iv.IssuedOn, &iv.DueOn, &iv.Subtotal,
-			&iv.UStRate, &iv.TaxAmount, &iv.Total, &iv.Kleinunternehmer, &iv.Canceled, &iv.CancelsID); err != nil {
+			&iv.UStRate, &iv.TaxAmount, &iv.Total, &iv.Kleinunternehmer, &iv.Canceled, &iv.CancelsID, &iv.PaidAmount); err != nil {
 			writeError(w, http.StatusInternalServerError, "query failed")
 			return
 		}
+		iv.OpenAmount = round2(iv.Total - iv.PaidAmount)
+		iv.Status = invoiceStatus(iv.Total, iv.PaidAmount, iv.Canceled, iv.CancelsID)
 		out = append(out, iv)
 	}
 	if rows.Err() != nil {
@@ -624,14 +799,16 @@ func (h *Handler) GetInvoice(w http.ResponseWriter, r *http.Request) {
 	var sellerJSON, buyerJSON []byte
 	if err := h.Pool.QueryRow(r.Context(),
 		`SELECT id, number, person_id, issued_on, due_on, subtotal, ust_rate, tax_amount, total,
-		        kleinunternehmer, seller_snapshot, buyer_snapshot, note, canceled, cancels_id
+		        kleinunternehmer, seller_snapshot, buyer_snapshot, note, canceled, cancels_id, paid_amount
 		   FROM invoices WHERE id=$1`, id,
 	).Scan(&iv.ID, &iv.Number, &iv.PersonID, &iv.IssuedOn, &iv.DueOn, &iv.Subtotal, &iv.UStRate,
 		&iv.TaxAmount, &iv.Total, &iv.Kleinunternehmer, &sellerJSON, &buyerJSON, &iv.Note,
-		&iv.Canceled, &iv.CancelsID); err != nil {
+		&iv.Canceled, &iv.CancelsID, &iv.PaidAmount); err != nil {
 		writeError(w, http.StatusNotFound, "invoice not found")
 		return
 	}
+	iv.OpenAmount = round2(iv.Total - iv.PaidAmount)
+	iv.Status = invoiceStatus(iv.Total, iv.PaidAmount, iv.Canceled, iv.CancelsID)
 	_ = json.Unmarshal(sellerJSON, &iv.Seller)
 	_ = json.Unmarshal(buyerJSON, &iv.Buyer)
 
