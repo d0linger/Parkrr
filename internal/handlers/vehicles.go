@@ -492,16 +492,28 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	var archived bool
+	var archived, curPaid bool
+	var personID int64
 	scanErr := h.Pool.QueryRow(r.Context(),
-		`SELECT archived FROM vehicles WHERE id=$1`, id).Scan(&archived)
+		`SELECT archived, paid, person_id FROM vehicles WHERE id=$1`, id).Scan(&archived, &curPaid, &personID)
 	if !ensureVehicleWritable(w, archived, scanErr) {
 		return
+	}
+	// P2.3: keep the money in step — record the auto-payment while still open (so
+	// its amount is visible in openOwedItems), then flip the flag.
+	if req.Paid && !curPaid {
+		if err := h.syncTogglePayment(r, "vehicle", id, personID, true); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not record payment")
+			return
+		}
 	}
 	if _, err := h.Pool.Exec(r.Context(),
 		`UPDATE vehicles SET paid=$1, updated_at=now() WHERE id=$2`, req.Paid, id); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update payment status")
 		return
+	}
+	if !req.Paid && curPaid {
+		_ = h.syncTogglePayment(r, "vehicle", id, personID, false)
 	}
 	label := "offen"
 	if req.Paid {

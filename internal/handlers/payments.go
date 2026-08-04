@@ -172,6 +172,59 @@ func (h *Handler) openOwedItems(r *http.Request, personID int64) ([]owedItem, er
 	return items, nil
 }
 
+// syncTogglePayment keeps a per-item "auto" payment in step with its paid toggle,
+// so flipping the one-tap slider actually moves money (P2.3): setting an item paid
+// records a payment for its open amount linked to it; setting it open removes that
+// auto-payment. Manual payments (auto=false) are never touched. Idempotent.
+func (h *Handler) syncTogglePayment(r *http.Request, kind string, refID, personID int64, paid bool) error {
+	ctx := r.Context()
+	if !paid {
+		_, err := h.Pool.Exec(ctx,
+			`DELETE FROM payments WHERE auto AND id IN (
+			   SELECT payment_id FROM payment_allocations WHERE kind=$1 AND ref_id=$2)`, kind, refID)
+		return err
+	}
+	var exists bool
+	if err := h.Pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM payment_allocations a JOIN payments p ON p.id=a.payment_id
+		   WHERE p.auto AND a.kind=$1 AND a.ref_id=$2)`, kind, refID).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return nil // already covered
+	}
+	// Only standalone, still-open items are in openOwedItems; that's their owed amount.
+	items, err := h.openOwedItems(r, personID)
+	if err != nil {
+		return err
+	}
+	var amt float64
+	for _, it := range items {
+		if it.Kind == kind && it.ID == refID {
+			amt = it.LineTotal
+		}
+	}
+	if amt < 0.005 {
+		return nil // nothing open to pay (already covered / zero) — just the flag flips
+	}
+	var createdBy *int64
+	if u, ok := auth.UserFrom(ctx); ok {
+		createdBy = &u.ID
+	}
+	return pgx.BeginFunc(ctx, h.Pool, func(tx pgx.Tx) error {
+		var pid int64
+		if err := tx.QueryRow(ctx,
+			`INSERT INTO payments (person_id, amount, method, note, auto, created_by)
+			 VALUES ($1,$2,'bar','Slider „bezahlt"',true,$3) RETURNING id`, personID, amt, createdBy).Scan(&pid); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx,
+			`INSERT INTO payment_allocations (payment_id, kind, ref_id, amount) VALUES ($1,$2,$3,$4)`,
+			pid, kind, refID, amt)
+		return err
+	})
+}
+
 // settleOne flips the existing paid toggle for one open item (reusing the same
 // updates as the manual sliders, so there is no parallel paid state).
 func (h *Handler) settleOne(r *http.Request, it owedItem) error {

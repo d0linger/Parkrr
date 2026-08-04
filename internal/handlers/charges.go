@@ -416,26 +416,38 @@ func (h *Handler) SetChargePaid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A charge bound to a vehicle is settled via that vehicle; its own flag is
-	// meaningless there. Update only standalone charges in one atomic statement.
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE charges SET paid=$1 WHERE id=$2 AND vehicle_id IS NULL`, req.Paid, id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not update charge")
-		return
-	}
-	if ct.RowsAffected() == 0 {
-		// No row updated: either the charge is missing (404) or it is bound to a
-		// vehicle (409). Distinguish the two only on this edge.
+	// meaningless there. Only standalone charges carry their own paid flag.
+	var personID int64
+	var curPaid bool
+	switch e := h.Pool.QueryRow(r.Context(),
+		`SELECT person_id, paid FROM charges WHERE id=$1 AND vehicle_id IS NULL`, id).Scan(&personID, &curPaid); {
+	case e == pgx.ErrNoRows:
+		// Missing (404) or bound to a vehicle (409).
 		var exists bool
-		switch e := h.Pool.QueryRow(r.Context(), `SELECT true FROM charges WHERE id=$1`, id).Scan(&exists); {
-		case e == pgx.ErrNoRows:
+		if h.Pool.QueryRow(r.Context(), `SELECT true FROM charges WHERE id=$1`, id).Scan(&exists) == pgx.ErrNoRows {
 			writeError(w, http.StatusNotFound, "charge not found")
-		case e != nil:
-			writeError(w, http.StatusInternalServerError, "query failed")
-		default:
+		} else {
 			writeError(w, http.StatusConflict, "charge is settled via its vehicle")
 		}
 		return
+	case e != nil:
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	// P2.3: record the auto-payment while still open, then flip the flag.
+	if req.Paid && !curPaid {
+		if err := h.syncTogglePayment(r, "charge", id, personID, true); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not record payment")
+			return
+		}
+	}
+	if _, err := h.Pool.Exec(r.Context(),
+		`UPDATE charges SET paid=$1 WHERE id=$2 AND vehicle_id IS NULL`, req.Paid, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update charge")
+		return
+	}
+	if !req.Paid && curPaid {
+		_ = h.syncTogglePayment(r, "charge", id, personID, false)
 	}
 	verb := "charge marked open"
 	if req.Paid {
