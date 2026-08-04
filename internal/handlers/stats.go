@@ -163,7 +163,7 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	// Rent = flat-rate agreements + per-vehicle cost of standalone vehicles.
 	// Vehicles bound to a Pauschale bill nothing individually (ownership model).
 	until := now.AddDate(0, 0, 1)
-	rentAccrued, rentPaid := personRent(agreements, vehicles, cats, time.Time{}, until)
+	rentAccrued, _ := personRent(agreements, vehicles, cats, time.Time{}, until)
 
 	vehPaid := vehiclePaidMap(vehicles)
 	recurs, err := h.loadRecurringCharges(r.Context(), id, agreements, vehPaid, now)
@@ -227,20 +227,17 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	// Extra charges are billed on top of rent; a bound charge is paid when its
 	// covering Pauschale's period is paid (or the vehicle's own paid flag is set),
 	// a standalone charge when its own flag is set.
-	totalCharges, paidCharges, err := h.personChargeSums(r.Context(), id, agreements, vehPaid)
+	totalCharges, _, err := h.personChargeSums(r.Context(), id, agreements, vehPaid)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	recAccrued, recPaid := recurringSums(recurs, agreements, vehPaid, now)
+	recAccrued, _ := recurringSums(recurs, agreements, vehPaid, now)
 
 	resp.TotalAccrued = round2(rentAccrued)
 	resp.TotalCharges = round2(totalCharges + recAccrued)
-	resp.TotalPaid = round2(rentPaid + paidCharges + recPaid)
-	resp.Balance = round2(resp.TotalAccrued + resp.TotalCharges - resp.TotalPaid)
 
-	// Recorded payments (money-in log) — independent of the per-item paid flags
-	// above; powers the Kontoauszug.
+	// Recorded payments (money actually received). Powers the Kontoauszug.
 	if perr := h.Pool.QueryRow(r.Context(),
 		`SELECT COALESCE(SUM(amount),0),
 		        COALESCE(SUM(amount) FILTER (WHERE EXTRACT(YEAR FROM paid_on) = $2),0)
@@ -249,11 +246,13 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 		resp.PaymentsTotal = round2(resp.PaymentsTotal)
 		resp.PaymentsYear = round2(resp.PaymentsYear)
 	}
-	// Guthaben = true overpayment: money received beyond EVERYTHING owed (rent +
-	// all charges + recurring), not the unallocated remainder — otherwise costs
-	// that settle without an allocation (vehicle-bound charges, Pauschale/recurring
-	// periods) would masquerade as credit.
-	if resp.Credit = round2(resp.PaymentsTotal - (resp.TotalAccrued + resp.TotalCharges)); resp.Credit < 0 {
+
+	// P2.2 — one money truth: paid = money actually received; Balance = accrued −
+	// received (the per-item toggles are a manual convenience, not the money).
+	resp.TotalPaid = resp.PaymentsTotal
+	resp.Balance = round2(resp.TotalAccrued + resp.TotalCharges - resp.PaymentsTotal)
+	// Guthaben = overpayment (negative balance), symmetric to Balance.
+	if resp.Credit = round2(-resp.Balance); resp.Credit < 0 {
 		resp.Credit = 0
 	}
 	// Offen fakturiert: the sum of the person's open invoices (the OP view).
@@ -371,10 +370,24 @@ func (h *Handler) outstandingByPerson(r *http.Request) (map[int64]float64, error
 		personIDs[pid] = struct{}{}
 	}
 
+	// P2.2 — open = accrued − payments received (the money truth), per person.
+	paymentsByPerson := map[int64]float64{}
+	if prows, perr := h.Pool.Query(ctx, `SELECT person_id, COALESCE(SUM(amount),0) FROM payments GROUP BY person_id`); perr == nil {
+		for prows.Next() {
+			var pid int64
+			var amt float64
+			if prows.Scan(&pid, &amt) == nil {
+				paymentsByPerson[pid] = amt
+			}
+		}
+		prows.Close()
+	}
+	_ = paidChargesByPerson // toggle-paid no longer drives the money truth
+
 	out := make(map[int64]float64, len(personIDs))
 	for pid := range personIDs {
-		tAcc, tPaid := personRent(agByPerson[pid], vehByPerson[pid], cats, time.Time{}, until)
-		owed := (tAcc + chargesByPerson[pid]) - (tPaid + paidChargesByPerson[pid])
+		tAcc, _ := personRent(agByPerson[pid], vehByPerson[pid], cats, time.Time{}, until)
+		owed := (tAcc + chargesByPerson[pid]) - paymentsByPerson[pid]
 		out[pid] = round2(owed)
 	}
 	return out, nil
@@ -572,13 +585,27 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	for pid := range chargesByPerson {
 		personIDs[pid] = struct{}{}
 	}
+	// P2.2 — money truth = recorded payments (per person + total).
+	paymentsByPerson := map[int64]float64{}
+	var paymentsTotal float64
+	if prows, perr := h.Pool.Query(ctx, `SELECT person_id, COALESCE(SUM(amount),0) FROM payments GROUP BY person_id`); perr == nil {
+		for prows.Next() {
+			var pid int64
+			var amt float64
+			if prows.Scan(&pid, &amt) == nil {
+				paymentsByPerson[pid] = amt
+				paymentsTotal += amt
+			}
+		}
+		prows.Close()
+	}
+	_ = paidChargesByPerson // toggle-paid no longer drives the money truth
+
 	resp.RevenueByMonth = make([]float64, 12)
-	var paidRent float64
 	for pid := range personIDs {
 		ag, vs := agByPerson[pid], vehByPerson[pid]
-		tAcc, tPaid := personRent(ag, vs, cats, time.Time{}, until)
+		tAcc, _ := personRent(ag, vs, cats, time.Time{}, until)
 		resp.AccruedTotal += tAcc
-		paidRent += tPaid
 		yAcc, _ := personRent(ag, vs, cats, yearStart, yearEnd)
 		resp.AccruedThisYear += yAcc
 		pAcc, _ := personRent(ag, vs, cats, prevStart, prevEnd)
@@ -589,9 +616,8 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		for m := range resp.RevenueByMonth {
 			resp.RevenueByMonth[m] = round2(resp.RevenueByMonth[m] + pm[m])
 		}
-		// Open balance per person = (accrued rent + charges) − (paid rent + paid
-		// charges), mirroring the person page's balance.
-		owed := (tAcc + chargesByPerson[pid]) - (tPaid + paidChargesByPerson[pid])
+		// Open balance per person = accrued (rent + charges) − payments received.
+		owed := (tAcc + chargesByPerson[pid]) - paymentsByPerson[pid]
 		if owed > 0.005 {
 			name := personNames[pid]
 			if name == "" {
@@ -604,12 +630,9 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 	// Revenue (Umsatz) = rent + extra charges. Fold charges into the accrued
 	// totals; the per-person charge maps carry the whole-period totals.
-	var totalCharges, paidCharges float64
+	var totalCharges float64
 	for _, v := range chargesByPerson {
 		totalCharges += v
-	}
-	for _, v := range paidChargesByPerson {
-		paidCharges += v
 	}
 	resp.AccruedTotal = round2(resp.AccruedTotal + totalCharges)
 	resp.AccruedThisYear = round2(resp.AccruedThisYear + chargeThisYear)
@@ -633,8 +656,8 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		resp.ChargesByMonth[m] = round2(chargeByMonth[m])
 	}
 
-	resp.PaidTotal = round2(paidRent + paidCharges)
-	resp.OutstandingTotal = round2(resp.AccruedTotal - resp.PaidTotal)
+	resp.PaidTotal = round2(paymentsTotal)
+	resp.OutstandingTotal = round2(resp.AccruedTotal - paymentsTotal)
 
 	// Recorded payments (money-in log): total, this-year, and per month for the
 	// selected year — independent of the paid-flag balance math above.

@@ -105,15 +105,18 @@ func TestRecurringChargeInStats(t *testing.T) {
 		t.Errorf("person with recurring charge not in top_outstanding")
 	}
 
-	// Settling the whole charge clears the balance.
-	if _, err := pool.Exec(ctx, `UPDATE recurring_charges SET paid=true WHERE id=$1`, rcID); err != nil {
-		t.Fatalf("mark paid: %v", err)
+	// P2.2: settling = recording a payment of the accrued amount (money truth =
+	// payments). Tolerance covers continuous-accrual timing noise.
+	s1 := personStats()
+	amt := s1.TotalAccrued + s1.TotalCharges
+	if _, err := pool.Exec(ctx, `INSERT INTO payments (person_id, amount, method) VALUES ($1,$2,'ueberweisung')`, personID, amt); err != nil {
+		t.Fatalf("record payment: %v", err)
 	}
 	s2 := personStats()
-	if math.Abs(s2.TotalPaid-s2.TotalCharges) > 0.01 {
-		t.Errorf("paid %.2f should equal charges %.2f after settling", s2.TotalPaid, s2.TotalCharges)
+	if math.Abs(s2.TotalPaid-amt) > 0.05 {
+		t.Errorf("TotalPaid %.2f should equal the recorded payment %.2f", s2.TotalPaid, amt)
 	}
-	if s2.Balance > 0.01 {
+	if math.Abs(s2.Balance) > 0.05 {
 		t.Errorf("expected settled balance ~0, got %.2f", s2.Balance)
 	}
 }
