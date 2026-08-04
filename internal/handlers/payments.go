@@ -15,6 +15,11 @@ import (
 	"github.com/preining/parkrr/internal/auth"
 )
 
+// maxMoneyAmount is the upper bound for a single money value. NUMERIC(12,2) holds
+// up to 9,999,999,999.99; this leaves headroom and rejects overflow/garbage input
+// with a clean 400 instead of a NUMERIC-overflow 500.
+const maxMoneyAmount = 1e9
+
 // payment is one recorded money-in entry (see migration 023_payments.sql).
 type payment struct {
 	ID        int64     `json:"id"`
@@ -224,15 +229,6 @@ func (h *Handler) syncTogglePayment(r *http.Request, kind string, refID, personI
 			   SELECT payment_id FROM payment_allocations WHERE kind=$1 AND ref_id=$2)`, kind, refID)
 		return err
 	}
-	var exists bool
-	if err := h.Pool.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM payment_allocations a JOIN payments p ON p.id=a.payment_id
-		   WHERE p.auto AND a.kind=$1 AND a.ref_id=$2)`, kind, refID).Scan(&exists); err != nil {
-		return err
-	}
-	if exists {
-		return nil // already covered
-	}
 	// Only standalone, still-open items are in openOwedItems; that's their owed amount.
 	items, err := h.openOwedItems(r, personID)
 	if err != nil {
@@ -252,6 +248,22 @@ func (h *Handler) syncTogglePayment(r *http.Request, kind string, refID, personI
 		createdBy = &u.ID
 	}
 	return pgx.BeginFunc(ctx, h.Pool, func(tx pgx.Tx) error {
+		// Serialize concurrent toggles of the SAME item: a transaction-scoped
+		// advisory lock makes the exists-check below reliable, so racing toggles
+		// (double-tap, retry, two tabs) mint exactly one auto-payment, not N.
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
+			kind+":"+strconv.FormatInt(refID, 10)); err != nil {
+			return err
+		}
+		var exists bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM payment_allocations a JOIN payments p ON p.id=a.payment_id
+			   WHERE p.auto AND a.kind=$1 AND a.ref_id=$2)`, kind, refID).Scan(&exists); err != nil {
+			return err
+		}
+		if exists {
+			return nil // already covered (won the race elsewhere)
+		}
 		var pid int64
 		if err := tx.QueryRow(ctx,
 			`INSERT INTO payments (person_id, amount, method, note, auto, created_by)
@@ -347,6 +359,11 @@ func (h *Handler) validatePayment(ctx context.Context, personID int64, req *paym
 	}
 	if req.Amount <= 0 {
 		return time.Time{}, "amount must be greater than 0", nil
+	}
+	// Reject out-of-range amounts before they hit NUMERIC(12,2) and 500 with an
+	// overflow error. maxMoneyAmount fits the column with headroom.
+	if req.Amount > maxMoneyAmount {
+		return time.Time{}, "amount exceeds the allowed maximum", nil
 	}
 	if !validNameLength(req.Note) {
 		return time.Time{}, "note is too long", nil

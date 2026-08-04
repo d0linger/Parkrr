@@ -264,6 +264,14 @@ func (h *Handler) validateCharge(ctx context.Context, req *chargeRequest) (time.
 	if req.Quantity <= 0 {
 		req.Quantity = 1
 	}
+	// Bound amount and line total so out-of-range input is a clean 400 rather than a
+	// NUMERIC(12,2) overflow 500 on insert.
+	if req.Amount < 0 || req.Amount > maxMoneyAmount || req.Quantity > maxMoneyAmount {
+		return time.Time{}, "amount or quantity is out of range", nil
+	}
+	if lt := req.Amount * req.Quantity; lt > maxMoneyAmount {
+		return time.Time{}, "amount × quantity exceeds the allowed maximum", nil
+	}
 	if req.VehicleID != nil {
 		var owner int64
 		err := h.Pool.QueryRow(ctx, `SELECT person_id FROM vehicles WHERE id=$1`, *req.VehicleID).Scan(&owner)
