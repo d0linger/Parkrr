@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -171,7 +170,6 @@ type createInvoiceRequest struct {
 func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, error) {
 	ctx := r.Context()
 	now := time.Now()
-	until := now.AddDate(0, 0, 1)
 
 	vehicles, _, err := h.loadVehiclesWithCategories(r, personID)
 	if err != nil {
@@ -197,6 +195,14 @@ func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, err
 			}
 		}
 		return "Gefährt"
+	}
+
+	// Positions already billed by an active (non-canceled) invoice are locked so
+	// nothing is invoiced twice — discrete kinds wholesale, periodic kinds per
+	// completed sub-period.
+	locked, err := h.lockedPositions(ctx, personID)
+	if err != nil {
+		return nil, err
 	}
 
 	// Standalone vehicles (open rent) + standalone one-off charges.
@@ -247,41 +253,69 @@ func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, err
 		lines = append(lines, owedItem{Kind: "charge", ID: b.id, Label: vehLabel(vid) + ": " + b.desc, Quantity: b.qty, UnitAmount: b.amount, LineTotal: lt})
 	}
 
-	// Open Pauschalen (flat-rate): unpaid accrued per agreement.
+	// Open Pauschalen (flat-rate): one line per COMPLETED, unpaid, not-yet-locked
+	// sub-period. The still-running current period is left for the next cycle.
 	for i := range ags {
 		a := &ags[i]
-		owed := round2(a.CostInRange(a.StartDate, until) - float64(a.PaidCentsInRange(a.StartDate, until))/100)
-		if owed <= 0.005 {
-			continue
-		}
 		label := "Pauschale"
 		if s := strings.TrimSpace(a.Note); s != "" {
 			label += ": " + s
 		}
-		lines = append(lines, owedItem{Kind: "agreement", ID: a.ID, Label: label, Quantity: 1, UnitAmount: owed, LineTotal: owed})
+		paidSet := periodKeySet(a.PaidPeriods)
+		ag := a
+		lines = append(lines, periodOwedLines(*a, now, "agreement", a.ID, label, locked,
+			func(key string, _ time.Time, cost float64) float64 {
+				if ag.Paid || paidSet[key] {
+					return cost
+				}
+				return ag.PaidFixed[key]
+			})...)
 	}
 
-	// Recurring extra costs: the open amount as one aggregate line.
+	// Recurring extra costs ("Wiederkehrende Nebenkosten"): likewise per completed
+	// sub-period, per charge. A bound charge settles via its vehicle's Pauschale /
+	// paid flag; a person-level one via its own per-period flags.
 	recurs, err := h.loadRecurringCharges(ctx, personID, ags, vehPaid, now)
 	if err != nil {
 		return nil, err
 	}
-	recAccrued, recPaid := recurringSums(recurs, ags, vehPaid, now)
-	if recOpen := round2(recAccrued - recPaid); recOpen > 0.005 {
-		lines = append(lines, owedItem{Kind: "recurring", ID: 0, Label: "Wiederkehrende Nebenkosten (offen)", Quantity: 1, UnitAmount: recOpen, LineTotal: recOpen})
+	for i := range recurs {
+		rc := &recurs[i]
+		p := rc.AsPeriod()
+		label := "Nebenkosten"
+		if s := strings.TrimSpace(rc.Description); s != "" {
+			label = s
+		}
+		var paidFor func(key string, start time.Time, cost float64) float64
+		if rc.VehicleID != nil {
+			label = vehLabel(*rc.VehicleID) + ": " + label
+			vid := rc.VehicleID
+			vp := vehPaid[*rc.VehicleID]
+			paidFor = func(_ string, start time.Time, cost float64) float64 {
+				if chargeSettled(ags, vid, start, false, vp) {
+					return cost
+				}
+				return 0
+			}
+		} else {
+			paidSet := periodKeySet(rc.PaidPeriods)
+			rcp := rc
+			paidFor = func(key string, _ time.Time, cost float64) float64 {
+				if rcp.Paid || paidSet[key] {
+					return cost
+				}
+				return rcp.PaidFixed[key]
+			}
+		}
+		lines = append(lines, periodOwedLines(p, now, "recurring", rc.ID, label, locked, paidFor)...)
 	}
 
-	// Fakturier-Sperre: drop discrete positions (vehicles, one-off charges) that an
-	// active (non-canceled) invoice already billed, so nothing is invoiced twice.
-	// Pauschale/recurring are periodic and not yet locked (see migration 026).
-	locked, err := h.lockedPositions(ctx, personID)
-	if err != nil {
-		return nil, err
-	}
+	// Discrete positions (vehicles, one-off charges incl. vehicle-bound) an active
+	// invoice already billed are dropped so nothing is invoiced twice (period "").
 	if len(locked) > 0 {
 		kept := lines[:0]
 		for _, it := range lines {
-			if (it.Kind == "vehicle" || it.Kind == "charge") && locked[it.Kind+":"+strconv.FormatInt(it.ID, 10)] {
+			if (it.Kind == "vehicle" || it.Kind == "charge") && locked[lockKey(it.Kind, it.ID, "")] {
 				continue
 			}
 			kept = append(kept, it)
@@ -291,11 +325,40 @@ func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, err
 	return lines, nil
 }
 
+// periodOwedLines turns a periodic accrual (Pauschale or recurring, via its
+// FlatRatePeriod view) into one invoice line per COMPLETED, still-open, not-yet-
+// locked sub-period, oldest first. paidFor returns how much of a period's cost is
+// already settled (whole-period payment, fixed partial, or vehicle coverage).
+func periodOwedLines(p models.FlatRatePeriod, now time.Time, kind string, refID int64, labelBase string, locked map[string]bool, paidFor func(key string, start time.Time, cost float64) float64) []owedItem {
+	var out []owedItem
+	for _, per := range p.ElapsedPeriodsDetailed(now) {
+		if !per.Complete {
+			continue // running period — billed once it closes
+		}
+		cost := round2(per.Cost)
+		if cost <= 0.005 {
+			continue
+		}
+		open := round2(cost - paidFor(per.Key, per.Start, cost))
+		if open <= 0.005 {
+			continue
+		}
+		if locked[lockKey(kind, refID, per.Key)] {
+			continue
+		}
+		out = append(out, owedItem{
+			Date: per.Start, Kind: kind, ID: refID, Period: per.Key,
+			Label: labelBase + " · " + per.Key, Quantity: 1, UnitAmount: open, LineTotal: open,
+		})
+	}
+	return out
+}
+
 // lockedPositions returns the set "kind:ref_id" of positions already billed by a
 // non-canceled invoice of the person.
 func (h *Handler) lockedPositions(ctx context.Context, personID int64) (map[string]bool, error) {
 	rows, err := h.Pool.Query(ctx,
-		`SELECT s.kind, s.ref_id FROM invoice_source s
+		`SELECT s.kind, s.ref_id, s.period_key FROM invoice_source s
 		    JOIN invoices i ON i.id = s.invoice_id
 		   WHERE i.person_id = $1 AND NOT i.canceled`, personID)
 	if err != nil {
@@ -304,12 +367,12 @@ func (h *Handler) lockedPositions(ctx context.Context, personID int64) (map[stri
 	defer rows.Close()
 	out := map[string]bool{}
 	for rows.Next() {
-		var kind string
+		var kind, period string
 		var ref int64
-		if err := rows.Scan(&kind, &ref); err != nil {
+		if err := rows.Scan(&kind, &ref, &period); err != nil {
 			return nil, err
 		}
-		out[kind+":"+strconv.FormatInt(ref, 10)] = true
+		out[lockKey(kind, ref, period)] = true
 	}
 	return out, rows.Err()
 }
@@ -449,11 +512,13 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 				invID, i+1, it.Label, it.Quantity, it.UnitAmount, it.LineTotal); err != nil {
 				return err
 			}
-			// Lock discrete positions so they can't be invoiced again (released on Storno).
-			if it.Kind == "vehicle" || it.Kind == "charge" {
+			// Lock the position so it can't be invoiced again (released on Storno):
+			// discrete kinds wholesale (period ""), periodic kinds per sub-period.
+			switch it.Kind {
+			case "vehicle", "charge", "agreement", "recurring":
 				if _, err := tx.Exec(r.Context(),
-					`INSERT INTO invoice_source (invoice_id, kind, ref_id) VALUES ($1,$2,$3)`,
-					invID, it.Kind, it.ID); err != nil {
+					`INSERT INTO invoice_source (invoice_id, kind, ref_id, period_key) VALUES ($1,$2,$3,$4)`,
+					invID, it.Kind, it.ID, it.Period); err != nil {
 					return err
 				}
 			}

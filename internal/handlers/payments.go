@@ -92,12 +92,28 @@ type paymentRequest struct {
 // line fields an invoice needs.
 type owedItem struct {
 	Date       time.Time
-	Kind       string // "vehicle" | "charge"
+	Kind       string // "vehicle" | "charge" | "agreement" | "recurring"
 	ID         int64
+	Period     string // sub-period key for periodic kinds; "" for discrete ones
 	Label      string
 	Quantity   float64
 	UnitAmount float64
 	LineTotal  float64
+}
+
+// lockKey is the identity of a fakturier-lockable position: kind + ref id +
+// sub-period ("" for discrete vehicle/charge, "YYYY-MM"/"YYYY" for periodic).
+func lockKey(kind string, refID int64, period string) string {
+	return kind + ":" + strconv.FormatInt(refID, 10) + ":" + period
+}
+
+// periodKeySet turns a list of paid sub-period keys into a lookup set.
+func periodKeySet(keys []string) map[string]bool {
+	m := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		m[k] = true
+	}
+	return m
 }
 
 // openOwedItems enumerates a person's open individually-owed positions, oldest
@@ -177,7 +193,7 @@ func (h *Handler) openOwedItems(r *http.Request, personID int64) ([]owedItem, er
 	if len(locked) > 0 {
 		kept := items[:0]
 		for _, it := range items {
-			if locked[it.Kind+":"+strconv.FormatInt(it.ID, 10)] {
+			if locked[lockKey(it.Kind, it.ID, "")] {
 				continue
 			}
 			kept = append(kept, it)

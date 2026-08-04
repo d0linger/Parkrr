@@ -291,6 +291,37 @@ func (a *FlatRatePeriod) ElapsedPeriodCosts(asOf time.Time) map[string]float64 {
 	return out
 }
 
+// OpenPeriod describes one elapsed sub-period of a periodic accrual.
+type OpenPeriod struct {
+	Key      string    // sub-period key ("YYYY-MM" monthly / "YYYY" yearly)
+	Start    time.Time // period start within the agreement window (for line dating)
+	Cost     float64   // accrued cost of the period (final once Complete)
+	Complete bool      // the period has fully elapsed as of asOf (safe to bill/lock)
+}
+
+// ElapsedPeriodsDetailed returns every elapsed sub-period from the agreement's
+// start through asOf, oldest first, with its accrued cost and whether it has
+// fully elapsed — its calendar end (or the agreement's EndDate, if earlier) is
+// not after asOf. Only a complete period has a final cost and may be locked, so
+// the still-running current period is never billed twice as it grows.
+func (a *FlatRatePeriod) ElapsedPeriodsDetailed(asOf time.Time) []OpenPeriod {
+	cents := toCents(a.Amount)
+	var out []OpenPeriod
+	a.subPeriods(a.StartDate, asOf.AddDate(0, 0, 1), func(s, e, pStart, pEnd time.Time, key string) {
+		end := pEnd
+		if a.EndDate != nil && a.EndDate.Before(end) {
+			end = *a.EndDate
+		}
+		out = append(out, OpenPeriod{
+			Key:      key,
+			Start:    s,
+			Cost:     float64(fractionCents(cents, days(s, e), days(pStart, pEnd))) / 100,
+			Complete: !end.After(asOf),
+		})
+	})
+	return out
+}
+
 // Covers reports whether this agreement applies to the given vehicle. An empty
 // VehicleIDs set means "all of the person's vehicles".
 func (a *FlatRatePeriod) Covers(vehicleID int64) bool {
