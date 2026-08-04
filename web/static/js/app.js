@@ -1259,7 +1259,7 @@
                     amount: Number(d.amount), paid_on: d.paid_on, method: d.method,
                     allocations: [{ invoice_id: iv.id, amount: Number(d.amount) }],
                 });
-                toast((r && r.guthaben > 0.005) ? ('Bezahlt · Guthaben ' + eur(r.guthaben)) : 'Rechnung bezahlt', 'success');
+                toast((r && r.unallocated > 0.005) ? ('Bezahlt · Rest ' + eur(r.unallocated) + ' nicht zugeordnet') : 'Rechnung bezahlt', 'success');
                 render();
             },
         });

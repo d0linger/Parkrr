@@ -642,10 +642,10 @@ func (h *Handler) PayInvoices(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type result struct {
-		PaymentID int64   `json:"payment_id"`
-		Allocated float64 `json:"allocated"`
-		Guthaben  float64 `json:"guthaben"`
-		Invoices  int     `json:"invoices_settled"`
+		PaymentID   int64   `json:"payment_id"`
+		Allocated   float64 `json:"allocated"`
+		Unallocated float64 `json:"unallocated"`
+		Invoices    int     `json:"invoices_settled"`
 	}
 	var out result
 	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
@@ -723,7 +723,7 @@ func (h *Handler) PayInvoices(w http.ResponseWriter, r *http.Request) {
 			out.Invoices++
 		}
 		out.Allocated = round2(pr.Amount - remaining)
-		out.Guthaben = round2(remaining)
+		out.Unallocated = round2(remaining)
 		return nil
 	})
 	if txErr != nil {
@@ -735,7 +735,7 @@ func (h *Handler) PayInvoices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r, "create", "payment", out.PaymentID,
-		fmt.Sprintf("Zahlung %.2f € auf %d Rechnung(en) (Guthaben %.2f €)", pr.Amount, out.Invoices, out.Guthaben))
+		fmt.Sprintf("Zahlung %.2f € auf %d Rechnung(en) (Rest %.2f € nicht zugeordnet)", pr.Amount, out.Invoices, out.Unallocated))
 	writeJSON(w, http.StatusCreated, out)
 }
 

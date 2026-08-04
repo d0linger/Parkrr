@@ -168,6 +168,22 @@ func (h *Handler) openOwedItems(r *http.Request, personID int64) ([]owedItem, er
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	// A position already billed by an active invoice is settled via that invoice —
+	// exclude it here so it can't be paid a second time (slider / allocation).
+	locked, err := h.lockedPositions(ctx, personID)
+	if err != nil {
+		return nil, err
+	}
+	if len(locked) > 0 {
+		kept := items[:0]
+		for _, it := range items {
+			if locked[it.Kind+":"+strconv.FormatInt(it.ID, 10)] {
+				continue
+			}
+			kept = append(kept, it)
+		}
+		items = kept
+	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Date.Before(items[j].Date) })
 	return items, nil
 }

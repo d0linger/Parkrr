@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -305,10 +306,10 @@ func TestInvoiceStorno(t *testing.T) {
 // --- P2: pay invoices (OP) ---
 
 type payResult struct {
-	PaymentID int64   `json:"payment_id"`
-	Allocated float64 `json:"allocated"`
-	Guthaben  float64 `json:"guthaben"`
-	Invoices  int     `json:"invoices_settled"`
+	PaymentID   int64   `json:"payment_id"`
+	Allocated   float64 `json:"allocated"`
+	Unallocated float64 `json:"unallocated"`
+	Invoices    int     `json:"invoices_settled"`
 }
 
 func payInvoicesRec(t *testing.T, h *Handler, pid int64, payload map[string]any) *httptest.ResponseRecorder {
@@ -352,7 +353,7 @@ func TestPayInvoiceLifecycle(t *testing.T) {
 	iv := createInvoice(t, h, pid) // total 100
 
 	r1 := payInvoices(t, h, pid, map[string]any{"amount": 40, "method": "ueberweisung", "auto": true})
-	if r1.Allocated != 40 || r1.Guthaben != 0 {
+	if r1.Allocated != 40 || r1.Unallocated != 0 {
 		t.Fatalf("partial payment result wrong: %+v", r1)
 	}
 	iv1 := getInvoiceT(t, h, iv.ID)
@@ -362,12 +363,79 @@ func TestPayInvoiceLifecycle(t *testing.T) {
 
 	// Overpay: 100 more -> invoice fully paid (caps at 60 open), 40 stays as Guthaben.
 	r2 := payInvoices(t, h, pid, map[string]any{"amount": 100, "method": "bar", "auto": true})
-	if r2.Allocated != 60 || r2.Guthaben != 40 {
+	if r2.Allocated != 60 || r2.Unallocated != 40 {
 		t.Fatalf("overpay result wrong: %+v", r2)
 	}
 	iv2 := getInvoiceT(t, h, iv.ID)
 	if iv2.Status != "bezahlt" || iv2.OpenAmount != 0 {
 		t.Errorf("bezahlt state wrong: %+v", iv2)
+	}
+}
+
+// personStatsT fetches a person's stats response for balance/credit assertions.
+func personStatsT(t *testing.T, h *Handler, pid int64) personStatsResponse {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/persons/"+strconv.FormatInt(pid, 10)+"/stats", nil)
+	req.SetPathValue("id", strconv.FormatInt(pid, 10))
+	rec := httptest.NewRecorder()
+	h.PersonStats(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stats: %d %s", rec.Code, rec.Body.String())
+	}
+	var s personStatsResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &s)
+	return s
+}
+
+// TestPaidUStInvoiceNoPhantomCredit is the regression for the net-vs-gross seam:
+// accrual is NET, but an issued USt invoice adds tax on top and the customer pays
+// GROSS. The invoiced tax must count on the owed side, otherwise fully paying a
+// USt invoice mints Guthaben equal to the tax. Anna-Bauer bug, tax variant.
+func TestPaidUStInvoiceNoPhantomCredit(t *testing.T) {
+	h := testHandler(t)
+	saveBilling(t, h, map[string]any{
+		"seller_name": "Test GmbH", "seller_address": "Musterstr. 1, 1010 Wien", "seller_uid": "ATU12345678",
+		"kleinunternehmer": false, "ust_rate": 20, "number_pad": 4,
+	})
+	pid := createIntegrationPerson(t, h)
+	chargeFor(t, h, pid, 100) // net 100
+	iv := createInvoice(t, h, pid)
+	if iv.TaxAmount != 20 || iv.Total != 120 {
+		t.Fatalf("expected gross 120 (tax 20), got %+v", iv)
+	}
+	// Owed side must now be the gross 120 (net 100 + invoiced tax 20), no credit.
+	if s := personStatsT(t, h, pid); math.Abs(s.Balance-120) > 0.05 || s.Credit > 0.05 {
+		t.Fatalf("after USt invoice: balance=%.2f credit=%.2f (want 120 / 0)", s.Balance, s.Credit)
+	}
+	// Pay the gross in full -> balance 0, NO phantom Guthaben equal to the tax.
+	payInvoices(t, h, pid, map[string]any{"amount": 120, "method": "ueberweisung", "auto": true})
+	s := personStatsT(t, h, pid)
+	if math.Abs(s.Balance) > 0.05 || s.Credit > 0.05 {
+		t.Errorf("paid USt invoice must leave balance 0 / credit 0, got balance=%.2f credit=%.2f", s.Balance, s.Credit)
+	}
+}
+
+// TestSliderInertOnInvoicedPosition is the regression for the double-pay seam: an
+// invoiced position is locked out of openOwedItems, so flipping its "bezahlt"
+// slider must NOT mint a second (auto) payment on top of the open invoice.
+func TestSliderInertOnInvoicedPosition(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	cid := mkChargeP(t, h, pid, "Standalone", 100, "2026-05-01")
+	iv := createInvoice(t, h, pid) // locks the charge
+
+	before := personStatsT(t, h, pid)
+	setChargePaidT(t, h, cid, true) // slider on the now-invoiced charge
+	after := personStatsT(t, h, pid)
+
+	// No auto-payment => balance unchanged, invoice still fully open.
+	if math.Abs(after.PaymentsTotal-before.PaymentsTotal) > 0.005 {
+		t.Errorf("slider must not record a payment on an invoiced position: %.2f -> %.2f",
+			before.PaymentsTotal, after.PaymentsTotal)
+	}
+	if s := getInvoiceT(t, h, iv.ID).Status; s != "offen" {
+		t.Errorf("invoice must stay open (settle via pay-invoices), got %s", s)
 	}
 }
 

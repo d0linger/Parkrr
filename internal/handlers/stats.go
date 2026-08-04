@@ -247,10 +247,18 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 		resp.PaymentsYear = round2(resp.PaymentsYear)
 	}
 
-	// P2.2 — one money truth: paid = money actually received; Balance = accrued −
+	// Accrual is NET; an issued invoice adds USt on top and the customer pays that
+	// GROSS. Add the invoiced tax to the owed side so a paid USt-invoice doesn't
+	// look like Guthaben equal to its tax. Kleinunternehmer => tax 0 (no-op).
+	var invoicedTax float64
+	_ = h.Pool.QueryRow(r.Context(),
+		`SELECT COALESCE(SUM(tax_amount),0) FROM invoices
+		   WHERE person_id=$1 AND NOT canceled AND cancels_id IS NULL`, id).Scan(&invoicedTax)
+
+	// P2.2 — one money truth: paid = money actually received; Balance = owed −
 	// received (the per-item toggles are a manual convenience, not the money).
 	resp.TotalPaid = resp.PaymentsTotal
-	resp.Balance = round2(resp.TotalAccrued + resp.TotalCharges - resp.PaymentsTotal)
+	resp.Balance = round2(resp.TotalAccrued + resp.TotalCharges + invoicedTax - resp.PaymentsTotal)
 	// Guthaben = overpayment (negative balance), symmetric to Balance.
 	if resp.Credit = round2(-resp.Balance); resp.Credit < 0 {
 		resp.Credit = 0
@@ -384,10 +392,23 @@ func (h *Handler) outstandingByPerson(r *http.Request) (map[int64]float64, error
 	}
 	_ = paidChargesByPerson // toggle-paid no longer drives the money truth
 
+	// Invoiced USt is owed on top of the net accrual (see PersonStats).
+	invoicedTaxByPerson := map[int64]float64{}
+	if trows, terr := h.Pool.Query(ctx, `SELECT person_id, COALESCE(SUM(tax_amount),0) FROM invoices WHERE NOT canceled AND cancels_id IS NULL GROUP BY person_id`); terr == nil {
+		for trows.Next() {
+			var pid int64
+			var amt float64
+			if trows.Scan(&pid, &amt) == nil {
+				invoicedTaxByPerson[pid] = amt
+			}
+		}
+		trows.Close()
+	}
+
 	out := make(map[int64]float64, len(personIDs))
 	for pid := range personIDs {
 		tAcc, _ := personRent(agByPerson[pid], vehByPerson[pid], cats, time.Time{}, until)
-		owed := (tAcc + chargesByPerson[pid]) - paymentsByPerson[pid]
+		owed := (tAcc + chargesByPerson[pid] + invoicedTaxByPerson[pid]) - paymentsByPerson[pid]
 		out[pid] = round2(owed)
 	}
 	return out, nil
@@ -601,6 +622,21 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = paidChargesByPerson // toggle-paid no longer drives the money truth
 
+	// Invoiced USt owed on top of net accrual (see PersonStats).
+	invoicedTaxByPerson := map[int64]float64{}
+	var invoicedTaxTotal float64
+	if trows, terr := h.Pool.Query(ctx, `SELECT person_id, COALESCE(SUM(tax_amount),0) FROM invoices WHERE NOT canceled AND cancels_id IS NULL GROUP BY person_id`); terr == nil {
+		for trows.Next() {
+			var pid int64
+			var amt float64
+			if trows.Scan(&pid, &amt) == nil {
+				invoicedTaxByPerson[pid] = amt
+				invoicedTaxTotal += amt
+			}
+		}
+		trows.Close()
+	}
+
 	resp.RevenueByMonth = make([]float64, 12)
 	for pid := range personIDs {
 		ag, vs := agByPerson[pid], vehByPerson[pid]
@@ -616,8 +652,8 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		for m := range resp.RevenueByMonth {
 			resp.RevenueByMonth[m] = round2(resp.RevenueByMonth[m] + pm[m])
 		}
-		// Open balance per person = accrued (rent + charges) − payments received.
-		owed := (tAcc + chargesByPerson[pid]) - paymentsByPerson[pid]
+		// Open balance per person = owed (rent + charges + invoiced USt) − payments.
+		owed := (tAcc + chargesByPerson[pid] + invoicedTaxByPerson[pid]) - paymentsByPerson[pid]
 		if owed > 0.005 {
 			name := personNames[pid]
 			if name == "" {
@@ -657,7 +693,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp.PaidTotal = round2(paymentsTotal)
-	resp.OutstandingTotal = round2(resp.AccruedTotal - paymentsTotal)
+	resp.OutstandingTotal = round2(resp.AccruedTotal + invoicedTaxTotal - paymentsTotal)
 
 	// Recorded payments (money-in log): total, this-year, and per month for the
 	// selected year — independent of the paid-flag balance math above.
