@@ -728,6 +728,22 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "period_key does not match an elapsed period of this agreement")
 		return
 	}
+	// An invoiced period is settled through the invoice — marking it paid here would
+	// double-credit once that invoice is Storno'd (the lock, not this flag, was
+	// neutralising it). Block it.
+	if req.Paid {
+		var locked bool
+		if err := tx.QueryRow(r.Context(),
+			`SELECT EXISTS(SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+			   WHERE s.kind='agreement' AND s.ref_id=$1 AND s.period_key=$2 AND NOT i.canceled)`, id, key).Scan(&locked); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not update payment")
+			return
+		}
+		if locked {
+			writeError(w, http.StatusConflict, "Periode ist fakturiert – über die Rechnung begleichen")
+			return
+		}
+	}
 
 	if req.Paid {
 		// amount NULL = whole period (prepaid); a value = fixed partial. Upsert so
@@ -763,11 +779,7 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "could not update payment")
 		return
 	}
-	state := "offen"
-	if req.Paid {
-		state = "bezahlt"
-	}
-	h.audit(r, "update", "flatrate", id, "Pauschale "+h.personLabel(r, a.PersonID)+" "+key+": "+state)
+	h.audit(r, "update", "flatrate", id, "Pauschale "+h.personLabel(r, a.PersonID)+" "+key+": "+periodPaidAuditState(req.Paid, req.Amount))
 	// Settling the last open period may finish the agreement -> archive vehicles.
 	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), a.PersonID)
 	h.writeAgreements(w, r, a.PersonID)

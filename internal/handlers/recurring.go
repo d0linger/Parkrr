@@ -452,28 +452,55 @@ func (h *Handler) SetRecurringChargePeriodPaid(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, "invalid period")
 		return
 	}
-
-	periods := removeString(rc.PaidPeriods, req.PeriodKey)
-	fixed := rc.PaidFixed
-	if fixed == nil {
-		fixed = map[string]float64{}
-	}
-	delete(fixed, req.PeriodKey)
+	// An invoiced period is settled through the invoice, not the per-period flag —
+	// marking it paid here would double-credit once the invoice is Storno'd (the
+	// lock, not the flag, was neutralising it). Block it.
 	if req.Paid {
-		if req.Amount == nil {
-			periods = append(periods, req.PeriodKey) // whole period prepaid
-		} else {
-			fixed[req.PeriodKey] = *req.Amount // fixed partial (validated > 0 above)
+		locked, lerr := h.lockedPositions(r.Context(), rc.PersonID)
+		if lerr != nil {
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		if locked[lockKey("recurring", id, req.PeriodKey)] {
+			writeError(w, http.StatusConflict, "Periode ist fakturiert – über die Rechnung begleichen")
+			return
 		}
 	}
-	fixedJSON, _ := json.Marshal(fixed)
-	if _, err := h.Pool.Exec(r.Context(),
-		`UPDATE recurring_charges SET paid_periods=$1, paid_fixed=$2, updated_at=now() WHERE id=$3`,
-		periods, string(fixedJSON), id); err != nil {
+	// Serialize the read-modify-write of the whole paid_periods/paid_fixed columns
+	// under FOR UPDATE (the agreement path is already tx-guarded); otherwise two
+	// concurrent per-period settlements clobber each other and lose one.
+	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		var periodsRaw []string
+		var fixedRaw []byte
+		if err := tx.QueryRow(r.Context(),
+			`SELECT paid_periods, paid_fixed FROM recurring_charges WHERE id=$1 FOR UPDATE`, id).
+			Scan(&periodsRaw, &fixedRaw); err != nil {
+			return err
+		}
+		fixed := map[string]float64{}
+		if len(fixedRaw) > 0 {
+			_ = json.Unmarshal(fixedRaw, &fixed)
+		}
+		periods := removeString(periodsRaw, req.PeriodKey)
+		delete(fixed, req.PeriodKey)
+		if req.Paid {
+			if req.Amount == nil {
+				periods = append(periods, req.PeriodKey) // whole period prepaid
+			} else {
+				fixed[req.PeriodKey] = *req.Amount // fixed partial (validated > 0 above)
+			}
+		}
+		fixedJSON, _ := json.Marshal(fixed)
+		_, err := tx.Exec(r.Context(),
+			`UPDATE recurring_charges SET paid_periods=$1, paid_fixed=$2, updated_at=now() WHERE id=$3`,
+			periods, string(fixedJSON), id)
+		return err
+	})
+	if txErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not update recurring charge")
 		return
 	}
-	h.audit(r, "update", "recurring_charge", id, "recurring period "+req.PeriodKey)
+	h.audit(r, "update", "recurring_charge", id, "Nebenkosten-Periode "+req.PeriodKey+": "+periodPaidAuditState(req.Paid, req.Amount))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

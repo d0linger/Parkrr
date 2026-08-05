@@ -382,6 +382,13 @@ func (h *Handler) DeleteCharge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+	if inv, ierr := h.refInvoiced(r.Context(), "charge", id); ierr != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete charge")
+		return
+	} else if inv {
+		writeError(w, http.StatusConflict, "Zusatzkosten sind Teil einer ausgestellten Rechnung und können nicht gelöscht werden (Storno statt Löschen).")
+		return
+	}
 	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM charges WHERE id=$1`, id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete charge")

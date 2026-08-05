@@ -170,6 +170,20 @@ func (h *Handler) DeletePerson(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+	// BAO §132: recorded payments are money-in Grundaufzeichnungen and must be kept.
+	// The payments/charges FKs cascade, so a person with a booked payment would have
+	// it silently wiped on delete — block that (invoices are already FK-RESTRICTed).
+	var hasPayments bool
+	if err := h.Pool.QueryRow(r.Context(),
+		`SELECT EXISTS(SELECT 1 FROM payments WHERE person_id=$1)`, id).Scan(&hasPayments); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete person")
+		return
+	}
+	if hasPayments {
+		writeError(w, http.StatusConflict,
+			"Person hat erfasste Zahlungen und kann nicht gelöscht werden (Aufbewahrungspflicht).")
+		return
+	}
 	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM persons WHERE id = $1`, id)
 	if err != nil {
 		if isForeignKeyViolation(err) {

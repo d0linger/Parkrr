@@ -104,13 +104,18 @@ func (h *Handler) SaveBillingSettings(w http.ResponseWriter, r *http.Request) {
 	// Read the current sequence and write under one FOR UPDATE lock (the same row
 	// CreateInvoice locks) so the no-rewind guard can't race a concurrently-issued
 	// number — and the read error is no longer swallowed.
+	var oldNext int
+	var oldUID string
+	var oldRate float64
+	var oldKlein bool
 	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
-		var cur int
-		if err := tx.QueryRow(r.Context(), `SELECT next_invoice_no FROM billing_settings WHERE id=1 FOR UPDATE`).Scan(&cur); err != nil {
+		if err := tx.QueryRow(r.Context(),
+			`SELECT next_invoice_no, seller_uid, ust_rate, kleinunternehmer FROM billing_settings WHERE id=1 FOR UPDATE`).
+			Scan(&oldNext, &oldUID, &oldRate, &oldKlein); err != nil {
 			return err
 		}
-		if in.NextInvoiceNo < cur {
-			in.NextInvoiceNo = cur
+		if in.NextInvoiceNo < oldNext {
+			in.NextInvoiceNo = oldNext
 		}
 		_, err := tx.Exec(r.Context(),
 			`UPDATE billing_settings SET seller_name=$1, seller_address=$2, seller_uid=$3,
@@ -125,7 +130,26 @@ func (h *Handler) SaveBillingSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not save billing settings")
 		return
 	}
-	h.audit(r, "update", "billing", 0, "updated invoicing settings")
+	// Audit the §11- / number-integrity-critical changes with before→after so a UID,
+	// tax-rate, or deliberate invoice-number jump is reconstructable from the trail.
+	var chg []string
+	if oldUID != in.SellerUID {
+		chg = append(chg, fmt.Sprintf("UID %q→%q", oldUID, in.SellerUID))
+	}
+	if oldRate != in.UStRate {
+		chg = append(chg, fmt.Sprintf("USt %.0f%%→%.0f%%", oldRate, in.UStRate))
+	}
+	if oldKlein != in.Kleinunternehmer {
+		chg = append(chg, fmt.Sprintf("Kleinunternehmer %v→%v", oldKlein, in.Kleinunternehmer))
+	}
+	if in.NextInvoiceNo != oldNext {
+		chg = append(chg, fmt.Sprintf("Nummernkreis %d→%d", oldNext, in.NextInvoiceNo))
+	}
+	msg := "Rechnungs-Einstellungen geändert"
+	if len(chg) > 0 {
+		msg += ": " + strings.Join(chg, ", ")
+	}
+	h.audit(r, "update", "billing", 0, msg)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
 }
 
@@ -145,6 +169,8 @@ type invoice struct {
 	PersonID         int64          `json:"person_id"`
 	IssuedOn         time.Time      `json:"issued_on"`
 	DueOn            *time.Time     `json:"due_on"`
+	LeistungFrom     *time.Time     `json:"leistung_from,omitempty"` // § 11 Abs 1 Z 4: Leistungszeitraum (von)
+	LeistungTo       *time.Time     `json:"leistung_to,omitempty"`   // Leistungszeitraum (bis)
 	Subtotal         float64        `json:"subtotal"`
 	UStRate          float64        `json:"ust_rate"`
 	TaxAmount        float64        `json:"tax_amount"`
@@ -426,6 +452,17 @@ func (h *Handler) lockedPositions(ctx context.Context, personID int64) (map[stri
 	return out, rows.Err()
 }
 
+// refInvoiced reports whether a position (kind, ref_id) is billed by an active
+// (non-canceled) invoice — used to block deleting a master record an issued invoice
+// was built from, which would orphan its invoice_source lock and lose history.
+func (h *Handler) refInvoiced(ctx context.Context, kind string, refID int64) (bool, error) {
+	var yes bool
+	err := h.Pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+		   WHERE s.kind=$1 AND s.ref_id=$2 AND NOT i.canceled)`, kind, refID).Scan(&yes)
+	return yes, err
+}
+
 // invoiceComplianceError checks the §11 UStG (AT) mandatory invoice fields and
 // returns a non-empty message naming what's missing, so an incomplete/non-compliant
 // invoice is never issued (GoBD/BAO: Richtigkeit & Vollständigkeit).
@@ -558,13 +595,24 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 		d := issued.AddDate(0, 0, s.PaymentTermsDays)
 		due := &d
 
+		// § 11 Leistungszeitraum: from the earliest billed position through the issue
+		// date (the service accrued up to issuance).
+		leistungFrom := issued
+		for _, it := range items {
+			if !it.Date.IsZero() && it.Date.Before(leistungFrom) {
+				leistungFrom = it.Date
+			}
+		}
+
 		var invID int64
 		if err := tx.QueryRow(r.Context(),
 			`INSERT INTO invoices (number, person_id, issued_on, due_on, subtotal, ust_rate,
-			        tax_amount, total, kleinunternehmer, seller_snapshot, buyer_snapshot, note, created_by)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+			        tax_amount, total, kleinunternehmer, seller_snapshot, buyer_snapshot, note, created_by,
+			        leistung_from, leistung_to)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
 			number, pid, issued, due, subtotal, rate, tax, total, s.Kleinunternehmer,
 			string(sellerJSON), string(buyerJSON), trim(req.Note), createdBy,
+			leistungFrom, issued,
 		).Scan(&invID); err != nil {
 			return err
 		}
@@ -586,7 +634,9 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		lf := leistungFrom
 		out = invoice{ID: invID, Number: number, PersonID: pid, IssuedOn: issued, DueOn: due,
+			LeistungFrom: &lf, LeistungTo: &issued,
 			Subtotal: subtotal, UStRate: rate, TaxAmount: tax, Total: total,
 			Kleinunternehmer: s.Kleinunternehmer, Seller: seller, Buyer: buyer, Note: trim(req.Note)}
 		return nil
@@ -739,6 +789,9 @@ func (h *Handler) CancelInvoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r, "update", "invoice", id, "storniert – Gegenbeleg "+out.Number)
+	// The counter-document is a distinct gapless-numbered Beleg — audit its issuance
+	// under its own id/number (it releases the original's payments to Guthaben).
+	h.audit(r, "create", "invoice", out.ID, "Storno-Gegenbeleg "+out.Number+" zu Rechnung "+o.number)
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -1003,11 +1056,12 @@ func (h *Handler) GetInvoice(w http.ResponseWriter, r *http.Request) {
 	var sellerJSON, buyerJSON []byte
 	if err := h.Pool.QueryRow(r.Context(),
 		`SELECT id, number, person_id, issued_on, due_on, subtotal, ust_rate, tax_amount, total,
-		        kleinunternehmer, seller_snapshot, buyer_snapshot, note, canceled, cancels_id, paid_amount
+		        kleinunternehmer, seller_snapshot, buyer_snapshot, note, canceled, cancels_id, paid_amount,
+		        leistung_from, leistung_to
 		   FROM invoices WHERE id=$1`, id,
 	).Scan(&iv.ID, &iv.Number, &iv.PersonID, &iv.IssuedOn, &iv.DueOn, &iv.Subtotal, &iv.UStRate,
 		&iv.TaxAmount, &iv.Total, &iv.Kleinunternehmer, &sellerJSON, &buyerJSON, &iv.Note,
-		&iv.Canceled, &iv.CancelsID, &iv.PaidAmount); err != nil {
+		&iv.Canceled, &iv.CancelsID, &iv.PaidAmount, &iv.LeistungFrom, &iv.LeistungTo); err != nil {
 		writeError(w, http.StatusNotFound, "invoice not found")
 		return
 	}

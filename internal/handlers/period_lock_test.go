@@ -138,7 +138,9 @@ func TestInvoicedPeriodNotDoubleCredited(t *testing.T) {
 	})
 	before := personStatsT(t, h, pid).Balance // ~ running month only
 
-	// Redundantly tap an INVOICED period's paid slider.
+	// Tapping an INVOICED period's paid slider is now REJECTED (audit W3): it must
+	// be settled through the invoice. Blocking at the source prevents the stale flag
+	// that would double-credit once the invoice is Storno'd.
 	key := firstOfMonthMonthsAgo(3).Format("2006-01")
 	body, _ := json.Marshal(map[string]any{"period_key": key, "paid": true})
 	req := httptest.NewRequest(http.MethodPost, "/api/agreements/"+strconv.FormatInt(aid, 10)+"/period-paid", bytes.NewReader(body))
@@ -146,16 +148,16 @@ func TestInvoicedPeriodNotDoubleCredited(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.SetAgreementPeriodPaid(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("period-paid: %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("marking an invoiced period paid must be rejected with 409, got %d %s", rec.Code, rec.Body.String())
 	}
 
 	s := personStatsT(t, h, pid)
 	if math.Abs(s.Balance-before) > 0.05 {
-		t.Errorf("marking an INVOICED period paid must not change the balance; before=%.2f after=%.2f", before, s.Balance)
+		t.Errorf("blocked period-paid must not change the balance; before=%.2f after=%.2f", before, s.Balance)
 	}
 	if s.Credit > 0.05 {
-		t.Errorf("no phantom Guthaben expected after paying an invoiced+toggled period, got credit=%.2f", s.Credit)
+		t.Errorf("no phantom Guthaben expected, got credit=%.2f", s.Credit)
 	}
 }
 

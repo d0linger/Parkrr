@@ -1298,6 +1298,11 @@
     }
     const metaRow = (l, v) => el('div', { class: 'inv-metarow' }, el('span', { class: 'inv-muted' }, l), el('span', {}, v));
     const totRow = (l, v, strong) => el('div', { class: 'inv-totrow' + (strong ? ' strong' : '') }, el('span', {}, l), el('span', { class: 'num' }, v));
+    function leistungLabel(from, to) {
+        const f = new Date(from).toLocaleDateString('de-DE');
+        const t = to ? new Date(to).toLocaleDateString('de-DE') : f;
+        return f === t ? f : (f + ' – ' + t);
+    }
     function invoiceDocument(iv) {
         const s = iv.seller || {}, b = iv.buyer || {};
         const doc = el('div', { class: 'invoice-doc' });
@@ -1314,6 +1319,8 @@
             el('div', { class: 'inv-meta' },
                 metaRow('Rechnungsdatum', new Date(iv.issued_on).toLocaleDateString('de-DE')),
                 iv.due_on ? metaRow('Fällig bis', new Date(iv.due_on).toLocaleDateString('de-DE')) : null,
+                // § 11 Abs 1 Z 4: Leistungszeitraum (a period, or a single date if from==to).
+                iv.leistung_from ? metaRow('Leistungszeitraum', leistungLabel(iv.leistung_from, iv.leistung_to)) : null,
                 metaRow('Rechnungsnr.', esc(iv.number)))));
         const tb = el('tbody', {});
         (iv.items || []).forEach((it) => tb.append(el('tr', {},

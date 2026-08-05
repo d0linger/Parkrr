@@ -117,6 +117,19 @@ func lockKey(kind string, refID int64, period string) string {
 	return kind + ":" + strconv.FormatInt(refID, 10) + ":" + period
 }
 
+// periodPaidAuditState renders a per-period settlement change for the audit log —
+// the state plus the fixed-partial amount (money received) when one was recorded,
+// so a recorded Teilbetrag is reconstructable from the trail.
+func periodPaidAuditState(paid bool, amount *float64) string {
+	if !paid {
+		return "offen"
+	}
+	if amount != nil {
+		return fmt.Sprintf("Teilbetrag %.2f €", *amount)
+	}
+	return "bezahlt"
+}
+
 // periodKeySet turns a list of paid sub-period keys into a lookup set.
 func periodKeySet(keys []string) map[string]bool {
 	m := make(map[string]bool, len(keys))

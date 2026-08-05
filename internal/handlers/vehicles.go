@@ -364,6 +364,13 @@ func (h *Handler) DeleteVehicle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+	if inv, ierr := h.refInvoiced(r.Context(), "vehicle", id); ierr != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete vehicle")
+		return
+	} else if inv {
+		writeError(w, http.StatusConflict, "Fahrzeug ist Teil einer ausgestellten Rechnung und kann nicht gelöscht werden (Storno statt Löschen).")
+		return
+	}
 	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM vehicles WHERE id = $1`, id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete vehicle")
@@ -415,7 +422,11 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 	// When collecting, set the pickup/end date: use the caller-supplied date if
 	// given (allows back-dating), otherwise keep any existing end date or today.
 	switch {
-	case req.Status == models.StatusCollected && trim(req.Date) != "":
+	// A closing status (collected OR cancelled) ends storage, so it MUST set an
+	// end_date — otherwise rent keeps accruing forever on a cancelled vehicle that
+	// is then archived and can never be invoiced/paid/cleared (perpetual phantom
+	// receivable).
+	case (req.Status == models.StatusCollected || req.Status == models.StatusCancelled) && trim(req.Date) != "":
 		end, perr := time.Parse(dateLayout, trim(req.Date))
 		if perr != nil {
 			writeError(w, http.StatusBadRequest, "date must be YYYY-MM-DD")
@@ -424,7 +435,7 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 		_, _ = h.Pool.Exec(r.Context(),
 			`UPDATE vehicles SET status=$1, end_date=$2, updated_at=now() WHERE id=$3`,
 			req.Status, end, id)
-	case req.Status == models.StatusCollected:
+	case req.Status == models.StatusCollected || req.Status == models.StatusCancelled:
 		_, _ = h.Pool.Exec(r.Context(),
 			`UPDATE vehicles SET status=$1, end_date=COALESCE(end_date, CURRENT_DATE), updated_at=now() WHERE id=$2`,
 			req.Status, id)
