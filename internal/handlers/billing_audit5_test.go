@@ -228,6 +228,53 @@ func TestRebindPaidRecurringBlocked(t *testing.T) {
 	}
 }
 
+// TestBillingLifecycleReconciles is the capstone cross-cutting number check: it
+// walks a charge through invoice → full payment → Storno and asserts the balance
+// identity holds and money is conserved at every step.
+func TestBillingLifecycleReconciles(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	chargeFor(t, h, pid, 100)
+
+	// (1) Open charge → owed 100.
+	if s := personStatsT(t, h, pid); math.Abs(s.Balance-100) > 0.005 {
+		t.Fatalf("after charge: balance %.2f, want 100", s.Balance)
+	}
+
+	// (2) Invoice → balance = net + USt = invoice total; invoiced_tax = the USt.
+	iv := createInvoice(t, h, pid)
+	s := personStatsT(t, h, pid)
+	if math.Abs(s.Balance-iv.Total) > 0.005 {
+		t.Errorf("after invoice: balance %.2f, want invoice total %.2f", s.Balance, iv.Total)
+	}
+	if math.Abs(s.InvoicedTax-iv.TaxAmount) > 0.005 {
+		t.Errorf("invoiced_tax %.2f, want %.2f", s.InvoicedTax, iv.TaxAmount)
+	}
+
+	// (3) Pay the invoice in full → balance 0.
+	payInvoices(t, h, pid, map[string]any{"amount": iv.Total, "method": "ueberweisung", "auto": true})
+	if s := personStatsT(t, h, pid); math.Abs(s.Balance) > 0.005 {
+		t.Errorf("after full payment: balance %.2f, want 0", s.Balance)
+	}
+
+	// (4) Storno → the payment is retained on-account, the net charge re-opens;
+	// balance = 100 (charge) − iv.Total (payment) = −USt → a Guthaben of the tax.
+	// Money is conserved: paid iv.Total, now owes net 100, overpaid by the USt.
+	creq := httptest.NewRequest(http.MethodPost, "/api/invoices/"+strconv.FormatInt(iv.ID, 10)+"/cancel", nil)
+	creq.SetPathValue("id", strconv.FormatInt(iv.ID, 10))
+	crec := httptest.NewRecorder()
+	h.CancelInvoice(crec, creq)
+	if crec.Code != http.StatusOK {
+		t.Fatalf("cancel: %d %s", crec.Code, crec.Body.String())
+	}
+	s = personStatsT(t, h, pid)
+	wantBal := round2(100 - iv.Total)
+	if math.Abs(s.Balance-wantBal) > 0.005 {
+		t.Errorf("after storno: balance %.2f, want %.2f (Guthaben of the reversed USt %.2f)", s.Balance, wantBal, iv.TaxAmount)
+	}
+}
+
 // setStatus posts a vehicle status change (optional back-dated date).
 func setStatus(t *testing.T, h *Handler, vid int64, status, date string) {
 	t.Helper()
