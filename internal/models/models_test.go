@@ -90,7 +90,9 @@ func TestCostInRangeYearly(t *testing.T) {
 
 func TestAccruedRespectsEndDate(t *testing.T) {
 	cat := Category{DefaultMonthlyCost: 30}
-	end := date(2024, time.July, 1)
+	// EndDate is inclusive (the vehicle occupies the space through its last day),
+	// so ending on 30 Jun bills exactly Jan–Jun = 6 full months.
+	end := date(2024, time.June, 30)
 	v := Vehicle{
 		BillingPeriod: BillingMonthly,
 		StartDate:     date(2024, time.January, 1),

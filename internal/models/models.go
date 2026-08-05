@@ -94,6 +94,16 @@ func walkSubPeriods(period string, from, to time.Time, fn func(s, e, pStart, pEn
 
 func days(a, b time.Time) float64 { return b.Sub(a).Hours() / 24.0 }
 
+// DayAfter returns midnight (UTC) at the start of the day following t's calendar
+// day. Accrual windows are half-open [start, DayAfter(today)); snapping the upper
+// bound to a whole day makes day counts integral, so the accrued value counts
+// today as a full day, does not drift within the day, and never bills into
+// tomorrow. It is the single source of truth for "up to and including today".
+func DayAfter(t time.Time) time.Time {
+	y, m, d := t.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
+}
+
 // toCents converts a euro amount to integer cents, rounded to the nearest cent.
 func toCents(euros float64) int64 { return int64(math.Round(euros * 100)) }
 
@@ -214,7 +224,7 @@ func (a *FlatRatePeriod) Ended(asOf time.Time) bool {
 // paid amount (whole periods + fixed partials + master flag) covers the accrued
 // cost. Used to decide when a finished Pauschale (and its vehicles) may archive.
 func (a *FlatRatePeriod) SettledAsOf(asOf time.Time) bool {
-	until := asOf.AddDate(0, 0, 1)
+	until := DayAfter(asOf)
 	return a.PaidCentsInRange(a.StartDate, until) >= toCents(a.CostInRange(a.StartDate, until))
 }
 
@@ -273,7 +283,7 @@ func (a *FlatRatePeriod) PaidCentsInRange(from, to time.Time) int64 {
 // therefore be marked paid.
 func (a *FlatRatePeriod) ElapsedPeriodKeys(asOf time.Time) []string {
 	var keys []string
-	a.subPeriods(a.StartDate, asOf.AddDate(0, 0, 1), func(_, _, _, _ time.Time, key string) {
+	a.subPeriods(a.StartDate, DayAfter(asOf), func(_, _, _, _ time.Time, key string) {
 		keys = append(keys, key)
 	})
 	return keys
@@ -285,7 +295,7 @@ func (a *FlatRatePeriod) ElapsedPeriodKeys(asOf time.Time) []string {
 func (a *FlatRatePeriod) ElapsedPeriodCosts(asOf time.Time) map[string]float64 {
 	out := map[string]float64{}
 	cents := toCents(a.Amount)
-	a.subPeriods(a.StartDate, asOf.AddDate(0, 0, 1), func(s, e, pStart, pEnd time.Time, key string) {
+	a.subPeriods(a.StartDate, DayAfter(asOf), func(s, e, pStart, pEnd time.Time, key string) {
 		out[key] += float64(fractionCents(cents, days(s, e), days(pStart, pEnd))) / 100
 	})
 	return out
@@ -307,7 +317,7 @@ type OpenPeriod struct {
 func (a *FlatRatePeriod) ElapsedPeriodsDetailed(asOf time.Time) []OpenPeriod {
 	cents := toCents(a.Amount)
 	var out []OpenPeriod
-	a.subPeriods(a.StartDate, asOf.AddDate(0, 0, 1), func(s, e, pStart, pEnd time.Time, key string) {
+	a.subPeriods(a.StartDate, DayAfter(asOf), func(s, e, pStart, pEnd time.Time, key string) {
 		end := pEnd
 		if a.EndDate != nil && a.EndDate.Before(end) {
 			end = *a.EndDate
@@ -340,8 +350,12 @@ func (a *FlatRatePeriod) Covers(vehicleID int64) bool {
 func (a *FlatRatePeriod) window(from, to time.Time) (time.Time, time.Time) {
 	s := maxTime(a.StartDate, from)
 	e := to
-	if a.EndDate != nil && a.EndDate.Before(e) {
-		e = *a.EndDate
+	// EndDate is inclusive: the agreement covers through its last day, so the
+	// half-open cost window extends to the start of the following day.
+	if a.EndDate != nil {
+		if endIncl := a.EndDate.AddDate(0, 0, 1); endIncl.Before(e) {
+			e = endIncl
+		}
 	}
 	return s, e
 }
@@ -358,7 +372,7 @@ func (a *FlatRatePeriod) CostInRange(from, to time.Time) float64 {
 
 // AccruedAsOf returns the agreement cost accrued through asOf (inclusive).
 func (a *FlatRatePeriod) AccruedAsOf(asOf time.Time) float64 {
-	return a.CostInRange(a.StartDate, asOf.AddDate(0, 0, 1))
+	return a.CostInRange(a.StartDate, DayAfter(asOf))
 }
 
 // RecurringCharge is a person-level extra cost that accrues per period like rent
@@ -549,8 +563,12 @@ func (v *Vehicle) EffectiveRateFor(cat Category) float64 {
 func (v *Vehicle) CostInRange(cat Category, from, to time.Time) float64 {
 	start := maxTime(v.StartDate, from)
 	end := to
-	if v.EndDate != nil && v.EndDate.Before(end) {
-		end = *v.EndDate
+	// EndDate is inclusive: the vehicle occupies the space through its last day
+	// (e.g. the collection day), so the half-open window extends to the next day.
+	if v.EndDate != nil {
+		if endIncl := v.EndDate.AddDate(0, 0, 1); endIncl.Before(end) {
+			end = endIncl
+		}
 	}
 	if !end.After(start) {
 		return 0
@@ -561,7 +579,7 @@ func (v *Vehicle) CostInRange(cat Category, from, to time.Time) float64 {
 // AccruedCostAsOf returns the total cost accrued from the start date until the
 // earlier of the end date or asOf.
 func (v *Vehicle) AccruedCostAsOf(cat Category, asOf time.Time) float64 {
-	return v.CostInRange(cat, v.StartDate, asOf.AddDate(0, 0, 1))
+	return v.CostInRange(cat, v.StartDate, DayAfter(asOf))
 }
 
 // YearStat is the aggregated cost for a person in a single calendar year.

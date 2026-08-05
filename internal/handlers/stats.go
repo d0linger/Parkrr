@@ -244,7 +244,7 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 
 	// Rent = flat-rate agreements + per-vehicle cost of standalone vehicles.
 	// Vehicles bound to a Pauschale bill nothing individually (ownership model).
-	until := now.AddDate(0, 0, 1)
+	until := models.DayAfter(now)
 	rentAccrued, _ := personRent(agreements, vehicles, cats, time.Time{}, until)
 
 	vehPaid := vehiclePaidMap(vehicles)
@@ -376,7 +376,7 @@ func (h *Handler) personAccruedTotal(r *http.Request, id int64) (float64, error)
 		return 0, err
 	}
 	setFlatRateCoverage(vehicles, map[int64][]models.FlatRatePeriod{id: ags}, now)
-	until := now.AddDate(0, 0, 1)
+	until := models.DayAfter(now)
 	rentAccrued, _ := personRent(ags, vehicles, cats, time.Time{}, until)
 	vehPaid := vehiclePaidMap(vehicles)
 	recurs, err := h.loadRecurringCharges(ctx, id, ags, vehPaid, now)
@@ -408,7 +408,7 @@ func (h *Handler) outstandingByPerson(r *http.Request) (map[int64]float64, error
 		return nil, err
 	}
 	now := time.Now()
-	until := now.AddDate(0, 0, 1)
+	until := models.DayAfter(now)
 	vehPaid := vehiclePaidMap(vehicles)
 
 	vehByPerson := map[int64][]models.Vehicle{}
@@ -580,7 +580,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	resp.TopOutstanding = []personOutstanding{}
 	yearStart := time.Date(resp.Year, 1, 1, 0, 0, 0, 0, time.UTC)
 	yearEnd := time.Date(resp.Year+1, 1, 1, 0, 0, 0, 0, time.UTC)
-	until := now.AddDate(0, 0, 1)
+	until := models.DayAfter(now)
 	if yearEnd.After(until) {
 		yearEnd = until
 	}
@@ -826,7 +826,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 // per-vehicle cost) per calendar month of a year, capped at today.
 func personMonthly(agreements []models.FlatRatePeriod, vehicles []models.Vehicle, cats map[int64]models.Category, year int, now time.Time) []float64 {
 	out := make([]float64, 12)
-	until := now.AddDate(0, 0, 1)
+	until := models.DayAfter(now)
 	for m := 0; m < 12; m++ {
 		from := time.Date(year, time.Month(m+1), 1, 0, 0, 0, 0, time.UTC)
 		to := from.AddDate(0, 1, 0)
@@ -846,7 +846,7 @@ func personMonthly(agreements []models.FlatRatePeriod, vehicles []models.Vehicle
 // earliest agreement/vehicle start through today.
 func personYears(agreements []models.FlatRatePeriod, vehicles []models.Vehicle, cats map[int64]models.Category, now time.Time) []models.YearStat {
 	res := []models.YearStat{}
-	until := now.AddDate(0, 0, 1)
+	until := models.DayAfter(now)
 	startYear := now.Year()
 	for i := range vehicles {
 		if y := vehicles[i].StartDate.Year(); y < startYear {

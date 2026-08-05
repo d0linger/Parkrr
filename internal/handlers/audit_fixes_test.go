@@ -8,7 +8,36 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 )
+
+// TestCollectedTodayEqualsStoredToday: the accrued balance shown while a vehicle
+// is stored (counted through today) must equal the final balance after marking
+// it collected today — whole-day counting with an inclusive collection day, so
+// the displayed value never jumps when the pickup is recorded.
+func TestCollectedTodayEqualsStoredToday(t *testing.T) {
+	h := testHandler(t)
+	pid := createIntegrationPerson(t, h)
+	vid := mkStoredVehicle(t, h, pid, 35, firstOfMonthMonthsAgo(7).Format("2006-01-02"))
+
+	stored := personStatsT(t, h, pid).Balance
+
+	today := time.Now().Format("2006-01-02")
+	body, _ := json.Marshal(map[string]any{"status": "collected", "date": today})
+	req := httptest.NewRequest(http.MethodPost, "/api/vehicles/"+strconv.FormatInt(vid, 10)+"/status", bytes.NewReader(body))
+	req.SetPathValue("id", strconv.FormatInt(vid, 10))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ChangeVehicleStatus(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("collect: %d %s", rec.Code, rec.Body.String())
+	}
+
+	collected := personStatsT(t, h, pid).Balance
+	if math.Abs(stored-collected) > 0.005 {
+		t.Errorf("collected-today balance must equal stored-through-today: stored=%.2f collected=%.2f", stored, collected)
+	}
+}
 
 // TestCancelledVehicleStopsAccrual (audit W1): cancelling a vehicle must set an
 // end_date so rent stops accruing — otherwise the archived vehicle grows an
@@ -18,7 +47,7 @@ func TestCancelledVehicleStopsAccrual(t *testing.T) {
 	pid := createIntegrationPerson(t, h)
 	vid := mkStoredVehicle(t, h, pid, 30, firstOfMonthMonthsAgo(3).Format("2006-01-02"))
 
-	// Cancel effective one month ago → accrual stops there (2 completed months = 60),
+	// Cancel effective one month ago → accrual stops there (~2 months, bounded),
 	// not the ~3 months it would keep growing to with a NULL end_date.
 	cancelDate := firstOfMonthMonthsAgo(1).Format("2006-01-02")
 	body, _ := json.Marshal(map[string]any{"status": "cancelled", "date": cancelDate})
@@ -30,8 +59,11 @@ func TestCancelledVehicleStopsAccrual(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("cancel: %d %s", rec.Code, rec.Body.String())
 	}
-	if b := personStatsT(t, h, pid).Balance; math.Abs(b-60) > 0.05 {
-		t.Errorf("cancelled vehicle rent must stop at the end date (2 months = 60), got %.2f (unbounded growth?)", b)
+	// EndDate is inclusive, so this bills 2 full months (60) plus the cancel day
+	// itself (~1) → ~60–61. The regression this guards against is unbounded growth
+	// (a NULL end_date would reach ~95 accruing through today).
+	if b := personStatsT(t, h, pid).Balance; b < 60 || b > 62 {
+		t.Errorf("cancelled vehicle rent must stop at the end date (~2 months, bounded), got %.2f (unbounded growth?)", b)
 	}
 }
 

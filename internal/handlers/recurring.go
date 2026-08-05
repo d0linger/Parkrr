@@ -130,7 +130,7 @@ func (h *Handler) loadAllRecurringCharges(ctx context.Context, agByPerson map[in
 // the given year (index 0 = January), capped at now for the current year.
 func recurringMonthly(list []models.RecurringCharge, year int, now time.Time) []float64 {
 	out := make([]float64, 12)
-	until := now.AddDate(0, 0, 1)
+	until := models.DayAfter(now)
 	for i := range list {
 		p := list[i].AsPeriod()
 		for m := 0; m < 12; m++ {
@@ -151,7 +151,7 @@ func recurringMonthly(list []models.RecurringCharge, year int, now time.Time) []
 // recurring charges as of now, reusing the flat-rate period math. A bound charge
 // is settled via its Gefährt/Pauschale; a person-level one via its own flags.
 func recurringSums(list []models.RecurringCharge, agreements []models.FlatRatePeriod, vehPaid map[int64]bool, now time.Time) (accrued, paid float64) {
-	until := now.AddDate(0, 0, 1)
+	until := models.DayAfter(now)
 	for i := range list {
 		rc := &list[i]
 		p := rc.AsPeriod()
