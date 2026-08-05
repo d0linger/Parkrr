@@ -2362,7 +2362,7 @@
             await api.post('/vehicles/' + v.id + '/status', { status: s, note, date });
             toast('Status: ' + STATUS_LABEL[s], 'success');
             render();
-        } catch (e) { toast(e.message, 'error'); }
+        } catch (e) { toast(e.message, 'error'); render(); } // roll back the optimistic slider on a rejected write
     }
     async function uploadPhoto(vehicleId, file) {
         if (!file) return;

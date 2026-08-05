@@ -685,7 +685,7 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 	// Audit inside the tx (before commit): the settlement change and its trail
 	// commit together (C7 / BAO §131).
 	if err := h.auditTx(r.Context(), tx, r, "update", "flatrate", id,
-		"Pauschale "+h.personLabel(r, pid)+" "+state); err != nil {
+		"Pauschale "+personLabelTx(r.Context(), tx, pid)+" "+state); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update agreement")
 		return
 	}
@@ -822,7 +822,7 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 	// Audit inside the tx, before commit: the paid-state change and its trail
 	// commit together (BAO §131).
 	if err := h.auditTx(r.Context(), tx, r, "update", "flatrate", id,
-		"Pauschale "+h.personLabel(r, a.PersonID)+" "+key+": "+periodPaidAuditState(req.Paid, req.Amount)); err != nil {
+		"Pauschale "+personLabelTx(r.Context(), tx, a.PersonID)+" "+key+": "+periodPaidAuditState(req.Paid, req.Amount)); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update payment")
 		return
 	}

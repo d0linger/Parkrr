@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/preining/parkrr/internal/auth"
 	"github.com/preining/parkrr/internal/models"
@@ -421,6 +422,8 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	// When collecting, set the pickup/end date: use the caller-supplied date if
 	// given (allows back-dating), otherwise keep any existing end date or today.
+	var ct pgconn.CommandTag
+	var uerr error
 	switch {
 	// A closing status (collected OR cancelled) ends storage, so it MUST set an
 	// end_date — otherwise rent keeps accruing forever on a cancelled vehicle that
@@ -432,19 +435,30 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "date must be YYYY-MM-DD")
 			return
 		}
-		_, _ = h.Pool.Exec(r.Context(),
+		ct, uerr = h.Pool.Exec(r.Context(),
 			`UPDATE vehicles SET status=$1, end_date=$2, updated_at=now() WHERE id=$3`,
 			req.Status, end, id)
 	case req.Status == models.StatusCollected || req.Status == models.StatusCancelled:
-		_, _ = h.Pool.Exec(r.Context(),
+		ct, uerr = h.Pool.Exec(r.Context(),
 			`UPDATE vehicles SET status=$1, end_date=COALESCE(end_date, CURRENT_DATE), updated_at=now() WHERE id=$2`,
 			req.Status, id)
 	default:
 		// stored / reserved re-open storage: clear any end_date left by a prior
 		// collected/cancelled, otherwise CostInRange stays capped at the stale date
 		// and the (now active-looking) vehicle silently accrues nothing.
-		_, _ = h.Pool.Exec(r.Context(),
+		ct, uerr = h.Pool.Exec(r.Context(),
 			`UPDATE vehicles SET status=$1, end_date=NULL, updated_at=now() WHERE id=$2`, req.Status, id)
+	}
+	// Don't record history/audit for a write that never landed: a swallowed error
+	// (or 0 rows) would claim a transition that didn't happen — and for a closing
+	// status that means rent keeps accruing while the log says "collected".
+	if uerr != nil {
+		writeError(w, http.StatusInternalServerError, "could not change status")
+		return
+	}
+	if ct.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "vehicle not found")
+		return
 	}
 	h.recordStatus(r, id, oldStatus, req.Status, trim(req.Note))
 	h.audit(r, "update", "vehicle", id, "Status "+h.vehicleDesc(r, id)+": "+oldStatus+" → "+req.Status)

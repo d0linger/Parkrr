@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -181,7 +182,12 @@ func (h *Handler) ListCharges(w http.ResponseWriter, r *http.Request) {
 	         LEFT JOIN vehicles v ON v.id = c.vehicle_id
 	         LEFT JOIN categories cat ON cat.id = v.category_id`
 	limit, offset := pageParams(r, 1000, 1000)
-	if pid := r.URL.Query().Get("person_id"); pid != "" {
+	if raw := r.URL.Query().Get("person_id"); raw != "" {
+		pid, perr := strconv.ParseInt(raw, 10, 64)
+		if perr != nil {
+			writeError(w, http.StatusBadRequest, "invalid person_id")
+			return
+		}
 		rows, err = h.Pool.Query(r.Context(),
 			base+` WHERE c.person_id=$1 ORDER BY c.charged_on DESC, c.id DESC LIMIT $2 OFFSET $3`, pid, limit, offset)
 	} else {

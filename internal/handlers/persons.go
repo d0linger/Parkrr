@@ -25,8 +25,15 @@ func scanPerson(row rowScanner) (models.Person, error) {
 
 // personLabel returns a person's display name for audit messages ("" on error).
 func (h *Handler) personLabel(r *http.Request, id int64) string {
+	return personLabelTx(r.Context(), h.Pool, id)
+}
+
+// personLabelTx resolves a person's display label through the given querier —
+// pass the caller's tx when one is open, so this doesn't grab a second pooled
+// connection while the tx is held (which would deadlock the pool).
+func personLabelTx(ctx context.Context, q rowQuerier, id int64) string {
 	var name string
-	_ = h.Pool.QueryRow(r.Context(),
+	_ = q.QueryRow(ctx,
 		`SELECT trim(first_name || ' ' || last_name) FROM persons WHERE id=$1`, id).Scan(&name)
 	return name
 }

@@ -176,26 +176,52 @@ func periodPaidUnlocked(p models.FlatRatePeriod, kind string, refID int64, now t
 // keys from active invoices — the bulk equivalent of lockedPositions, so the
 // dashboard/outstanding paths can exclude invoiced periods from the off-book
 // per-period credit (see personPeriodPaid) without a query per person.
-func (h *Handler) lockedPeriodsByPerson(ctx context.Context) map[int64]map[string]bool {
+// sumByPerson runs a "person_id, SUM(...)" grouped query and returns it as a map,
+// surfacing any error instead of silently yielding zeros — a swallowed error here
+// skews every person's dashboard receivable.
+func sumByPerson(ctx context.Context, q interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, sql string) (map[int64]float64, error) {
+	out := map[int64]float64{}
+	rows, err := q.Query(ctx, sql)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var pid int64
+		var amt float64
+		if err := rows.Scan(&pid, &amt); err != nil {
+			return nil, err
+		}
+		out[pid] = amt
+	}
+	return out, rows.Err()
+}
+
+func (h *Handler) lockedPeriodsByPerson(ctx context.Context) (map[int64]map[string]bool, error) {
 	out := map[int64]map[string]bool{}
 	rows, err := h.Pool.Query(ctx,
 		`SELECT i.person_id, s.kind, s.ref_id, s.period_key FROM invoice_source s
 		    JOIN invoices i ON i.id = s.invoice_id WHERE NOT i.canceled`)
 	if err != nil {
-		return out
+		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var pid, ref int64
 		var kind, period string
-		if rows.Scan(&pid, &kind, &ref, &period) == nil {
-			if out[pid] == nil {
-				out[pid] = map[string]bool{}
-			}
-			out[pid][lockKey(kind, ref, period)] = true
+		if err := rows.Scan(&pid, &kind, &ref, &period); err != nil {
+			return nil, err
 		}
+		if out[pid] == nil {
+			out[pid] = map[string]bool{}
+		}
+		out[pid][lockKey(kind, ref, period)] = true
 	}
-	return out
+	// A mid-stream error would drop invoiced periods → double-credit → understate
+	// owed; surface it rather than serving confidently-wrong dashboard money.
+	return out, rows.Err()
 }
 
 // vehiclePaidMap indexes vehicles by id -> stored paid flag.
@@ -345,17 +371,27 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	// GROSS. Add the invoiced tax to the owed side so a paid USt-invoice doesn't
 	// look like Guthaben equal to its tax. Kleinunternehmer => tax 0 (no-op).
 	var invoicedTax float64
-	_ = h.Pool.QueryRow(r.Context(),
+	// Don't swallow this: a silent 0 would drop the USt the customer owes on issued
+	// invoices, making a fully-paid USt-invoice look like Guthaben equal to its tax.
+	if err := h.Pool.QueryRow(r.Context(),
 		`SELECT COALESCE(SUM(tax_amount),0) FROM invoices
-		   WHERE person_id=$1 AND NOT canceled AND cancels_id IS NULL`, id).Scan(&invoicedTax)
+		   WHERE person_id=$1 AND NOT canceled AND cancels_id IS NULL`, id).Scan(&invoicedTax); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 
 	// P2.2 — one money truth: paid = money actually received; Balance = owed −
 	// received (the per-item toggles are a manual convenience, not the money).
 	resp.TotalPaid = resp.PaymentsTotal
 	resp.InvoicedTax = round2(invoicedTax)
 	// Exclude invoiced periods (settled via the invoice payment) from the off-book
-	// per-period credit so a period isn't credited twice.
-	periodLocked, _ := h.lockedPositions(r.Context(), id)
+	// per-period credit so a period isn't credited twice. A read error here would
+	// double-credit invoiced periods → understate owed, so surface it.
+	periodLocked, lerr := h.lockedPositions(r.Context(), id)
+	if lerr != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 	resp.PeriodPaid = personPeriodPaid(agreements, recurs, now, periodLocked)
 	resp.Balance = round2(resp.TotalAccrued + resp.TotalCharges + resp.InvoicedTax -
 		resp.PaymentsTotal - resp.PeriodPaid)
@@ -364,10 +400,13 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 		resp.Credit = 0
 	}
 	// Offen fakturiert: the sum of the person's open invoices (the OP view).
-	_ = h.Pool.QueryRow(r.Context(),
+	if err := h.Pool.QueryRow(r.Context(),
 		`SELECT COALESCE(SUM(total - paid_amount),0) FROM invoices
 		   WHERE person_id=$1 AND NOT canceled AND cancels_id IS NULL AND (total - paid_amount) > 0.005`, id,
-	).Scan(&resp.InvoicedOpen)
+	).Scan(&resp.InvoicedOpen); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 	resp.InvoicedOpen = round2(resp.InvoicedOpen)
 
 	writeJSON(w, http.StatusOK, resp)
@@ -477,29 +516,19 @@ func (h *Handler) outstandingByPerson(r *http.Request) (map[int64]float64, error
 	}
 
 	// P2.2 — open = accrued − payments received (the money truth), per person.
-	paymentsByPerson := map[int64]float64{}
-	if prows, perr := h.Pool.Query(ctx, `SELECT person_id, COALESCE(SUM(amount),0) FROM payments WHERE NOT reversed GROUP BY person_id`); perr == nil {
-		for prows.Next() {
-			var pid int64
-			var amt float64
-			if prows.Scan(&pid, &amt) == nil {
-				paymentsByPerson[pid] = amt
-			}
-		}
-		prows.Close()
+	// Don't fail open: a swallowed error would drop everyone's payments and
+	// overstate every receivable on the dashboard.
+	paymentsByPerson, err := sumByPerson(ctx, h.Pool,
+		`SELECT person_id, COALESCE(SUM(amount),0) FROM payments WHERE NOT reversed GROUP BY person_id`)
+	if err != nil {
+		return nil, err
 	}
 
 	// Invoiced USt is owed on top of the net accrual (see PersonStats).
-	invoicedTaxByPerson := map[int64]float64{}
-	if trows, terr := h.Pool.Query(ctx, `SELECT person_id, COALESCE(SUM(tax_amount),0) FROM invoices WHERE NOT canceled AND cancels_id IS NULL GROUP BY person_id`); terr == nil {
-		for trows.Next() {
-			var pid int64
-			var amt float64
-			if trows.Scan(&pid, &amt) == nil {
-				invoicedTaxByPerson[pid] = amt
-			}
-		}
-		trows.Close()
+	invoicedTaxByPerson, err := sumByPerson(ctx, h.Pool,
+		`SELECT person_id, COALESCE(SUM(tax_amount),0) FROM invoices WHERE NOT canceled AND cancels_id IS NULL GROUP BY person_id`)
+	if err != nil {
+		return nil, err
 	}
 
 	// A person owing only a standing invoice (e.g. USt after the underlying charge
@@ -507,7 +536,10 @@ func (h *Handler) outstandingByPerson(r *http.Request) (map[int64]float64, error
 	for pid := range invoicedTaxByPerson {
 		personIDs[pid] = struct{}{}
 	}
-	lockedByPerson := h.lockedPeriodsByPerson(ctx)
+	lockedByPerson, lerr := h.lockedPeriodsByPerson(ctx)
+	if lerr != nil {
+		return nil, lerr
+	}
 
 	out := make(map[int64]float64, len(personIDs))
 	for pid := range personIDs {
@@ -709,31 +741,23 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		personIDs[pid] = struct{}{}
 	}
 	// P2.2 — money truth = recorded payments (per person + total).
-	paymentsByPerson := map[int64]float64{}
+	paymentsByPerson, perr := sumByPerson(ctx, h.Pool,
+		`SELECT person_id, COALESCE(SUM(amount),0) FROM payments WHERE NOT reversed GROUP BY person_id`)
+	if perr != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 	var paymentsTotal float64
-	if prows, perr := h.Pool.Query(ctx, `SELECT person_id, COALESCE(SUM(amount),0) FROM payments WHERE NOT reversed GROUP BY person_id`); perr == nil {
-		for prows.Next() {
-			var pid int64
-			var amt float64
-			if prows.Scan(&pid, &amt) == nil {
-				paymentsByPerson[pid] = amt
-				paymentsTotal += amt
-			}
-		}
-		prows.Close()
+	for _, v := range paymentsByPerson {
+		paymentsTotal += v
 	}
 
 	// Invoiced USt owed on top of net accrual (see PersonStats).
-	invoicedTaxByPerson := map[int64]float64{}
-	if trows, terr := h.Pool.Query(ctx, `SELECT person_id, COALESCE(SUM(tax_amount),0) FROM invoices WHERE NOT canceled AND cancels_id IS NULL GROUP BY person_id`); terr == nil {
-		for trows.Next() {
-			var pid int64
-			var amt float64
-			if trows.Scan(&pid, &amt) == nil {
-				invoicedTaxByPerson[pid] = amt
-			}
-		}
-		trows.Close()
+	invoicedTaxByPerson, terr := sumByPerson(ctx, h.Pool,
+		`SELECT person_id, COALESCE(SUM(tax_amount),0) FROM invoices WHERE NOT canceled AND cancels_id IS NULL GROUP BY person_id`)
+	if terr != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
 	}
 
 	// Count a person owing only a standing invoice (e.g. USt after the charge was
@@ -741,7 +765,11 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	for pid := range invoicedTaxByPerson {
 		personIDs[pid] = struct{}{}
 	}
-	lockedByPerson := h.lockedPeriodsByPerson(ctx)
+	lockedByPerson, lerr := h.lockedPeriodsByPerson(ctx)
+	if lerr != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 
 	resp.RevenueByMonth = make([]float64, 12)
 	var outstandingSum float64 // Σ of positive per-person balances (real receivable)
@@ -811,19 +839,29 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	// Recorded payments (money-in log): total, this-year, and per month for the
 	// selected year — independent of the paid-flag balance math above.
 	resp.PaymentsByMonth = make([]float64, 12)
-	if prows, perr := h.Pool.Query(ctx, `SELECT amount, paid_on FROM payments WHERE NOT reversed`); perr == nil {
-		defer prows.Close()
-		for prows.Next() {
-			var amt float64
-			var on time.Time
-			if prows.Scan(&amt, &on) == nil {
-				resp.PaymentsTotal += amt
-				if !on.Before(yearStart) && on.Before(yearEnd) {
-					resp.PaymentsThisYear += amt
-					resp.PaymentsByMonth[int(on.Month())-1] += amt
-				}
-			}
+	prows, perr := h.Pool.Query(ctx, `SELECT amount, paid_on FROM payments WHERE NOT reversed`)
+	if perr != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	for prows.Next() {
+		var amt float64
+		var on time.Time
+		if err := prows.Scan(&amt, &on); err != nil {
+			prows.Close()
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
 		}
+		resp.PaymentsTotal += amt
+		if !on.Before(yearStart) && on.Before(yearEnd) {
+			resp.PaymentsThisYear += amt
+			resp.PaymentsByMonth[int(on.Month())-1] += amt
+		}
+	}
+	prows.Close()
+	if err := prows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
 	}
 	resp.PaymentsTotal = round2(resp.PaymentsTotal)
 	resp.PaymentsThisYear = round2(resp.PaymentsThisYear)

@@ -263,7 +263,7 @@ func (h *Handler) BackupRestore(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := backup.Restore(ctx, h.DatabaseURL, enc, key); err != nil {
 		slog.Error("backup restore failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "restore failed: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "restore failed")
 		return
 	}
 	h.audit(r, "restore", "system", 0, "restored the database from an uploaded backup")
@@ -379,7 +379,7 @@ func (h *Handler) BackupRestoreS3(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := backup.Restore(ctx, h.DatabaseURL, enc, key); err != nil {
 		slog.Error("backup restore (S3) failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "restore failed: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "restore failed")
 		return
 	}
 	h.audit(r, "restore", "system", 0, "restored the database from S3 backup "+name)
