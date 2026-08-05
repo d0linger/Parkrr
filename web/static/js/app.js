@@ -995,13 +995,22 @@
         page.append(el('div', { class: 'card' },
             el('div', { class: 'bal-hero-label' }, 'Offener Saldo'),
             el('div', { class: 'bal-hero-num ' + (owed ? 'is-owed' : 'is-clear') }, eur(stats.balance)),
-            el('div', { class: 'bal-hero-sub' }, 'Stand heute · Miete + Zusatzkosten − Bezahlt')));
-        // Derivation lives in its own card below the hero: three labelled figures
-        // (Miete / Zusatzkosten / Bezahlt) so the breakdown reads as a small ledger.
-        page.append(el('div', { class: 'card bal-figs' },
+            el('div', { class: 'bal-hero-sub' }, 'Stand heute · Aufgelaufen − Bezahlt')));
+        // Derivation lives in its own card below the hero: labelled figures that add
+        // up to the hero exactly. USt (only when invoiced) and per-period Pauschale
+        // payments (only when used) appear so the small ledger always reconciles.
+        const figs = [
             el('div', { class: 'fig' }, el('div', { class: 'fig-l' }, 'Miete'), el('div', { class: 'fig-v' }, eur(stats.total_accrued))),
             el('div', { class: 'fig' }, el('div', { class: 'fig-l' }, 'Zusatzkosten'), el('div', { class: 'fig-v' }, eur(stats.total_charges))),
-            el('div', { class: 'fig' }, el('div', { class: 'fig-l' }, 'Bezahlt'), el('div', { class: 'fig-v is-paid' }, eur(stats.total_paid)))));
+        ];
+        if ((stats.invoiced_tax || 0) > 0.005) {
+            figs.push(el('div', { class: 'fig' }, el('div', { class: 'fig-l' }, 'USt (fakturiert)'), el('div', { class: 'fig-v' }, eur(stats.invoiced_tax))));
+        }
+        figs.push(el('div', { class: 'fig' }, el('div', { class: 'fig-l' }, 'Bezahlt'), el('div', { class: 'fig-v is-paid' }, eur(stats.total_paid))));
+        if ((stats.period_paid || 0) > 0.005) {
+            figs.push(el('div', { class: 'fig' }, el('div', { class: 'fig-l' }, 'Pauschale-Zahlung'), el('div', { class: 'fig-v is-paid' }, eur(stats.period_paid))));
+        }
+        page.append(el('div', { class: 'card bal-figs' }, ...figs));
 
         // flat-rate agreements (Pauschalen). Per-vehicle coverage badges/payment
         // come from the backend (v.flat_rate_covered / v.uncovered_cost).

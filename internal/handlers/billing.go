@@ -822,15 +822,21 @@ func (h *Handler) PayInvoices(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 			if len(explicit) > 0 {
-				if _, ok := explicit[iv.id]; !ok {
+				amt, ok := explicit[iv.id]
+				if !ok {
 					continue // explicit selection: skip unchosen invoices
 				}
+				if amt <= 0 {
+					continue // chosen but amount ≤ 0 → allocate nothing to it
+				}
+			} else if !req.Auto {
+				break // no explicit selection and auto off → leave the rest as Guthaben
 			}
 			pay := round2(iv.total - iv.paid)
 			if pay > remaining {
 				pay = round2(remaining)
 			}
-			if amt, ok := explicit[iv.id]; ok && amt > 0 && amt < pay {
+			if amt, ok := explicit[iv.id]; ok && amt < pay {
 				pay = round2(amt)
 			}
 			if pay < 0.005 {

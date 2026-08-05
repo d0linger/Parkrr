@@ -23,6 +23,8 @@ type personStatsResponse struct {
 	PaymentsTotal    float64                  `json:"payments_total"` // recorded money-in (all time)
 	PaymentsYear     float64                  `json:"payments_year"`  // recorded money-in in the selected year
 	Credit           float64                  `json:"credit"`         // Guthaben: payments not (yet) allocated to items
+	InvoicedTax      float64                  `json:"invoiced_tax"`   // USt added by issued invoices (owed on top of net accrual)
+	PeriodPaid       float64                  `json:"period_paid"`    // per-period Pauschale/recurring settlement (not in payments)
 	InvoicedOpen     float64                  `json:"invoiced_open"`  // Σ open_amount of the person's non-canceled invoices (OP)
 	ActiveVehicles   int                      `json:"active_vehicles"`
 	TotalVehicles    int                      `json:"total_vehicles"`
@@ -278,8 +280,10 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	// P2.2 — one money truth: paid = money actually received; Balance = owed −
 	// received (the per-item toggles are a manual convenience, not the money).
 	resp.TotalPaid = resp.PaymentsTotal
-	resp.Balance = round2(resp.TotalAccrued + resp.TotalCharges + invoicedTax -
-		resp.PaymentsTotal - personPeriodPaid(agreements, recurs, until))
+	resp.InvoicedTax = round2(invoicedTax)
+	resp.PeriodPaid = personPeriodPaid(agreements, recurs, until)
+	resp.Balance = round2(resp.TotalAccrued + resp.TotalCharges + resp.InvoicedTax -
+		resp.PaymentsTotal - resp.PeriodPaid)
 	// Guthaben = overpayment (negative balance), symmetric to Balance.
 	if resp.Credit = round2(-resp.Balance); resp.Credit < 0 {
 		resp.Credit = 0
@@ -350,9 +354,9 @@ func (h *Handler) outstandingByPerson(r *http.Request) (map[int64]float64, error
 		vehByPerson[v.PersonID] = append(vehByPerson[v.PersonID], *v)
 	}
 
-	// One-off charges per person (total accrued + paid).
+	// One-off charges per person (total accrued; the paid portion no longer drives
+	// the payment-based balance, so it is not accumulated).
 	chargesByPerson := map[int64]float64{}
-	paidChargesByPerson := map[int64]float64{}
 	crows, err := h.Pool.Query(ctx, `SELECT person_id, vehicle_id, amount, quantity, charged_on, paid FROM charges`)
 	if err != nil {
 		return nil, err
@@ -367,9 +371,8 @@ func (h *Handler) outstandingByPerson(r *http.Request) (map[int64]float64, error
 			crows.Close()
 			return nil, serr
 		}
-		t, p := chargeAmounts(agByPerson[pid], vehPaid, vid, amount, qty, chargedOn, ownPaid)
+		t, _ := chargeAmounts(agByPerson[pid], vehPaid, vid, amount, qty, chargedOn, ownPaid)
 		chargesByPerson[pid] += t
-		paidChargesByPerson[pid] += p
 	}
 	crows.Close()
 	if cerr := crows.Err(); cerr != nil {
@@ -382,9 +385,8 @@ func (h *Handler) outstandingByPerson(r *http.Request) (map[int64]float64, error
 		return nil, err
 	}
 	for pid, list := range recurByPerson {
-		acc, pd := recurringSums(list, agByPerson[pid], vehPaid, now)
+		acc, _ := recurringSums(list, agByPerson[pid], vehPaid, now)
 		chargesByPerson[pid] += acc
-		paidChargesByPerson[pid] += pd
 	}
 
 	// Any person with vehicles, an agreement, or a charge can carry a balance.
@@ -411,7 +413,6 @@ func (h *Handler) outstandingByPerson(r *http.Request) (map[int64]float64, error
 		}
 		prows.Close()
 	}
-	_ = paidChargesByPerson // toggle-paid no longer drives the money truth
 
 	// Invoiced USt is owed on top of the net accrual (see PersonStats).
 	invoicedTaxByPerson := map[int64]float64{}
@@ -559,7 +560,6 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 	vehPaid := vehiclePaidMap(vehicles)
 	chargesByPerson := map[int64]float64{}
-	paidChargesByPerson := map[int64]float64{}
 	// Extra charges are revenue too: accrue the one-off charges into the year
 	// windows and per month (by charge date) to fold into the Umsatz figures.
 	var chargeThisYear, chargePrevYear, chargePrevFull float64
@@ -575,9 +575,8 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "query failed")
 			return
 		}
-		t, p := chargeAmounts(agByPerson[pid], vehPaid, vid, amount, qty, chargedOn, ownPaid)
+		t, _ := chargeAmounts(agByPerson[pid], vehPaid, vid, amount, qty, chargedOn, ownPaid)
 		chargesByPerson[pid] += t
-		paidChargesByPerson[pid] += p
 		if !chargedOn.Before(yearStart) && chargedOn.Before(yearEnd) {
 			chargeThisYear += t
 			chargeByMonth[int(chargedOn.Month())-1] += t
@@ -602,9 +601,8 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for pid, list := range recurByPerson {
-		acc, pd := recurringSums(list, agByPerson[pid], vehPaid, now)
+		acc, _ := recurringSums(list, agByPerson[pid], vehPaid, now)
 		chargesByPerson[pid] += acc
-		paidChargesByPerson[pid] += pd
 		for i := range list {
 			p := list[i].AsPeriod()
 			chargeThisYear += p.CostInRange(yearStart, yearEnd)
@@ -642,7 +640,6 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		}
 		prows.Close()
 	}
-	_ = paidChargesByPerson // toggle-paid no longer drives the money truth
 
 	// Invoiced USt owed on top of net accrual (see PersonStats).
 	invoicedTaxByPerson := map[int64]float64{}
@@ -660,6 +657,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp.RevenueByMonth = make([]float64, 12)
+	var outstandingSum float64 // Σ of positive per-person balances (real receivable)
 	for pid := range personIDs {
 		ag, vs := agByPerson[pid], vehByPerson[pid]
 		tAcc, _ := personRent(ag, vs, cats, time.Time{}, until)
@@ -679,6 +677,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		owed := (tAcc + chargesByPerson[pid] + invoicedTaxByPerson[pid]) - paymentsByPerson[pid] -
 			personPeriodPaid(ag, recurByPerson[pid], until)
 		if owed > 0.005 {
+			outstandingSum += owed
 			name := personNames[pid]
 			if name == "" {
 				name = "Person"
@@ -717,7 +716,10 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp.PaidTotal = round2(paymentsTotal)
-	resp.OutstandingTotal = round2(resp.AccruedTotal + invoicedTaxTotal - paymentsTotal)
+	// Real receivable = sum of positive per-person balances, NOT accrued − payments
+	// (which would net overpayers' Guthaben against debtors and understate it, and
+	// disagree with the TopOutstanding list).
+	resp.OutstandingTotal = round2(outstandingSum)
 
 	// Recorded payments (money-in log): total, this-year, and per month for the
 	// selected year — independent of the paid-flag balance math above.

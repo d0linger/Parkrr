@@ -443,6 +443,38 @@ func TestSliderInertOnInvoicedPosition(t *testing.T) {
 	}
 }
 
+// TestPayInvoicesRespectsAutoAndZeroAlloc (#13): a pay-invoices call with auto off
+// and no explicit selection books pure Guthaben (settles nothing); an explicit
+// allocation of 0 to an invoice must not pay it in full.
+func TestPayInvoicesRespectsAutoAndZeroAlloc(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	chargeFor(t, h, pid, 100)
+	iv := createInvoice(t, h, pid) // total 100, open
+
+	// auto=false, no explicit allocations → pure Guthaben, invoice stays open.
+	rec := payInvoicesRec(t, h, pid, map[string]any{"amount": 100, "method": "bar"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("pay: %d %s", rec.Code, rec.Body.String())
+	}
+	if s := getInvoiceT(t, h, iv.ID).Status; s != "offen" {
+		t.Errorf("auto=false without selection must not settle the invoice, got status %s", s)
+	}
+
+	// Explicit allocation of 0 → must not pay the invoice.
+	rec2 := payInvoicesRec(t, h, pid, map[string]any{
+		"amount": 100, "method": "bar",
+		"allocations": []map[string]any{{"invoice_id": iv.ID, "amount": 0}},
+	})
+	if rec2.Code != http.StatusCreated {
+		t.Fatalf("pay2: %d %s", rec2.Code, rec2.Body.String())
+	}
+	if iv2 := getInvoiceT(t, h, iv.ID); iv2.Status != "offen" || iv2.PaidAmount > 0.005 {
+		t.Errorf("zero allocation must not pay the invoice, got status=%s paid=%.2f", iv2.Status, iv2.PaidAmount)
+	}
+}
+
 // TestPayInvoiceDeleteReverts (B3): deleting the payment restores the invoice
 // atomically to open.
 func TestPayInvoiceDeleteReverts(t *testing.T) {
