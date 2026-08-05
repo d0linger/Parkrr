@@ -318,16 +318,42 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	var oldStatus string
+	var oldStatus, oldPeriod string
 	var oldRate float64
+	var oldStart time.Time
+	var oldPersonID int64
 	var archived bool
 	scanErr := h.Pool.QueryRow(r.Context(),
-		`SELECT status, rate, archived FROM vehicles WHERE id=$1`, id).Scan(&oldStatus, &oldRate, &archived)
+		`SELECT status, rate, billing_period, start_date, person_id, archived FROM vehicles WHERE id=$1`, id).
+		Scan(&oldStatus, &oldRate, &oldPeriod, &oldStart, &oldPersonID, &archived)
 	if !ensureVehicleWritable(w, archived, scanErr) {
 		return
 	}
 	// Fallback is the existing rate, so an omitted rate keeps the locked price.
 	rate := effectiveRate(pv.req, oldRate)
+	// Freeze the billing-defining fields once a period is invoiced: changing
+	// rate/period/start/person would desync the period-keyed invoice_source lock
+	// (re-billing an invoiced span) or make the balance disagree with the issued
+	// document. Mirrors the agreement/recurring freeze. end_date stays editable
+	// (collect/re-store), but must not RETRACT below an invoiced period.
+	billingChanged := rate != oldRate || pv.req.BillingPeriod != oldPeriod ||
+		!pv.startDate.Equal(oldStart) || pv.req.PersonID != oldPersonID
+	if billingChanged {
+		if inv, ierr := h.refInvoiced(r.Context(), h.Pool, "vehicle", id); ierr != nil {
+			writeError(w, http.StatusInternalServerError, "could not check invoices")
+			return
+		} else if inv {
+			writeError(w, http.StatusConflict, "Gefährt ist fakturiert – Preis/Zeitraum nicht änderbar (Storno über die Rechnung)")
+			return
+		}
+	}
+	if retract, ierr := h.endDateRetractsBelowInvoiced(r.Context(), h.Pool, "vehicle", id, pv.endDate); ierr != nil {
+		writeError(w, http.StatusInternalServerError, "could not check invoices")
+		return
+	} else if retract {
+		writeError(w, http.StatusConflict, "Enddatum liegt vor einer fakturierten Periode – Storno über die Rechnung")
+		return
+	}
 	ct, err := h.Pool.Exec(r.Context(),
 		`UPDATE vehicles SET person_id=$1, category_id=$2, label=$3, license_plate=$4,
 		        notes=$5, billing_period=$6, rate=$7, cost_override=$8, start_date=$9,

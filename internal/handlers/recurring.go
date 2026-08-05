@@ -71,15 +71,16 @@ func recurringPaidBound(rc *models.RecurringCharge, agreements []models.FlatRate
 // deriveRecurring fills the derived accrual/settlement fields as of now. A bound
 // charge is settled via its Gefährt/Pauschale; a person-level one via its own
 // per-period flags.
-func deriveRecurring(rc *models.RecurringCharge, agreements []models.FlatRatePeriod, vehPaid map[int64]bool, now time.Time) {
+func deriveRecurring(rc *models.RecurringCharge, now time.Time) {
 	p := rc.AsPeriod()
 	rc.Accrued = round2(p.AccruedAsOf(now))
 	rc.PeriodCosts = p.ElapsedPeriodCosts(now)
-	if rc.VehicleID != nil {
-		rc.Settled = recurringPaidBound(rc, agreements, vehPaid[*rc.VehicleID], now)+0.005 >= rc.Accrued
-	} else {
-		rc.Settled = p.SettledAsOf(now)
-	}
+	// Settled must match how the charge is actually billed and balanced — Option A:
+	// its OWN per-period flags only, for bound and person-level alike. A covering
+	// Pauschale does NOT settle a Nebenkosten (billing.go bills it, personPeriodPaid
+	// credits it only from own flags), so a coverage-based badge would show a bound
+	// charge as paid while it is still billed and owed.
+	rc.Settled = p.SettledAsOf(now)
 }
 
 // ptrInt64Differs reports whether two nullable ints differ, matching SQL's
@@ -108,7 +109,7 @@ func (h *Handler) loadRecurringCharges(ctx context.Context, personID int64, agre
 		if serr != nil {
 			return nil, serr
 		}
-		deriveRecurring(&rc, agreements, vehPaid, now)
+		deriveRecurring(&rc, now)
 		out = append(out, rc)
 	}
 	return out, rows.Err()
@@ -129,7 +130,7 @@ func (h *Handler) loadAllRecurringCharges(ctx context.Context, agByPerson map[in
 		if serr != nil {
 			return nil, serr
 		}
-		deriveRecurring(&rc, agByPerson[rc.PersonID], vehPaid, now)
+		deriveRecurring(&rc, now)
 		out[rc.PersonID] = append(out[rc.PersonID], rc)
 	}
 	return out, rows.Err()
@@ -240,6 +241,9 @@ func (req *recurringRequest) parse() (desc, period string, amount float64, start
 	if req.Amount == nil || *req.Amount < 0 {
 		return "", "", 0, time.Time{}, nil, "amount must not be negative"
 	}
+	if *req.Amount > maxMoneyAmount {
+		return "", "", 0, time.Time{}, nil, "amount is out of range"
+	}
 	switch req.Period {
 	case models.BillingMonthly, models.BillingYearly:
 		period = req.Period
@@ -343,8 +347,14 @@ func (h *Handler) UpdateRecurringCharge(w http.ResponseWriter, r *http.Request) 
 	// Once a period of this charge is invoiced, its billing-defining fields are
 	// frozen: changing period/start/amount would desync the period-keyed
 	// invoice_source lock (re-billing an already-invoiced span) or make the balance
-	// disagree with the issued document. Description/vehicle/end_date stay editable.
-	if period != existing.Period || !start.Equal(existing.StartDate) || amount != existing.Amount {
+	// disagree with the issued document. end_date may extend but must not RETRACT
+	// below an invoiced period (that drops it from accrual while its payment stays).
+	retract, rerr := h.endDateRetractsBelowInvoiced(r.Context(), h.Pool, "recurring", id, end)
+	if rerr != nil {
+		writeError(w, http.StatusInternalServerError, "could not check invoices")
+		return
+	}
+	if period != existing.Period || !start.Equal(existing.StartDate) || amount != existing.Amount || retract {
 		if inv, ierr := h.refInvoiced(r.Context(), h.Pool, "recurring", id); ierr != nil {
 			writeError(w, http.StatusInternalServerError, "could not check invoices")
 			return

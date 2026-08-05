@@ -205,6 +205,43 @@ func createVehiclesTx(ctx context.Context, tx pgx.Tx, personID int64, period str
 	return out, nil
 }
 
+// currentAgreementVehicles returns the vehicle ids currently covered by an
+// agreement, read through the caller's tx.
+func currentAgreementVehicles(ctx context.Context, tx pgx.Tx, id int64) ([]int64, error) {
+	rows, err := tx.Query(ctx, `SELECT vehicle_id FROM flat_rate_period_vehicles WHERE period_id=$1`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var v int64
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// sameInt64Set reports whether a and b contain the same ids (order-independent);
+// both are expected deduplicated.
+func sameInt64Set(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	m := make(map[int64]bool, len(a))
+	for _, x := range a {
+		m[x] = true
+	}
+	for _, x := range b {
+		if !m[x] {
+			return false
+		}
+	}
+	return true
+}
+
 // agreementSaveError maps a saveAgreement failure to a client (message, status).
 // errNoCategory is classified at its source (createVehiclesTx); a foreign-key
 // violation means the person or a covered vehicle vanished mid-save — telling
@@ -214,7 +251,7 @@ func agreementSaveError(err error, fallback string) (string, int) {
 		return "tariff does not exist", http.StatusBadRequest
 	}
 	if errors.Is(err, errAgreementInvoiced) {
-		return "Pauschale ist fakturiert – Betrag/Zeitraum nicht änderbar (Storno über die Rechnung)", http.StatusConflict
+		return "Pauschale ist fakturiert – Betrag/Zeitraum/Gefährte nicht änderbar (Storno über die Rechnung)", http.StatusConflict
 	}
 	if isForeignKeyViolation(err) {
 		return "person or vehicle does not exist", http.StatusBadRequest
@@ -234,6 +271,9 @@ func (req *agreementRequest) parse() (models.FlatRatePeriod, string) {
 	var a models.FlatRatePeriod
 	if req.Amount == nil || *req.Amount <= 0 {
 		return a, "amount must be greater than zero"
+	}
+	if *req.Amount > maxMoneyAmount {
+		return a, "amount is out of range"
 	}
 	period := req.Period
 	if period == "" {
@@ -525,7 +565,21 @@ func (h *Handler) saveAgreement(r *http.Request, id, personID int64, a models.Fl
 		// period/start/amount would desync the period-keyed invoice_source lock
 		// (re-billing an invoiced span) or make the balance disagree with the
 		// issued document. Note/vehicles/end_date stay editable.
-		if oldPeriod != a.Period || !oldStart.Equal(a.StartDate) || oldAmount != a.Amount {
+		// Membership too: adding/removing a covered vehicle on an invoiced agreement
+		// re-bills (an unbound vehicle then bills its period individually) or
+		// phantom-credits (a newly-covered vehicle drops its individual accrual for
+		// an already-invoiced period). And end_date must not retract below an
+		// invoiced period (that drops it from accrual while its payment stays).
+		curVeh, verr := currentAgreementVehicles(ctx, tx, id)
+		if verr != nil {
+			return verr
+		}
+		retract, rerr := h.endDateRetractsBelowInvoiced(ctx, tx, "agreement", id, a.EndDate)
+		if rerr != nil {
+			return rerr
+		}
+		if oldPeriod != a.Period || !oldStart.Equal(a.StartDate) || oldAmount != a.Amount ||
+			!sameInt64Set(curVeh, a.VehicleIDs) || retract {
 			if inv, ierr := h.refInvoiced(ctx, tx, "agreement", id); ierr != nil {
 				return ierr
 			} else if inv {

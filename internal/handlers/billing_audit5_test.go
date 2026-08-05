@@ -9,7 +9,47 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+
+	"github.com/preining/parkrr/internal/models"
 )
+
+// TestUpdateInvoicedVehicleBillingFrozen (review #1): changing a billing-defining
+// field (rate) on an already-invoiced vehicle must be blocked — otherwise a
+// period-key/rate change re-bills or phantom-credits an invoiced span.
+func TestUpdateInvoicedVehicleBillingFrozen(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	vid := mkStoredVehicle(t, h, pid, 30, firstOfMonthMonthsAgo(2).Format("2006-01-02"))
+	createInvoice(t, h, pid) // locks the vehicle's completed periods
+
+	lrec := httptest.NewRecorder()
+	h.ListVehicles(lrec, httptest.NewRequest(http.MethodGet, "/api/vehicles?person_id="+strconv.FormatInt(pid, 10), nil))
+	var vehs []models.Vehicle
+	_ = json.Unmarshal(lrec.Body.Bytes(), &vehs)
+	var v models.Vehicle
+	for _, x := range vehs {
+		if x.ID == vid {
+			v = x
+		}
+	}
+	if v.ID == 0 {
+		t.Fatalf("vehicle %d not found in list", vid)
+	}
+
+	ubody, _ := json.Marshal(map[string]any{
+		"person_id": v.PersonID, "category_id": v.CategoryID, "billing_period": v.BillingPeriod,
+		"status": v.Status, "start_date": v.StartDate.Format("2006-01-02"), "rate": v.Rate + 20,
+	})
+	ureq := httptest.NewRequest(http.MethodPut, "/api/vehicles/"+strconv.FormatInt(vid, 10), bytes.NewReader(ubody))
+	ureq.SetPathValue("id", strconv.FormatInt(vid, 10))
+	ureq.Header.Set("Content-Type", "application/json")
+	urec := httptest.NewRecorder()
+	h.UpdateVehicle(urec, ureq)
+	if urec.Code != http.StatusConflict {
+		t.Errorf("changing rate on an invoiced vehicle must be blocked (409), got %d %s", urec.Code, urec.Body.String())
+	}
+}
 
 // TestPaymentCreatedByNullable (review #1 / migration 035): the immutability guard
 // must tolerate created_by being nulled — that is the ON DELETE SET NULL FK action

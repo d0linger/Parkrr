@@ -270,9 +270,16 @@ func (a *FlatRatePeriod) PaidCentsInRange(from, to time.Time) int64 {
 			// paid period always nets to zero.
 			total += fractionCents(cents, days(s, e), days(pStart, pEnd))
 		} else if fx, ok := a.PaidFixed[key]; ok {
-			// Fixed partial payment: credit the lump once (paid totals are computed
-			// over the full accrual range, so each fixed amount is counted once).
-			total += toCents(fx)
+			// Fixed partial payment: credit the lump once, CAPPED at the period's
+			// accrued cost — matching the balance path (periodPaidUnlocked) — so an
+			// over-large partial (mis-entry) can't over-settle the period or archive
+			// its vehicles prematurely.
+			periodCents := fractionCents(cents, days(s, e), days(pStart, pEnd))
+			if fxc := toCents(fx); fxc < periodCents {
+				total += fxc
+			} else {
+				total += periodCents
+			}
 		}
 	})
 	return total

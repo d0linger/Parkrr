@@ -129,3 +129,18 @@ func TestCostZeroBeforeStart(t *testing.T) {
 		t.Errorf("before start: got %.2f want 0", got)
 	}
 }
+
+// TestPaidFixedCappedAtPeriodCost (review #5): an over-large fixed partial
+// (Teilbetrag > period cost) must be capped at the period's accrued cost in
+// PaidCentsInRange, matching the balance path — so it can't over-settle.
+func TestPaidFixedCappedAtPeriodCost(t *testing.T) {
+	start := date(2024, time.January, 1)
+	a := FlatRatePeriod{
+		Amount: 100, Period: BillingMonthly, StartDate: start,
+		PaidFixed: map[string]float64{"2024-01": 250}, // nonsense: partial > cost
+	}
+	got := a.PaidCentsInRange(start, date(2024, time.February, 1))
+	if got != 10000 { // capped at the full month cost 100,00 = 10000c, not 25000
+		t.Errorf("over-large fixed partial must cap at period cost 10000c, got %d", got)
+	}
+}

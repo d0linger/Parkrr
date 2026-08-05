@@ -457,6 +457,42 @@ func (h *Handler) lockedPositions(ctx context.Context, personID int64) (map[stri
 // refInvoiced reports whether a position (kind, ref_id) is billed by an active
 // (non-canceled) invoice — used to block deleting a master record an issued invoice
 // was built from, which would orphan its invoice_source lock and lose history.
+// periodKeyEnd returns the exclusive end (start of the next period) of a
+// sub-period key — "YYYY-MM" (monthly) or "YYYY" (yearly). Zero time on a bad key.
+func periodKeyEnd(key string) time.Time {
+	if t, err := time.Parse("2006-01", key); err == nil {
+		return t.AddDate(0, 1, 0)
+	}
+	if t, err := time.Parse("2006", key); err == nil {
+		return t.AddDate(1, 0, 0)
+	}
+	return time.Time{}
+}
+
+// endDateRetractsBelowInvoiced reports whether setting newEnd (inclusive; nil =
+// open-ended) would move a ref's accrual window before the end of a period that
+// a non-canceled invoice already billed — which would drop that period from the
+// balance while its payment remains, i.e. a phantom Guthaben. Extending (or
+// closing at/after the last invoiced period) is fine.
+func (h *Handler) endDateRetractsBelowInvoiced(ctx context.Context, q rowQuerier, kind string, refID int64, newEnd *time.Time) (bool, error) {
+	if newEnd == nil {
+		return false, nil // open-ended can't retract below anything
+	}
+	var maxKey *string
+	if err := q.QueryRow(ctx,
+		`SELECT max(s.period_key) FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+		   WHERE s.kind=$1 AND s.ref_id=$2 AND NOT i.canceled AND s.period_key <> ''`, kind, refID).
+		Scan(&maxKey); err != nil {
+		return false, err
+	}
+	if maxKey == nil {
+		return false, nil
+	}
+	// Inclusive EndDate → the window covers through newEnd, i.e. its exclusive
+	// upper bound is newEnd+1. It must reach the end of the latest invoiced period.
+	return newEnd.AddDate(0, 0, 1).Before(periodKeyEnd(*maxKey)), nil
+}
+
 // refInvoiced takes a rowQuerier (pool or tx) so callers already holding a
 // transaction pass their tx — running it on h.Pool mid-tx would grab a second
 // pooled connection while the first is held and can deadlock the pool.
