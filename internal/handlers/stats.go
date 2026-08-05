@@ -113,17 +113,71 @@ func (h *Handler) personChargeSums(ctx context.Context, personID int64, agreemen
 // Otherwise a paid period is owed forever (the invoice already omits it) — an
 // uncollectable phantom debt. Vehicle rent settled via v.Paid is deliberately
 // excluded here: it already has a payment row and would double-count.
-func personPeriodPaid(agreements []models.FlatRatePeriod, recurs []models.RecurringCharge, until time.Time) float64 {
+func personPeriodPaid(agreements []models.FlatRatePeriod, recurs []models.RecurringCharge, now time.Time, locked map[string]bool) float64 {
 	var paid float64
 	for i := range agreements {
 		a := &agreements[i]
-		paid += float64(a.PaidCentsInRange(a.StartDate, until)) / 100
+		paid += periodPaidUnlocked(*a, "agreement", a.ID, now, locked)
 	}
 	for i := range recurs {
-		p := recurs[i].AsPeriod()
-		paid += float64(p.PaidCentsInRange(p.StartDate, until)) / 100
+		paid += periodPaidUnlocked(recurs[i].AsPeriod(), "recurring", recurs[i].ID, now, locked)
 	}
 	return round2(paid)
+}
+
+// periodPaidUnlocked sums one accrual's per-period paid amount, EXCLUDING sub-
+// periods already billed by an active invoice (present in invoice_source / locked).
+// An invoiced period is settled through the invoice payment, so crediting it here
+// too would double-count (phantom Guthaben). A fixed partial is capped at the
+// period's accrued-so-far cost, so a prepayment on a still-running period can't
+// over-credit and drive the balance transiently negative.
+func periodPaidUnlocked(p models.FlatRatePeriod, kind string, refID int64, now time.Time, locked map[string]bool) float64 {
+	paidSet := periodKeySet(p.PaidPeriods)
+	var paid float64
+	for _, per := range p.ElapsedPeriodsDetailed(now) {
+		if locked[lockKey(kind, refID, per.Key)] {
+			continue
+		}
+		switch {
+		case p.Paid || paidSet[per.Key]:
+			paid += per.Cost
+		default:
+			if fx, ok := p.PaidFixed[per.Key]; ok {
+				if fx < per.Cost {
+					paid += fx
+				} else {
+					paid += per.Cost
+				}
+			}
+		}
+	}
+	return paid
+}
+
+// lockedPeriodsByPerson returns, per person, the set of invoiced (locked) position
+// keys from active invoices — the bulk equivalent of lockedPositions, so the
+// dashboard/outstanding paths can exclude invoiced periods from the off-book
+// per-period credit (see personPeriodPaid) without a query per person.
+func (h *Handler) lockedPeriodsByPerson(ctx context.Context) map[int64]map[string]bool {
+	out := map[int64]map[string]bool{}
+	rows, err := h.Pool.Query(ctx,
+		`SELECT i.person_id, s.kind, s.ref_id, s.period_key FROM invoice_source s
+		    JOIN invoices i ON i.id = s.invoice_id WHERE NOT i.canceled`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var pid, ref int64
+		var kind, period string
+		if rows.Scan(&pid, &kind, &ref, &period) == nil {
+			if out[pid] == nil {
+				out[pid] = map[string]bool{}
+			}
+			out[pid][lockKey(kind, ref, period)] = true
+		}
+	}
+	return out
 }
 
 // vehiclePaidMap indexes vehicles by id -> stored paid flag.
@@ -281,7 +335,10 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	// received (the per-item toggles are a manual convenience, not the money).
 	resp.TotalPaid = resp.PaymentsTotal
 	resp.InvoicedTax = round2(invoicedTax)
-	resp.PeriodPaid = personPeriodPaid(agreements, recurs, until)
+	// Exclude invoiced periods (settled via the invoice payment) from the off-book
+	// per-period credit so a period isn't credited twice.
+	periodLocked, _ := h.lockedPositions(r.Context(), id)
+	resp.PeriodPaid = personPeriodPaid(agreements, recurs, now, periodLocked)
 	resp.Balance = round2(resp.TotalAccrued + resp.TotalCharges + resp.InvoicedTax -
 		resp.PaymentsTotal - resp.PeriodPaid)
 	// Guthaben = overpayment (negative balance), symmetric to Balance.
@@ -427,11 +484,18 @@ func (h *Handler) outstandingByPerson(r *http.Request) (map[int64]float64, error
 		trows.Close()
 	}
 
+	// A person owing only a standing invoice (e.g. USt after the underlying charge
+	// was deleted) must still count — seed from the invoiced set too.
+	for pid := range invoicedTaxByPerson {
+		personIDs[pid] = struct{}{}
+	}
+	lockedByPerson := h.lockedPeriodsByPerson(ctx)
+
 	out := make(map[int64]float64, len(personIDs))
 	for pid := range personIDs {
 		tAcc, _ := personRent(agByPerson[pid], vehByPerson[pid], cats, time.Time{}, until)
 		owed := (tAcc + chargesByPerson[pid] + invoicedTaxByPerson[pid]) - paymentsByPerson[pid] -
-			personPeriodPaid(agByPerson[pid], recurByPerson[pid], until)
+			personPeriodPaid(agByPerson[pid], recurByPerson[pid], now, lockedByPerson[pid])
 		out[pid] = round2(owed)
 	}
 	return out, nil
@@ -643,18 +707,23 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 
 	// Invoiced USt owed on top of net accrual (see PersonStats).
 	invoicedTaxByPerson := map[int64]float64{}
-	var invoicedTaxTotal float64
 	if trows, terr := h.Pool.Query(ctx, `SELECT person_id, COALESCE(SUM(tax_amount),0) FROM invoices WHERE NOT canceled AND cancels_id IS NULL GROUP BY person_id`); terr == nil {
 		for trows.Next() {
 			var pid int64
 			var amt float64
 			if trows.Scan(&pid, &amt) == nil {
 				invoicedTaxByPerson[pid] = amt
-				invoicedTaxTotal += amt
 			}
 		}
 		trows.Close()
 	}
+
+	// Count a person owing only a standing invoice (e.g. USt after the charge was
+	// deleted); exclude invoiced periods from the off-book per-period credit.
+	for pid := range invoicedTaxByPerson {
+		personIDs[pid] = struct{}{}
+	}
+	lockedByPerson := h.lockedPeriodsByPerson(ctx)
 
 	resp.RevenueByMonth = make([]float64, 12)
 	var outstandingSum float64 // Σ of positive per-person balances (real receivable)
@@ -675,7 +744,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		// Open balance per person = owed (rent + charges + invoiced USt) − payments −
 		// per-period Pauschale/recurring settlement (not in the payments table).
 		owed := (tAcc + chargesByPerson[pid] + invoicedTaxByPerson[pid]) - paymentsByPerson[pid] -
-			personPeriodPaid(ag, recurByPerson[pid], until)
+			personPeriodPaid(ag, recurByPerson[pid], now, lockedByPerson[pid])
 		if owed > 0.005 {
 			outstandingSum += owed
 			name := personNames[pid]

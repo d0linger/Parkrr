@@ -118,6 +118,74 @@ func TestPaidPauschalePeriodNotOwed(t *testing.T) {
 	}
 }
 
+// TestInvoicedPeriodNotDoubleCredited (review D1): a period that was invoiced and
+// the invoice paid is settled through the payment. Additionally tapping that
+// period's "bezahlt" slider must NOT credit it a second time (personPeriodPaid
+// excludes invoiced periods) — otherwise a phantom Guthaben appears.
+func TestInvoicedPeriodNotDoubleCredited(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	aid := mkAgreement(t, h, pid, 30, "monthly", firstOfMonthMonthsAgo(3).Format("2006-01-02"))
+
+	iv := createInvoice(t, h, pid) // bills + locks the 3 completed months (90)
+	if math.Abs(iv.Subtotal-90) > 0.05 {
+		t.Fatalf("expected 90, got %.2f", iv.Subtotal)
+	}
+	payInvoices(t, h, pid, map[string]any{
+		"amount": iv.Total, "method": "ueberweisung",
+		"allocations": []map[string]any{{"invoice_id": iv.ID, "amount": iv.Total}},
+	})
+	before := personStatsT(t, h, pid).Balance // ~ running month only
+
+	// Redundantly tap an INVOICED period's paid slider.
+	key := firstOfMonthMonthsAgo(3).Format("2006-01")
+	body, _ := json.Marshal(map[string]any{"period_key": key, "paid": true})
+	req := httptest.NewRequest(http.MethodPost, "/api/agreements/"+strconv.FormatInt(aid, 10)+"/period-paid", bytes.NewReader(body))
+	req.SetPathValue("id", strconv.FormatInt(aid, 10))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.SetAgreementPeriodPaid(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("period-paid: %d %s", rec.Code, rec.Body.String())
+	}
+
+	s := personStatsT(t, h, pid)
+	if math.Abs(s.Balance-before) > 0.05 {
+		t.Errorf("marking an INVOICED period paid must not change the balance; before=%.2f after=%.2f", before, s.Balance)
+	}
+	if s.Credit > 0.05 {
+		t.Errorf("no phantom Guthaben expected after paying an invoiced+toggled period, got credit=%.2f", s.Credit)
+	}
+}
+
+// TestReToggleManuallySettledChargeNoError (review P0-#2): a charge settled by a
+// manual payment, toggled open, then paid again must not hit the (kind,ref_id)
+// unique index and 500 — syncTogglePayment sees the existing allocation and no-ops.
+func TestReToggleManuallySettledChargeNoError(t *testing.T) {
+	h := testHandler(t)
+	pid := createIntegrationPerson(t, h)
+	cid := mkChargeP(t, h, pid, "ReToggle", 100, "2026-05-01")
+
+	// Manual payment explicitly settles the charge (creates a manual allocation).
+	pbody, _ := json.Marshal(map[string]any{
+		"amount": 100, "method": "ueberweisung",
+		"allocations": []map[string]any{{"kind": "charge", "id": cid}},
+	})
+	preq := httptest.NewRequest(http.MethodPost, "/api/persons/"+strconv.FormatInt(pid, 10)+"/payments", bytes.NewReader(pbody))
+	preq.SetPathValue("id", strconv.FormatInt(pid, 10))
+	preq.Header.Set("Content-Type", "application/json")
+	prec := httptest.NewRecorder()
+	h.CreatePayment(prec, preq)
+	if prec.Code != http.StatusCreated {
+		t.Fatalf("payment: %d %s", prec.Code, prec.Body.String())
+	}
+
+	// Toggle open, then paid again — the second must not 500 on the unique index.
+	setChargePaidT(t, h, cid, false)
+	setChargePaidT(t, h, cid, true)
+}
+
 // TestStornoReleasesPeriodLocks (B1-Rest): cancelling the invoice releases its
 // per-period locks so the same periods become fakturierbar again (BAO Storno).
 func TestStornoReleasesPeriodLocks(t *testing.T) {

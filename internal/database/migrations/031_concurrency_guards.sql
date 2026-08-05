@@ -9,6 +9,16 @@
 --  * payment_allocations: a position (kind, ref_id) is settled by at most one
 --    payment at a time. Deleting a payment cascades its allocations, freeing the
 --    position again.
+-- Preflight: drop any pre-existing duplicate rows (from the very races these
+-- indexes now prevent, or the pre-fix toggle-off orphan) so the unique index can
+-- build instead of aborting startup. Keeps the earliest row per key; a no-op on a
+-- clean DB. A leftover double-billed invoice_item stays on its invoice (a data
+-- issue for the operator to Storno) — only the redundant lock row is removed.
+DELETE FROM payment_allocations a USING payment_allocations b
+  WHERE a.kind = b.kind AND a.ref_id = b.ref_id AND a.id > b.id;
+DELETE FROM invoice_source a USING invoice_source b
+  WHERE a.kind = b.kind AND a.ref_id = b.ref_id AND a.period_key = b.period_key AND a.id > b.id;
+
 CREATE UNIQUE INDEX IF NOT EXISTS uq_invoice_source_ref_period
     ON invoice_source (kind, ref_id, period_key);
 

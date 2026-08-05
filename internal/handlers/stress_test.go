@@ -269,23 +269,29 @@ func TestStress_ConcurrentSamePersonInvoice(t *testing.T) {
 	cid := mkChargeP(t, h, pid, "RaceCharge", 100, "2026-05-01")
 
 	const N = 12
-	var created, conflict, other int64
+	var created, conflict, other, got500 int64
 	var wg sync.WaitGroup
 	for i := 0; i < N; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			switch invoiceRec(h, pid).Code {
-			case http.StatusCreated:
+			code := invoiceRec(h, pid).Code
+			switch {
+			case code == http.StatusCreated:
 				atomic.AddInt64(&created, 1)
-			case http.StatusConflict:
+			case code == http.StatusConflict:
 				atomic.AddInt64(&conflict, 1)
+			case code >= 500:
+				atomic.AddInt64(&got500, 1)
 			default:
 				atomic.AddInt64(&other, 1) // 400 "keine offenen Positionen" once locked
 			}
 		}()
 	}
 	wg.Wait()
+	if got500 > 0 {
+		t.Errorf("losers must fail cleanly (4xx), got %d×5xx", got500)
+	}
 
 	var srcCount int
 	_ = h.Pool.QueryRow(context.Background(),
@@ -311,7 +317,7 @@ func TestStress_ConcurrentStorno(t *testing.T) {
 	iv := createInvoice(t, h, pid)
 
 	const N = 10
-	var okc, conflict int64
+	var okc, conflict, got500 int64
 	var wg sync.WaitGroup
 	for i := 0; i < N; i++ {
 		wg.Add(1)
@@ -321,15 +327,20 @@ func TestStress_ConcurrentStorno(t *testing.T) {
 			req.SetPathValue("id", strconv.FormatInt(iv.ID, 10))
 			rec := httptest.NewRecorder()
 			h.CancelInvoice(rec, req)
-			switch rec.Code {
-			case http.StatusOK, http.StatusCreated:
+			switch {
+			case rec.Code == http.StatusOK, rec.Code == http.StatusCreated:
 				atomic.AddInt64(&okc, 1)
-			case http.StatusConflict:
+			case rec.Code == http.StatusConflict:
 				atomic.AddInt64(&conflict, 1)
+			case rec.Code >= 500:
+				atomic.AddInt64(&got500, 1)
 			}
 		}()
 	}
 	wg.Wait()
+	if got500 > 0 {
+		t.Errorf("losing Stornos must fail cleanly (409), got %d×5xx", got500)
+	}
 
 	var stornoCount int
 	_ = h.Pool.QueryRow(context.Background(), `SELECT count(*) FROM invoices WHERE cancels_id=$1`, iv.ID).Scan(&stornoCount)
@@ -351,6 +362,7 @@ func TestStress_ConcurrentAllocationSameItem(t *testing.T) {
 	cid := mkChargeP(t, h, pid, "AllocRace", 100, "2026-05-01")
 
 	const N = 15
+	var got500 int64
 	var wg sync.WaitGroup
 	for i := 0; i < N; i++ {
 		wg.Add(1)
@@ -363,18 +375,29 @@ func TestStress_ConcurrentAllocationSameItem(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/api/persons/"+strconv.FormatInt(pid, 10)+"/payments", bytes.NewReader(body))
 			req.SetPathValue("id", strconv.FormatInt(pid, 10))
 			req.Header.Set("Content-Type", "application/json")
-			h.CreatePayment(httptest.NewRecorder(), req)
+			rec := httptest.NewRecorder()
+			h.CreatePayment(rec, req)
+			if rec.Code >= 500 {
+				atomic.AddInt64(&got500, 1)
+			}
 		}()
 	}
 	wg.Wait()
 
-	var allocCount int
+	var allocCount, payCount int
 	_ = h.Pool.QueryRow(context.Background(),
 		`SELECT count(*) FROM payment_allocations WHERE kind='charge' AND ref_id=$1`, cid).Scan(&allocCount)
+	_ = h.Pool.QueryRow(context.Background(), `SELECT count(*) FROM payments WHERE person_id=$1`, pid).Scan(&payCount)
 	if allocCount != 1 {
 		t.Errorf("charge must be allocated exactly once across concurrent payments, got %d", allocCount)
 	}
-	t.Logf("[metrics] %d concurrent allocations of one charge → %d allocation row(s)", N, allocCount)
+	if got500 > 0 {
+		t.Errorf("no payment should 500 under the allocation race, got %d", got500)
+	}
+	if payCount != N {
+		t.Errorf("all %d payments must be recorded (1 allocated + %d as Guthaben), got %d", N, N-1, payCount)
+	}
+	t.Logf("[metrics] %d concurrent allocations of one charge → %d allocation, %d payment rows, %d×500", N, allocCount, payCount, got500)
 }
 
 // --- Categories 1–4: extreme / hostile inputs (real analog) -----------------

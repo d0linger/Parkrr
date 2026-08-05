@@ -259,10 +259,13 @@ func (h *Handler) syncTogglePayment(r *http.Request, kind string, refID, personI
 			kind+":"+strconv.FormatInt(refID, 10)); err != nil {
 			return err
 		}
+		// Any allocation (auto OR manual) already settles this item — don't mint a
+		// second one. Checking only p.auto would let a manually-settled item that was
+		// toggled open and paid again hit the (kind,ref_id) unique index → 500.
 		var exists bool
 		if err := tx.QueryRow(ctx,
-			`SELECT EXISTS(SELECT 1 FROM payment_allocations a JOIN payments p ON p.id=a.payment_id
-			   WHERE p.auto AND a.kind=$1 AND a.ref_id=$2)`, kind, refID).Scan(&exists); err != nil {
+			`SELECT EXISTS(SELECT 1 FROM payment_allocations WHERE kind=$1 AND ref_id=$2)`,
+			kind, refID).Scan(&exists); err != nil {
 			return err
 		}
 		if exists {
@@ -274,8 +277,11 @@ func (h *Handler) syncTogglePayment(r *http.Request, kind string, refID, personI
 			 VALUES ($1,$2,'bar','Slider „bezahlt"',true,$3) RETURNING id`, personID, amt, createdBy).Scan(&pid); err != nil {
 			return err
 		}
+		// ON CONFLICT guards the toggle-vs-manual-payment race the advisory lock
+		// doesn't cover (CreatePayment takes no such lock).
 		_, err := tx.Exec(ctx,
-			`INSERT INTO payment_allocations (payment_id, kind, ref_id, amount) VALUES ($1,$2,$3,$4)`,
+			`INSERT INTO payment_allocations (payment_id, kind, ref_id, amount) VALUES ($1,$2,$3,$4)
+			 ON CONFLICT (kind, ref_id) DO NOTHING`,
 			pid, kind, refID, amt)
 		return err
 	})
