@@ -364,7 +364,7 @@ func (h *Handler) DeleteVehicle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	if inv, ierr := h.refInvoiced(r.Context(), "vehicle", id); ierr != nil {
+	if inv, ierr := h.refInvoiced(r.Context(), h.Pool, "vehicle", id); ierr != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete vehicle")
 		return
 	} else if inv {

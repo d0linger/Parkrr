@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"math"
 	"net/http"
@@ -9,6 +10,69 @@ import (
 	"strconv"
 	"testing"
 )
+
+// TestPaymentCreatedByNullable (review #1 / migration 035): the immutability guard
+// must tolerate created_by being nulled — that is the ON DELETE SET NULL FK action
+// fired when an admin user who booked payments is deleted; without it the user is
+// undeletable. Tampering with a real money field must still be rejected.
+func TestPaymentCreatedByNullable(t *testing.T) {
+	h := testHandler(t)
+	pid := createIntegrationPerson(t, h)
+	pbody, _ := json.Marshal(map[string]any{"amount": 40, "method": "bar"})
+	preq := httptest.NewRequest(http.MethodPost, "/api/persons/"+strconv.FormatInt(pid, 10)+"/payments", bytes.NewReader(pbody))
+	preq.SetPathValue("id", strconv.FormatInt(pid, 10))
+	preq.Header.Set("Content-Type", "application/json")
+	prec := httptest.NewRecorder()
+	h.CreatePayment(prec, preq)
+	if prec.Code != http.StatusCreated {
+		t.Fatalf("payment: %d %s", prec.Code, prec.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(prec.Body.Bytes(), &resp)
+	payID := int64(resp["id"].(float64))
+	ctx := context.Background()
+
+	if _, err := h.Pool.Exec(ctx, `UPDATE payments SET created_by = NULL WHERE id=$1`, payID); err != nil {
+		t.Errorf("nulling created_by (FK action on user delete) must be allowed, got %v", err)
+	}
+	if _, err := h.Pool.Exec(ctx, `UPDATE payments SET amount = amount + 1 WHERE id=$1`, payID); err == nil {
+		t.Errorf("changing a payment amount must still be rejected")
+	}
+}
+
+// TestUnmarkInvoicedPeriodBlocked (review #2): un-marking a fixed partial on an
+// already-invoiced period must be blocked — the invoice billed cost − partial, so
+// dropping the partial would leave a phantom debt equal to it.
+func TestUnmarkInvoicedPeriodBlocked(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	aid := mkAgreement(t, h, pid, 100, "monthly", firstOfMonthMonthsAgo(2).Format("2006-01-02"))
+	key := firstOfMonthMonthsAgo(1).Format("2006-01")
+
+	setPeriodPaid := func(paid bool, amount any) *httptest.ResponseRecorder {
+		payload := map[string]any{"period_key": key, "paid": paid}
+		if amount != nil {
+			payload["amount"] = amount
+		}
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, "/api/agreements/"+strconv.FormatInt(aid, 10)+"/period-paid", bytes.NewReader(body))
+		req.SetPathValue("id", strconv.FormatInt(aid, 10))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.SetAgreementPeriodPaid(rec, req)
+		return rec
+	}
+
+	if rec := setPeriodPaid(true, 30); rec.Code != http.StatusOK {
+		t.Fatalf("mark partial: %d %s", rec.Code, rec.Body.String())
+	}
+	createInvoice(t, h, pid) // bills cost−30 for the period, locks it
+
+	if rec := setPeriodPaid(false, nil); rec.Code != http.StatusConflict {
+		t.Errorf("un-marking an invoiced period must be blocked (409), got %d %s", rec.Code, rec.Body.String())
+	}
+}
 
 // TestPaidFixedPartialSurvivesInvoicing (5th-pass A1-1): a per-period fixed
 // partial (Teilbetrag, off-book) must stay credited after its period is invoiced

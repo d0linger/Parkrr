@@ -457,9 +457,12 @@ func (h *Handler) lockedPositions(ctx context.Context, personID int64) (map[stri
 // refInvoiced reports whether a position (kind, ref_id) is billed by an active
 // (non-canceled) invoice — used to block deleting a master record an issued invoice
 // was built from, which would orphan its invoice_source lock and lose history.
-func (h *Handler) refInvoiced(ctx context.Context, kind string, refID int64) (bool, error) {
+// refInvoiced takes a rowQuerier (pool or tx) so callers already holding a
+// transaction pass their tx — running it on h.Pool mid-tx would grab a second
+// pooled connection while the first is held and can deadlock the pool.
+func (h *Handler) refInvoiced(ctx context.Context, q rowQuerier, kind string, refID int64) (bool, error) {
 	var yes bool
-	err := h.Pool.QueryRow(ctx,
+	err := q.QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
 		   WHERE s.kind=$1 AND s.ref_id=$2 AND NOT i.canceled)`, kind, refID).Scan(&yes)
 	return yes, err

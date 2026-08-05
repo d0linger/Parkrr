@@ -287,15 +287,18 @@ func (req *agreementRequest) parse() (models.FlatRatePeriod, string) {
 	return a, ""
 }
 
-// agreementsOverlapInTime reports whether the two agreements' windows intersect
-// (end dates exclusive; nil = open-ended).
+// agreementsOverlapInTime reports whether the two agreements' windows intersect.
+// EndDate is INCLUSIVE (matching the billing window, which covers through the
+// last day): the exclusive upper bound is EndDate+1, so two same-vehicle
+// agreements handing off on date D (A ends D, B starts D) DO overlap — both bill
+// D — and are correctly flagged as a conflict. nil = open-ended.
 func agreementsOverlapInTime(a, b models.FlatRatePeriod) bool {
 	aEnd, bEnd := farFuture, farFuture
 	if a.EndDate != nil {
-		aEnd = *a.EndDate
+		aEnd = a.EndDate.AddDate(0, 0, 1)
 	}
 	if b.EndDate != nil {
-		bEnd = *b.EndDate
+		bEnd = b.EndDate.AddDate(0, 0, 1)
 	}
 	return a.StartDate.Before(bEnd) && b.StartDate.Before(aEnd)
 }
@@ -523,7 +526,7 @@ func (h *Handler) saveAgreement(r *http.Request, id, personID int64, a models.Fl
 		// (re-billing an invoiced span) or make the balance disagree with the
 		// issued document. Note/vehicles/end_date stay editable.
 		if oldPeriod != a.Period || !oldStart.Equal(a.StartDate) || oldAmount != a.Amount {
-			if inv, ierr := h.refInvoiced(ctx, "agreement", id); ierr != nil {
+			if inv, ierr := h.refInvoiced(ctx, tx, "agreement", id); ierr != nil {
 				return ierr
 			} else if inv {
 				return errAgreementInvoiced
@@ -575,7 +578,7 @@ func (h *Handler) DeleteAgreement(w http.ResponseWriter, r *http.Request) {
 	// An invoiced Pauschale must not be deleted: its invoice_source lock has no FK
 	// to this row, so deleting it orphans the lock and severs the invoice→source
 	// trail (BAO reconstruction). Mirror DeleteVehicle.
-	if inv, err := h.refInvoiced(r.Context(), "agreement", id); err != nil {
+	if inv, err := h.refInvoiced(r.Context(), h.Pool, "agreement", id); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not check invoices")
 		return
 	} else if inv {
@@ -675,15 +678,21 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not update agreement")
 		return
 	}
-	if err := tx.Commit(r.Context()); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not update agreement")
-		return
-	}
 	state := "offen"
 	if req.Paid {
 		state = "bezahlt"
 	}
-	h.audit(r, "update", "flatrate", id, "Pauschale "+h.personLabel(r, pid)+" "+state)
+	// Audit inside the tx (before commit): the settlement change and its trail
+	// commit together (C7 / BAO §131).
+	if err := h.auditTx(r.Context(), tx, r, "update", "flatrate", id,
+		"Pauschale "+h.personLabel(r, pid)+" "+state); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update agreement")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update agreement")
+		return
+	}
 	// Settling the last open period may finish the agreement -> archive vehicles.
 	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), pid)
 	h.writeAgreements(w, r, pid)
@@ -761,10 +770,12 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "period_key does not match an elapsed period of this agreement")
 		return
 	}
-	// An invoiced period is settled through the invoice — marking it paid here would
-	// double-credit once that invoice is Storno'd (the lock, not this flag, was
-	// neutralising it). Block it.
-	if req.Paid {
+	// An invoiced period is settled through the invoice. Block BOTH directions:
+	// marking would double-credit once the invoice is Storno'd; UNmarking would
+	// drop a fixed partial that the invoice already billed around (open = cost −
+	// partial), leaving a phantom debt equal to the partial. The invoice, not this
+	// flag, governs a fakturierte Periode.
+	{
 		var locked bool
 		if err := tx.QueryRow(r.Context(),
 			`SELECT EXISTS(SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id

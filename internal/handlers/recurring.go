@@ -345,7 +345,7 @@ func (h *Handler) UpdateRecurringCharge(w http.ResponseWriter, r *http.Request) 
 	// invoice_source lock (re-billing an already-invoiced span) or make the balance
 	// disagree with the issued document. Description/vehicle/end_date stay editable.
 	if period != existing.Period || !start.Equal(existing.StartDate) || amount != existing.Amount {
-		if inv, ierr := h.refInvoiced(r.Context(), "recurring", id); ierr != nil {
+		if inv, ierr := h.refInvoiced(r.Context(), h.Pool, "recurring", id); ierr != nil {
 			writeError(w, http.StatusInternalServerError, "could not check invoices")
 			return
 		} else if inv {
@@ -395,7 +395,7 @@ func (h *Handler) DeleteRecurringCharge(w http.ResponseWriter, r *http.Request) 
 	}
 	// An invoiced recurring charge must not be deleted: it would orphan the
 	// invoice_source lock and sever the invoice→source trail (BAO reconstruction).
-	if inv, err := h.refInvoiced(r.Context(), "recurring", id); err != nil {
+	if inv, err := h.refInvoiced(r.Context(), h.Pool, "recurring", id); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not check invoices")
 		return
 	} else if inv {
@@ -429,21 +429,32 @@ func (h *Handler) SetRecurringChargePaid(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE recurring_charges SET paid=$1, updated_at=now() WHERE id=$2`, req.Paid, id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not update recurring charge")
-		return
-	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "recurring charge not found")
-		return
-	}
 	verb := "recurring marked open"
 	if req.Paid {
 		verb = "recurring marked paid"
 	}
-	h.audit(r, "update", "recurring_charge", id, verb)
+	var notFound bool
+	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		ct, err := tx.Exec(r.Context(),
+			`UPDATE recurring_charges SET paid=$1, updated_at=now() WHERE id=$2`, req.Paid, id)
+		if err != nil {
+			return err
+		}
+		if ct.RowsAffected() == 0 {
+			notFound = true
+			return nil
+		}
+		// Audit in the tx: the settlement change and its trail commit together (C7).
+		return h.auditTx(r.Context(), tx, r, "update", "recurring_charge", id, verb)
+	})
+	if txErr != nil {
+		writeError(w, http.StatusInternalServerError, "could not update recurring charge")
+		return
+	}
+	if notFound {
+		writeError(w, http.StatusNotFound, "recurring charge not found")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -492,10 +503,11 @@ func (h *Handler) SetRecurringChargePeriodPaid(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, "invalid period")
 		return
 	}
-	// An invoiced period is settled through the invoice, not the per-period flag —
-	// marking it paid here would double-credit once the invoice is Storno'd (the
-	// lock, not the flag, was neutralising it). Block it.
-	if req.Paid {
+	// An invoiced period is settled through the invoice, not the per-period flag.
+	// Block BOTH directions: marking would double-credit once the invoice is
+	// Storno'd; UNmarking would drop a fixed partial the invoice already billed
+	// around (open = cost − partial), leaving a phantom debt equal to the partial.
+	{
 		locked, lerr := h.lockedPositions(r.Context(), rc.PersonID)
 		if lerr != nil {
 			writeError(w, http.StatusInternalServerError, "query failed")
