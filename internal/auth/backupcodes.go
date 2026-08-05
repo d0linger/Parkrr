@@ -86,16 +86,23 @@ func (m *Manager) RemainingBackupCodes(ctx context.Context, userID int64) (int, 
 }
 
 func randomCode() (string, error) {
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
 	var sb strings.Builder
-	for i, v := range b {
+	b := make([]byte, 1)
+	for i := 0; i < 8; {
+		if _, err := rand.Read(b); err != nil {
+			return "", err
+		}
+		v := b[0]
+		// Reject values >= 248 to eliminate modulo bias. With len(codeAlphabet) == 31,
+		// 31 * 8 = 248. This ensures each character is picked with uniform probability.
+		if v >= 248 {
+			continue
+		}
 		if i == 4 {
 			sb.WriteByte('-')
 		}
 		sb.WriteByte(codeAlphabet[int(v)%len(codeAlphabet)])
+		i++
 	}
 	return sb.String(), nil
 }

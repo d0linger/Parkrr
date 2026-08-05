@@ -27,3 +27,8 @@
 *Vulnerability:* Although vehicle notes were restricted on creation/modification, the vehicle status change endpoint accepted an unrestricted `Note` field for logging the transition in the history database. This allowed users with editor permissions to bypass length controls and submit massive string payloads.
 *Learning:* Input sanitization and length bounds must be applied to text fields across all mutating endpoints, including transition/history logs, to prevent DB bloat and DoS/memory pressure.
 *Prevention:* Enforce the centralized note length validator (`validNoteLength`) on all endpoints receiving text notes or transition details.
+
+## 2026-08-02 - [Modulo Bias in MFA Backup Code Generation]
+*Vulnerability:* The 8-character backup recovery codes were mapped from cryptographically secure random bytes using `int(v) % len(codeAlphabet)`. Since 256 is not evenly divisible by the 31-character alphabet, the first 8 characters had a slightly higher probability (~3.51%) of being selected than the remaining 23 characters (~3.12%), resulting in a non-uniform distribution (modulo bias) and entropy loss.
+*Learning:* Using simple modulo operations to map random bytes to a custom alphabet of a size that is not a power of two introduces subtle but real probability bias, weakening the entropy of security keys and recovery codes.
+*Prevention:* Implement cryptographic rejection sampling to restrict the accepted raw byte values to the largest multiple of the alphabet size less than 256, ensuring a perfectly uniform distribution.
