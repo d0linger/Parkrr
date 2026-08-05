@@ -358,14 +358,18 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	resp.TotalCharges = round2(totalCharges + recAccrued)
 
 	// Recorded payments (money actually received). Powers the Kontoauszug.
-	if perr := h.Pool.QueryRow(r.Context(),
+	// Don't swallow: a dropped payments read would leave PaymentsTotal 0 and
+	// overstate the receivable (Balance = owed − received).
+	if err := h.Pool.QueryRow(r.Context(),
 		`SELECT COALESCE(SUM(amount),0),
 		        COALESCE(SUM(amount) FILTER (WHERE EXTRACT(YEAR FROM paid_on) = $2),0)
 		   FROM payments WHERE person_id=$1 AND NOT reversed`, id, year,
-	).Scan(&resp.PaymentsTotal, &resp.PaymentsYear); perr == nil {
-		resp.PaymentsTotal = round2(resp.PaymentsTotal)
-		resp.PaymentsYear = round2(resp.PaymentsYear)
+	).Scan(&resp.PaymentsTotal, &resp.PaymentsYear); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
 	}
+	resp.PaymentsTotal = round2(resp.PaymentsTotal)
+	resp.PaymentsYear = round2(resp.PaymentsYear)
 
 	// Accrual is NET; an issued invoice adds USt on top and the customer pays that
 	// GROSS. Add the invoiced tax to the owed side so a paid USt-invoice doesn't

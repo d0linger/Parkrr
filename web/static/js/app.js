@@ -34,7 +34,12 @@
     const eur = (n) => new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(Number(n) || 0);
     const fmtDate = (s) => (s ? new Date(s).toLocaleDateString('de-DE') : '–');
     const fmtDateTime = (s) => (s ? new Date(s).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' }) : '–');
-    const today = () => new Date().toISOString().slice(0, 10);
+    // Local calendar date (not UTC): toISOString() would yield yesterday between
+    // local midnight and the UTC offset, wrong-dating a payment/charge default.
+    const today = () => {
+        const d = new Date();
+        return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    };
     const norm = (s) => String(s ?? '').toLowerCase();
 
     // ---------- icons ----------
@@ -1749,6 +1754,9 @@
                 const current = fixed != null ? { mode: 'partial', amount: fixed } : (paid ? { mode: 'full' } : null);
                 const choice = await periodPayDialog(key, defAmt, current);
                 if (!choice) { render(); return; } // cancelled -> reset optimistic state
+                // A partial of 0/blank is not a payment — revert instead of sending
+                // an empty Teilbetrag the server rejects (mirrors the recurring slider).
+                if (choice.amount != null && !(choice.amount > 0)) { render(); return; }
                 await post(true, choice.amount);
                 return;
             }

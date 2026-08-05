@@ -164,7 +164,8 @@ func chargePaid(t *testing.T, h *Handler, id int64) bool {
 
 func personCreditVal(t *testing.T, h *Handler, pid int64) float64 {
 	t.Helper()
-	return h.personCredit(httptest.NewRequest(http.MethodGet, "/", nil), pid)
+	// Guthaben is the production balance path (−Balance), the single source of truth.
+	return personStatsT(t, h, pid).Credit
 }
 
 // TestPaymentExplicitSelectionAndDelete: an explicit selection stamps exactly the

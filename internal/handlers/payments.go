@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -669,20 +670,6 @@ func (h *Handler) OpenItems(w http.ResponseWriter, r *http.Request) {
 // beyond everything owed (rent + all charges + recurring). Not the unallocated
 // remainder — costs that settle without an allocation (vehicle-bound charges,
 // Pauschale/recurring periods) must not look like credit.
-func (h *Handler) personCredit(r *http.Request, personID int64) float64 {
-	var payments float64
-	_ = h.Pool.QueryRow(r.Context(),
-		`SELECT COALESCE(SUM(amount),0) FROM payments WHERE person_id=$1 AND NOT reversed`, personID).Scan(&payments)
-	accrued, err := h.personAccruedTotal(r, personID)
-	if err != nil {
-		return 0
-	}
-	if c := round2(payments - accrued); c > 0 {
-		return c
-	}
-	return 0
-}
-
 // ApplyCredit stamps a person's currently-open items (oldest first) that their
 // payments already cover but which weren't stamped yet — i.e. draws down the
 // Guthaben. The budget is the paid amount minus the cost already covered
@@ -713,9 +700,18 @@ func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
 	for _, it := range items {
 		openTotal += it.LineTotal
 	}
-	_ = h.Pool.QueryRow(ctx, `SELECT COALESCE(SUM(amount),0) FROM payments WHERE person_id=$1 AND NOT reversed`, id).Scan(&paymentsTotal)
+	// Don't swallow: paymentsTotal drives the Guthaben drawdown budget below.
+	if err := h.Pool.QueryRow(ctx, `SELECT COALESCE(SUM(amount),0) FROM payments WHERE person_id=$1 AND NOT reversed`, id).Scan(&paymentsTotal); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 	var latestPayment int64
-	_ = h.Pool.QueryRow(ctx, `SELECT id FROM payments WHERE person_id=$1 AND NOT reversed ORDER BY paid_on DESC, id DESC LIMIT 1`, id).Scan(&latestPayment)
+	// A missing latest payment (no rows) is not an error — it means no Guthaben to
+	// apply; only a real query error should surface.
+	if err := h.Pool.QueryRow(ctx, `SELECT id FROM payments WHERE person_id=$1 AND NOT reversed ORDER BY paid_on DESC, id DESC LIMIT 1`, id).Scan(&latestPayment); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 
 	// budget = money paid that isn't already tied up in non-open (covered) costs.
 	// No payment to link the drawdown to → nothing to apply (and no orphan risk).

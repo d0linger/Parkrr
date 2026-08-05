@@ -211,6 +211,10 @@ func (h *Handler) ListCharges(w http.ResponseWriter, r *http.Request) {
 		c.Total = round2(c.Amount * c.Quantity)
 		out = append(out, c)
 	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 	rows.Close()
 
 	// A bound Zusatzkosten is billed separately from the flat rate (Option A): a

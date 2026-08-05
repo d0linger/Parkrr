@@ -1110,7 +1110,11 @@ func (h *Handler) GetInvoice(w http.ResponseWriter, r *http.Request) {
 	).Scan(&iv.ID, &iv.Number, &iv.PersonID, &iv.IssuedOn, &iv.DueOn, &iv.Subtotal, &iv.UStRate,
 		&iv.TaxAmount, &iv.Total, &iv.Kleinunternehmer, &sellerJSON, &buyerJSON, &iv.Note,
 		&iv.Canceled, &iv.CancelsID, &iv.PaidAmount, &iv.LeistungFrom, &iv.LeistungTo); err != nil {
-		writeError(w, http.StatusNotFound, "invoice not found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "invoice not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 	iv.OpenAmount = round2(iv.Total - iv.PaidAmount)

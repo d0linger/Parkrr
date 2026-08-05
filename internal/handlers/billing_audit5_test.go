@@ -344,3 +344,78 @@ func TestListChargesRejectsBadPersonID(t *testing.T) {
 		t.Errorf("bad person_id must be 400, got %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// updateVehicleFields PUTs a vehicle built from its current state plus overrides.
+func updateVehicleFields(t *testing.T, h *Handler, pid, vid int64, override map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	lrec := httptest.NewRecorder()
+	h.ListVehicles(lrec, httptest.NewRequest(http.MethodGet, "/api/vehicles?person_id="+strconv.FormatInt(pid, 10), nil))
+	var vehs []models.Vehicle
+	_ = json.Unmarshal(lrec.Body.Bytes(), &vehs)
+	var v models.Vehicle
+	for _, x := range vehs {
+		if x.ID == vid {
+			v = x
+		}
+	}
+	body := map[string]any{
+		"person_id": v.PersonID, "category_id": v.CategoryID, "billing_period": v.BillingPeriod,
+		"status": v.Status, "start_date": v.StartDate.Format("2006-01-02"), "rate": v.Rate,
+	}
+	for k, val := range override {
+		body[k] = val
+	}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, "/api/vehicles/"+strconv.FormatInt(vid, 10), bytes.NewReader(b))
+	req.SetPathValue("id", strconv.FormatInt(vid, 10))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.UpdateVehicle(rec, req)
+	return rec
+}
+
+// TestVehicleEndDateRetractBlocked (review B3): setting end_date before the end of
+// an already-invoiced period must be blocked (that would drop the period from
+// accrual while its payment stays → phantom Guthaben); extending must still work.
+func TestVehicleEndDateRetractBlocked(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	vid := mkStoredVehicle(t, h, pid, 30, firstOfMonthMonthsAgo(2).Format("2006-01-02"))
+	createInvoice(t, h, pid) // locks the two completed months
+
+	// Retract end_date into an invoiced month → 409.
+	if rec := updateVehicleFields(t, h, pid, vid, map[string]any{"end_date": firstOfMonthMonthsAgo(1).Format("2006-01-02")}); rec.Code != http.StatusConflict {
+		t.Errorf("retracting end_date below an invoiced period must be 409, got %d %s", rec.Code, rec.Body.String())
+	}
+	// Extend (close in the future) → allowed.
+	if rec := updateVehicleFields(t, h, pid, vid, map[string]any{"end_date": firstOfMonthMonthsAgo(-6).Format("2006-01-02")}); rec.Code != http.StatusOK {
+		t.Errorf("extending end_date on an invoiced vehicle must be allowed, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestAgreementMembershipFrozenWhenInvoiced (review B2): changing the covered
+// vehicle set of an invoiced Pauschale must be blocked — an unbound vehicle would
+// re-bill its period individually, a newly-covered one would phantom-credit an
+// already-invoiced period.
+func TestAgreementMembershipFrozenWhenInvoiced(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	start := firstOfMonthMonthsAgo(2).Format("2006-01-02")
+	aid := mkAgreement(t, h, pid, 100, "monthly", start)
+	vid := mkStoredVehicle(t, h, pid, 30, start)
+	createInvoice(t, h, pid) // locks the agreement's completed periods
+
+	ubody, _ := json.Marshal(map[string]any{
+		"amount": 100, "period": "monthly", "start_date": start, "vehicle_ids": []int64{vid},
+	})
+	ureq := httptest.NewRequest(http.MethodPut, "/api/agreements/"+strconv.FormatInt(aid, 10), bytes.NewReader(ubody))
+	ureq.SetPathValue("id", strconv.FormatInt(aid, 10))
+	ureq.Header.Set("Content-Type", "application/json")
+	urec := httptest.NewRecorder()
+	h.UpdateAgreement(urec, ureq)
+	if urec.Code != http.StatusConflict {
+		t.Errorf("changing covered vehicles of an invoiced agreement must be 409, got %d %s", urec.Code, urec.Body.String())
+	}
+}
