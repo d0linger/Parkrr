@@ -24,7 +24,19 @@ const (
 	maxTOTPCodeLen = 20
 	minPasswordLen = 8
 	maxPasswordLen = 72
+	maxCronLen     = 100
+	maxBackupKeyLen = 100
 )
+
+// validCronLength reports whether s is within the cron expression length cap.
+func validCronLength(s string) bool {
+	return len(s) <= maxCronLen
+}
+
+// validBackupKeyLength reports whether s is within the backup key length cap.
+func validBackupKeyLength(s string) bool {
+	return len(s) <= maxBackupKeyLen
+}
 
 // validUsernameLength reports whether s is a non-empty username within the
 // length cap. Bounding it protects the rate limiter (which keys on the

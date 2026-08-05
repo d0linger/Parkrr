@@ -114,6 +114,14 @@ func (h *Handler) SaveBackupSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	in.VolumeCron = trim(in.VolumeCron)
 	in.S3Cron = trim(in.S3Cron)
+	if !validCronLength(in.VolumeCron) {
+		writeError(w, http.StatusBadRequest, "volume cron is too long")
+		return
+	}
+	if !validCronLength(in.S3Cron) {
+		writeError(w, http.StatusBadRequest, "S3 cron is too long")
+		return
+	}
 	if !backup.ValidCron(in.VolumeCron) {
 		writeError(w, http.StatusBadRequest, "volume cron is not a valid 5-field cron expression")
 		return
@@ -285,6 +293,9 @@ func readBackupUpload(r *http.Request) (enc []byte, key string, err error) {
 	if key == "" {
 		return nil, "", errors.New("the backup key is required to decrypt the file")
 	}
+	if !validBackupKeyLength(key) {
+		return nil, "", errors.New("the backup key is too long")
+	}
 	f, _, err := r.FormFile("file")
 	if err != nil {
 		return nil, "", errors.New("missing backup file")
@@ -360,6 +371,10 @@ func (h *Handler) BackupRestoreS3(w http.ResponseWriter, r *http.Request) {
 	}
 	if key == "" {
 		writeError(w, http.StatusBadRequest, "the backup key is required to decrypt the file")
+		return
+	}
+	if !validBackupKeyLength(key) {
+		writeError(w, http.StatusBadRequest, "the backup key is too long")
 		return
 	}
 	if r.FormValue("confirm") != "RESTORE" {

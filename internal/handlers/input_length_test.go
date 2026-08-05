@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/preining/parkrr/internal/backup"
 )
 
 func TestInputLengthValidation(t *testing.T) {
@@ -17,6 +19,7 @@ func TestInputLengthValidation(t *testing.T) {
 	longNote := strings.Repeat("c", maxNoteLen+1)
 	longPhone := strings.Repeat("d", maxPhoneLen+1)
 	longAddress := strings.Repeat("e", maxAddressLen+1)
+	longCron := strings.Repeat("*", maxCronLen+1)
 
 	tests := []struct {
 		name       string
@@ -162,6 +165,22 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "notes is too long",
 		},
+		{
+			name:       "SaveBackupSchedule: Volume cron too long",
+			path:       "/api/backup/schedule",
+			method:     "POST",
+			body:       backup.Settings{VolumeCron: longCron, S3Cron: "* * * * *"},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "volume cron is too long",
+		},
+		{
+			name:       "SaveBackupSchedule: S3 cron too long",
+			path:       "/api/backup/schedule",
+			method:     "POST",
+			body:       backup.Settings{VolumeCron: "* * * * *", S3Cron: longCron},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "S3 cron is too long",
+		},
 	}
 
 	for _, tt := range tests {
@@ -193,6 +212,8 @@ func TestInputLengthValidation(t *testing.T) {
 			case "ChangeVehicleStatus: Note too long":
 				req.SetPathValue("id", "1")
 				h.ChangeVehicleStatus(w, req)
+			case "SaveBackupSchedule: Volume cron too long", "SaveBackupSchedule: S3 cron too long":
+				h.SaveBackupSchedule(w, req)
 			}
 
 			if w.Code != tt.wantStatus {

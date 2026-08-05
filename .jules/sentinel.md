@@ -27,3 +27,8 @@
 *Vulnerability:* Although vehicle notes were restricted on creation/modification, the vehicle status change endpoint accepted an unrestricted `Note` field for logging the transition in the history database. This allowed users with editor permissions to bypass length controls and submit massive string payloads.
 *Learning:* Input sanitization and length bounds must be applied to text fields across all mutating endpoints, including transition/history logs, to prevent DB bloat and DoS/memory pressure.
 *Prevention:* Enforce the centralized note length validator (`validNoteLength`) on all endpoints receiving text notes or transition details.
+
+## 2026-08-04 - [Unbounded Backup Config and Decryption Keys]
+*Vulnerability:* The backup scheduler configuration endpoints and restore decryption key flows lacked early input length checks. This allowed an authenticated user or administrator to submit extremely large strings for backup cron schedules (`VolumeCron`, `S3Cron`) and backup keys, introducing potential resource exhaustion (DoS) vectors on regex/parsing routines and memory/CPU overhead on cryptographic operations.
+*Learning:* Validating input structure alone is insufficient; early length constraints are essential to protect CPU-intensive operations (such as cron parsing or cryptographic key derivation) and prevent state storage bloat.
+*Prevention:* Enforce strict, centralized length limits on all configuration inputs before structural parsing or cryptographic processing occurs.
