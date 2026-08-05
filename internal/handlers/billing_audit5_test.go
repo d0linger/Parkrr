@@ -114,6 +114,56 @@ func TestDeleteInvoicedAgreementBlocked(t *testing.T) {
 	}
 }
 
+// TestRebindPaidRecurringBlocked (5th-pass A2-4): re-binding a recurring charge
+// that has a paid period must be refused — the rebind wipes the per-period
+// settlement flags (the only record a person-level charge was paid), which would
+// silently reopen already-paid periods and re-bill the customer.
+func TestRebindPaidRecurringBlocked(t *testing.T) {
+	h := testHandler(t)
+	pid := createIntegrationPerson(t, h)
+
+	amt := 20.0
+	start := firstOfMonthMonthsAgo(3).Format("2006-01-02")
+	body, _ := json.Marshal(recurringRequest{Description: "Strom", Amount: &amt, Period: "monthly", StartDate: start})
+	req := httptest.NewRequest(http.MethodPost, "/api/persons/"+strconv.FormatInt(pid, 10)+"/recurring", bytes.NewReader(body))
+	req.SetPathValue("id", strconv.FormatInt(pid, 10))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.CreateRecurringCharge(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create recurring: %d %s", rec.Code, rec.Body.String())
+	}
+	var cr struct {
+		ID int64 `json:"id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &cr)
+
+	// Mark a completed period paid (off-book per-period settlement).
+	key := firstOfMonthMonthsAgo(3).Format("2006-01")
+	pbody, _ := json.Marshal(map[string]any{"period_key": key, "paid": true})
+	preq := httptest.NewRequest(http.MethodPost, "/api/recurring/"+strconv.FormatInt(cr.ID, 10)+"/period-paid", bytes.NewReader(pbody))
+	preq.SetPathValue("id", strconv.FormatInt(cr.ID, 10))
+	preq.Header.Set("Content-Type", "application/json")
+	prec := httptest.NewRecorder()
+	h.SetRecurringChargePeriodPaid(prec, preq)
+	if prec.Code != http.StatusOK {
+		t.Fatalf("period-paid: %d %s", prec.Code, prec.Body.String())
+	}
+
+	vid := mkStoredVehicle(t, h, pid, 30, start)
+
+	// Rebinding onto the vehicle must be refused while the paid period exists.
+	ubody, _ := json.Marshal(recurringRequest{Description: "Strom", Amount: &amt, Period: "monthly", StartDate: start, VehicleID: &vid})
+	ureq := httptest.NewRequest(http.MethodPut, "/api/recurring/"+strconv.FormatInt(cr.ID, 10), bytes.NewReader(ubody))
+	ureq.SetPathValue("id", strconv.FormatInt(cr.ID, 10))
+	ureq.Header.Set("Content-Type", "application/json")
+	urec := httptest.NewRecorder()
+	h.UpdateRecurringCharge(urec, ureq)
+	if urec.Code != http.StatusConflict {
+		t.Errorf("rebinding a recurring charge with a paid period must be blocked (409), got %d %s", urec.Code, urec.Body.String())
+	}
+}
+
 // setStatus posts a vehicle status change (optional back-dated date).
 func setStatus(t *testing.T, h *Handler, vid int64, status, date string) {
 	t.Helper()

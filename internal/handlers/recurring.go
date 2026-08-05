@@ -82,6 +82,15 @@ func deriveRecurring(rc *models.RecurringCharge, agreements []models.FlatRatePer
 	}
 }
 
+// ptrInt64Differs reports whether two nullable ints differ, matching SQL's
+// IS DISTINCT FROM (nil vs non-nil counts as different).
+func ptrInt64Differs(a, b *int64) bool {
+	if a == nil || b == nil {
+		return (a == nil) != (b == nil)
+	}
+	return *a != *b
+}
+
 func (h *Handler) getRecurring(ctx context.Context, id int64) (models.RecurringCharge, error) {
 	return scanRecurring(h.Pool.QueryRow(ctx, recurringSelect+` WHERE rc.id=$1`, id))
 }
@@ -343,6 +352,15 @@ func (h *Handler) UpdateRecurringCharge(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusConflict, "Nebenkosten sind fakturiert – Betrag/Zeitraum nicht änderbar (Storno über die Rechnung)")
 			return
 		}
+	}
+	// Re-binding (person-level ↔ vehicle, or to a different vehicle) wipes the
+	// per-period settlement flags — for a person-level charge those flags are the
+	// ONLY record that its periods were paid. Refuse while any settlement exists so
+	// already-paid periods can't silently reopen and re-bill the customer (A2-4).
+	if ptrInt64Differs(existing.VehicleID, req.VehicleID) &&
+		(existing.Paid || len(existing.PaidPeriods) > 0 || len(existing.PaidFixed) > 0) {
+		writeError(w, http.StatusConflict, "Nebenkosten haben bezahlte Perioden – Bindung nicht änderbar (erst offen stellen)")
+		return
 	}
 	ct, err := h.Pool.Exec(r.Context(),
 		`UPDATE recurring_charges SET description=$1, amount=$2, period=$3, start_date=$4, end_date=$5,
