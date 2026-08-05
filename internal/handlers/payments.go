@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -277,34 +276,45 @@ func (h *Handler) syncTogglePayment(r *http.Request, kind string, refID, personI
 	})
 }
 
-// settleOne flips the existing paid toggle for one open item (reusing the same
-// updates as the manual sliders, so there is no parallel paid state).
-func (h *Handler) settleOne(r *http.Request, it owedItem) error {
+// settleItemTx settles ONE open position inside a transaction, atomically and
+// idempotently: it CLAIMS the position via a payment_allocations row (unique on
+// (kind, ref_id)) first, and only flips the paid toggle if the claim won. A lost
+// race — the position was already allocated by another payment — is a clean no-op,
+// never an orphaned paid flag with no allocation. Returns whether it settled and,
+// for a settled vehicle, its id so the caller can auto-archive after commit.
+func settleItemTx(ctx context.Context, tx pgx.Tx, paymentID int64, it owedItem) (settled bool, archiveVehicle int64, err error) {
+	ct, err := tx.Exec(ctx,
+		`INSERT INTO payment_allocations (payment_id, kind, ref_id, amount)
+		 VALUES ($1,$2,$3,$4) ON CONFLICT (kind, ref_id) DO NOTHING`,
+		paymentID, it.Kind, it.ID, it.LineTotal)
+	if err != nil {
+		return false, 0, err
+	}
+	if ct.RowsAffected() == 0 {
+		return false, 0, nil // already settled by another payment — skip, no orphan
+	}
 	switch it.Kind {
 	case "vehicle":
-		if _, err := h.Pool.Exec(r.Context(), `UPDATE vehicles SET paid=true, updated_at=now() WHERE id=$1`, it.ID); err != nil {
-			return err
+		if _, err := tx.Exec(ctx, `UPDATE vehicles SET paid=true, updated_at=now() WHERE id=$1`, it.ID); err != nil {
+			return false, 0, err
 		}
-		h.autoArchiveIfClosed(r, it.ID)
+		return true, it.ID, nil
 	case "charge":
-		if _, err := h.Pool.Exec(r.Context(), `UPDATE charges SET paid=true WHERE id=$1 AND vehicle_id IS NULL`, it.ID); err != nil {
-			return err
+		if _, err := tx.Exec(ctx, `UPDATE charges SET paid=true WHERE id=$1 AND vehicle_id IS NULL`, it.ID); err != nil {
+			return false, 0, err
 		}
 	}
-	return nil
+	return true, 0, nil
 }
 
-// settlePayment applies a freshly-recorded payment to the person's open items:
+// settlePaymentTx applies a freshly-recorded payment to the person's open items —
 // explicit selection (req.Allocations) or auto oldest-first (req.Allocate), whole
-// items only. Each settled item is linked to the payment (payment_allocations)
-// and its existing paid toggle is flipped; the leftover amount stays as the
-// payment's unallocated remainder (Guthaben). Returns the number settled.
-func (h *Handler) settlePayment(r *http.Request, paymentID, personID int64, req *paymentRequest) (int, error) {
-	items, err := h.openOwedItems(r, personID)
-	if err != nil {
-		return 0, err
-	}
-	// Choose targets in the person's oldest-first order.
+// items only — inside the caller's transaction. `items` must be read BEFORE the tx
+// (openOwedItems uses the pool; reading it here would grab a second connection
+// while holding the tx's, deadlocking the pool under concurrency). The unallocated
+// remainder stays as the payment's Guthaben. Returns the count settled and the
+// vehicle ids to auto-archive after the tx commits.
+func (h *Handler) settlePaymentTx(ctx context.Context, tx pgx.Tx, paymentID int64, req *paymentRequest, items []owedItem) (int, []int64, error) {
 	var targets []owedItem
 	strict := false
 	if len(req.Allocations) > 0 {
@@ -324,6 +334,7 @@ func (h *Handler) settlePayment(r *http.Request, paymentID, personID int64, req 
 
 	remaining := req.Amount
 	settled := 0
+	var archive []int64
 	for _, it := range targets {
 		if remaining+0.005 < it.LineTotal {
 			if strict {
@@ -331,18 +342,20 @@ func (h *Handler) settlePayment(r *http.Request, paymentID, personID int64, req 
 			}
 			continue // explicit: skip an unaffordable pick, still settle the rest
 		}
-		if err := h.settleOne(r, it); err != nil {
-			return settled, err
+		ok, veh, serr := settleItemTx(ctx, tx, paymentID, it)
+		if serr != nil {
+			return settled, archive, serr
 		}
-		if _, err := h.Pool.Exec(r.Context(),
-			`INSERT INTO payment_allocations (payment_id, kind, ref_id, amount) VALUES ($1,$2,$3,$4)`,
-			paymentID, it.Kind, it.ID, it.LineTotal); err != nil {
-			return settled, err
+		if !ok {
+			continue // lost the race for this item; leave the amount for the rest
+		}
+		if veh > 0 {
+			archive = append(archive, veh)
 		}
 		remaining -= it.LineTotal
 		settled++
 	}
-	return settled, nil
+	return settled, archive, nil
 }
 
 // validatePayment normalizes and checks a payment request, returning the parsed
@@ -404,12 +417,44 @@ func (h *Handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 	if u, ok := auth.UserFrom(r.Context()); ok {
 		createdBy = &u.ID
 	}
-	p, err := scanPayment(h.Pool.QueryRow(r.Context(),
-		`INSERT INTO payments (person_id, amount, paid_on, method, note, created_by)
-		 VALUES ($1,$2,$3,$4,$5,$6) RETURNING `+paymentColumns,
-		id, req.Amount, paidOn, req.Method, req.Note, createdBy))
-	if err != nil {
-		if isForeignKeyViolation(err) {
+	// Read the open items BEFORE the tx (openOwedItems uses the pool; reading it
+	// inside the tx would hold two connections and deadlock the pool under load).
+	ctx := r.Context()
+	var openItems []owedItem
+	if req.Allocate || len(req.Allocations) > 0 {
+		its, oerr := h.openOwedItems(r, id)
+		if oerr != nil {
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		openItems = its
+	}
+	// Record the payment and settle its items in ONE transaction so a settlement
+	// failure can never leave a half-allocated payment or a paid-but-unallocated
+	// orphan (the whole thing commits or rolls back together).
+	var p payment
+	var settled int
+	var archive []int64
+	txErr := pgx.BeginFunc(ctx, h.Pool, func(tx pgx.Tx) error {
+		pp, err := scanPayment(tx.QueryRow(ctx,
+			`INSERT INTO payments (person_id, amount, paid_on, method, note, created_by)
+			 VALUES ($1,$2,$3,$4,$5,$6) RETURNING `+paymentColumns,
+			id, req.Amount, paidOn, req.Method, req.Note, createdBy))
+		if err != nil {
+			return err
+		}
+		p = pp
+		if len(openItems) > 0 {
+			n, arch, serr := h.settlePaymentTx(ctx, tx, p.ID, &req, openItems)
+			if serr != nil {
+				return serr
+			}
+			settled, archive = n, arch
+		}
+		return nil
+	})
+	if txErr != nil {
+		if isForeignKeyViolation(txErr) {
 			writeError(w, http.StatusBadRequest, "person does not exist")
 			return
 		}
@@ -417,15 +462,12 @@ func (h *Handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r, "create", "payment", p.ID, fmt.Sprintf("recorded payment %.2f € (%s)", p.Amount, p.Method))
-
-	settled := 0
-	if req.Allocate || len(req.Allocations) > 0 {
-		if n, aerr := h.settlePayment(r, p.ID, id, &req); aerr != nil {
-			slog.Warn("payment allocation failed", "payment_id", p.ID, "err", aerr)
-		} else if n > 0 {
-			settled = n
-			h.audit(r, "update", "payment", p.ID, fmt.Sprintf("stamped %d position(s) as paid", n))
-		}
+	if settled > 0 {
+		h.audit(r, "update", "payment", p.ID, fmt.Sprintf("stamped %d position(s) as paid", settled))
+	}
+	// Archive now-closed vehicles after the money is durably committed.
+	for _, vid := range archive {
+		h.autoArchiveIfClosed(r, vid)
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id": p.ID, "person_id": p.PersonID, "amount": p.Amount, "paid_on": p.PaidOn,
@@ -622,29 +664,43 @@ func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
 	_ = h.Pool.QueryRow(ctx, `SELECT id FROM payments WHERE person_id=$1 ORDER BY paid_on DESC, id DESC LIMIT 1`, id).Scan(&latestPayment)
 
 	// budget = money paid that isn't already tied up in non-open (covered) costs.
+	// No payment to link the drawdown to → nothing to apply (and no orphan risk).
+	if latestPayment == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"settled": 0})
+		return
+	}
 	budget := round2(paymentsTotal - round2(accrued-openTotal))
 	settled := 0
-	for _, it := range items {
-		if budget+0.005 < it.LineTotal {
-			break // not enough paid to cover this (oldest) open item
-		}
-		if err := h.settleOne(r, it); err != nil {
-			writeError(w, http.StatusInternalServerError, "could not apply credit")
-			return
-		}
-		if latestPayment > 0 {
-			if _, err := h.Pool.Exec(ctx,
-				`INSERT INTO payment_allocations (payment_id, kind, ref_id, amount) VALUES ($1,$2,$3,$4)`,
-				latestPayment, it.Kind, it.ID, it.LineTotal); err != nil {
-				writeError(w, http.StatusInternalServerError, "could not apply credit")
-				return
+	var archive []int64
+	txErr := pgx.BeginFunc(ctx, h.Pool, func(tx pgx.Tx) error {
+		for _, it := range items {
+			if budget+0.005 < it.LineTotal {
+				break // not enough paid to cover this (oldest) open item
 			}
+			ok, veh, serr := settleItemTx(ctx, tx, latestPayment, it)
+			if serr != nil {
+				return serr
+			}
+			if !ok {
+				continue // already settled by another payment (race)
+			}
+			if veh > 0 {
+				archive = append(archive, veh)
+			}
+			budget -= it.LineTotal
+			settled++
 		}
-		budget -= it.LineTotal
-		settled++
+		return nil
+	})
+	if txErr != nil {
+		writeError(w, http.StatusInternalServerError, "could not apply credit")
+		return
 	}
 	if settled > 0 {
 		h.audit(r, "update", "payment", 0, fmt.Sprintf("applied Guthaben to %d open position(s)", settled))
+	}
+	for _, vid := range archive {
+		h.autoArchiveIfClosed(r, vid)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"settled": settled})
 }

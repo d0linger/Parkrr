@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -13,6 +14,11 @@ import (
 	"github.com/preining/parkrr/internal/auth"
 	"github.com/preining/parkrr/internal/models"
 )
+
+// errAlreadyCanceled signals that a Storno lost the race to a concurrent one —
+// the invoice was already canceled, so the second attempt aborts (409) instead of
+// issuing a duplicate counter-document.
+var errAlreadyCanceled = errors.New("invoice already canceled")
 
 // billingSettings is the GUI-editable invoicing configuration (one row, id=1).
 // Austria: kleinunternehmer => § 6 Abs 1 Z 27 UStG (no USt); otherwise ust_rate
@@ -559,6 +565,13 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if txErr != nil {
+		// A concurrent CreateInvoice for the same person raced us and already billed
+		// one of these positions (uq_invoice_source_ref_period). The tx rolled back —
+		// no double-bill, no burned number — so ask the caller to reload and retry.
+		if isUniqueViolation(txErr) {
+			writeError(w, http.StatusConflict, "Positionen wurden soeben abgerechnet – bitte neu laden")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not create invoice")
 		return
 	}
@@ -663,8 +676,15 @@ func (h *Handler) CancelInvoice(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		}
-		if _, err := tx.Exec(r.Context(), `UPDATE invoices SET canceled=true, paid_amount=0 WHERE id=$1`, id); err != nil {
+		// Guard against a concurrent Storno: only the first to flip canceled wins;
+		// if no row is affected the invoice was already canceled, so abort (rolling
+		// back this duplicate counter-document + its burned number).
+		ct, err := tx.Exec(r.Context(), `UPDATE invoices SET canceled=true, paid_amount=0 WHERE id=$1 AND NOT canceled`, id)
+		if err != nil {
 			return err
+		}
+		if ct.RowsAffected() == 0 {
+			return errAlreadyCanceled
 		}
 		if _, err := tx.Exec(r.Context(), `DELETE FROM invoice_source WHERE invoice_id=$1`, id); err != nil {
 			return err
@@ -679,6 +699,10 @@ func (h *Handler) CancelInvoice(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if txErr != nil {
+		if errors.Is(txErr, errAlreadyCanceled) {
+			writeError(w, http.StatusConflict, "Rechnung ist bereits storniert")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not cancel invoice")
 		return
 	}

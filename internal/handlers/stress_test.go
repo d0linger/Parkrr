@@ -259,6 +259,124 @@ func TestStress_BulkInvoiceThroughput(t *testing.T) {
 		N, elapsed, float64(elapsed.Milliseconds())/float64(N), float64(N)/elapsed.Seconds(), len(seen))
 }
 
+// TestStress_ConcurrentSamePersonInvoice (P0): N invoices fired at once for the
+// SAME person must bill each open position exactly once — the loser(s) get a clean
+// 409/400, never a duplicate invoice_source row (uq_invoice_source_ref_period).
+func TestStress_ConcurrentSamePersonInvoice(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	cid := mkChargeP(t, h, pid, "RaceCharge", 100, "2026-05-01")
+
+	const N = 12
+	var created, conflict, other int64
+	var wg sync.WaitGroup
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			switch invoiceRec(h, pid).Code {
+			case http.StatusCreated:
+				atomic.AddInt64(&created, 1)
+			case http.StatusConflict:
+				atomic.AddInt64(&conflict, 1)
+			default:
+				atomic.AddInt64(&other, 1) // 400 "keine offenen Positionen" once locked
+			}
+		}()
+	}
+	wg.Wait()
+
+	var srcCount int
+	_ = h.Pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+		   WHERE s.kind='charge' AND s.ref_id=$1 AND NOT i.canceled`, cid).Scan(&srcCount)
+	if srcCount != 1 {
+		t.Errorf("charge must be billed on exactly ONE active invoice, got %d invoice_source rows", srcCount)
+	}
+	if created != 1 {
+		t.Errorf("exactly one CreateInvoice should succeed, got %d (409=%d other=%d)", created, conflict, other)
+	}
+	t.Logf("[metrics] %d concurrent same-person invoices → created=%d, 409=%d, other=%d; invoice_source rows=%d",
+		N, created, conflict, other, srcCount)
+}
+
+// TestStress_ConcurrentStorno (P0): N Stornos on one invoice must produce exactly
+// ONE counter-document — no phantom Guthaben from duplicate negative documents.
+func TestStress_ConcurrentStorno(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	chargeFor(t, h, pid, 100)
+	iv := createInvoice(t, h, pid)
+
+	const N = 10
+	var okc, conflict int64
+	var wg sync.WaitGroup
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodPost, "/api/invoices/"+strconv.FormatInt(iv.ID, 10)+"/cancel", nil)
+			req.SetPathValue("id", strconv.FormatInt(iv.ID, 10))
+			rec := httptest.NewRecorder()
+			h.CancelInvoice(rec, req)
+			switch rec.Code {
+			case http.StatusOK, http.StatusCreated:
+				atomic.AddInt64(&okc, 1)
+			case http.StatusConflict:
+				atomic.AddInt64(&conflict, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	var stornoCount int
+	_ = h.Pool.QueryRow(context.Background(), `SELECT count(*) FROM invoices WHERE cancels_id=$1`, iv.ID).Scan(&stornoCount)
+	if stornoCount != 1 {
+		t.Errorf("exactly ONE Storno counter-document expected, got %d", stornoCount)
+	}
+	if okc != 1 {
+		t.Errorf("exactly one Storno should succeed, got %d (409=%d)", okc, conflict)
+	}
+	t.Logf("[metrics] %d concurrent Storno → ok=%d, 409=%d; counter-docs=%d", N, okc, conflict, stornoCount)
+}
+
+// TestStress_ConcurrentAllocationSameItem (P0): N payments each trying to allocate
+// the SAME open charge must allocate it exactly once (uq_payalloc_ref); the losers
+// record their payment as Guthaben, never a duplicate allocation.
+func TestStress_ConcurrentAllocationSameItem(t *testing.T) {
+	h := testHandler(t)
+	pid := createIntegrationPerson(t, h)
+	cid := mkChargeP(t, h, pid, "AllocRace", 100, "2026-05-01")
+
+	const N = 15
+	var wg sync.WaitGroup
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			body, _ := json.Marshal(map[string]any{
+				"amount": 100, "method": "bar",
+				"allocations": []map[string]any{{"kind": "charge", "id": cid}},
+			})
+			req := httptest.NewRequest(http.MethodPost, "/api/persons/"+strconv.FormatInt(pid, 10)+"/payments", bytes.NewReader(body))
+			req.SetPathValue("id", strconv.FormatInt(pid, 10))
+			req.Header.Set("Content-Type", "application/json")
+			h.CreatePayment(httptest.NewRecorder(), req)
+		}()
+	}
+	wg.Wait()
+
+	var allocCount int
+	_ = h.Pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM payment_allocations WHERE kind='charge' AND ref_id=$1`, cid).Scan(&allocCount)
+	if allocCount != 1 {
+		t.Errorf("charge must be allocated exactly once across concurrent payments, got %d", allocCount)
+	}
+	t.Logf("[metrics] %d concurrent allocations of one charge → %d allocation row(s)", N, allocCount)
+}
+
 // --- Categories 1–4: extreme / hostile inputs (real analog) -----------------
 
 // TestStress_HostileInputs feeds malformed, oversized and out-of-range payloads to
