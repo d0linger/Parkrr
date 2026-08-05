@@ -38,14 +38,37 @@ func testHandler(t *testing.T) *Handler {
 }
 
 func cleanupPersons(t *testing.T, pool *pgxpool.Pool) {
-	// Invoices are ON DELETE RESTRICT (immutable records), so drop any test
-	// invoices before their persons; payments cascade with the person.
-	_, _ = pool.Exec(context.Background(),
-		`DELETE FROM invoices WHERE person_id IN (SELECT id FROM persons WHERE last_name = 'Integration')`)
-	if _, err := pool.Exec(context.Background(),
+	ctx := context.Background()
+	// Records of account are immutable (migration 034); teardown uses the purge
+	// escape hatch. Invoices are ON DELETE RESTRICT (immutable), so drop them
+	// before their persons; payments cascade with the person.
+	if err := purgeExec(ctx, pool,
+		`DELETE FROM invoices WHERE person_id IN (SELECT id FROM persons WHERE last_name = 'Integration')`); err != nil {
+		t.Logf("cleanup invoices: %v", err)
+	}
+	if err := purgeExec(ctx, pool,
 		`DELETE FROM persons WHERE last_name = 'Integration'`); err != nil {
 		t.Logf("cleanup: %v", err)
 	}
+}
+
+// purgeExec runs a teardown delete that the immutability triggers (migration 034)
+// would otherwise block, inside a transaction that sets the sanctioned escape
+// hatch (parkrr.purge). SET LOCAL scopes it to this tx, so cascaded deletes of
+// payments/invoice_items are permitted too. Test-only — the app never sets it.
+func purgeExec(ctx context.Context, pool *pgxpool.Pool, sql string, args ...any) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SET LOCAL parkrr.purge = 'on'`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, sql, args...); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func TestCreateAndListPerson(t *testing.T) {

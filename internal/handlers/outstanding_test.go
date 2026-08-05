@@ -45,7 +45,7 @@ func TestOutstandingByPersonMatchesStats(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		_, _ = pool.Exec(ctx, `DELETE FROM recurring_charges WHERE id=$1`, rcID)
-		_, _ = pool.Exec(ctx, `DELETE FROM persons WHERE id=$1`, personID)
+		_ = purgeExec(ctx, pool, `DELETE FROM persons WHERE id=$1`, personID)
 	})
 
 	h := New(pool)

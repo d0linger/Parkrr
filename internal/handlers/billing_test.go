@@ -622,7 +622,9 @@ func TestOverdueInvoices(t *testing.T) {
 	pid := createIntegrationPerson(t, h)
 	chargeFor(t, h, pid, 100)
 	iv := createInvoice(t, h, pid)
-	if _, err := h.Pool.Exec(t.Context(), `UPDATE invoices SET due_on = CURRENT_DATE - 5 WHERE id=$1`, iv.ID); err != nil {
+	// Backdate the due date to simulate an overdue invoice. due_on is an immutable
+	// document field (migration 034), so this test-only manipulation uses purge.
+	if err := purgeExec(t.Context(), h.Pool, `UPDATE invoices SET due_on = CURRENT_DATE - 5 WHERE id=$1`, iv.ID); err != nil {
 		t.Fatalf("set due: %v", err)
 	}
 	list := func() *overdueInvoice {

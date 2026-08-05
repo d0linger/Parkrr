@@ -54,7 +54,7 @@ func TestOverviewTopOutstanding(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		_, _ = pool.Exec(ctx, `DELETE FROM vehicles WHERE id=$1`, vehID)
-		_, _ = pool.Exec(ctx, `DELETE FROM persons WHERE id=$1`, personID)
+		_ = purgeExec(ctx, pool, `DELETE FROM persons WHERE id=$1`, personID)
 		_, _ = pool.Exec(ctx, `DELETE FROM categories WHERE id=$1`, catID)
 	})
 

@@ -123,6 +123,59 @@ func TestDeletePersonWithPaymentBlocked(t *testing.T) {
 	}
 }
 
+// TestInvoiceDocumentIsImmutable (audit C3 / BAO §131): the database itself
+// rejects tampering with an issued invoice's document fields and rejects
+// deleting it, while the sanctioned settlement update (paid_amount) still works.
+func TestInvoiceDocumentIsImmutable(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	chargeFor(t, h, pid, 100)
+	iv := createInvoice(t, h, pid)
+	ctx := context.Background()
+
+	if _, err := h.Pool.Exec(ctx, `UPDATE invoices SET total = total + 1 WHERE id=$1`, iv.ID); err == nil {
+		t.Errorf("immutability trigger must reject changing an invoice's total (BAO §131)")
+	}
+	if _, err := h.Pool.Exec(ctx, `DELETE FROM invoices WHERE id=$1`, iv.ID); err == nil {
+		t.Errorf("immutability trigger must reject deleting an invoice (BAO §132: Storno, not delete)")
+	}
+	// The sanctioned settlement bookkeeping is still allowed.
+	if _, err := h.Pool.Exec(ctx, `UPDATE invoices SET paid_amount = 5 WHERE id=$1`, iv.ID); err != nil {
+		t.Errorf("settlement update (paid_amount) must be allowed, got %v", err)
+	}
+}
+
+// TestPaymentImmutableExceptReversal (audit C3): a booked payment's amount cannot
+// be altered and it cannot be deleted, but flagging it reversed is permitted.
+func TestPaymentImmutableExceptReversal(t *testing.T) {
+	h := testHandler(t)
+	pid := createIntegrationPerson(t, h)
+	pbody, _ := json.Marshal(map[string]any{"amount": 50, "method": "bar"})
+	preq := httptest.NewRequest(http.MethodPost, "/api/persons/"+strconv.FormatInt(pid, 10)+"/payments", bytes.NewReader(pbody))
+	preq.SetPathValue("id", strconv.FormatInt(pid, 10))
+	preq.Header.Set("Content-Type", "application/json")
+	prec := httptest.NewRecorder()
+	h.CreatePayment(prec, preq)
+	if prec.Code != http.StatusCreated {
+		t.Fatalf("payment: %d %s", prec.Code, prec.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(prec.Body.Bytes(), &resp)
+	payID := int64(resp["id"].(float64))
+	ctx := context.Background()
+
+	if _, err := h.Pool.Exec(ctx, `UPDATE payments SET amount = amount + 1 WHERE id=$1`, payID); err == nil {
+		t.Errorf("immutability trigger must reject changing a payment's amount (BAO §131)")
+	}
+	if _, err := h.Pool.Exec(ctx, `DELETE FROM payments WHERE id=$1`, payID); err == nil {
+		t.Errorf("immutability trigger must reject deleting a payment (reverse it instead)")
+	}
+	if _, err := h.Pool.Exec(ctx, `UPDATE payments SET reversed=true, reversed_at=now() WHERE id=$1`, payID); err != nil {
+		t.Errorf("reversal (reversed flag) must be allowed, got %v", err)
+	}
+}
+
 // TestInvoiceHasLeistungszeitraum (audit C1 / §11 Abs 1 Z 4): an issued invoice
 // must carry a service period (Leistungszeitraum) for the printed document.
 func TestInvoiceHasLeistungszeitraum(t *testing.T) {
