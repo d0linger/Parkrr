@@ -15,16 +15,16 @@ package handlers
 // match the API-wide error strings). Callers emit it via writeError or by
 // returning the message string, per each handler's existing style.
 const (
-	maxUsernameLen = 100
-	maxNameLen     = 100
-	maxEmailLen    = 255
-	maxNoteLen     = 2000
-	maxPhoneLen    = 50
-	maxAddressLen  = 500
-	maxTOTPCodeLen = 20
-	minPasswordLen = 8
-	maxPasswordLen = 72
-	maxCronLen     = 100
+	maxUsernameLen  = 100
+	maxNameLen      = 100
+	maxEmailLen     = 255
+	maxNoteLen      = 2000
+	maxPhoneLen     = 50
+	maxAddressLen   = 500
+	maxTOTPCodeLen  = 20
+	minPasswordLen  = 8
+	maxPasswordLen  = 72
+	maxCronLen      = 100
 	maxBackupKeyLen = 100
 )
 
