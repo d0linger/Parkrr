@@ -499,6 +499,20 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 	if !ensureVehicleWritable(w, archived, scanErr) {
 		return
 	}
+	// A vehicle already billed by an active invoice is settled through that invoice.
+	// Marking it globally "bezahlt" would record no payment (it's excluded from
+	// openOwedItems) yet — via the per-period model — suppress ALL its future rent:
+	// silent lost revenue. Block the slider; settle via the invoice instead.
+	if req.Paid && !curPaid {
+		var invoiced bool
+		_ = h.Pool.QueryRow(r.Context(),
+			`SELECT EXISTS(SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+			   WHERE s.kind='vehicle' AND s.ref_id=$1 AND NOT i.canceled)`, id).Scan(&invoiced)
+		if invoiced {
+			writeError(w, http.StatusConflict, "Fahrzeug ist bereits fakturiert – über die Rechnung begleichen")
+			return
+		}
+	}
 	// P2.3: keep the money in step — record the auto-payment while still open (so
 	// its amount is visible in openOwedItems), then flip the flag.
 	if req.Paid && !curPaid {

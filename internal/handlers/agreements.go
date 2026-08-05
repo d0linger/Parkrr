@@ -684,8 +684,8 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "period_key is required")
 		return
 	}
-	if req.Amount != nil && *req.Amount < 0 {
-		writeError(w, http.StatusBadRequest, "amount must not be negative")
+	if req.Amount != nil && (*req.Amount < 0 || *req.Amount > maxMoneyAmount) {
+		writeError(w, http.StatusBadRequest, "amount is out of range")
 		return
 	}
 	tx, err := h.Pool.Begin(r.Context())

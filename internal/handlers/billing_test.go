@@ -443,6 +443,30 @@ func TestSliderInertOnInvoicedPosition(t *testing.T) {
 	}
 }
 
+// TestFractionalQuantityChargeNoPhantomCredit (audit Math-D1): a charge with a
+// fractional quantity must round the SAME way in the balance as on the invoice, so
+// paying the invoice in full leaves no phantom Guthaben.
+func TestFractionalQuantityChargeNoPhantomCredit(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	// 33.33 × 1.5 = 49.995 → line rounds to 50.00 on the invoice AND in the balance.
+	body, _ := json.Marshal(map[string]any{"person_id": pid, "description": "Stunden", "amount": 33.33, "quantity": 1.5, "charged_on": "2026-05-01"})
+	rec := httptest.NewRecorder()
+	h.CreateCharge(rec, httptest.NewRequest(http.MethodPost, "/api/charges", bytes.NewReader(body)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("charge: %d %s", rec.Code, rec.Body.String())
+	}
+	iv := createInvoice(t, h, pid)
+	payInvoices(t, h, pid, map[string]any{
+		"amount": iv.Total, "method": "bar",
+		"allocations": []map[string]any{{"invoice_id": iv.ID, "amount": iv.Total}},
+	})
+	if s := personStatsT(t, h, pid); s.Credit > 0.005 || math.Abs(s.Balance) > 0.005 {
+		t.Errorf("fractional-qty charge paid in full must net to 0 with no phantom Guthaben, got balance=%.2f credit=%.2f", s.Balance, s.Credit)
+	}
+}
+
 // TestPayInvoicesRespectsAutoAndZeroAlloc (#13): a pay-invoices call with auto off
 // and no explicit selection books pure Guthaben (settles nothing); an explicit
 // allocation of 0 to an invoice must not pay it in full.

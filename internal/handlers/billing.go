@@ -20,6 +20,12 @@ import (
 // issuing a duplicate counter-document.
 var errAlreadyCanceled = errors.New("invoice already canceled")
 
+// complianceError carries a §11-gate message from inside the CreateInvoice tx so
+// the handler can roll back (restoring the number) and answer 422 with the reason.
+type complianceError struct{ msg string }
+
+func (e *complianceError) Error() string { return e.msg }
+
 // billingSettings is the GUI-editable invoicing configuration (one row, id=1).
 // Austria: kleinunternehmer => § 6 Abs 1 Z 27 UStG (no USt); otherwise ust_rate
 // (20 / 13 / 10) is shown. next_invoice_no drives the gapless invoice number.
@@ -423,7 +429,7 @@ func (h *Handler) lockedPositions(ctx context.Context, personID int64) (map[stri
 // invoiceComplianceError checks the §11 UStG (AT) mandatory invoice fields and
 // returns a non-empty message naming what's missing, so an incomplete/non-compliant
 // invoice is never issued (GoBD/BAO: Richtigkeit & Vollständigkeit).
-func invoiceComplianceError(s billingSettings, buyerName string) string {
+func invoiceComplianceError(s billingSettings, buyerName, buyerAddress string, grossTotal float64) string {
 	var missing []string
 	if strings.TrimSpace(s.SellerName) == "" {
 		missing = append(missing, "Name des Ausstellers")
@@ -433,6 +439,11 @@ func invoiceComplianceError(s billingSettings, buyerName string) string {
 	}
 	if strings.TrimSpace(buyerName) == "" {
 		missing = append(missing, "Name des Leistungsempfängers")
+	}
+	// § 11 Abs 1: over the €400 Kleinbetragsrechnung threshold the recipient's
+	// address is mandatory too (below it, name alone suffices — § 11 Abs 6).
+	if grossTotal > 400 && strings.TrimSpace(buyerAddress) == "" {
+		missing = append(missing, "Anschrift des Leistungsempfängers (> 400 € brutto)")
 	}
 	if !s.Kleinunternehmer {
 		if strings.TrimSpace(s.SellerUID) == "" {
@@ -490,7 +501,8 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not load billing settings")
 		return
 	}
-	if msg := invoiceComplianceError(settings, trim(person.First+" "+person.Last)); msg != "" {
+	buyerName := trim(person.First + " " + person.Last)
+	if msg := invoiceComplianceError(settings, buyerName, person.Address, 0); msg != "" {
 		writeError(w, http.StatusUnprocessableEntity, msg)
 		return
 	}
@@ -525,6 +537,14 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 		}
 		total := round2(subtotal + tax)
 
+		// Re-run the §11 gate INSIDE the tx against the FOR UPDATE snapshot (settings
+		// can't change under us) and now with the real gross total (the > 400 €
+		// recipient-address rule). A failure rolls the whole tx back, so the number
+		// bumped above is restored — no burned number, no non-compliant document.
+		if msg := invoiceComplianceError(s, buyerName, person.Address, total); msg != "" {
+			return &complianceError{msg: msg}
+		}
+
 		seller := map[string]any{"name": s.SellerName, "address": s.SellerAddress, "uid": s.SellerUID,
 			"iban": s.IBAN, "bic": s.BIC, "footer": s.FooterNote}
 		buyer := map[string]any{"name": trim(person.First + " " + person.Last), "address": person.Address}
@@ -532,11 +552,11 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 		buyerJSON, _ := json.Marshal(buyer)
 
 		issued := time.Now()
-		var due *time.Time
-		if s.PaymentTermsDays > 0 {
-			d := issued.AddDate(0, 0, s.PaymentTermsDays)
-			due = &d
-		}
+		// Terms of 0 mean "sofort fällig" — due on the issue date, so it becomes
+		// overdue immediately (a nil due_on would instead hide it from Mahnwesen
+		// forever, the opposite of the intent).
+		d := issued.AddDate(0, 0, s.PaymentTermsDays)
+		due := &d
 
 		var invID int64
 		if err := tx.QueryRow(r.Context(),
@@ -572,6 +592,11 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if txErr != nil {
+		var ce *complianceError
+		if errors.As(txErr, &ce) {
+			writeError(w, http.StatusUnprocessableEntity, ce.msg)
+			return
+		}
 		// A concurrent CreateInvoice for the same person raced us and already billed
 		// one of these positions (uq_invoice_source_ref_period). The tx rolled back —
 		// no double-bill, no burned number — so ask the caller to reload and retry.

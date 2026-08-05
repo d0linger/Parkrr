@@ -507,6 +507,9 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 		amount    float64
 	}
 	deleted := false
+	var delAmt float64
+	var delMethod string
+	var delOn time.Time
 	txErr := pgx.BeginFunc(ctx, h.Pool, func(tx pgx.Tx) error {
 		// Position toggles this payment stamped, and invoice allocations it funded.
 		var refs []ref
@@ -544,12 +547,16 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
-		ct, err := tx.Exec(ctx, `DELETE FROM payments WHERE id=$1`, id) // cascades allocations + invoice_payments
-		if err != nil {
+		// Capture the money-in details as we remove it, so the audit trail records
+		// exactly what was reverted (amount/method/date) — BAO: a booked payment must
+		// not vanish without a trace. Cascades allocations + invoice_payments.
+		if err := tx.QueryRow(ctx,
+			`DELETE FROM payments WHERE id=$1 RETURNING amount, method, paid_on`, id).
+			Scan(&delAmt, &delMethod, &delOn); err != nil {
+			if err == pgx.ErrNoRows {
+				return errPaymentNotFound
+			}
 			return err
-		}
-		if ct.RowsAffected() == 0 {
-			return errPaymentNotFound
 		}
 		deleted = true
 		// Un-stamp positions no longer covered by any payment.
@@ -590,7 +597,9 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not delete payment")
 		return
 	}
-	h.audit(r, "delete", "payment", id, "deleted payment (reverted stamps + invoice allocations)")
+	h.audit(r, "delete", "payment", id, fmt.Sprintf(
+		"Zahlung gelöscht: %.2f € (%s, %s) – Stempel & Rechnungszuordnungen zurückgesetzt",
+		delAmt, delMethod, delOn.Format("2006-01-02")))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 

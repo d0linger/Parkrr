@@ -330,8 +330,9 @@ func TestPersonWidePauschaleNoDoubleBill(t *testing.T) {
 }
 
 // TestVehicleSliderInertAfterInvoicing (#3): once a vehicle has been invoiced,
-// its "bezahlt" slider must not mint an auto-payment on top of the open invoice —
-// the invoiced vehicle drops off the manual money path (settle via the invoice).
+// its "bezahlt" slider is REJECTED (409) — settle via the invoice. (Audit W#1: the
+// old behavior silently flipped vehicles.paid=true while recording no payment,
+// which then suppressed all future rent = lost revenue. The guard blocks it.)
 func TestVehicleSliderInertAfterInvoicing(t *testing.T) {
 	h := testHandler(t)
 	compliantSeller(t, h)
@@ -346,13 +347,13 @@ func TestVehicleSliderInertAfterInvoicing(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.MarkPaid(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("markpaid: %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("marking an invoiced vehicle paid must be rejected with 409, got %d %s", rec.Code, rec.Body.String())
 	}
+	// No payment recorded and the paid flag not flipped (no lost-revenue path).
 	after := personStatsT(t, h, pid)
 	if math.Abs(after.PaymentsTotal-before.PaymentsTotal) > 0.005 {
-		t.Errorf("slider must not record a payment for an invoiced vehicle: %.2f -> %.2f",
-			before.PaymentsTotal, after.PaymentsTotal)
+		t.Errorf("rejected slider must not record a payment: %.2f -> %.2f", before.PaymentsTotal, after.PaymentsTotal)
 	}
 }
 

@@ -70,7 +70,11 @@ func chargeSettled(agreements []models.FlatRatePeriod, vehicleID *int64, charged
 // portion — the whole total when chargeSettled reports it paid, otherwise 0. The
 // vehicle's stored paid flag is looked up in vehPaid.
 func chargeAmounts(agreements []models.FlatRatePeriod, vehPaid map[int64]bool, vid *int64, amount, qty float64, chargedOn time.Time, ownPaid bool) (total, paid float64) {
-	total = amount * qty
+	// Round each charge's line total to the cent, exactly as the invoice and the
+	// payment path do (round2(amount*qty)). Summing the raw product here instead
+	// would drift by sub-cents for fractional quantities and mint a phantom
+	// Guthaben once an invoice for those lines is paid in full.
+	total = round2(amount * qty)
 	vp := false
 	if vid != nil {
 		vp = vehPaid[*vid]

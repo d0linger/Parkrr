@@ -424,9 +424,10 @@ func (h *Handler) SetRecurringChargePeriodPaid(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	// A fixed partial payment must be positive; a whole-period prepayment omits it.
-	if req.Paid && req.Amount != nil && *req.Amount <= 0 {
-		writeError(w, http.StatusBadRequest, "amount must be positive")
+	// A fixed partial payment must be positive and in range; a whole-period
+	// prepayment omits it.
+	if req.Paid && req.Amount != nil && (*req.Amount <= 0 || *req.Amount > maxMoneyAmount) {
+		writeError(w, http.StatusBadRequest, "amount is out of range")
 		return
 	}
 	rc, err := h.getRecurring(r.Context(), id)
