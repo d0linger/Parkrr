@@ -552,9 +552,9 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 		buyerJSON, _ := json.Marshal(buyer)
 
 		issued := time.Now()
-		// Terms of 0 mean "sofort fällig" — due on the issue date, so it becomes
-		// overdue immediately (a nil due_on would instead hide it from Mahnwesen
-		// forever, the opposite of the intent).
+		// Terms of 0 mean "sofort fällig" — due on the issue date (overdue the next
+		// day). A nil due_on would instead hide it from Mahnwesen forever, so always
+		// setting it is the fix.
 		d := issued.AddDate(0, 0, s.PaymentTermsDays)
 		due := &d
 

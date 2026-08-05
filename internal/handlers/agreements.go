@@ -684,7 +684,9 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "period_key is required")
 		return
 	}
-	if req.Amount != nil && (*req.Amount < 0 || *req.Amount > maxMoneyAmount) {
+	// A set fixed partial must be positive and in range (a whole-period prepayment
+	// omits Amount entirely) — symmetric with the recurring path.
+	if req.Amount != nil && (*req.Amount <= 0 || *req.Amount > maxMoneyAmount) {
 		writeError(w, http.StatusBadRequest, "amount is out of range")
 		return
 	}

@@ -242,6 +242,7 @@ func (h *Handler) chargeChartData(ctx context.Context, personID int64, year int,
 		if err := rows.Scan(&chargedOn, &s); err != nil {
 			return nil, nil, err
 		}
+		s = round2(s) // per-line cent rounding, consistent with the balance/invoice
 		yearly[chargedOn.Year()] += s
 		if chargedOn.Year() == year {
 			monthly[int(chargedOn.Month())-1] += s

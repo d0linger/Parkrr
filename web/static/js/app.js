@@ -1075,9 +1075,10 @@
 
         // Zahlungen (recorded money-in). A dedicated log + Kontoauszug, separate
         // from the per-item "bezahlt" toggle above (which drives the Saldo).
+        const activePayments = payments.filter((p) => !p.reversed).length; // count excludes storniert, like the money figures
         const pz = el('div', { class: 'page-head section-head' },
             el('div', { class: 'sec-group' }, el('h3', { class: 'sec-eyebrow' }, 'Zahlungen'),
-                payments.length ? el('span', { class: 'sec-count' }, payments.length) : null));
+                activePayments ? el('span', { class: 'sec-count' }, activePayments) : null));
         if (canBill()) pz.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => paymentForm(id, stats) }, '+ Zahlung'));
         page.append(pz);
         const kontoCard = el('div', { class: 'card konto' },

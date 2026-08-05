@@ -505,9 +505,14 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 	// silent lost revenue. Block the slider; settle via the invoice instead.
 	if req.Paid && !curPaid {
 		var invoiced bool
-		_ = h.Pool.QueryRow(r.Context(),
+		// Fail CLOSED: a query error must not skip the guard (that would re-open the
+		// silent lost-revenue path the guard exists to prevent).
+		if err := h.Pool.QueryRow(r.Context(),
 			`SELECT EXISTS(SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
-			   WHERE s.kind='vehicle' AND s.ref_id=$1 AND NOT i.canceled)`, id).Scan(&invoiced)
+			   WHERE s.kind='vehicle' AND s.ref_id=$1 AND NOT i.canceled)`, id).Scan(&invoiced); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not verify invoice status")
+			return
+		}
 		if invoiced {
 			writeError(w, http.StatusConflict, "Fahrzeug ist bereits fakturiert – über die Rechnung begleichen")
 			return
