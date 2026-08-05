@@ -440,8 +440,11 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 			`UPDATE vehicles SET status=$1, end_date=COALESCE(end_date, CURRENT_DATE), updated_at=now() WHERE id=$2`,
 			req.Status, id)
 	default:
+		// stored / reserved re-open storage: clear any end_date left by a prior
+		// collected/cancelled, otherwise CostInRange stays capped at the stale date
+		// and the (now active-looking) vehicle silently accrues nothing.
 		_, _ = h.Pool.Exec(r.Context(),
-			`UPDATE vehicles SET status=$1, updated_at=now() WHERE id=$2`, req.Status, id)
+			`UPDATE vehicles SET status=$1, end_date=NULL, updated_at=now() WHERE id=$2`, req.Status, id)
 	}
 	h.recordStatus(r, id, oldStatus, req.Status, trim(req.Note))
 	h.audit(r, "update", "vehicle", id, "Status "+h.vehicleDesc(r, id)+": "+oldStatus+" → "+req.Status)
@@ -543,7 +546,12 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !req.Paid && curPaid {
-		_ = h.syncTogglePayment(r, "vehicle", id, personID, false)
+		// Don't swallow this: if removing the auto-payment fails the flag is already
+		// open, so a discarded error leaves a phantom money-in inflating the balance.
+		if err := h.syncTogglePayment(r, "vehicle", id, personID, false); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not reverse payment")
+			return
+		}
 	}
 	label := "offen"
 	if req.Paid {

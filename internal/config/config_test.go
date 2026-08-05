@@ -20,8 +20,8 @@ func TestLoadDefaults(t *testing.T) {
 	if !cfg.SecureCookies {
 		t.Error("SecureCookies should default to true (secure-by-default)")
 	}
-	if cfg.AuditRetentionDays != 365 {
-		t.Errorf("AuditRetentionDays default: got %d want 365", cfg.AuditRetentionDays)
+	if cfg.AuditRetentionDays != 2555 {
+		t.Errorf("AuditRetentionDays default: got %d want 2555 (7-year BAO §132 window)", cfg.AuditRetentionDays)
 	}
 	if !cfg.CheckBreachedPasswords {
 		t.Error("CheckBreachedPasswords should default to true")

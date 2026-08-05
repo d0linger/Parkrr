@@ -331,6 +331,19 @@ func (h *Handler) UpdateRecurringCharge(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, badMsg)
 		return
 	}
+	// Once a period of this charge is invoiced, its billing-defining fields are
+	// frozen: changing period/start/amount would desync the period-keyed
+	// invoice_source lock (re-billing an already-invoiced span) or make the balance
+	// disagree with the issued document. Description/vehicle/end_date stay editable.
+	if period != existing.Period || !start.Equal(existing.StartDate) || amount != existing.Amount {
+		if inv, ierr := h.refInvoiced(r.Context(), "recurring", id); ierr != nil {
+			writeError(w, http.StatusInternalServerError, "could not check invoices")
+			return
+		} else if inv {
+			writeError(w, http.StatusConflict, "Nebenkosten sind fakturiert – Betrag/Zeitraum nicht änderbar (Storno über die Rechnung)")
+			return
+		}
+	}
 	ct, err := h.Pool.Exec(r.Context(),
 		`UPDATE recurring_charges SET description=$1, amount=$2, period=$3, start_date=$4, end_date=$5,
 		        vehicle_id=$6,
@@ -360,6 +373,15 @@ func (h *Handler) DeleteRecurringCharge(w http.ResponseWriter, r *http.Request) 
 	id, ok := pathID(r)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	// An invoiced recurring charge must not be deleted: it would orphan the
+	// invoice_source lock and sever the invoice→source trail (BAO reconstruction).
+	if inv, err := h.refInvoiced(r.Context(), "recurring", id); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not check invoices")
+		return
+	} else if inv {
+		writeError(w, http.StatusConflict, "Nebenkosten sind fakturiert – nicht löschbar (Storno über die Rechnung)")
 		return
 	}
 	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM recurring_charges WHERE id=$1`, id)

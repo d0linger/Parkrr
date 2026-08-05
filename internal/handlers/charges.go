@@ -449,7 +449,12 @@ func (h *Handler) SetChargePaid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !req.Paid && curPaid {
-		_ = h.syncTogglePayment(r, "charge", id, personID, false)
+		// Don't swallow: a discarded error would leave a phantom auto-payment while
+		// the charge shows open, inflating the balance.
+		if err := h.syncTogglePayment(r, "charge", id, personID, false); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not reverse payment")
+			return
+		}
 	}
 	verb := "charge marked open"
 	if req.Paid {

@@ -681,12 +681,14 @@ func (h *Handler) CancelInvoice(w http.ResponseWriter, r *http.Request) {
 		klein, canceled               bool
 		sellerJSON, buyerJSON         []byte
 		cancelsID                     *int64
+		leistungFrom, leistungTo      *time.Time
 	}
 	if err := h.Pool.QueryRow(r.Context(),
 		`SELECT number, person_id, subtotal, ust_rate, tax_amount, total, kleinunternehmer,
-		        seller_snapshot, buyer_snapshot, canceled, cancels_id FROM invoices WHERE id=$1`, id,
+		        seller_snapshot, buyer_snapshot, canceled, cancels_id, leistung_from, leistung_to
+		   FROM invoices WHERE id=$1`, id,
 	).Scan(&o.number, &o.personID, &o.subtotal, &o.ustRate, &o.tax, &o.total, &o.klein,
-		&o.sellerJSON, &o.buyerJSON, &o.canceled, &o.cancelsID); err != nil {
+		&o.sellerJSON, &o.buyerJSON, &o.canceled, &o.cancelsID, &o.leistungFrom, &o.leistungTo); err != nil {
 		writeError(w, http.StatusNotFound, "invoice not found")
 		return
 	}
@@ -746,10 +748,12 @@ func (h *Handler) CancelInvoice(w http.ResponseWriter, r *http.Request) {
 		var stornoID int64
 		if err := tx.QueryRow(r.Context(),
 			`INSERT INTO invoices (number, person_id, issued_on, subtotal, ust_rate, tax_amount, total,
-			        kleinunternehmer, seller_snapshot, buyer_snapshot, note, cancels_id, created_by)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+			        kleinunternehmer, seller_snapshot, buyer_snapshot, note, cancels_id, created_by,
+			        leistung_from, leistung_to)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
 			number, o.personID, issued, -o.subtotal, o.ustRate, -o.tax, -o.total, o.klein,
 			string(o.sellerJSON), string(o.buyerJSON), note, id, createdBy,
+			o.leistungFrom, o.leistungTo,
 		).Scan(&stornoID); err != nil {
 			return err
 		}

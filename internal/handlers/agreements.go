@@ -213,11 +213,20 @@ func agreementSaveError(err error, fallback string) (string, int) {
 	if errors.Is(err, errNoCategory) {
 		return "tariff does not exist", http.StatusBadRequest
 	}
+	if errors.Is(err, errAgreementInvoiced) {
+		return "Pauschale ist fakturiert – Betrag/Zeitraum nicht änderbar (Storno über die Rechnung)", http.StatusConflict
+	}
 	if isForeignKeyViolation(err) {
 		return "person or vehicle does not exist", http.StatusBadRequest
 	}
 	return fallback, http.StatusInternalServerError
 }
+
+// errAgreementInvoiced: an edit tried to change the billing-defining fields
+// (period/start/amount) of a Pauschale that already has an invoiced period —
+// which would desync the period-keyed invoice_source lock or make the balance
+// disagree with the issued document.
+var errAgreementInvoiced = errors.New("agreement has an invoiced period")
 
 // parse validates the request and returns a partially-filled agreement (without
 // person id). VehicleIDs is normalised (deduplicated).
@@ -502,9 +511,23 @@ func (h *Handler) saveAgreement(r *http.Request, id, personID int64, a models.Fl
 		// never be counted by PaidCentsInRange. Clear them so the payment state
 		// is visibly reset instead of silently uncounted.
 		var oldPeriod string
+		var oldStart time.Time
+		var oldAmount float64
 		if err := tx.QueryRow(ctx,
-			`SELECT period FROM flat_rate_periods WHERE id=$1 FOR UPDATE`, id).Scan(&oldPeriod); err != nil {
+			`SELECT period, start_date, amount FROM flat_rate_periods WHERE id=$1 FOR UPDATE`, id).
+			Scan(&oldPeriod, &oldStart, &oldAmount); err != nil {
 			return err
+		}
+		// Freeze the billing-defining fields once a period is invoiced: changing
+		// period/start/amount would desync the period-keyed invoice_source lock
+		// (re-billing an invoiced span) or make the balance disagree with the
+		// issued document. Note/vehicles/end_date stay editable.
+		if oldPeriod != a.Period || !oldStart.Equal(a.StartDate) || oldAmount != a.Amount {
+			if inv, ierr := h.refInvoiced(ctx, "agreement", id); ierr != nil {
+				return ierr
+			} else if inv {
+				return errAgreementInvoiced
+			}
 		}
 		if oldPeriod != a.Period {
 			if _, err := tx.Exec(ctx, `DELETE FROM flat_rate_period_payments WHERE period_id=$1`, id); err != nil {
@@ -547,6 +570,16 @@ func (h *Handler) DeleteAgreement(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	// An invoiced Pauschale must not be deleted: its invoice_source lock has no FK
+	// to this row, so deleting it orphans the lock and severs the invoice→source
+	// trail (BAO reconstruction). Mirror DeleteVehicle.
+	if inv, err := h.refInvoiced(r.Context(), "agreement", id); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not check invoices")
+		return
+	} else if inv {
+		writeError(w, http.StatusConflict, "Pauschale ist fakturiert – nicht löschbar (Storno über die Rechnung)")
 		return
 	}
 	// Optionally delete the covered vehicles too; otherwise they are only unbound

@@ -142,6 +142,18 @@ func periodPaidUnlocked(p models.FlatRatePeriod, kind string, refID int64, now t
 	var paid float64
 	for _, per := range p.ElapsedPeriodsDetailed(now) {
 		if locked[lockKey(kind, refID, per.Key)] {
+			// The period was invoiced. A FULLY-paid period is never invoiced (its
+			// open amount is ≤0, so no lock), so a locked period can only carry a
+			// fixed PARTIAL: the invoice billed cost − PaidFixed, and that off-book
+			// partial is still real money. Keep crediting it (capped at cost), else
+			// it becomes phantom debt equal to the partial once the invoice is paid.
+			if fx, ok := p.PaidFixed[per.Key]; ok {
+				if fx < per.Cost {
+					paid += fx
+				} else {
+					paid += per.Cost
+				}
+			}
 			continue
 		}
 		switch {
