@@ -104,6 +104,26 @@ func (h *Handler) personChargeSums(ctx context.Context, personID int64, agreemen
 	return total, paid, rows.Err()
 }
 
+// personPeriodPaid sums money settled through the per-period Pauschale / recurring
+// mechanism (agreement + recurring paid_periods / paid_fixed). Unlike vehicle and
+// one-off-charge toggles — which record a P2.3 auto-payment — this money is NOT in
+// the payments table, so the payment-based balance must subtract it explicitly.
+// Otherwise a paid period is owed forever (the invoice already omits it) — an
+// uncollectable phantom debt. Vehicle rent settled via v.Paid is deliberately
+// excluded here: it already has a payment row and would double-count.
+func personPeriodPaid(agreements []models.FlatRatePeriod, recurs []models.RecurringCharge, until time.Time) float64 {
+	var paid float64
+	for i := range agreements {
+		a := &agreements[i]
+		paid += float64(a.PaidCentsInRange(a.StartDate, until)) / 100
+	}
+	for i := range recurs {
+		p := recurs[i].AsPeriod()
+		paid += float64(p.PaidCentsInRange(p.StartDate, until)) / 100
+	}
+	return round2(paid)
+}
+
 // vehiclePaidMap indexes vehicles by id -> stored paid flag.
 func vehiclePaidMap(vehicles []models.Vehicle) map[int64]bool {
 	m := make(map[int64]bool, len(vehicles))
@@ -258,7 +278,8 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	// P2.2 — one money truth: paid = money actually received; Balance = owed −
 	// received (the per-item toggles are a manual convenience, not the money).
 	resp.TotalPaid = resp.PaymentsTotal
-	resp.Balance = round2(resp.TotalAccrued + resp.TotalCharges + invoicedTax - resp.PaymentsTotal)
+	resp.Balance = round2(resp.TotalAccrued + resp.TotalCharges + invoicedTax -
+		resp.PaymentsTotal - personPeriodPaid(agreements, recurs, until))
 	// Guthaben = overpayment (negative balance), symmetric to Balance.
 	if resp.Credit = round2(-resp.Balance); resp.Credit < 0 {
 		resp.Credit = 0
@@ -408,7 +429,8 @@ func (h *Handler) outstandingByPerson(r *http.Request) (map[int64]float64, error
 	out := make(map[int64]float64, len(personIDs))
 	for pid := range personIDs {
 		tAcc, _ := personRent(agByPerson[pid], vehByPerson[pid], cats, time.Time{}, until)
-		owed := (tAcc + chargesByPerson[pid] + invoicedTaxByPerson[pid]) - paymentsByPerson[pid]
+		owed := (tAcc + chargesByPerson[pid] + invoicedTaxByPerson[pid]) - paymentsByPerson[pid] -
+			personPeriodPaid(agByPerson[pid], recurByPerson[pid], until)
 		out[pid] = round2(owed)
 	}
 	return out, nil
@@ -652,8 +674,10 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		for m := range resp.RevenueByMonth {
 			resp.RevenueByMonth[m] = round2(resp.RevenueByMonth[m] + pm[m])
 		}
-		// Open balance per person = owed (rent + charges + invoiced USt) − payments.
-		owed := (tAcc + chargesByPerson[pid] + invoicedTaxByPerson[pid]) - paymentsByPerson[pid]
+		// Open balance per person = owed (rent + charges + invoiced USt) − payments −
+		// per-period Pauschale/recurring settlement (not in the payments table).
+		owed := (tAcc + chargesByPerson[pid] + invoicedTaxByPerson[pid]) - paymentsByPerson[pid] -
+			personPeriodPaid(ag, recurByPerson[pid], until)
 		if owed > 0.005 {
 			name := personNames[pid]
 			if name == "" {

@@ -185,11 +185,11 @@ func (h *Handler) parseVehicleRequest(r *http.Request) (*parsedVehicle, error) {
 	if req.PersonID <= 0 || req.CategoryID <= 0 {
 		return nil, errors.New("person_id and category_id are required")
 	}
-	if req.CostOverride != nil && *req.CostOverride < 0 {
-		return nil, errors.New("cost_override must not be negative")
+	if req.CostOverride != nil && (*req.CostOverride < 0 || *req.CostOverride > maxMoneyAmount) {
+		return nil, errors.New("cost_override is out of range")
 	}
-	if req.Rate != nil && *req.Rate < 0 {
-		return nil, errors.New("rate must not be negative")
+	if req.Rate != nil && (*req.Rate < 0 || *req.Rate > maxMoneyAmount) {
+		return nil, errors.New("rate is out of range")
 	}
 
 	if !validNameLength(req.Label) {

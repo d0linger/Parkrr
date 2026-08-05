@@ -19,6 +19,11 @@ import (
 // with a clean 400 instead of a NUMERIC-overflow 500.
 const maxMoneyAmount = 1e9
 
+// maxQuantity bounds a charge's quantity, which is stored as NUMERIC(10,2)
+// (max ~99,999,999.99). A generous ceiling well under the column keeps a huge
+// quantity from overflowing to a 500.
+const maxQuantity = 1e6
+
 // payment is one recorded money-in entry (see migration 023_payments.sql).
 type payment struct {
 	ID        int64     `json:"id"`

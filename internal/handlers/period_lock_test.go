@@ -26,11 +26,18 @@ func mkAgreement(t *testing.T, h *Handler, pid int64, amount float64, period, st
 	if rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
 		t.Fatalf("create agreement: %d %s", rec.Code, rec.Body.String())
 	}
-	var out struct {
+	// CreateAgreement returns the person's full agreement list; take the newest id.
+	var list []struct {
 		ID int64 `json:"id"`
 	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &out)
-	return out.ID
+	_ = json.Unmarshal(rec.Body.Bytes(), &list)
+	var id int64
+	for _, a := range list {
+		if a.ID > id {
+			id = a.ID
+		}
+	}
+	return id
 }
 
 // firstOfMonthMonthsAgo returns the first day of the month n months before now,
@@ -80,6 +87,34 @@ func TestPauschaleBilledPerCompletedPeriodThenLocked(t *testing.T) {
 	h.CreateInvoice(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("re-invoicing locked periods must yield 400, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestPaidPauschalePeriodNotOwed (P1): marking a Pauschale period paid via the
+// per-period mechanism (flat_rate_period_payments — no payments row) must reduce
+// the payment-based balance. Before the fix the balance ignored it, so the period
+// showed as owed forever while the invoice already omitted it (uncollectable).
+func TestPaidPauschalePeriodNotOwed(t *testing.T) {
+	h := testHandler(t)
+	pid := createIntegrationPerson(t, h)
+	aid := mkAgreement(t, h, pid, 30, "monthly", firstOfMonthMonthsAgo(3).Format("2006-01-02"))
+
+	before := personStatsT(t, h, pid).Balance
+	key := firstOfMonthMonthsAgo(3).Format("2006-01") // an elapsed month
+	body, _ := json.Marshal(map[string]any{"period_key": key, "paid": true})
+	req := httptest.NewRequest(http.MethodPost, "/api/agreements/"+strconv.FormatInt(aid, 10)+"/period-paid", bytes.NewReader(body))
+	req.SetPathValue("id", strconv.FormatInt(aid, 10))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.SetAgreementPeriodPaid(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("period-paid: %d %s", rec.Code, rec.Body.String())
+	}
+
+	after := personStatsT(t, h, pid).Balance
+	if diff := before - after; math.Abs(diff-30) > 0.05 {
+		t.Errorf("paying one 30€ Pauschale period must drop the balance by 30 (no phantom debt); before=%.2f after=%.2f diff=%.2f",
+			before, after, diff)
 	}
 }
 

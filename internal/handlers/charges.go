@@ -266,7 +266,7 @@ func (h *Handler) validateCharge(ctx context.Context, req *chargeRequest) (time.
 	}
 	// Bound amount and line total so out-of-range input is a clean 400 rather than a
 	// NUMERIC(12,2) overflow 500 on insert.
-	if req.Amount < 0 || req.Amount > maxMoneyAmount || req.Quantity > maxMoneyAmount {
+	if req.Amount < 0 || req.Amount > maxMoneyAmount || req.Quantity > maxQuantity {
 		return time.Time{}, "amount or quantity is out of range", nil
 	}
 	if lt := req.Amount * req.Quantity; lt > maxMoneyAmount {

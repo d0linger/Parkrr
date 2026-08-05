@@ -460,6 +460,18 @@ func TestStress_HostileInputs(t *testing.T) {
 			},
 		},
 		{
+			id:      "CHARGE-overflow-quantity",
+			note:    "quantity 2e8 exceeds NUMERIC(10,2) column",
+			wantMax: 499,
+			handler: func() *httptest.ResponseRecorder {
+				body, _ := json.Marshal(map[string]any{"person_id": pid, "description": "QtyOverflow", "amount": 1, "quantity": 2e8, "charged_on": "2026-05-01"})
+				req := httptest.NewRequest(http.MethodPost, "/api/charges", bytes.NewReader(body))
+				rec := httptest.NewRecorder()
+				h.CreateCharge(rec, req)
+				return rec
+			},
+		},
+		{
 			id:      "BILLING-invalid-ust",
 			note:    "USt rate 19 (not in {20,13,10})",
 			wantMax: 499,

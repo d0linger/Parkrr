@@ -95,20 +95,27 @@ func (h *Handler) SaveBillingSettings(w http.ResponseWriter, r *http.Request) {
 	if in.PaymentTermsDays < 0 {
 		in.PaymentTermsDays = 0
 	}
-	// Never rewind the sequence below what's already been issued.
-	var cur int
-	_ = h.Pool.QueryRow(r.Context(), `SELECT next_invoice_no FROM billing_settings WHERE id=1`).Scan(&cur)
-	if in.NextInvoiceNo < cur {
-		in.NextInvoiceNo = cur
-	}
-	if _, err := h.Pool.Exec(r.Context(),
-		`UPDATE billing_settings SET seller_name=$1, seller_address=$2, seller_uid=$3,
-		        kleinunternehmer=$4, ust_rate=$5, invoice_prefix=$6, next_invoice_no=$7,
-		        number_pad=$8, iban=$9, bic=$10, payment_terms_days=$11, footer_note=$12
-		  WHERE id=1`,
-		in.SellerName, in.SellerAddress, in.SellerUID, in.Kleinunternehmer, in.UStRate,
-		in.InvoicePrefix, in.NextInvoiceNo, in.NumberPad, in.IBAN, in.BIC, in.PaymentTermsDays, in.FooterNote,
-	); err != nil {
+	// Read the current sequence and write under one FOR UPDATE lock (the same row
+	// CreateInvoice locks) so the no-rewind guard can't race a concurrently-issued
+	// number — and the read error is no longer swallowed.
+	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		var cur int
+		if err := tx.QueryRow(r.Context(), `SELECT next_invoice_no FROM billing_settings WHERE id=1 FOR UPDATE`).Scan(&cur); err != nil {
+			return err
+		}
+		if in.NextInvoiceNo < cur {
+			in.NextInvoiceNo = cur
+		}
+		_, err := tx.Exec(r.Context(),
+			`UPDATE billing_settings SET seller_name=$1, seller_address=$2, seller_uid=$3,
+			        kleinunternehmer=$4, ust_rate=$5, invoice_prefix=$6, next_invoice_no=$7,
+			        number_pad=$8, iban=$9, bic=$10, payment_terms_days=$11, footer_note=$12
+			  WHERE id=1`,
+			in.SellerName, in.SellerAddress, in.SellerUID, in.Kleinunternehmer, in.UStRate,
+			in.InvoicePrefix, in.NextInvoiceNo, in.NumberPad, in.IBAN, in.BIC, in.PaymentTermsDays, in.FooterNote)
+		return err
+	})
+	if txErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not save billing settings")
 		return
 	}
