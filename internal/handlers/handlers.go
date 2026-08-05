@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/preining/parkrr/internal/backup"
@@ -162,10 +163,45 @@ func pageParams(r *http.Request, defLimit, maxLimit int) (limit, offset int) {
 	return limit, offset
 }
 
+// execer is the subset of *pgxpool.Pool and pgx.Tx used to write an audit row,
+// so the row can be inserted either standalone (post-commit, best-effort) or
+// inside a money transaction (atomic with the mutation).
+type execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// actorFrom derives the acting user (id, name) from the request context, or
+// (0, "") when none is present (e.g. before login).
+func actorFrom(r *http.Request) (int64, string) {
+	if u, ok := auth.UserFrom(r.Context()); ok {
+		return u.ID, u.Username
+	}
+	return 0, ""
+}
+
 // audit writes an entry to the audit log, deriving the acting user from the
 // request context. Failures are ignored so auditing never breaks a request.
+//
+// This is the post-commit, best-effort path (separate connection). For money
+// mutations use auditTx / auditChangeTx inside the transaction so the trail is
+// atomic with the change (BAO §131) — a crash can never leave a booked change
+// without its audit row.
 func (h *Handler) audit(r *http.Request, action, entity string, id int64, summary string) {
 	h.auditChange(r, action, entity, id, summary, nil)
+}
+
+// auditTx writes an audit entry through q — pass the money transaction's pgx.Tx
+// so the row commits atomically with the mutation and rolls back with it. The
+// error is returned so the caller fails (and rolls back) the tx on an audit
+// write failure: a booked money change must not persist without its trail.
+func (h *Handler) auditTx(ctx context.Context, q execer, r *http.Request, action, entity string, id int64, summary string) error {
+	return h.auditChangeTx(ctx, q, r, action, entity, id, summary, nil)
+}
+
+// auditChangeTx is auditTx with per-field before/after values (diffFields).
+func (h *Handler) auditChangeTx(ctx context.Context, q execer, r *http.Request, action, entity string, id int64, summary string, changes any) error {
+	actorID, actorName := actorFrom(r)
+	return auditExec(ctx, q, actorID, actorName, action, entity, id, summary, changes)
 }
 
 // auditChange is like audit but also records per-field before/after values
@@ -188,6 +224,14 @@ func (h *Handler) auditAs(r *http.Request, actorID int64, actorName, action, ent
 }
 
 func (h *Handler) auditInsert(r *http.Request, actorID int64, actorName, action, entity string, id int64, summary string, changes any) {
+	// Best-effort, post-commit: never break a request on an audit failure.
+	_ = auditExec(r.Context(), h.Pool, actorID, actorName, action, entity, id, summary, changes)
+}
+
+// auditExec inserts one audit row through q (pool or tx) and returns the write
+// error. It is the single INSERT shared by the best-effort and transactional
+// paths, so the row shape stays identical either way.
+func auditExec(ctx context.Context, q execer, actorID int64, actorName, action, entity string, id int64, summary string, changes any) error {
 	var uid *int64
 	if actorID > 0 {
 		uid = &actorID
@@ -202,10 +246,11 @@ func (h *Handler) auditInsert(r *http.Request, actorID int64, actorName, action,
 			changesArg = string(b)
 		}
 	}
-	_, _ = h.Pool.Exec(r.Context(),
+	_, err := q.Exec(ctx,
 		`INSERT INTO audit_log (user_id, username, action, entity, entity_id, summary, changes)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		uid, actorName, action, entity, entID, summary, changesArg)
+	return err
 }
 
 // diffFields compares the JSON representations of old and new and returns the

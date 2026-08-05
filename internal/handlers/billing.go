@@ -117,39 +117,41 @@ func (h *Handler) SaveBillingSettings(w http.ResponseWriter, r *http.Request) {
 		if in.NextInvoiceNo < oldNext {
 			in.NextInvoiceNo = oldNext
 		}
-		_, err := tx.Exec(r.Context(),
+		if _, err := tx.Exec(r.Context(),
 			`UPDATE billing_settings SET seller_name=$1, seller_address=$2, seller_uid=$3,
 			        kleinunternehmer=$4, ust_rate=$5, invoice_prefix=$6, next_invoice_no=$7,
 			        number_pad=$8, iban=$9, bic=$10, payment_terms_days=$11, footer_note=$12
 			  WHERE id=1`,
 			in.SellerName, in.SellerAddress, in.SellerUID, in.Kleinunternehmer, in.UStRate,
-			in.InvoicePrefix, in.NextInvoiceNo, in.NumberPad, in.IBAN, in.BIC, in.PaymentTermsDays, in.FooterNote)
-		return err
+			in.InvoicePrefix, in.NextInvoiceNo, in.NumberPad, in.IBAN, in.BIC, in.PaymentTermsDays, in.FooterNote); err != nil {
+			return err
+		}
+		// Audit the §11- / number-integrity-critical changes with before→after so a UID,
+		// tax-rate, or deliberate invoice-number jump is reconstructable from the trail.
+		// Built and written inside the tx: the change and its trail commit together.
+		var chg []string
+		if oldUID != in.SellerUID {
+			chg = append(chg, fmt.Sprintf("UID %q→%q", oldUID, in.SellerUID))
+		}
+		if oldRate != in.UStRate {
+			chg = append(chg, fmt.Sprintf("USt %.0f%%→%.0f%%", oldRate, in.UStRate))
+		}
+		if oldKlein != in.Kleinunternehmer {
+			chg = append(chg, fmt.Sprintf("Kleinunternehmer %v→%v", oldKlein, in.Kleinunternehmer))
+		}
+		if in.NextInvoiceNo != oldNext {
+			chg = append(chg, fmt.Sprintf("Nummernkreis %d→%d", oldNext, in.NextInvoiceNo))
+		}
+		msg := "Rechnungs-Einstellungen geändert"
+		if len(chg) > 0 {
+			msg += ": " + strings.Join(chg, ", ")
+		}
+		return h.auditTx(r.Context(), tx, r, "update", "billing", 0, msg)
 	})
 	if txErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not save billing settings")
 		return
 	}
-	// Audit the §11- / number-integrity-critical changes with before→after so a UID,
-	// tax-rate, or deliberate invoice-number jump is reconstructable from the trail.
-	var chg []string
-	if oldUID != in.SellerUID {
-		chg = append(chg, fmt.Sprintf("UID %q→%q", oldUID, in.SellerUID))
-	}
-	if oldRate != in.UStRate {
-		chg = append(chg, fmt.Sprintf("USt %.0f%%→%.0f%%", oldRate, in.UStRate))
-	}
-	if oldKlein != in.Kleinunternehmer {
-		chg = append(chg, fmt.Sprintf("Kleinunternehmer %v→%v", oldKlein, in.Kleinunternehmer))
-	}
-	if in.NextInvoiceNo != oldNext {
-		chg = append(chg, fmt.Sprintf("Nummernkreis %d→%d", oldNext, in.NextInvoiceNo))
-	}
-	msg := "Rechnungs-Einstellungen geändert"
-	if len(chg) > 0 {
-		msg += ": " + strings.Join(chg, ", ")
-	}
-	h.audit(r, "update", "billing", 0, msg)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
 }
 
@@ -639,7 +641,9 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 			LeistungFrom: &lf, LeistungTo: &issued,
 			Subtotal: subtotal, UStRate: rate, TaxAmount: tax, Total: total,
 			Kleinunternehmer: s.Kleinunternehmer, Seller: seller, Buyer: buyer, Note: trim(req.Note)}
-		return nil
+		// Audit inside the tx: the immutable document and its trail commit together.
+		return h.auditTx(r.Context(), tx, r, "create", "invoice", invID,
+			"issued invoice "+number+" ("+fmt.Sprintf("%.2f €", total)+")")
 	})
 	if txErr != nil {
 		var ce *complianceError
@@ -657,7 +661,6 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create invoice")
 		return
 	}
-	h.audit(r, "create", "invoice", out.ID, "issued invoice "+out.Number+" ("+fmt.Sprintf("%.2f €", out.Total)+")")
 	writeJSON(w, http.StatusCreated, out)
 }
 
@@ -778,7 +781,14 @@ func (h *Handler) CancelInvoice(w http.ResponseWriter, r *http.Request) {
 		out = invoice{ID: stornoID, Number: number, PersonID: o.personID, IssuedOn: issued,
 			Subtotal: -o.subtotal, UStRate: o.ustRate, TaxAmount: -o.tax, Total: -o.total,
 			Kleinunternehmer: o.klein, Note: note, CancelsID: &id}
-		return nil
+		// Both trail rows commit with the Storno itself (atomic).
+		if err := h.auditTx(r.Context(), tx, r, "update", "invoice", id, "storniert – Gegenbeleg "+number); err != nil {
+			return err
+		}
+		// The counter-document is a distinct gapless-numbered Beleg — audit its issuance
+		// under its own id/number (it releases the original's payments to Guthaben).
+		return h.auditTx(r.Context(), tx, r, "create", "invoice", stornoID,
+			"Storno-Gegenbeleg "+number+" zu Rechnung "+o.number)
 	})
 	if txErr != nil {
 		if errors.Is(txErr, errAlreadyCanceled) {
@@ -788,10 +798,6 @@ func (h *Handler) CancelInvoice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not cancel invoice")
 		return
 	}
-	h.audit(r, "update", "invoice", id, "storniert – Gegenbeleg "+out.Number)
-	// The counter-document is a distinct gapless-numbered Beleg — audit its issuance
-	// under its own id/number (it releases the original's payments to Guthaben).
-	h.audit(r, "create", "invoice", out.ID, "Storno-Gegenbeleg "+out.Number+" zu Rechnung "+o.number)
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -934,7 +940,8 @@ func (h *Handler) PayInvoices(w http.ResponseWriter, r *http.Request) {
 		}
 		out.Allocated = round2(pr.Amount - remaining)
 		out.Unallocated = round2(remaining)
-		return nil
+		return h.auditTx(r.Context(), tx, r, "create", "payment", out.PaymentID,
+			fmt.Sprintf("Zahlung %.2f € auf %d Rechnung(en) (Rest %.2f € nicht zugeordnet)", pr.Amount, out.Invoices, out.Unallocated))
 	})
 	if txErr != nil {
 		if txErr == errInvoiceNotOpen {
@@ -944,8 +951,6 @@ func (h *Handler) PayInvoices(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not record payment")
 		return
 	}
-	h.audit(r, "create", "payment", out.PaymentID,
-		fmt.Sprintf("Zahlung %.2f € auf %d Rechnung(en) (Rest %.2f € nicht zugeordnet)", pr.Amount, out.Invoices, out.Unallocated))
 	writeJSON(w, http.StatusCreated, out)
 }
 

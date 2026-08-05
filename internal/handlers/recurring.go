@@ -491,16 +491,18 @@ func (h *Handler) SetRecurringChargePeriodPaid(w http.ResponseWriter, r *http.Re
 			}
 		}
 		fixedJSON, _ := json.Marshal(fixed)
-		_, err := tx.Exec(r.Context(),
+		if _, err := tx.Exec(r.Context(),
 			`UPDATE recurring_charges SET paid_periods=$1, paid_fixed=$2, updated_at=now() WHERE id=$3`,
-			periods, string(fixedJSON), id)
-		return err
+			periods, string(fixedJSON), id); err != nil {
+			return err
+		}
+		return h.auditTx(r.Context(), tx, r, "update", "recurring_charge", id,
+			"Nebenkosten-Periode "+req.PeriodKey+": "+periodPaidAuditState(req.Paid, req.Amount))
 	})
 	if txErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not update recurring charge")
 		return
 	}
-	h.audit(r, "update", "recurring_charge", id, "Nebenkosten-Periode "+req.PeriodKey+": "+periodPaidAuditState(req.Paid, req.Amount))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

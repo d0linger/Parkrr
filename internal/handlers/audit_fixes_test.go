@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"math"
 	"net/http"
@@ -10,6 +11,37 @@ import (
 	"testing"
 	"time"
 )
+
+// TestPaymentWritesAuditRowInTx (audit C7): the payment and its audit row are
+// written in one transaction, so a booked money mutation always carries its
+// trail (no orphaned change if the process dies right after the money commit).
+func TestPaymentWritesAuditRowInTx(t *testing.T) {
+	h := testHandler(t)
+	pid := createIntegrationPerson(t, h)
+	pbody, _ := json.Marshal(map[string]any{"amount": 40, "method": "bar"})
+	preq := httptest.NewRequest(http.MethodPost, "/api/persons/"+strconv.FormatInt(pid, 10)+"/payments", bytes.NewReader(pbody))
+	preq.SetPathValue("id", strconv.FormatInt(pid, 10))
+	preq.Header.Set("Content-Type", "application/json")
+	prec := httptest.NewRecorder()
+	h.CreatePayment(prec, preq)
+	if prec.Code != http.StatusCreated {
+		t.Fatalf("payment: %d %s", prec.Code, prec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(prec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	payID := int64(resp["id"].(float64))
+
+	var n int
+	if err := h.Pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM audit_log WHERE action='create' AND entity='payment' AND entity_id=$1`, payID).Scan(&n); err != nil {
+		t.Fatalf("query audit_log: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("a booked payment must write exactly one audit row (in-tx), got %d", n)
+	}
+}
 
 // TestCollectedTodayEqualsStoredToday: the accrued balance shown while a vehicle
 // is stored (counted through today) must equal the final balance after marking

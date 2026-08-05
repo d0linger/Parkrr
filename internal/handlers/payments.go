@@ -476,6 +476,17 @@ func (h *Handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 			}
 			settled, archive = n, arch
 		}
+		// Trail commits with the payment (atomic).
+		if err := h.auditTx(ctx, tx, r, "create", "payment", p.ID,
+			fmt.Sprintf("recorded payment %.2f € (%s)", p.Amount, p.Method)); err != nil {
+			return err
+		}
+		if settled > 0 {
+			if err := h.auditTx(ctx, tx, r, "update", "payment", p.ID,
+				fmt.Sprintf("stamped %d position(s) as paid", settled)); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if txErr != nil {
@@ -485,10 +496,6 @@ func (h *Handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusInternalServerError, "could not record payment")
 		return
-	}
-	h.audit(r, "create", "payment", p.ID, fmt.Sprintf("recorded payment %.2f € (%s)", p.Amount, p.Method))
-	if settled > 0 {
-		h.audit(r, "update", "payment", p.ID, fmt.Sprintf("stamped %d position(s) as paid", settled))
 	}
 	// Archive now-closed vehicles after the money is durably committed.
 	for _, vid := range archive {
@@ -613,7 +620,11 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		}
-		return nil
+		// Reversal trail commits with the reversal (atomic) — the retained-record
+		// Storno and its audit row are inseparable (BAO §131).
+		return h.auditTx(ctx, tx, r, "update", "payment", id, fmt.Sprintf(
+			"Zahlung storniert: %.2f € (%s, %s) – Datensatz bleibt erhalten, Zuordnungen zurückgesetzt",
+			delAmt, delMethod, delOn.Format("2006-01-02")))
 	})
 	if txErr == errPaymentNotFound || (txErr == nil && !deleted) {
 		writeError(w, http.StatusNotFound, "payment not found")
@@ -623,9 +634,6 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not delete payment")
 		return
 	}
-	h.audit(r, "update", "payment", id, fmt.Sprintf(
-		"Zahlung storniert: %.2f € (%s, %s) – Datensatz bleibt erhalten, Zuordnungen zurückgesetzt",
-		delAmt, delMethod, delOn.Format("2006-01-02")))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reversed"})
 }
 
@@ -736,14 +744,15 @@ func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
 			budget -= it.LineTotal
 			settled++
 		}
+		if settled > 0 {
+			return h.auditTx(ctx, tx, r, "update", "payment", 0,
+				fmt.Sprintf("applied Guthaben to %d open position(s)", settled))
+		}
 		return nil
 	})
 	if txErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not apply credit")
 		return
-	}
-	if settled > 0 {
-		h.audit(r, "update", "payment", 0, fmt.Sprintf("applied Guthaben to %d open position(s)", settled))
 	}
 	for _, vid := range archive {
 		h.autoArchiveIfClosed(r, vid)

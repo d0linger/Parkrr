@@ -775,11 +775,17 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
+	// Audit inside the tx, before commit: the paid-state change and its trail
+	// commit together (BAO §131).
+	if err := h.auditTx(r.Context(), tx, r, "update", "flatrate", id,
+		"Pauschale "+h.personLabel(r, a.PersonID)+" "+key+": "+periodPaidAuditState(req.Paid, req.Amount)); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update payment")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update payment")
 		return
 	}
-	h.audit(r, "update", "flatrate", id, "Pauschale "+h.personLabel(r, a.PersonID)+" "+key+": "+periodPaidAuditState(req.Paid, req.Amount))
 	// Settling the last open period may finish the agreement -> archive vehicles.
 	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), a.PersonID)
 	h.writeAgreements(w, r, a.PersonID)
