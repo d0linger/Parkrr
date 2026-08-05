@@ -321,7 +321,7 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	if perr := h.Pool.QueryRow(r.Context(),
 		`SELECT COALESCE(SUM(amount),0),
 		        COALESCE(SUM(amount) FILTER (WHERE EXTRACT(YEAR FROM paid_on) = $2),0)
-		   FROM payments WHERE person_id=$1`, id, year,
+		   FROM payments WHERE person_id=$1 AND NOT reversed`, id, year,
 	).Scan(&resp.PaymentsTotal, &resp.PaymentsYear); perr == nil {
 		resp.PaymentsTotal = round2(resp.PaymentsTotal)
 		resp.PaymentsYear = round2(resp.PaymentsYear)
@@ -464,7 +464,7 @@ func (h *Handler) outstandingByPerson(r *http.Request) (map[int64]float64, error
 
 	// P2.2 — open = accrued − payments received (the money truth), per person.
 	paymentsByPerson := map[int64]float64{}
-	if prows, perr := h.Pool.Query(ctx, `SELECT person_id, COALESCE(SUM(amount),0) FROM payments GROUP BY person_id`); perr == nil {
+	if prows, perr := h.Pool.Query(ctx, `SELECT person_id, COALESCE(SUM(amount),0) FROM payments WHERE NOT reversed GROUP BY person_id`); perr == nil {
 		for prows.Next() {
 			var pid int64
 			var amt float64
@@ -697,7 +697,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	// P2.2 — money truth = recorded payments (per person + total).
 	paymentsByPerson := map[int64]float64{}
 	var paymentsTotal float64
-	if prows, perr := h.Pool.Query(ctx, `SELECT person_id, COALESCE(SUM(amount),0) FROM payments GROUP BY person_id`); perr == nil {
+	if prows, perr := h.Pool.Query(ctx, `SELECT person_id, COALESCE(SUM(amount),0) FROM payments WHERE NOT reversed GROUP BY person_id`); perr == nil {
 		for prows.Next() {
 			var pid int64
 			var amt float64
@@ -797,7 +797,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	// Recorded payments (money-in log): total, this-year, and per month for the
 	// selected year — independent of the paid-flag balance math above.
 	resp.PaymentsByMonth = make([]float64, 12)
-	if prows, perr := h.Pool.Query(ctx, `SELECT amount, paid_on FROM payments`); perr == nil {
+	if prows, perr := h.Pool.Query(ctx, `SELECT amount, paid_on FROM payments WHERE NOT reversed`); perr == nil {
 		defer prows.Close()
 		for prows.Next() {
 			var amt float64

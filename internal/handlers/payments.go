@@ -34,17 +34,18 @@ type payment struct {
 	Note      string    `json:"note"`
 	VehicleID *int64    `json:"vehicle_id"`
 	CreatedAt time.Time `json:"created_at"`
+	Reversed  bool      `json:"reversed"` // storniert: kept for audit, excluded from all money sums
 }
 
 // paymentMethods is the closed set the UI offers; anything else is rejected so a
 // typo can't create an unfilterable method.
 var paymentMethods = map[string]bool{"bar": true, "ueberweisung": true, "paypal": true, "sonstiges": true}
 
-const paymentColumns = `id, person_id, amount, paid_on, method, note, vehicle_id, created_at`
+const paymentColumns = `id, person_id, amount, paid_on, method, note, vehicle_id, created_at, reversed`
 
 func scanPayment(row pgx.Row) (payment, error) {
 	var p payment
-	err := row.Scan(&p.ID, &p.PersonID, &p.Amount, &p.PaidOn, &p.Method, &p.Note, &p.VehicleID, &p.CreatedAt)
+	err := row.Scan(&p.ID, &p.PersonID, &p.Amount, &p.PaidOn, &p.Method, &p.Note, &p.VehicleID, &p.CreatedAt, &p.Reversed)
 	return p, err
 }
 
@@ -506,6 +507,10 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 		invoiceID int64
 		amount    float64
 	}
+	var reversedBy *int64
+	if u, ok := auth.UserFrom(ctx); ok {
+		reversedBy = &u.ID
+	}
 	deleted := false
 	var delAmt float64
 	var delMethod string
@@ -547,11 +552,13 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
-		// Capture the money-in details as we remove it, so the audit trail records
-		// exactly what was reverted (amount/method/date) — BAO: a booked payment must
-		// not vanish without a trace. Cascades allocations + invoice_payments.
+		// BAO §131: don't hard-delete a booked money-in — reverse it (Storno). The
+		// row is KEPT and flagged reversed (excluded from every money sum, retained
+		// for audit); its allocations and invoice links are removed so the settlement
+		// is undone. Re-reversing (already reversed) affects no row → not found.
 		if err := tx.QueryRow(ctx,
-			`DELETE FROM payments WHERE id=$1 RETURNING amount, method, paid_on`, id).
+			`UPDATE payments SET reversed=true, reversed_at=now(), reversed_by=$2
+			   WHERE id=$1 AND NOT reversed RETURNING amount, method, paid_on`, id, reversedBy).
 			Scan(&delAmt, &delMethod, &delOn); err != nil {
 			if err == pgx.ErrNoRows {
 				return errPaymentNotFound
@@ -559,6 +566,12 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		deleted = true
+		if _, err := tx.Exec(ctx, `DELETE FROM payment_allocations WHERE payment_id=$1`, id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM invoice_payments WHERE payment_id=$1`, id); err != nil {
+			return err
+		}
 		// Un-stamp positions no longer covered by any payment.
 		for _, rf := range refs {
 			var others int
@@ -597,10 +610,10 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not delete payment")
 		return
 	}
-	h.audit(r, "delete", "payment", id, fmt.Sprintf(
-		"Zahlung gelöscht: %.2f € (%s, %s) – Stempel & Rechnungszuordnungen zurückgesetzt",
+	h.audit(r, "update", "payment", id, fmt.Sprintf(
+		"Zahlung storniert: %.2f € (%s, %s) – Datensatz bleibt erhalten, Zuordnungen zurückgesetzt",
 		delAmt, delMethod, delOn.Format("2006-01-02")))
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "reversed"})
 }
 
 var errPaymentNotFound = fmt.Errorf("payment not found")
@@ -638,7 +651,7 @@ func (h *Handler) OpenItems(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) personCredit(r *http.Request, personID int64) float64 {
 	var payments float64
 	_ = h.Pool.QueryRow(r.Context(),
-		`SELECT COALESCE(SUM(amount),0) FROM payments WHERE person_id=$1`, personID).Scan(&payments)
+		`SELECT COALESCE(SUM(amount),0) FROM payments WHERE person_id=$1 AND NOT reversed`, personID).Scan(&payments)
 	accrued, err := h.personAccruedTotal(r, personID)
 	if err != nil {
 		return 0
@@ -679,9 +692,9 @@ func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
 	for _, it := range items {
 		openTotal += it.LineTotal
 	}
-	_ = h.Pool.QueryRow(ctx, `SELECT COALESCE(SUM(amount),0) FROM payments WHERE person_id=$1`, id).Scan(&paymentsTotal)
+	_ = h.Pool.QueryRow(ctx, `SELECT COALESCE(SUM(amount),0) FROM payments WHERE person_id=$1 AND NOT reversed`, id).Scan(&paymentsTotal)
 	var latestPayment int64
-	_ = h.Pool.QueryRow(ctx, `SELECT id FROM payments WHERE person_id=$1 ORDER BY paid_on DESC, id DESC LIMIT 1`, id).Scan(&latestPayment)
+	_ = h.Pool.QueryRow(ctx, `SELECT id FROM payments WHERE person_id=$1 AND NOT reversed ORDER BY paid_on DESC, id DESC LIMIT 1`, id).Scan(&latestPayment)
 
 	// budget = money paid that isn't already tied up in non-open (covered) costs.
 	// No payment to link the drawdown to → nothing to apply (and no orphan risk).

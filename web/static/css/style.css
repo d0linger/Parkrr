@@ -1160,6 +1160,8 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .konto-fig.tone-in .konto-v{ color:var(--success-text, var(--success)); }
 .konto-fig .konto-l{ font-size:.62rem; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--text-muted); margin-top:.15rem; }
 .pay-row{ display:flex; align-items:center; gap:.6rem; }
+.pay-row.is-reversed{ opacity:.5; }
+.pay-row.is-reversed .pay-amt{ text-decoration:line-through; }
 .pay-row .pay-main{ flex:1; min-width:0; }
 .pay-row .pay-method{ font-weight:650; font-size:.9rem; }
 .pay-row .pay-date{ font-size:.75rem; color:var(--text-muted); word-break:break-word; }

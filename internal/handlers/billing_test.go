@@ -443,6 +443,71 @@ func TestSliderInertOnInvoicedPosition(t *testing.T) {
 	}
 }
 
+// TestPaymentReversalKeepsRecord (BAO §131/§132): deleting a booked payment must
+// REVERSE it (Storno) — the record is kept, flagged reversed, excluded from money
+// sums; re-reversing is rejected. A booked money-in never vanishes.
+func TestPaymentReversalKeepsRecord(t *testing.T) {
+	h := testHandler(t)
+	pid := createIntegrationPerson(t, h)
+	pbody, _ := json.Marshal(map[string]any{"amount": 100, "method": "ueberweisung"})
+	preq := httptest.NewRequest(http.MethodPost, "/api/persons/"+strconv.FormatInt(pid, 10)+"/payments", bytes.NewReader(pbody))
+	preq.SetPathValue("id", strconv.FormatInt(pid, 10))
+	preq.Header.Set("Content-Type", "application/json")
+	prec := httptest.NewRecorder()
+	h.CreatePayment(prec, preq)
+	if prec.Code != http.StatusCreated {
+		t.Fatalf("pay: %d %s", prec.Code, prec.Body.String())
+	}
+	var created struct {
+		ID int64 `json:"id"`
+	}
+	_ = json.Unmarshal(prec.Body.Bytes(), &created)
+	if s := personStatsT(t, h, pid); math.Abs(s.PaymentsTotal-100) > 0.005 {
+		t.Fatalf("expected 100 recorded, got %.2f", s.PaymentsTotal)
+	}
+
+	// "Delete" → reverse.
+	dreq := httptest.NewRequest(http.MethodDelete, "/api/payments/"+strconv.FormatInt(created.ID, 10), nil)
+	dreq.SetPathValue("id", strconv.FormatInt(created.ID, 10))
+	drec := httptest.NewRecorder()
+	h.DeletePayment(drec, dreq)
+	if drec.Code != http.StatusOK {
+		t.Fatalf("reverse: %d %s", drec.Code, drec.Body.String())
+	}
+
+	// Row kept + flagged reversed (still listed), and excluded from PaymentsTotal.
+	lreq := httptest.NewRequest(http.MethodGet, "/api/persons/"+strconv.FormatInt(pid, 10)+"/payments", nil)
+	lreq.SetPathValue("id", strconv.FormatInt(pid, 10))
+	lrec := httptest.NewRecorder()
+	h.ListPayments(lrec, lreq)
+	var list []struct {
+		ID       int64 `json:"id"`
+		Reversed bool  `json:"reversed"`
+	}
+	_ = json.Unmarshal(lrec.Body.Bytes(), &list)
+	found := false
+	for _, p := range list {
+		if p.ID == created.ID {
+			found = true
+			if !p.Reversed {
+				t.Errorf("kept payment must be flagged reversed")
+			}
+		}
+	}
+	if !found {
+		t.Errorf("reversed payment must remain in the ledger (retention), not be deleted")
+	}
+	if s := personStatsT(t, h, pid); math.Abs(s.PaymentsTotal) > 0.005 {
+		t.Errorf("reversed payment must be excluded from PaymentsTotal, got %.2f", s.PaymentsTotal)
+	}
+	// Re-reversing is rejected.
+	drec2 := httptest.NewRecorder()
+	h.DeletePayment(drec2, dreq)
+	if drec2.Code != http.StatusNotFound {
+		t.Errorf("re-reversing an already-reversed payment must fail, got %d", drec2.Code)
+	}
+}
+
 // TestFractionalQuantityChargeNoPhantomCredit (audit Math-D1): a charge with a
 // fractional quantity must round the SAME way in the balance as on the invoice, so
 // paying the invoice in full leaves no phantom Guthaben.

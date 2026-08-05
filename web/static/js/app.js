@@ -1144,18 +1144,23 @@
             el('div', { class: 'konto-l' }, label));
     }
     function paymentRow(personId, p) {
-        const meta = new Date(p.paid_on).toLocaleDateString('de-DE') + (p.note ? ' · ' + p.note : '');
-        const row = el('div', { class: 'card pay-row' },
+        const meta = new Date(p.paid_on).toLocaleDateString('de-DE') + (p.note ? ' · ' + p.note : '')
+            + (p.reversed ? ' · storniert' : '');
+        const row = el('div', { class: 'card pay-row' + (p.reversed ? ' is-reversed' : '') },
             el('div', { class: 'pay-main' },
                 el('div', { class: 'pay-method' }, payMethodLabel(p.method)),
                 el('div', { class: 'pay-date' }, meta)),
             el('div', { class: 'pay-amt' }, eur(p.amount)));
-        if (canBill()) row.append(el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Zahlung löschen', onclick: (e) => delPayment(p, e.currentTarget.closest('.card')) }, icon('trash', 15)));
+        // A reversed payment is kept for the record (BAO) — no further action on it.
+        if (canBill() && !p.reversed) {
+            row.append(el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Zahlung stornieren', title: 'Zahlung stornieren', onclick: (e) => delPayment(p, e.currentTarget.closest('.card')) }, icon('trash', 15)));
+        }
         return row;
     }
     function delPayment(p, node) {
-        deleteWithUndo('Zahlung löschen?',
-            eur(p.amount) + ' vom ' + new Date(p.paid_on).toLocaleDateString('de-DE') + ' wird entfernt.',
+        // BAO: the payment is not deleted but reversed (Storno) — the record is kept.
+        deleteWithUndo('Zahlung stornieren?',
+            eur(p.amount) + ' vom ' + new Date(p.paid_on).toLocaleDateString('de-DE') + ' wird storniert (Datensatz bleibt erhalten).',
             () => api.del('/payments/' + p.id), () => render(), node);
     }
     async function paymentForm(personId, stats) {
