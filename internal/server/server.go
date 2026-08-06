@@ -38,6 +38,15 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	// Archive vehicles of finished-and-settled Pauschalen in the background.
 	go startFlatRateArchival(h, stop)
 
+	// Idempotent one-shot: book real Zahlungseingänge for Pauschale/Nebenkosten
+	// period settlements made before migration 036 (they only flipped an off-book
+	// flag). Runs in the background so a large dataset never delays serving.
+	go func() {
+		if err := h.BackfillPeriodPayments(context.Background()); err != nil {
+			slog.Error("period-payment backfill failed", "err", err)
+		}
+	}()
+
 	mux := http.NewServeMux()
 
 	// Middleware shortcuts.

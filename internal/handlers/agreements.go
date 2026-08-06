@@ -805,9 +805,9 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 	// below acts on a consistent snapshot even under concurrent paid toggles.
 	var a models.FlatRatePeriod
 	if err := tx.QueryRow(r.Context(),
-		`SELECT id, person_id, period, start_date, end_date, paid
+		`SELECT id, person_id, period, start_date, end_date, amount, paid
 		 FROM flat_rate_periods WHERE id=$1 FOR UPDATE`, id).
-		Scan(&a.ID, &a.PersonID, &a.Period, &a.StartDate, &a.EndDate, &a.Paid); err != nil {
+		Scan(&a.ID, &a.PersonID, &a.Period, &a.StartDate, &a.EndDate, &a.Amount, &a.Paid); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "agreement not found")
 			return
@@ -860,6 +860,18 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusInternalServerError, "could not update payment")
 			return
 		}
+		// Book the real Zahlungseingang mirroring this off-book settlement (Fix 1): a
+		// completed whole period or an explicit partial. A still-running whole period
+		// stays off-book (its cost isn't final); its payment is booked once complete.
+		if amt, ok := periodPaymentAmount(a, key, req.Amount, time.Now()); ok {
+			if err := recordPeriodPaymentTx(r.Context(), tx, a.PersonID, "agreement", id, key, amt, createdByFrom(r.Context())); err != nil {
+				writeError(w, http.StatusInternalServerError, "could not update payment")
+				return
+			}
+		} else if err := deletePeriodPaymentTx(r.Context(), tx, "agreement", id, key); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not update payment")
+			return
+		}
 	} else {
 		if a.Paid {
 			if _, err := tx.Exec(r.Context(),
@@ -877,6 +889,13 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 		}
 		if _, err := tx.Exec(r.Context(),
 			`DELETE FROM flat_rate_period_payments WHERE period_id=$1 AND period_key=$2`, id, key); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not update payment")
+			return
+		}
+		// Remove the real Zahlungseingang this period's settlement had booked (Fix 1).
+		// Periods materialized from a cleared master flag stay off-book (no payment to
+		// delete), so this only drops the one the toggle created.
+		if err := deletePeriodPaymentTx(r.Context(), tx, "agreement", id, key); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not update payment")
 			return
 		}

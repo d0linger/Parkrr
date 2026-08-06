@@ -552,6 +552,21 @@ func (h *Handler) SetRecurringChargePeriodPaid(w http.ResponseWriter, r *http.Re
 			periods, string(fixedJSON), id); err != nil {
 			return err
 		}
+		// Book/remove the real Zahlungseingang mirroring the off-book flag (Fix 1): a
+		// completed whole period or an explicit partial becomes a payments row; a
+		// toggle-off deletes it. The off-book credit skips periods with such a payment,
+		// so the balance never double-counts.
+		if req.Paid {
+			if amt, ok := periodPaymentAmount(rc.AsPeriod(), req.PeriodKey, req.Amount, time.Now()); ok {
+				if err := recordPeriodPaymentTx(r.Context(), tx, rc.PersonID, "recurring", id, req.PeriodKey, amt, createdByFrom(r.Context())); err != nil {
+					return err
+				}
+			} else if err := deletePeriodPaymentTx(r.Context(), tx, "recurring", id, req.PeriodKey); err != nil {
+				return err
+			}
+		} else if err := deletePeriodPaymentTx(r.Context(), tx, "recurring", id, req.PeriodKey); err != nil {
+			return err
+		}
 		return h.auditTx(r.Context(), tx, r, "update", "recurring_charge", id,
 			"Nebenkosten-Periode "+req.PeriodKey+": "+periodPaidAuditState(req.Paid, req.Amount))
 	})

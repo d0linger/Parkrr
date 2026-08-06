@@ -115,9 +115,12 @@ func TestUnmarkInvoicedPeriodBlocked(t *testing.T) {
 }
 
 // TestPaidFixedPartialSurvivesInvoicing (5th-pass A1-1): a per-period fixed
-// partial (Teilbetrag, off-book) must stay credited after its period is invoiced
-// — the invoice bills cost − partial, so dropping the credit on lock creates a
-// permanent phantom debt equal to the partial.
+// partial (Teilbetrag) must stay credited after its period is invoiced — the
+// invoice bills cost − partial, so dropping the credit on lock creates a permanent
+// phantom debt equal to the partial. Since Fix 1 the partial is a REAL Zahlungseingang
+// (PaymentsTotal), not an off-book PeriodPaid credit, so the invariant is checked
+// mechanism-agnostically: the balance must be unchanged across invoicing, and the
+// €30 must remain recorded as a real payment.
 func TestPaidFixedPartialSurvivesInvoicing(t *testing.T) {
 	h := testHandler(t)
 	compliantSeller(t, h)
@@ -136,16 +139,21 @@ func TestPaidFixedPartialSurvivesInvoicing(t *testing.T) {
 		t.Fatalf("period-paid: %d %s", rec.Code, rec.Body.String())
 	}
 
-	ppBefore := personStatsT(t, h, pid).PeriodPaid
-	if math.Abs(ppBefore-30) > 0.5 {
-		t.Fatalf("period-paid credit before invoicing should be ~30, got %.2f", ppBefore)
+	before := personStatsT(t, h, pid)
+	// The partial is a real €30 payment (Fix 1), whichever credit path carries it.
+	if credit := before.PaymentsTotal + before.PeriodPaid; math.Abs(credit-30) > 0.5 {
+		t.Fatalf("the €30 partial should be credited before invoicing, got payments=%.2f periodpaid=%.2f", before.PaymentsTotal, before.PeriodPaid)
 	}
 
 	createInvoice(t, h, pid) // bills the completed periods (this one at cost − 30), locks them
 
-	ppAfter := personStatsT(t, h, pid).PeriodPaid
-	if math.Abs(ppAfter-30) > 0.5 {
-		t.Errorf("fixed partial must stay credited after its period is invoiced: before=%.2f after=%.2f (phantom debt)", ppBefore, ppAfter)
+	after := personStatsT(t, h, pid)
+	// No phantom debt: invoicing a partially-paid period is balance-neutral.
+	if math.Abs(after.Balance-before.Balance) > 0.5 {
+		t.Errorf("fixed partial must survive invoicing (no phantom debt): balance before=%.2f after=%.2f", before.Balance, after.Balance)
+	}
+	if credit := after.PaymentsTotal + after.PeriodPaid; math.Abs(credit-30) > 0.5 {
+		t.Errorf("the €30 partial credit must persist after invoicing, got payments=%.2f periodpaid=%.2f", after.PaymentsTotal, after.PeriodPaid)
 	}
 }
 

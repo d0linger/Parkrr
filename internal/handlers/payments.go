@@ -140,6 +140,63 @@ func periodKeySet(keys []string) map[string]bool {
 	return m
 }
 
+// createdByFrom returns the acting user's id (for payments.created_by) or nil when
+// the request has no authenticated actor (system paths). Kept here so the agreement
+// and recurring handlers can stamp their period auto-payments without importing auth.
+func createdByFrom(ctx context.Context) *int64 {
+	if u, ok := auth.UserFrom(ctx); ok {
+		return &u.ID
+	}
+	return nil
+}
+
+// periodPaymentNote labels a per-period settlement auto-payment for the payments
+// list / audit trail, e.g. "Pauschale 2026-05 (Slider)".
+func periodPaymentNote(kind, period string) string {
+	label := "Periode"
+	switch kind {
+	case "agreement":
+		label = "Pauschale"
+	case "recurring":
+		label = "Nebenkosten"
+	}
+	return label + " " + period + " (Slider)"
+}
+
+// recordPeriodPaymentTx books (or refreshes) the real Zahlungseingang that settles
+// ONE Pauschale/Nebenkosten sub-period. Per-period settlements historically only
+// flipped an off-book flag; this makes the received money a first-class payment so
+// it shows in the payments list and audit like every other. The row is auto=true
+// (system-managed toggle state, deletable on un-toggle) and linked to
+// (settles_kind, settles_ref, settles_period). The payments immutability trigger
+// blocks UPDATEing an auto row's amount, so a re-mark (partial↔whole) is
+// delete-then-insert, never an upsert. A zero amount records no row — the settled
+// flag alone marks a 0-cost period paid.
+func recordPeriodPaymentTx(ctx context.Context, tx pgx.Tx, personID int64, kind string, refID int64, period string, amount float64, createdBy *int64) error {
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM payments WHERE auto AND settles_kind=$1 AND settles_ref=$2 AND settles_period=$3`,
+		kind, refID, period); err != nil {
+		return err
+	}
+	if amount < 0.005 {
+		return nil
+	}
+	_, err := tx.Exec(ctx,
+		`INSERT INTO payments (person_id, amount, method, note, auto, settles_kind, settles_ref, settles_period, created_by)
+		 VALUES ($1,$2,'bar',$3,true,$4,$5,$6,$7)`,
+		personID, amount, periodPaymentNote(kind, period), kind, refID, period, createdBy)
+	return err
+}
+
+// deletePeriodPaymentTx removes the real Zahlungseingang for a sub-period toggled
+// back open (auto rows are removable wholesale, migration 035).
+func deletePeriodPaymentTx(ctx context.Context, tx pgx.Tx, kind string, refID int64, period string) error {
+	_, err := tx.Exec(ctx,
+		`DELETE FROM payments WHERE auto AND settles_kind=$1 AND settles_ref=$2 AND settles_period=$3`,
+		kind, refID, period)
+	return err
+}
+
 // openOwedItems enumerates a person's open individually-owed positions, oldest
 // first: uncovered active vehicles (rent) and standalone unpaid one-off charges.
 // Pauschale-covered vehicles and per-period Pauschale/recurring costs are left to

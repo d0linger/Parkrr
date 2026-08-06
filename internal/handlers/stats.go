@@ -156,14 +156,14 @@ func (h *Handler) personChargeSums(ctx context.Context, personID int64, agreemen
 // Otherwise a paid period is owed forever (the invoice already omits it) — an
 // uncollectable phantom debt. Vehicle rent settled via v.Paid is deliberately
 // excluded here: it already has a payment row and would double-count.
-func personPeriodPaid(agreements []models.FlatRatePeriod, recurs []models.RecurringCharge, now time.Time, locked map[string]bool) float64 {
+func personPeriodPaid(agreements []models.FlatRatePeriod, recurs []models.RecurringCharge, now time.Time, locked, settled map[string]bool) float64 {
 	var paid float64
 	for i := range agreements {
 		a := &agreements[i]
-		paid += periodPaidUnlocked(*a, "agreement", a.ID, now, locked)
+		paid += periodPaidUnlocked(*a, "agreement", a.ID, now, locked, settled)
 	}
 	for i := range recurs {
-		paid += periodPaidUnlocked(recurs[i].AsPeriod(), "recurring", recurs[i].ID, now, locked)
+		paid += periodPaidUnlocked(recurs[i].AsPeriod(), "recurring", recurs[i].ID, now, locked, settled)
 	}
 	return round2(paid)
 }
@@ -174,10 +174,16 @@ func personPeriodPaid(agreements []models.FlatRatePeriod, recurs []models.Recurr
 // too would double-count (phantom Guthaben). A fixed partial is capped at the
 // period's accrued-so-far cost, so a prepayment on a still-running period can't
 // over-credit and drive the balance transiently negative.
-func periodPaidUnlocked(p models.FlatRatePeriod, kind string, refID int64, now time.Time, locked map[string]bool) float64 {
+func periodPaidUnlocked(p models.FlatRatePeriod, kind string, refID int64, now time.Time, locked, settled map[string]bool) float64 {
 	paidSet := periodKeySet(p.PaidPeriods)
 	var paid float64
 	for _, per := range p.ElapsedPeriodsDetailed(now) {
+		if settled[lockKey(kind, refID, per.Key)] {
+			// A real Zahlungseingang already settles this period (counted in
+			// PaymentsTotal). Crediting it off-book too would double-count, so skip —
+			// the payment is the single money truth for this period.
+			continue
+		}
 		if locked[lockKey(kind, refID, per.Key)] {
 			// The period was invoiced. A FULLY-paid period is never invoiced (its
 			// open amount is ≤0, so no lock), so a locked period can only carry a
@@ -207,6 +213,77 @@ func periodPaidUnlocked(p models.FlatRatePeriod, kind string, refID int64, now t
 		}
 	}
 	return paid
+}
+
+// periodPaymentAmount returns the money a settled sub-period represents, and whether
+// a real Zahlungseingang should be booked for it. A fixed partial is an explicit
+// amount (booked regardless of completeness). A whole period books its final accrued
+// cost only once it has fully elapsed — a still-running whole-paid period keeps the
+// off-book dynamic credit (its cost is not yet final) and gets its real payment when
+// it completes (the startup backfill), so the fixed row never diverges from a
+// growing period.
+func periodPaymentAmount(p models.FlatRatePeriod, periodKey string, amount *float64, now time.Time) (float64, bool) {
+	if amount != nil {
+		return *amount, true
+	}
+	for _, per := range p.ElapsedPeriodsDetailed(now) {
+		if per.Key == periodKey {
+			if !per.Complete {
+				return 0, false
+			}
+			return per.Cost, true
+		}
+	}
+	return 0, false
+}
+
+// periodSettledByPayment returns, for one person, the set of sub-period keys already
+// settled by a real Zahlungseingang (payments.settles_*), so the off-book per-period
+// credit can skip them and never double-count. Reversed payments are excluded — a
+// reversed period drops from PaymentsTotal, so the off-book credit must resume.
+func (h *Handler) periodSettledByPayment(ctx context.Context, personID int64) (map[string]bool, error) {
+	out := map[string]bool{}
+	rows, err := h.Pool.Query(ctx,
+		`SELECT settles_kind, settles_ref, settles_period FROM payments
+		   WHERE person_id=$1 AND settles_kind IS NOT NULL AND NOT reversed`, personID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kind, period string
+		var ref int64
+		if err := rows.Scan(&kind, &ref, &period); err != nil {
+			return nil, err
+		}
+		out[lockKey(kind, ref, period)] = true
+	}
+	return out, rows.Err()
+}
+
+// periodSettledByPaymentByPerson is the bulk equivalent for the dashboard/outstanding
+// paths — one query, person_id → settled-key set.
+func (h *Handler) periodSettledByPaymentByPerson(ctx context.Context) (map[int64]map[string]bool, error) {
+	out := map[int64]map[string]bool{}
+	rows, err := h.Pool.Query(ctx,
+		`SELECT person_id, settles_kind, settles_ref, settles_period FROM payments
+		   WHERE settles_kind IS NOT NULL AND NOT reversed`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var pid, ref int64
+		var kind, period string
+		if err := rows.Scan(&pid, &kind, &ref, &period); err != nil {
+			return nil, err
+		}
+		if out[pid] == nil {
+			out[pid] = map[string]bool{}
+		}
+		out[pid][lockKey(kind, ref, period)] = true
+	}
+	return out, rows.Err()
 }
 
 // lockedPeriodsByPerson returns, per person, the set of invoiced (locked) position
@@ -439,7 +516,12 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	resp.PeriodPaid = personPeriodPaid(agreements, recurs, now, periodLocked)
+	periodSettled, serr := h.periodSettledByPayment(r.Context(), id)
+	if serr != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	resp.PeriodPaid = personPeriodPaid(agreements, recurs, now, periodLocked, periodSettled)
 	resp.Balance = round2(resp.TotalAccrued + resp.TotalCharges + resp.InvoicedTax -
 		resp.PaymentsTotal - resp.PeriodPaid)
 	// Guthaben = overpayment (negative balance), symmetric to Balance.
@@ -587,12 +669,16 @@ func (h *Handler) outstandingByPerson(r *http.Request) (map[int64]float64, error
 	if lerr != nil {
 		return nil, lerr
 	}
+	settledByPerson, serr := h.periodSettledByPaymentByPerson(ctx)
+	if serr != nil {
+		return nil, serr
+	}
 
 	out := make(map[int64]float64, len(personIDs))
 	for pid := range personIDs {
 		tAcc := personRent(agByPerson[pid], vehByPerson[pid], cats, time.Time{}, until)
 		owed := (tAcc + chargesByPerson[pid] + invoicedTaxByPerson[pid]) - paymentsByPerson[pid] -
-			personPeriodPaid(agByPerson[pid], recurByPerson[pid], now, lockedByPerson[pid])
+			personPeriodPaid(agByPerson[pid], recurByPerson[pid], now, lockedByPerson[pid], settledByPerson[pid])
 		out[pid] = round2(owed)
 	}
 	return out, nil
@@ -817,6 +903,11 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
+	settledByPerson, serr := h.periodSettledByPaymentByPerson(ctx)
+	if serr != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 
 	resp.RevenueByMonth = make([]float64, 12)
 	var outstandingSum float64 // Σ of positive per-person balances (real receivable)
@@ -837,7 +928,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		// Open balance per person = owed (rent + charges + invoiced USt) − payments −
 		// per-period Pauschale/recurring settlement (not in the payments table).
 		owed := (tAcc + chargesByPerson[pid] + invoicedTaxByPerson[pid]) - paymentsByPerson[pid] -
-			personPeriodPaid(ag, recurByPerson[pid], now, lockedByPerson[pid])
+			personPeriodPaid(ag, recurByPerson[pid], now, lockedByPerson[pid], settledByPerson[pid])
 		if owed > 0.005 {
 			outstandingSum += owed
 			name := personNames[pid]
