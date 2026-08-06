@@ -1604,11 +1604,17 @@
         } else {
             paidAcc = 0;
             const costs = a.period_costs || {};
-            const paidP = a.paid_periods || [];
-            for (const k of paidP) paidAcc += Number(costs[k]) || 0;
+            const counted = new Set();
+            // Whole periods paid via the per-period toggle, then those settled through
+            // a fully-paid Rechnung (invoice_paid_periods) — both count at full cost.
+            for (const k of (a.paid_periods || [])) { paidAcc += Number(costs[k]) || 0; counted.add(k); }
+            for (const k of (a.invoice_paid_periods || [])) {
+                if (counted.has(k)) continue;
+                paidAcc += Number(costs[k]) || 0; counted.add(k);
+            }
             const fixed = a.paid_fixed || {};
             for (const k in fixed) {
-                if (paidP.includes(k)) continue; // whole period already counted
+                if (counted.has(k)) continue; // whole period already counted
                 const c = Number(costs[k]) || 0;
                 paidAcc += c > 0 ? Math.min(Number(fixed[k]) || 0, c) : (Number(fixed[k]) || 0);
             }

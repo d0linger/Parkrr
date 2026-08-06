@@ -181,6 +181,12 @@ type FlatRatePeriod struct {
 	// PeriodCosts maps each elapsed sub-period key to its accrued cost (euros),
 	// so the per-period payment list can show the amount beside each year/month.
 	PeriodCosts map[string]float64 `json:"period_costs,omitempty"`
+	// InvoicePaidPeriods lists the sub-period keys billed on a fully-paid,
+	// non-canceled invoice — settled through the Rechnung, not the per-period flag.
+	// The payment-progress bar counts these as paid so an invoiced+paid Pauschale
+	// reads "bezahlt", not "0 % bezahlt" (the Pauschale twin of the charge/vehicle
+	// invoice status).
+	InvoicePaidPeriods []string `json:"invoice_paid_periods,omitempty"`
 }
 
 // paidKeySet returns the set of sub-period keys explicitly marked paid.

@@ -113,7 +113,52 @@ func (h *Handler) loadAgreements(ctx context.Context, personID int64, now time.T
 		out[i].Settled = out[i].SettledAsOf(now)
 		out[i].PeriodCosts = out[i].ElapsedPeriodCosts(now)
 	}
+	if err := h.setAgreementInvoiceStatus(ctx, out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// setAgreementInvoiceStatus marks, per agreement, which sub-periods are settled
+// through a fully-paid Rechnung (invoice_source kind='agreement' × a non-canceled,
+// fully-paid invoice) — the Pauschale twin of setVehicleInvoiceStatus. A period
+// billed on a paid invoice is settled even though its per-period flag is unset, so
+// the progress bar must count it; otherwise an invoiced+paid Pauschale shows
+// "0 % bezahlt".
+func (h *Handler) setAgreementInvoiceStatus(ctx context.Context, agreements []models.FlatRatePeriod) error {
+	if len(agreements) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(agreements))
+	for i := range agreements {
+		ids = append(ids, agreements[i].ID)
+	}
+	rows, err := h.Pool.Query(ctx,
+		`SELECT s.ref_id, s.period_key FROM invoice_source s JOIN invoices i ON i.id = s.invoice_id
+		  WHERE s.kind='agreement' AND NOT i.canceled AND (i.total - i.paid_amount) <= 0.005
+		    AND s.ref_id = ANY($1)`, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	paid := map[int64][]string{}
+	for rows.Next() {
+		var ref int64
+		var period string
+		if err := rows.Scan(&ref, &period); err != nil {
+			return err
+		}
+		paid[ref] = append(paid[ref], period)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range agreements {
+		if keys, ok := paid[agreements[i].ID]; ok {
+			agreements[i].InvoicePaidPeriods = keys
+		}
+	}
+	return nil
 }
 
 // ListAgreements returns the flat-rate agreements of a person.
