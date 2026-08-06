@@ -461,6 +461,16 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "date must be YYYY-MM-DD")
 			return
 		}
+		// A back-dated close must not fall below an already-invoiced period — that
+		// would drop it from accrual while its payment stays → phantom Guthaben
+		// (mirrors the UpdateVehicle guard).
+		if retract, ierr := h.endDateRetractsBelowInvoiced(r.Context(), h.Pool, "vehicle", id, &end); ierr != nil {
+			writeError(w, http.StatusInternalServerError, "could not check invoices")
+			return
+		} else if retract {
+			writeError(w, http.StatusConflict, "Enddatum liegt vor einer fakturierten Periode – Storno über die Rechnung")
+			return
+		}
 		ct, uerr = h.Pool.Exec(r.Context(),
 			`UPDATE vehicles SET status=$1, end_date=$2, updated_at=now() WHERE id=$3`,
 			req.Status, end, id)

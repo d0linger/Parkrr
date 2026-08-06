@@ -86,16 +86,20 @@ func (m *Manager) RemainingBackupCodes(ctx context.Context, userID int64) (int, 
 }
 
 func randomCode() (string, error) {
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	var sb strings.Builder
-	for i, v := range b {
-		if i == 4 {
-			sb.WriteByte('-')
+	const n = 8
+	// Reject bytes at or above the largest multiple of the alphabet length so the
+	// modulo maps uniformly (no bias toward the low residues).
+	limit := 256 - (256 % len(codeAlphabet))
+	chars := make([]byte, 0, n)
+	buf := make([]byte, 1)
+	for len(chars) < n {
+		if _, err := rand.Read(buf); err != nil {
+			return "", err
 		}
-		sb.WriteByte(codeAlphabet[int(v)%len(codeAlphabet)])
+		if int(buf[0]) >= limit {
+			continue // rejection-sample for a uniform distribution
+		}
+		chars = append(chars, codeAlphabet[int(buf[0])%len(codeAlphabet)])
 	}
-	return sb.String(), nil
+	return string(chars[:4]) + "-" + string(chars[4:]), nil
 }

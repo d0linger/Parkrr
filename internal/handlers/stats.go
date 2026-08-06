@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"math"
 	"net/http"
 	"sort"
@@ -278,7 +279,11 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 
 	person, err := h.getPerson(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "person not found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "person not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 

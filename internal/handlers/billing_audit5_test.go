@@ -434,3 +434,25 @@ func TestReconcileMonthsToYear(t *testing.T) {
 		t.Errorf("months must sum to the year total 1000.00, got %.2f", sum)
 	}
 }
+
+// TestBackdatedCollectBelowInvoicedBlocked (regression): a back-dated collect via
+// the status endpoint must not set end_date below an invoiced period (phantom
+// Guthaben) — same guard as UpdateVehicle.
+func TestBackdatedCollectBelowInvoicedBlocked(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	vid := mkStoredVehicle(t, h, pid, 30, firstOfMonthMonthsAgo(2).Format("2006-01-02"))
+	createInvoice(t, h, pid) // locks the two completed months
+
+	// Collect back-dated into an invoiced month → 409.
+	body, _ := json.Marshal(map[string]any{"status": "collected", "date": firstOfMonthMonthsAgo(1).Format("2006-01-02")})
+	req := httptest.NewRequest(http.MethodPost, "/api/vehicles/"+strconv.FormatInt(vid, 10)+"/status", bytes.NewReader(body))
+	req.SetPathValue("id", strconv.FormatInt(vid, 10))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ChangeVehicleStatus(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("back-dated collect below an invoiced period must be 409, got %d %s", rec.Code, rec.Body.String())
+	}
+}

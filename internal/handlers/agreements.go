@@ -454,7 +454,11 @@ func (h *Handler) UpdateAgreement(w http.ResponseWriter, r *http.Request) {
 	var pid int64
 	if err := h.Pool.QueryRow(r.Context(),
 		`SELECT person_id FROM flat_rate_periods WHERE id=$1`, id).Scan(&pid); err != nil {
-		writeError(w, http.StatusNotFound, "agreement not found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "agreement not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 	h.persistAgreement(w, r, id, pid)
@@ -724,7 +728,11 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 	if err := tx.QueryRow(r.Context(),
 		`UPDATE flat_rate_periods SET paid=$1, updated_at=now() WHERE id=$2 RETURNING person_id`,
 		req.Paid, id).Scan(&pid); err != nil {
-		writeError(w, http.StatusNotFound, "agreement not found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "agreement not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "could not update agreement")
 		return
 	}
 	if _, err := tx.Exec(r.Context(),
