@@ -85,27 +85,27 @@ func TestBoundChargeBilledDespitePauschale(t *testing.T) {
 	}
 }
 
-// TestBoundChargeBilledDespiteVehiclePaid (#B): a bound Zusatzkosten must still be
-// billed after the vehicle's own "bezahlt" toggle — the rent toggle settles rent,
-// not the separate extra. Before the fix vehPaid dropped it from the invoice while
-// the balance still owed it (uncollectable).
-func TestBoundChargeBilledDespiteVehiclePaid(t *testing.T) {
+// TestBoundChargeSettledByVehicleSlider (#B, updated): the vehicle's "bezahlt"
+// slider now settles its bound Zusatzkosten too — one auto-payment covers rent +
+// extras — so the extra is collected (not dropped, not left owed). Previously the
+// slider settled only rent and the extra stayed owed while showing "bezahlt".
+func TestBoundChargeSettledByVehicleSlider(t *testing.T) {
 	h := testHandler(t)
-	compliantSeller(t, h)
 	pid := createIntegrationPerson(t, h)
-	vid := mkStoredVehicle(t, h, pid, 30, "2026-01-01")
+	vid := mkStoredVehicle(t, h, pid, 30, firstOfMonthMonthsAgo(2).Format("2006-01-02"))
 
 	// A bound one-off extra.
 	chBody, _ := json.Marshal(map[string]any{
-		"person_id": pid, "vehicle_id": vid, "description": "Sonderreinigung", "amount": 60, "quantity": 1, "charged_on": "2026-05-01",
+		"person_id": pid, "vehicle_id": vid, "description": "Sonderreinigung", "amount": 60, "quantity": 1,
 	})
 	chrec := httptest.NewRecorder()
 	h.CreateCharge(chrec, httptest.NewRequest(http.MethodPost, "/api/charges", bytes.NewReader(chBody)))
 	if chrec.Code != http.StatusCreated {
 		t.Fatalf("bound charge: %d %s", chrec.Code, chrec.Body.String())
 	}
+	before := personStatsT(t, h, pid).Balance
 
-	// Mark the VEHICLE paid (its rent), which must not absorb the extra.
+	// Mark the VEHICLE paid → its auto-payment now covers rent AND the bound extra.
 	pbody, _ := json.Marshal(map[string]any{"paid": true})
 	preq := httptest.NewRequest(http.MethodPost, "/api/vehicles/"+strconv.FormatInt(vid, 10)+"/paid", bytes.NewReader(pbody))
 	preq.SetPathValue("id", strconv.FormatInt(vid, 10))
@@ -116,16 +116,14 @@ func TestBoundChargeBilledDespiteVehiclePaid(t *testing.T) {
 		t.Fatalf("markpaid: %d %s", prec.Code, prec.Body.String())
 	}
 
-	iv := createInvoice(t, h, pid)
-	full := getInvoiceT(t, h, iv.ID)
-	hasExtra := false
-	for _, it := range full.Items {
-		if it.LineTotal == 60 {
-			hasExtra = true
-		}
+	// Balance nets to 0 (rent + the 60 extra covered) and the recorded payment
+	// includes the extra — the extra is collected, not left outstanding.
+	s := personStatsT(t, h, pid)
+	if math.Abs(s.Balance) > 0.005 {
+		t.Errorf("after paying the vehicle, balance must be 0 (rent + extra covered), got %.2f (before %.2f)", s.Balance, before)
 	}
-	if !hasExtra {
-		t.Errorf("bound Zusatzkosten (60) must be billed despite the paid vehicle; items=%+v", full.Items)
+	if s.PaymentsTotal+0.005 < 60 {
+		t.Errorf("the auto-payment must include the bound extra (>=60), got %.2f", s.PaymentsTotal)
 	}
 }
 

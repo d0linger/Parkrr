@@ -243,10 +243,23 @@ func (h *Handler) openOwedItems(r *http.Request, personID int64) ([]owedItem, er
 func (h *Handler) syncTogglePayment(r *http.Request, kind string, refID, personID int64, paid bool) error {
 	ctx := r.Context()
 	if !paid {
-		_, err := h.Pool.Exec(ctx,
-			`DELETE FROM payments WHERE auto AND id IN (
-			   SELECT payment_id FROM payment_allocations WHERE kind=$1 AND ref_id=$2)`, kind, refID)
-		return err
+		return pgx.BeginFunc(ctx, h.Pool, func(tx pgx.Tx) error {
+			// A vehicle's auto-payment also settled the charges bound to it — reopen
+			// them (their paid flag was set by this payment) before removing it.
+			if kind == "vehicle" {
+				if _, err := tx.Exec(ctx,
+					`UPDATE charges SET paid=false WHERE vehicle_id=$1 AND id IN (
+					   SELECT ca.ref_id FROM payment_allocations ca
+					    WHERE ca.kind='charge' AND ca.payment_id IN (
+					      SELECT payment_id FROM payment_allocations WHERE kind='vehicle' AND ref_id=$1))`, refID); err != nil {
+					return err
+				}
+			}
+			_, err := tx.Exec(ctx,
+				`DELETE FROM payments WHERE auto AND id IN (
+				   SELECT payment_id FROM payment_allocations WHERE kind=$1 AND ref_id=$2)`, kind, refID)
+			return err
+		})
 	}
 	// Only standalone, still-open items are in openOwedItems; that's their owed amount.
 	items, err := h.openOwedItems(r, personID)
@@ -259,7 +272,45 @@ func (h *Handler) syncTogglePayment(r *http.Request, kind string, refID, personI
 			amt = it.LineTotal
 		}
 	}
-	if amt < 0.005 {
+	// A vehicle's slider also settles the Zusatzkosten bound to it (they follow the
+	// Gefährt via chargeSettled): fold their open amount into the same auto-payment
+	// so the money matches the "bezahlt · Gefährt" display and the balance nets to 0
+	// (otherwise the bound charge stays owed while showing paid).
+	type boundCharge struct {
+		id    int64
+		total float64
+	}
+	var bound []boundCharge
+	if kind == "vehicle" {
+		rows, qerr := h.Pool.Query(ctx,
+			`SELECT id, amount, quantity FROM charges WHERE vehicle_id=$1 AND NOT paid`, refID)
+		if qerr != nil {
+			return qerr
+		}
+		for rows.Next() {
+			var id int64
+			var a, q float64
+			if err := rows.Scan(&id, &a, &q); err != nil {
+				rows.Close()
+				return err
+			}
+			if q <= 0 {
+				q = 1
+			}
+			if t := round2(a * q); t > 0.005 {
+				bound = append(bound, boundCharge{id, t})
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+	}
+	var boundTotal float64
+	for _, b := range bound {
+		boundTotal += b.total
+	}
+	if amt+boundTotal < 0.005 {
 		return nil // nothing open to pay (already covered / zero) — just the flag flips
 	}
 	var createdBy *int64
@@ -289,16 +340,28 @@ func (h *Handler) syncTogglePayment(r *http.Request, kind string, refID, personI
 		var pid int64
 		if err := tx.QueryRow(ctx,
 			`INSERT INTO payments (person_id, amount, method, note, auto, created_by)
-			 VALUES ($1,$2,'bar','Slider „bezahlt"',true,$3) RETURNING id`, personID, amt, createdBy).Scan(&pid); err != nil {
+			 VALUES ($1,$2,'bar','Slider „bezahlt"',true,$3) RETURNING id`, personID, amt+boundTotal, createdBy).Scan(&pid); err != nil {
 			return err
 		}
 		// ON CONFLICT guards the toggle-vs-manual-payment race the advisory lock
-		// doesn't cover (CreatePayment takes no such lock).
-		_, err := tx.Exec(ctx,
+		// doesn't cover (CreatePayment takes no such lock). The primary allocation is
+		// the "settled" marker even when amt is 0 (a 0-rent vehicle with bound charges).
+		if _, err := tx.Exec(ctx,
 			`INSERT INTO payment_allocations (payment_id, kind, ref_id, amount) VALUES ($1,$2,$3,$4)
-			 ON CONFLICT (kind, ref_id) DO NOTHING`,
-			pid, kind, refID, amt)
-		return err
+			 ON CONFLICT (kind, ref_id) DO NOTHING`, pid, kind, refID, amt); err != nil {
+			return err
+		}
+		for _, b := range bound {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO payment_allocations (payment_id, kind, ref_id, amount) VALUES ($1,'charge',$2,$3)
+				 ON CONFLICT (kind, ref_id) DO NOTHING`, pid, b.id, b.total); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE charges SET paid=true WHERE id=$1`, b.id); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
