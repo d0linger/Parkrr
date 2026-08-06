@@ -208,12 +208,7 @@ func (h *Handler) auditChangeTx(ctx context.Context, q execer, r *http.Request, 
 // (pass the result of diffFields for updates). A nil/empty changes is stored as
 // NULL.
 func (h *Handler) auditChange(r *http.Request, action, entity string, id int64, summary string, changes any) {
-	var actorID int64
-	var actorName string
-	if u, ok := auth.UserFrom(r.Context()); ok {
-		actorID = u.ID
-		actorName = u.Username
-	}
+	actorID, actorName := actorFrom(r)
 	h.auditInsert(r, actorID, actorName, action, entity, id, summary, changes)
 }
 

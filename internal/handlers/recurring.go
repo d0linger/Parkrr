@@ -531,7 +531,11 @@ func (h *Handler) SetRecurringChargePeriodPaid(w http.ResponseWriter, r *http.Re
 		}
 		fixed := map[string]float64{}
 		if len(fixedRaw) > 0 {
-			_ = json.Unmarshal(fixedRaw, &fixed)
+			// Fail the tx on malformed paid_fixed rather than silently proceeding with
+			// an empty map, which would wipe the other periods' recorded partials.
+			if err := json.Unmarshal(fixedRaw, &fixed); err != nil {
+				return err
+			}
 		}
 		periods := removeString(periodsRaw, req.PeriodKey)
 		delete(fixed, req.PeriodKey)

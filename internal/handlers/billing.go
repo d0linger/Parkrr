@@ -990,7 +990,7 @@ func (h *Handler) PayInvoices(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("Zahlung %.2f € auf %d Rechnung(en) (Rest %.2f € nicht zugeordnet)", pr.Amount, out.Invoices, out.Unallocated))
 	})
 	if txErr != nil {
-		if txErr == errInvoiceNotOpen {
+		if errors.Is(txErr, errInvoiceNotOpen) {
 			writeError(w, http.StatusBadRequest, "eine gewählte Rechnung ist nicht offen (storniert/bezahlt/fremd)")
 			return
 		}
