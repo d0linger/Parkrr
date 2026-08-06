@@ -648,7 +648,10 @@
     // "N weitere anzeigen" toggle, so long Zahlungs-/Rechnungslisten don't flood the
     // page. All data is already loaded — this is pure client-side reveal, no paging.
     function collapsibleRows(items, renderFn, limit = 5) {
-        const wrap = el('div', {});
+        // margin-bottom matches a .card so the list (and its toggle button, which is
+        // inline-flex and wouldn't space the next section on its own) keeps the normal
+        // 0.75rem gap to whatever follows. Verified: 12px in the rendered layout.
+        const wrap = el('div', { style: 'margin-bottom:.75rem' });
         items.slice(0, limit).forEach((it) => wrap.append(renderFn(it)));
         const rest = items.slice(limit);
         if (!rest.length) return wrap;
@@ -3163,7 +3166,7 @@
             sched.append(el('div', { class: 'card-meta' }, 'Verzeichnis: ' + esc(st.dir) + ' — noch keine Dateien.'));
         } else {
             sched.append(el('div', { class: 'card-meta', style: 'margin-bottom:.5rem' }, 'Verzeichnis: ' + esc(st.dir)));
-            for (const f of st.files) sched.append(backupFileRow(f, '/api/backup/file/'));
+            sched.append(collapsibleRows(st.files, (f) => backupFileRow(f, '/api/backup/file/')));
         }
         page.append(el('div', { class: 'card', style: 'margin-top:1rem' }, el('h3', {}, 'Volume-Backups'), sched));
 
@@ -3176,7 +3179,7 @@
                 el('div', { style: 'flex:1;min-width:0' }, el('div', { class: 'card-meta' }, 'Bucket: ' + esc(st.s3_bucket))),
                 el('button', { class: 'btn btn-primary btn-sm', onclick: (e) => uploadToS3(e.currentTarget) }, 'Jetzt in S3 sichern')));
             if (!st.s3_files.length) s3box.append(el('div', { class: 'card-meta' }, 'Noch keine Objekte im Bucket.'));
-            else for (const f of st.s3_files) s3box.append(backupFileRow(f, '/api/backup/s3/file/', () => restoreFromS3(f.name)));
+            else s3box.append(collapsibleRows(st.s3_files, (f) => backupFileRow(f, '/api/backup/s3/file/', () => restoreFromS3(f.name))));
         }
         page.append(el('div', { class: 'card', style: 'margin-top:1rem' }, el('h3', {}, 'S3-Sicherung (extern)'), s3box));
 
