@@ -706,7 +706,7 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, out)
 }
 
-// CancelInvoice issues a Storno (cancelling document) for an invoice: no delete
+// CancelInvoice issues a Storno (canceling document) for an invoice: no delete
 // (Unveränderbarkeit) — a new numbered document mirrors the original with negated
 // amounts, points at it via cancels_id, marks the original canceled, and releases
 // its locked positions so they can be re-invoiced.
@@ -882,11 +882,7 @@ func (h *Handler) PayInvoices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pr := paymentRequest{Amount: req.Amount, Method: req.Method, Note: req.Note, PaidOn: req.PaidOn}
-	paidOn, badMsg, serr := h.validatePayment(r.Context(), pid, &pr)
-	if serr != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
+	paidOn, badMsg := h.validatePayment(&pr)
 	if badMsg != "" {
 		writeError(w, http.StatusBadRequest, badMsg)
 		return

@@ -387,35 +387,37 @@ func (h *Handler) settlePaymentTx(ctx context.Context, tx pgx.Tx, paymentID int6
 // validatePayment normalizes and checks a payment request, returning the parsed
 // date. A non-empty badMsg is a 400 reason; a non-nil error is a 500. A bound
 // vehicle (optional context) must belong to the same person.
-func (h *Handler) validatePayment(ctx context.Context, personID int64, req *paymentRequest) (time.Time, string, error) {
+// validatePayment normalizes and validates a payment request, returning the
+// effective paid_on date and a non-empty message when the input is invalid.
+func (h *Handler) validatePayment(req *paymentRequest) (time.Time, string) {
 	req.Method = trim(req.Method)
 	req.Note = trim(req.Note)
 	if req.Method == "" {
 		req.Method = "bar"
 	}
 	if !paymentMethods[req.Method] {
-		return time.Time{}, "unknown payment method", nil
+		return time.Time{}, "unknown payment method"
 	}
 	if req.Amount <= 0 {
-		return time.Time{}, "amount must be greater than 0", nil
+		return time.Time{}, "amount must be greater than 0"
 	}
 	// Reject out-of-range amounts before they hit NUMERIC(12,2) and 500 with an
 	// overflow error. maxMoneyAmount fits the column with headroom.
 	if req.Amount > maxMoneyAmount {
-		return time.Time{}, "amount exceeds the allowed maximum", nil
+		return time.Time{}, "amount exceeds the allowed maximum"
 	}
 	if !validNameLength(req.Note) {
-		return time.Time{}, "note is too long", nil
+		return time.Time{}, "note is too long"
 	}
 	paidOn := time.Now()
 	if trim(req.PaidOn) != "" {
 		t, perr := time.Parse(dateLayout, trim(req.PaidOn))
 		if perr != nil {
-			return time.Time{}, "paid_on must be YYYY-MM-DD", nil
+			return time.Time{}, "paid_on must be YYYY-MM-DD"
 		}
 		paidOn = t
 	}
-	return paidOn, "", nil
+	return paidOn, ""
 }
 
 // CreatePayment records a payment for a person (editor role).
@@ -430,11 +432,7 @@ func (h *Handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	paidOn, badMsg, serr := h.validatePayment(r.Context(), id, &req)
-	if serr != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
+	paidOn, badMsg := h.validatePayment(&req)
 	if badMsg != "" {
 		writeError(w, http.StatusBadRequest, badMsg)
 		return

@@ -188,7 +188,7 @@ func TestReToggleManuallySettledChargeNoError(t *testing.T) {
 	setChargePaidT(t, h, cid, true)
 }
 
-// TestStornoReleasesPeriodLocks (B1-Rest): cancelling the invoice releases its
+// TestStornoReleasesPeriodLocks (B1-Rest): canceling the invoice releases its
 // per-period locks so the same periods become fakturierbar again (BAO Storno).
 func TestStornoReleasesPeriodLocks(t *testing.T) {
 	h := testHandler(t)

@@ -1076,12 +1076,9 @@ func (h *Handler) ArchiveSettledExpiredVehicles(ctx context.Context, personID in
 // and a vehicle bound to any Pauschale bills nothing itself (ownership model —
 // the agreement's flat amount is the only charge, regardless of how long each
 // bound vehicle is stored).
-func personRent(agreements []models.FlatRatePeriod, vehicles []models.Vehicle, cats map[int64]models.Category, from, to time.Time) (accrued, paid float64) {
+func personRent(agreements []models.FlatRatePeriod, vehicles []models.Vehicle, cats map[int64]models.Category, from, to time.Time) (accrued float64) {
 	for i := range agreements {
 		accrued += agreements[i].CostInRange(from, to)
-		// Paid is tracked per sub-period (year/month); the master Paid flag counts
-		// every sub-period as paid, preserving legacy behavior.
-		paid += float64(agreements[i].PaidCentsInRange(from, to)) / 100
 	}
 	for i := range vehicles {
 		v := &vehicles[i]
@@ -1090,11 +1087,7 @@ func personRent(agreements []models.FlatRatePeriod, vehicles []models.Vehicle, c
 		if len(coveringAgreements(agreements, v.ID, v.StartDate)) > 0 {
 			continue
 		}
-		c := v.CostInRange(cats[v.CategoryID], from, to)
-		accrued += c
-		if v.Paid {
-			paid += c
-		}
+		accrued += v.CostInRange(cats[v.CategoryID], from, to)
 	}
-	return accrued, paid
+	return accrued
 }

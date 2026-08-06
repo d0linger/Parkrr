@@ -71,7 +71,7 @@ func TestCollectedTodayEqualsStoredToday(t *testing.T) {
 	}
 }
 
-// TestCancelledVehicleStopsAccrual (audit W1): cancelling a vehicle must set an
+// TestCancelledVehicleStopsAccrual (audit W1): canceling a vehicle must set an
 // end_date so rent stops accruing — otherwise the archived vehicle grows an
 // uncollectable receivable forever.
 func TestCancelledVehicleStopsAccrual(t *testing.T) {

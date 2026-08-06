@@ -103,7 +103,10 @@ func chargeSettled(agreements []models.FlatRatePeriod, vehicleID *int64, charged
 
 // chargeAmounts computes one charge row's total (amount × quantity) and its paid
 // portion — the whole total when chargeSettled reports it paid, otherwise 0. The
-// vehicle's stored paid flag is looked up in vehPaid.
+// paid return is currently unused by the balance (charges settle via the payment
+// path) but is kept as the symmetric settlement helper alongside recurringPaidBound.
+//
+//nolint:unparam // paid retained as the settlement API; see comment above
 func chargeAmounts(agreements []models.FlatRatePeriod, vehPaid map[int64]bool, vid *int64, amount, qty float64, chargedOn time.Time, ownPaid bool) (total, paid float64) {
 	// Round each charge's line total to the cent, exactly as the invoice and the
 	// payment path do (round2(amount*qty)) — and normalize qty<=0 → 1 the same way
@@ -125,11 +128,11 @@ func chargeAmounts(agreements []models.FlatRatePeriod, vehPaid map[int64]bool, v
 // personChargeSums returns a person's total charges and the paid portion, with a
 // vehicle-bound charge settled via its covering Pauschale (or the vehicle's own
 // paid flag). vehPaid maps a vehicle id to its stored paid flag.
-func (h *Handler) personChargeSums(ctx context.Context, personID int64, agreements []models.FlatRatePeriod, vehPaid map[int64]bool) (total, paid float64, err error) {
+func (h *Handler) personChargeSums(ctx context.Context, personID int64, agreements []models.FlatRatePeriod, vehPaid map[int64]bool) (total float64, err error) {
 	rows, qerr := h.Pool.Query(ctx,
 		`SELECT vehicle_id, amount, quantity, charged_on, paid FROM charges WHERE person_id=$1`, personID)
 	if qerr != nil {
-		return 0, 0, qerr
+		return 0, qerr
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -138,13 +141,12 @@ func (h *Handler) personChargeSums(ctx context.Context, personID int64, agreemen
 		var chargedOn time.Time
 		var ownPaid bool
 		if serr := rows.Scan(&vid, &amount, &qty, &chargedOn, &ownPaid); serr != nil {
-			return 0, 0, serr
+			return 0, serr
 		}
-		t, p := chargeAmounts(agreements, vehPaid, vid, amount, qty, chargedOn, ownPaid)
+		t, _ := chargeAmounts(agreements, vehPaid, vid, amount, qty, chargedOn, ownPaid)
 		total += t
-		paid += p
 	}
-	return total, paid, rows.Err()
+	return total, rows.Err()
 }
 
 // personPeriodPaid sums money settled through the per-period Pauschale / recurring
@@ -322,7 +324,7 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	// Rent = flat-rate agreements + per-vehicle cost of standalone vehicles.
 	// Vehicles bound to a Pauschale bill nothing individually (ownership model).
 	until := models.DayAfter(now)
-	rentAccrued, _ := personRent(agreements, vehicles, cats, time.Time{}, until)
+	rentAccrued := personRent(agreements, vehicles, cats, time.Time{}, until)
 
 	vehPaid := vehiclePaidMap(vehicles)
 	recurs, err := h.loadRecurringCharges(r.Context(), id, now)
@@ -388,7 +390,7 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	// Extra charges are billed on top of rent; a bound charge is paid when its
 	// covering Pauschale's period is paid (or the vehicle's own paid flag is set),
 	// a standalone charge when its own flag is set.
-	totalCharges, _, err := h.personChargeSums(r.Context(), id, agreements, vehPaid)
+	totalCharges, err := h.personChargeSums(r.Context(), id, agreements, vehPaid)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -473,13 +475,13 @@ func (h *Handler) personAccruedTotal(r *http.Request, id int64) (float64, error)
 	}
 	setFlatRateCoverage(vehicles, map[int64][]models.FlatRatePeriod{id: ags}, now)
 	until := models.DayAfter(now)
-	rentAccrued, _ := personRent(ags, vehicles, cats, time.Time{}, until)
+	rentAccrued := personRent(ags, vehicles, cats, time.Time{}, until)
 	vehPaid := vehiclePaidMap(vehicles)
 	recurs, err := h.loadRecurringCharges(ctx, id, now)
 	if err != nil {
 		return 0, err
 	}
-	totalCharges, _, err := h.personChargeSums(ctx, id, ags, vehPaid)
+	totalCharges, err := h.personChargeSums(ctx, id, ags, vehPaid)
 	if err != nil {
 		return 0, err
 	}
@@ -588,7 +590,7 @@ func (h *Handler) outstandingByPerson(r *http.Request) (map[int64]float64, error
 
 	out := make(map[int64]float64, len(personIDs))
 	for pid := range personIDs {
-		tAcc, _ := personRent(agByPerson[pid], vehByPerson[pid], cats, time.Time{}, until)
+		tAcc := personRent(agByPerson[pid], vehByPerson[pid], cats, time.Time{}, until)
 		owed := (tAcc + chargesByPerson[pid] + invoicedTaxByPerson[pid]) - paymentsByPerson[pid] -
 			personPeriodPaid(agByPerson[pid], recurByPerson[pid], now, lockedByPerson[pid])
 		out[pid] = round2(owed)
@@ -820,13 +822,13 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	var outstandingSum float64 // Σ of positive per-person balances (real receivable)
 	for pid := range personIDs {
 		ag, vs := agByPerson[pid], vehByPerson[pid]
-		tAcc, _ := personRent(ag, vs, cats, time.Time{}, until)
+		tAcc := personRent(ag, vs, cats, time.Time{}, until)
 		resp.AccruedTotal += tAcc
-		yAcc, _ := personRent(ag, vs, cats, yearStart, yearEnd)
+		yAcc := personRent(ag, vs, cats, yearStart, yearEnd)
 		resp.AccruedThisYear += yAcc
-		pAcc, _ := personRent(ag, vs, cats, prevStart, prevEnd)
+		pAcc := personRent(ag, vs, cats, prevStart, prevEnd)
 		resp.AccruedPrevYear += pAcc
-		fAcc, _ := personRent(ag, vs, cats, prevStart, yearStart)
+		fAcc := personRent(ag, vs, cats, prevStart, yearStart)
 		resp.AccruedPrevFull += fAcc
 		pm := personMonthly(ag, vs, cats, resp.Year, now)
 		for m := range resp.RevenueByMonth {
@@ -933,7 +935,7 @@ func personMonthly(agreements []models.FlatRatePeriod, vehicles []models.Vehicle
 		if !to.After(from) {
 			continue
 		}
-		acc, _ := personRent(agreements, vehicles, cats, from, to)
+		acc := personRent(agreements, vehicles, cats, from, to)
 		out[m] = round2(acc)
 	}
 	return out
@@ -964,7 +966,7 @@ func personYears(agreements []models.FlatRatePeriod, vehicles []models.Vehicle, 
 		if !to.After(from) {
 			continue
 		}
-		acc, _ := personRent(agreements, vehicles, cats, from, to)
+		acc := personRent(agreements, vehicles, cats, from, to)
 		if c := round2(acc); c > 0 {
 			res = append(res, models.YearStat{Year: y, Cost: c})
 		}
