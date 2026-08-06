@@ -53,7 +53,16 @@ func (h *Handler) autoArchiveIfClosed(r *http.Request, id int64) {
 	ct, err := h.Pool.Exec(r.Context(),
 		`UPDATE vehicles SET archived=true, updated_at=now()
 		 WHERE id=$1 AND archived=false
-		   AND (status='cancelled' OR (status='collected' AND paid))`, id)
+		   AND (status='cancelled'
+		        OR (status='collected' AND paid)
+		        -- collected + settled through invoice(s): has a covering non-canceled
+		        -- invoice and none of them is still open (all fully paid).
+		        OR (status='collected'
+		            AND EXISTS (SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+		                        WHERE s.kind='vehicle' AND s.ref_id=$1 AND NOT i.canceled)
+		            AND NOT EXISTS (SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+		                            WHERE s.kind='vehicle' AND s.ref_id=$1 AND NOT i.canceled
+		                              AND (i.total - i.paid_amount) > 0.005)))`, id)
 	if err == nil && ct.RowsAffected() > 0 {
 		h.audit(r, "update", "vehicle", id, "Gefährt archiviert (abgeschlossen): "+h.vehicleDesc(r, id))
 	}
@@ -125,6 +134,10 @@ func (h *Handler) ListVehicles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setFlatRateCoverage(vehicles, agByPerson, now)
+	if err := h.setVehicleInvoiceStatus(r.Context(), vehicles); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 	writeJSON(w, http.StatusOK, vehicles)
 }
 
@@ -730,6 +743,10 @@ func (h *Handler) writeVehicle(w http.ResponseWriter, ctx context.Context, id in
 	}
 	vs := []models.Vehicle{v}
 	setFlatRateCoverage(vs, agByPerson, now)
+	if err := h.setVehicleInvoiceStatus(ctx, vs); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load vehicle")
+		return
+	}
 	writeJSON(w, status, vs[0])
 }
 
@@ -754,6 +771,63 @@ func scanVehicleRow(row rowScanner) (models.Vehicle, models.Category, error) {
 	v.CategoryName = cat.Name
 	v.PersonName = trim(firstName + " " + lastName)
 	return v, cat, nil
+}
+
+// archiveInvoiceSettledCollected archives a person's collected vehicles that are
+// now settled through fully-paid invoice(s) — called after an invoice payment so
+// paying the invoice closes the vehicle out, mirroring autoArchiveIfClosed's
+// invoice branch for the bulk (one payment can settle several invoices/vehicles).
+func (h *Handler) archiveInvoiceSettledCollected(ctx context.Context, personID int64) {
+	_, _ = h.Pool.Exec(ctx,
+		`UPDATE vehicles v SET archived=true, updated_at=now()
+		  WHERE v.person_id=$1 AND v.archived=false AND v.status='collected'
+		    AND EXISTS (SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+		                WHERE s.kind='vehicle' AND s.ref_id=v.id AND NOT i.canceled)
+		    AND NOT EXISTS (SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+		                    WHERE s.kind='vehicle' AND s.ref_id=v.id AND NOT i.canceled
+		                      AND (i.total - i.paid_amount) > 0.005)`, personID)
+}
+
+// setVehicleInvoiceStatus fills Invoiced/InvoiceOpen for each vehicle from the
+// invoice_source → invoices join: Invoiced when a non-canceled invoice bills it,
+// InvoiceOpen when at least one covering invoice is not fully paid. One batched
+// query for the whole slice.
+func (h *Handler) setVehicleInvoiceStatus(ctx context.Context, vehicles []models.Vehicle) error {
+	if len(vehicles) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(vehicles))
+	for i := range vehicles {
+		ids = append(ids, vehicles[i].ID)
+	}
+	rows, err := h.Pool.Query(ctx,
+		`SELECT s.ref_id, count(*) FILTER (WHERE (i.total - i.paid_amount) > 0.005) AS open_n
+		   FROM invoice_source s JOIN invoices i ON i.id = s.invoice_id
+		  WHERE s.kind='vehicle' AND NOT i.canceled AND s.ref_id = ANY($1)
+		  GROUP BY s.ref_id`, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	openN := map[int64]int{}
+	for rows.Next() {
+		var ref int64
+		var n int
+		if err := rows.Scan(&ref, &n); err != nil {
+			return err
+		}
+		openN[ref] = n // presence of the key = invoiced (≥1 covering invoice)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range vehicles {
+		if n, ok := openN[vehicles[i].ID]; ok {
+			vehicles[i].Invoiced = true
+			vehicles[i].InvoiceOpen = n > 0
+		}
+	}
+	return nil
 }
 
 // enrich fills in derived cost/status fields on a vehicle as of the given time.

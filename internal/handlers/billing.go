@@ -997,6 +997,8 @@ func (h *Handler) PayInvoices(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not record payment")
 		return
 	}
+	// Paying an invoice can fully settle a collected vehicle → close it out.
+	h.archiveInvoiceSettledCollected(r.Context(), pid)
 	writeJSON(w, http.StatusCreated, out)
 }
 

@@ -1006,5 +1006,8 @@ func (h *Handler) loadVehiclesWithCategories(r *http.Request, personID int64) ([
 	if err := rows.Err(); err != nil {
 		return nil, nil, err
 	}
+	if err := h.setVehicleInvoiceStatus(r.Context(), vehicles); err != nil {
+		return nil, nil, err
+	}
 	return vehicles, cats, nil
 }

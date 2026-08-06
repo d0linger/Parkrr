@@ -456,3 +456,47 @@ func TestBackdatedCollectBelowInvoicedBlocked(t *testing.T) {
 		t.Errorf("back-dated collect below an invoiced period must be 409, got %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// getVehicleT returns a person's vehicle (incl. archived) from ListVehicles.
+func getVehicleT(t *testing.T, h *Handler, pid, vid int64) models.Vehicle {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	h.ListVehicles(rec, httptest.NewRequest(http.MethodGet, "/api/vehicles?person_id="+strconv.FormatInt(pid, 10), nil))
+	var vehs []models.Vehicle
+	if err := json.Unmarshal(rec.Body.Bytes(), &vehs); err != nil {
+		t.Fatalf("decode vehicles: %v", err)
+	}
+	for _, x := range vehs {
+		if x.ID == vid {
+			return x
+		}
+	}
+	t.Fatalf("vehicle %d not found", vid)
+	return models.Vehicle{}
+}
+
+// TestInvoicedVehicleBadgeAndArchive (3-part fix): a collected vehicle billed on
+// an invoice shows invoiced/invoice_open, and once the invoice is fully paid it
+// flips to invoiced+!open and is auto-archived (balance 0).
+func TestInvoicedVehicleBadgeAndArchive(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	vid := mkStoredVehicle(t, h, pid, 30, firstOfMonthMonthsAgo(3).Format("2006-01-02"))
+	// Collect with a PAST end date so every period has elapsed → fully invoiceable.
+	setStatus(t, h, vid, "collected", firstOfMonthMonthsAgo(1).Format("2006-01-02"))
+	iv := createInvoice(t, h, pid)
+
+	if v := getVehicleT(t, h, pid, vid); !v.Invoiced || !v.InvoiceOpen || v.Archived {
+		t.Fatalf("after invoicing: invoiced=%v open=%v archived=%v (want true,true,false)", v.Invoiced, v.InvoiceOpen, v.Archived)
+	}
+
+	payInvoices(t, h, pid, map[string]any{"amount": iv.Total, "method": "bar", "auto": true})
+
+	if v := getVehicleT(t, h, pid, vid); !v.Invoiced || v.InvoiceOpen || !v.Archived {
+		t.Errorf("after paying the invoice: invoiced=%v open=%v archived=%v (want true,false,true)", v.Invoiced, v.InvoiceOpen, v.Archived)
+	}
+	if b := personStatsT(t, h, pid).Balance; math.Abs(b) > 0.005 {
+		t.Errorf("balance after full payment must be 0, got %.2f", b)
+	}
+}

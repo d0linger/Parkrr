@@ -475,6 +475,12 @@ type Vehicle struct {
 	FlatRateCovered bool    `json:"flat_rate_covered"`
 	FlatRateActive  bool    `json:"flat_rate_active"`
 	UncoveredCost   float64 `json:"uncovered_cost"`
+	// Invoiced is true when a non-canceled invoice bills this vehicle (settle via
+	// the invoice, not the per-vehicle slider). InvoiceOpen is true while at least
+	// one covering invoice is not fully paid; when Invoiced && !InvoiceOpen the
+	// vehicle is settled through a paid invoice (shown as "bezahlt", archivable).
+	Invoiced    bool `json:"invoiced"`
+	InvoiceOpen bool `json:"invoice_open"`
 }
 
 // ServiceType is a catalog entry for a chargeable extra service.

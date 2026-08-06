@@ -1513,6 +1513,12 @@
         const wrap = el('div', { class: 'controls-row' });
         const c = coverage(v);
         const pauschaleBadge = (label, title) => el('span', { class: 'badge badge-cat', title }, label);
+        // An invoiced vehicle settles via its invoice, not the per-vehicle slider:
+        // "fakturiert" while a covering invoice is still open, "bezahlt · Rechnung"
+        // once all covering invoices are paid.
+        const invoiceBadge = () => v.invoice_open
+            ? el('span', { class: 'badge badge-collected', title: 'Fakturiert – über die Rechnung begleichen' }, 'fakturiert')
+            : el('span', { class: 'badge badge-active', title: 'Über eine bezahlte Rechnung beglichen' }, 'bezahlt · Rechnung');
         // Archived (closed) vehicles are read-only: show the settled state as
         // badges and offer a one-tap reactivate instead of the live sliders.
         if (v.archived) {
@@ -1521,6 +1527,8 @@
             // the per-vehicle paid state.
             if (c.settled) {
                 wrap.append(pauschaleBadge('über Pauschale abgerechnet', 'Zahlung erfolgt über die Pauschale'));
+            } else if (v.invoiced) {
+                wrap.append(invoiceBadge());
             } else {
                 wrap.append(el('span', { class: 'badge ' + (v.paid ? 'badge-active' : 'badge-ended') }, v.paid ? 'bezahlt' : 'offen'));
                 if (c.active) wrap.append(pauschaleBadge('in Pauschale', 'Teilweise über eine Pauschale abgerechnet'));
@@ -1540,6 +1548,9 @@
             if (c.settled) {
                 // Nothing owed per vehicle; payment belongs to the Pauschale.
                 wrap.append(pauschaleBadge('über Pauschale abgerechnet', 'Zahlung erfolgt über die Pauschale'));
+            } else if (v.invoiced) {
+                // Settled via its invoice, not the slider — show the invoice state.
+                wrap.append(invoiceBadge());
             } else {
                 // A remainder is owed (e.g. the Pauschale has ended, or covers only
                 // part of the period) — settle it with the per-vehicle slider.
