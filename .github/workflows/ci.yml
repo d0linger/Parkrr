@@ -70,5 +70,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Minify embedded static JS before the image build (same as docker-publish),
+      # so the validation build exercises the shipped, minified assets.
+      - name: Minify static JavaScript
+        run: |
+          npx --yes esbuild@0.24.2 web/static/js/app.js --minify --allow-overwrite --outfile=web/static/js/app.js
+          npx --yes esbuild@0.24.2 web/static/sw.js     --minify --allow-overwrite --outfile=web/static/sw.js
+          node --check web/static/js/app.js
+          node --check web/static/sw.js
       - name: Build image
         run: docker build -t parkrr:ci .
