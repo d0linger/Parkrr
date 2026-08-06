@@ -704,7 +704,13 @@ type agreementPaidRequest struct {
 	Paid bool `json:"paid"`
 }
 
-// SetAgreementPaid toggles an agreement's paid status.
+// SetAgreementPaid toggles a whole Pauschale paid via the master slider. "bezahlt"
+// now moves real money, mirroring the per-item sliders: it books a real
+// Zahlungseingang for every completed rent period AND settles the bound Zusatzkosten
+// open on the covered vehicles at that moment (Fix 2 semantics, extended to the
+// Pauschale). "offen" reverses both. Before this, the slider only flipped a flag and
+// deleted the per-period rows — so a paid Pauschale showed no payment and left its
+// extras owed.
 func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
@@ -716,18 +722,22 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	// The master flag is the "reset all" control: it also clears any per-period
-	// payment rows, so "bezahlt" = everything paid and "offen" = nothing paid.
-	tx, err := h.Pool.Begin(r.Context())
+	ctx := r.Context()
+	createdBy := createdByFrom(ctx)
+	tx, err := h.Pool.Begin(ctx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update agreement")
 		return
 	}
-	defer func() { _ = tx.Rollback(r.Context()) }()
-	var pid int64
-	if err := tx.QueryRow(r.Context(),
-		`UPDATE flat_rate_periods SET paid=$1, updated_at=now() WHERE id=$2 RETURNING person_id`,
-		req.Paid, id).Scan(&pid); err != nil {
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Set the flag and load the money fields in one shot — needed to book the real
+	// per-period rent payments below, not just flip paid.
+	var ag models.FlatRatePeriod
+	if err := tx.QueryRow(ctx,
+		`UPDATE flat_rate_periods SET paid=$1, updated_at=now() WHERE id=$2
+		 RETURNING person_id, amount, period, start_date, end_date`,
+		req.Paid, id).Scan(&ag.PersonID, &ag.Amount, &ag.Period, &ag.StartDate, &ag.EndDate); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "agreement not found")
 			return
@@ -735,29 +745,158 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not update agreement")
 		return
 	}
-	if _, err := tx.Exec(r.Context(),
-		`DELETE FROM flat_rate_period_payments WHERE period_id=$1`, id); err != nil {
+	ag.ID = id
+	pid := ag.PersonID
+
+	// "Reset all": drop the per-period rows and every real Zahlungseingang this
+	// agreement's settlement had booked (rent periods + extras), then re-derive from
+	// the new state. Also un-settles bound extras this agreement had settled — and
+	// clears any orphan a per-period toggle followed by a master toggle left behind.
+	if _, err := tx.Exec(ctx, `DELETE FROM flat_rate_period_payments WHERE period_id=$1`, id); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update agreement")
 		return
 	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE charges SET paid=false WHERE id IN (
+		    SELECT pa.ref_id FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id
+		     WHERE pa.kind='charge' AND p.settles_kind='agreement' AND p.settles_ref=$1 AND p.settles_period='extras')`, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update agreement")
+		return
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM payments WHERE auto AND settles_kind='agreement' AND settles_ref=$1`, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update agreement")
+		return
+	}
+
+	if req.Paid {
+		// (a) Rent: one real Zahlungseingang per COMPLETED elapsed period. A still-
+		// running period keeps the off-book credit (its cost is not final yet).
+		for _, per := range ag.ElapsedPeriodsDetailed(time.Now()) {
+			if !per.Complete {
+				continue
+			}
+			if err := recordPeriodPaymentTx(ctx, tx, pid, "agreement", id, per.Key, per.Cost, createdBy); err != nil {
+				writeError(w, http.StatusInternalServerError, "could not update agreement")
+				return
+			}
+		}
+		// (b) Extras: settle the bound Zusatzkosten open on covered vehicles right now
+		// (charges added later stay billable — Option A).
+		if err := h.settleAgreementExtrasTx(ctx, tx, id, pid, createdBy); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not update agreement")
+			return
+		}
+	}
+
 	state := "offen"
 	if req.Paid {
 		state = "bezahlt"
 	}
 	// Audit inside the tx (before commit): the settlement change and its trail
 	// commit together (C7 / BAO §131).
-	if err := h.auditTx(r.Context(), tx, r, "update", "flatrate", id,
-		"Pauschale "+personLabelTx(r.Context(), tx, pid)+" "+state); err != nil {
+	if err := h.auditTx(ctx, tx, r, "update", "flatrate", id,
+		"Pauschale "+personLabelTx(ctx, tx, pid)+" "+state); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update agreement")
 		return
 	}
-	if err := tx.Commit(r.Context()); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update agreement")
 		return
 	}
 	// Settling the last open period may finish the agreement -> archive vehicles.
-	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), pid)
+	_, _ = h.ArchiveSettledExpiredVehicles(ctx, pid)
 	h.writeAgreements(w, r, pid)
+}
+
+// settleAgreementExtrasTx books ONE auto-payment covering the bound Zusatzkosten
+// currently open on the agreement's covered vehicles, allocates a line per charge,
+// and marks them paid — the Pauschale-slider twin of the vehicle slider (Fix 2). A
+// charge already settled elsewhere (its (kind,ref) allocation exists) is skipped, so
+// the recorded amount matches exactly what this settles. Nothing open → no row. The
+// payment carries settles_period='extras' so SetAgreementPaid can find and reverse
+// exactly it on "offen".
+func (h *Handler) settleAgreementExtrasTx(ctx context.Context, tx pgx.Tx, agreementID, personID int64, createdBy *int64) error {
+	// Covered vehicles: the explicit links, or — for a person-wide agreement with no
+	// links — all of the person's vehicles.
+	vrows, err := tx.Query(ctx, `SELECT vehicle_id FROM flat_rate_period_vehicles WHERE period_id=$1`, agreementID)
+	if err != nil {
+		return err
+	}
+	var vids []int64
+	for vrows.Next() {
+		var v int64
+		if err := vrows.Scan(&v); err != nil {
+			vrows.Close()
+			return err
+		}
+		vids = append(vids, v)
+	}
+	vrows.Close()
+	if err := vrows.Err(); err != nil {
+		return err
+	}
+
+	// Open bound charges on those vehicles not already settled by another allocation.
+	const base = `SELECT c.id, c.amount, c.quantity FROM charges c
+	   WHERE c.person_id=$1 AND c.vehicle_id IS NOT NULL AND NOT c.paid
+	     AND NOT EXISTS (SELECT 1 FROM payment_allocations pa WHERE pa.kind='charge' AND pa.ref_id=c.id)`
+	var crows pgx.Rows
+	if len(vids) == 0 {
+		crows, err = tx.Query(ctx, base, personID)
+	} else {
+		crows, err = tx.Query(ctx, base+` AND c.vehicle_id = ANY($2)`, personID, vids)
+	}
+	if err != nil {
+		return err
+	}
+	type ext struct {
+		id    int64
+		total float64
+	}
+	var exts []ext
+	var total float64
+	for crows.Next() {
+		var cid int64
+		var amt, qty float64
+		if err := crows.Scan(&cid, &amt, &qty); err != nil {
+			crows.Close()
+			return err
+		}
+		if qty <= 0 {
+			qty = 1
+		}
+		if t := round2(amt * qty); t > 0.005 {
+			exts = append(exts, ext{cid, t})
+			total += t
+		}
+	}
+	crows.Close()
+	if err := crows.Err(); err != nil {
+		return err
+	}
+	if round2(total) < 0.005 {
+		return nil
+	}
+
+	var payID int64
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO payments (person_id, amount, method, note, auto, settles_kind, settles_ref, settles_period, created_by)
+		 VALUES ($1,$2,'bar','Pauschale Zusatzkosten (Slider)',true,'agreement',$3,'extras',$4) RETURNING id`,
+		personID, round2(total), agreementID, createdBy).Scan(&payID); err != nil {
+		return err
+	}
+	for _, e := range exts {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO payment_allocations (payment_id, kind, ref_id, amount) VALUES ($1,'charge',$2,$3)
+			 ON CONFLICT (kind, ref_id) DO NOTHING`, payID, e.id, e.total); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE charges SET paid=true WHERE id=$1`, e.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type agreementPeriodPaidRequest struct {

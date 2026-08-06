@@ -2425,12 +2425,13 @@
     }
     function financeRow(it) {
         const bound = it.vehicle_id != null;
-        // A bound charge is settled either by its vehicle's slider (vehicle_paid) or
-        // through a fully-paid Rechnung (invoiced && !invoice_open) — PayInvoices
-        // settles the invoice, not the raw charge flag, so the paid Rechnung must
-        // count here too, else the extra lingers as "offen" after being paid.
+        // A bound charge is settled by its vehicle's slider (vehicle_paid), its
+        // covering Pauschale slider (which sets the charge's own paid flag), or a
+        // fully-paid Rechnung (invoiced && !invoice_open — PayInvoices settles the
+        // invoice, not the raw flag). Honour all three, else a paid extra lingers
+        // as "offen".
         const invoiceSettled = bound && it.invoiced && !it.invoice_open;
-        const paidEff = bound ? (!!it.vehicle_paid || invoiceSettled) : !!it.paid;
+        const paidEff = bound ? (!!it.paid || !!it.vehicle_paid || invoiceSettled) : !!it.paid;
         const title = it.description ? esc(it.description) : 'Zusatzkosten';
         const metaBits = [esc(it.person_name), fmtDate(it.charged_on)];
         if (it.quantity !== 1) metaBits.push(`${it.quantity}×${eur(it.amount)}`);
