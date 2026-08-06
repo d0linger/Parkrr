@@ -34,8 +34,25 @@ func TestAgreementInvoicePaidPeriodsPopulated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load agreements: %v", err)
 	}
-	if got := agreementByID(agsAfter, aid); len(got.InvoicePaidPeriods) != 3 {
-		t.Errorf("after paying the invoice, the 3 completed periods must be invoice-paid, got %v", got.InvoicePaidPeriods)
+	// The invoice-paid periods must be exactly the three completed months — verify the
+	// keys as an unordered set, not just the count, so a wrong/unrelated key is caught.
+	got := agreementByID(agsAfter, aid).InvoicePaidPeriods
+	want := []string{
+		firstOfMonthMonthsAgo(3).Format("2006-01"),
+		firstOfMonthMonthsAgo(2).Format("2006-01"),
+		firstOfMonthMonthsAgo(1).Format("2006-01"),
+	}
+	set := map[string]bool{}
+	for _, k := range got {
+		set[k] = true
+	}
+	if len(got) != len(set) || len(got) != len(want) {
+		t.Fatalf("expected exactly the 3 completed months %v as invoice-paid, got %v", want, got)
+	}
+	for _, k := range want {
+		if !set[k] {
+			t.Errorf("missing invoice-paid period %q; got %v (want %v)", k, got, want)
+		}
 	}
 }
 
