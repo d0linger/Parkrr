@@ -627,6 +627,22 @@ func (h *Handler) saveAgreement(r *http.Request, id, personID int64, a models.Fl
 }
 
 // DeleteAgreement removes an agreement.
+// clearAgreementSettlementTx removes an agreement's auto settlement money before the
+// row is deleted: un-settle the bound extras it paid, then delete its period + extras
+// auto-payments. Without this a deleted paid Pauschale leaves orphan Zahlungseingänge
+// that still count as money-in (phantom Guthaben).
+func clearAgreementSettlementTx(ctx context.Context, tx pgx.Tx, id int64) error {
+	if _, err := tx.Exec(ctx,
+		`UPDATE charges SET paid=false WHERE id IN (
+		    SELECT pa.ref_id FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id
+		     WHERE pa.kind='charge' AND p.settles_kind='agreement' AND p.settles_ref=$1 AND p.settles_period='extras')`, id); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx,
+		`DELETE FROM payments WHERE auto AND settles_kind='agreement' AND settles_ref=$1`, id)
+	return err
+}
+
 func (h *Handler) DeleteAgreement(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
@@ -657,6 +673,10 @@ func (h *Handler) DeleteAgreement(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer func() { _ = tx.Rollback(r.Context()) }()
+		if err := clearAgreementSettlementTx(r.Context(), tx, id); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not delete agreement")
+			return
+		}
 		// Delete only vehicles exclusive to this agreement (their join rows
 		// cascade). A vehicle shared with another agreement — possible for
 		// non-overlapping windows — is left intact and merely unbound here.
@@ -677,12 +697,21 @@ func (h *Handler) DeleteAgreement(w http.ResponseWriter, r *http.Request) {
 		}
 		affected = ct.RowsAffected()
 	} else {
-		ct, err := h.Pool.Exec(r.Context(), `DELETE FROM flat_rate_periods WHERE id=$1`, id)
-		if err != nil {
+		txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+			if err := clearAgreementSettlementTx(r.Context(), tx, id); err != nil {
+				return err
+			}
+			ct, err := tx.Exec(r.Context(), `DELETE FROM flat_rate_periods WHERE id=$1`, id)
+			if err != nil {
+				return err
+			}
+			affected = ct.RowsAffected()
+			return nil
+		})
+		if txErr != nil {
 			writeError(w, http.StatusInternalServerError, "could not delete agreement")
 			return
 		}
-		affected = ct.RowsAffected()
 	}
 	if affected == 0 {
 		writeError(w, http.StatusNotFound, "agreement not found")

@@ -644,6 +644,25 @@
         return opts;
     }
 
+    // collapsibleRows renders the first `limit` items and tucks the rest behind a
+    // "N weitere anzeigen" toggle, so long Zahlungs-/Rechnungslisten don't flood the
+    // page. All data is already loaded — this is pure client-side reveal, no paging.
+    function collapsibleRows(items, renderFn, limit = 5) {
+        const wrap = el('div', {});
+        items.slice(0, limit).forEach((it) => wrap.append(renderFn(it)));
+        const rest = items.slice(limit);
+        if (!rest.length) return wrap;
+        const overflow = el('div', { style: 'display:none' });
+        rest.forEach((it) => overflow.append(renderFn(it)));
+        let open = false;
+        const btn = el('button', { class: 'btn btn-ghost btn-sm btn-block', style: 'margin-top:.4rem' });
+        const label = () => { btn.textContent = open ? 'Weniger anzeigen' : `${rest.length} weitere anzeigen`; };
+        btn.addEventListener('click', () => { open = !open; overflow.style.display = open ? '' : 'none'; label(); });
+        label();
+        wrap.append(overflow, btn);
+        return wrap;
+    }
+
     // ================= ROUTER =================
     const routes = {};
     function parseHash() {
@@ -1099,7 +1118,7 @@
                 el('button', { class: 'btn btn-ghost btn-sm', onclick: (e) => applyCredit(id, e.currentTarget) }, 'Guthaben anrechnen')));
         }
         if (!payments.length) page.append(el('p', { class: 'muted' }, 'Noch keine Zahlungen erfasst.'));
-        else payments.forEach((p) => page.append(paymentRow(id, p)));
+        else page.append(collapsibleRows(payments, (p) => paymentRow(id, p)));
 
         // Rechnungen (fortlaufend nummeriert, unveränderlich)
         const rz = el('div', { class: 'page-head section-head' },
@@ -1108,7 +1127,7 @@
         if (canBill()) rz.append(el('button', { class: 'btn btn-primary btn-sm', onclick: (e) => createInvoiceFor(id, e.currentTarget) }, '+ Rechnung'));
         page.append(rz);
         if (!invoices.length) page.append(el('p', { class: 'muted' }, 'Noch keine Rechnungen. „+ Rechnung" erstellt eine aus den offenen Einzelposten.'));
-        else invoices.forEach((iv) => page.append(invoiceRow(iv)));
+        else page.append(collapsibleRows(invoices, (iv) => invoiceRow(iv)));
 
         // statistics at the bottom, below the actionable sections
         const chartCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Kosten pro Monat · ' + stats.year));

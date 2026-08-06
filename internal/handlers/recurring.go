@@ -402,12 +402,25 @@ func (h *Handler) DeleteRecurringCharge(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusConflict, "Nebenkosten sind fakturiert – nicht löschbar (Storno über die Rechnung)")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM recurring_charges WHERE id=$1`, id)
-	if err != nil {
+	// Remove its auto settle-payments in the same tx as the delete, so a paid-then-
+	// deleted Nebenkosten leaves no orphan Zahlungseingang (phantom money-in).
+	var affected int64
+	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		if err := clearRecurringSettlementTx(r.Context(), tx, id); err != nil {
+			return err
+		}
+		ct, err := tx.Exec(r.Context(), `DELETE FROM recurring_charges WHERE id=$1`, id)
+		if err != nil {
+			return err
+		}
+		affected = ct.RowsAffected()
+		return nil
+	})
+	if txErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete recurring charge")
 		return
 	}
-	if ct.RowsAffected() == 0 {
+	if affected == 0 {
 		writeError(w, http.StatusNotFound, "recurring charge not found")
 		return
 	}
@@ -415,7 +428,10 @@ func (h *Handler) DeleteRecurringCharge(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
-// SetRecurringChargePaid toggles the whole-charge paid flag.
+// SetRecurringChargePaid toggles the whole Nebenkosten paid via its master slider.
+// Like the Pauschale slider, "bezahlt" now books a real Zahlungseingang per completed
+// period (a running period stays on the off-book credit) and "offen" reverses it, so
+// a paid recurring charge shows up in the payments list — not just as a flag.
 func (h *Handler) SetRecurringChargePaid(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
@@ -429,33 +445,60 @@ func (h *Handler) SetRecurringChargePaid(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	ctx := r.Context()
+	createdBy := createdByFrom(ctx)
+	rc, err := h.getRecurring(ctx, id)
+	if err == pgx.ErrNoRows {
+		writeError(w, http.StatusNotFound, "recurring charge not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update recurring charge")
+		return
+	}
 	verb := "recurring marked open"
 	if req.Paid {
 		verb = "recurring marked paid"
 	}
-	var notFound bool
-	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
-		ct, err := tx.Exec(r.Context(),
-			`UPDATE recurring_charges SET paid=$1, updated_at=now() WHERE id=$2`, req.Paid, id)
-		if err != nil {
+	txErr := pgx.BeginFunc(ctx, h.Pool, func(tx pgx.Tx) error {
+		// "Reset all": clear the per-period flags and this charge's settle payments,
+		// then re-derive from the master flag (mirrors the Pauschale slider).
+		if _, err := tx.Exec(ctx,
+			`UPDATE recurring_charges SET paid=$1, paid_periods='{}', paid_fixed='{}'::jsonb, updated_at=now() WHERE id=$2`,
+			req.Paid, id); err != nil {
 			return err
 		}
-		if ct.RowsAffected() == 0 {
-			notFound = true
-			return nil
+		if err := clearRecurringSettlementTx(ctx, tx, id); err != nil {
+			return err
+		}
+		if req.Paid {
+			p := rc.AsPeriod()
+			for _, per := range p.ElapsedPeriodsDetailed(time.Now()) {
+				if !per.Complete {
+					continue
+				}
+				if err := recordPeriodPaymentTx(ctx, tx, rc.PersonID, "recurring", id, per.Key, per.Cost, createdBy); err != nil {
+					return err
+				}
+			}
 		}
 		// Audit in the tx: the settlement change and its trail commit together (C7).
-		return h.auditTx(r.Context(), tx, r, "update", "recurring_charge", id, verb)
+		return h.auditTx(ctx, tx, r, "update", "recurring_charge", id, verb)
 	})
 	if txErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not update recurring charge")
 		return
 	}
-	if notFound {
-		writeError(w, http.StatusNotFound, "recurring charge not found")
-		return
-	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// clearRecurringSettlementTx removes a recurring charge's auto settle-payments — used
+// when it is toggled open and before it is deleted, so no orphan Zahlungseingang
+// (phantom money-in) outlives the settlement or the row.
+func clearRecurringSettlementTx(ctx context.Context, tx pgx.Tx, id int64) error {
+	_, err := tx.Exec(ctx,
+		`DELETE FROM payments WHERE auto AND settles_kind='recurring' AND settles_ref=$1`, id)
+	return err
 }
 
 // SetRecurringChargePeriodPaid settles a single elapsed sub-period: a whole
