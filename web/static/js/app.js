@@ -1045,8 +1045,10 @@
         if (canBill() || ags.length) {
             // A Pauschale only moves to the archive once it has ended AND is fully
             // paid — an ended-but-unpaid agreement stays visible so the open payment
-            // isn't hidden. End date is exclusive (matches the backend).
-            const ended = (a) => a.settled && a.end_date && a.end_date.slice(0, 10) <= today();
+            // isn't hidden. "Fully paid" uses the same invoice-aware state as the
+            // progress bar (agreementPaid().done), so a Pauschale settled through a
+            // paid Rechnung archives too — not only ones cleared via the paid flags.
+            const ended = (a) => agreementPaid(a).done && a.end_date && a.end_date.slice(0, 10) <= today();
             const activeAg = ags.filter((a) => !ended(a));
             const endedAg = ags.filter(ended);
             const frCard = el('div', { class: 'card' });
