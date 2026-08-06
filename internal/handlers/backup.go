@@ -16,9 +16,20 @@ import (
 	"github.com/preining/parkrr/internal/backup"
 )
 
+// clearWriteDeadline lifts the server's WriteTimeout for a long-running response
+// (a large encrypted backup stream, an S3 upload, or a multi-minute pg_restore)
+// so the write isn't aborted mid-flight — which would truncate a download into a
+// corrupt archive or drop a restore's connection before its status is returned.
+// The per-handler context still bounds the work; only the socket write deadline
+// is cleared. Best-effort: a no-op if the writer doesn't support it.
+func clearWriteDeadline(w http.ResponseWriter) {
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+}
+
 // CreateBackup runs an encrypted pg_dump and streams it to the operator as a
 // download (admin-only). Encrypted with PARKRR_BACKUP_KEY (AES-256-GCM).
 func (h *Handler) CreateBackup(w http.ResponseWriter, r *http.Request) {
+	clearWriteDeadline(w)
 	if h.BackupKey == "" {
 		writeError(w, http.StatusServiceUnavailable, "backup is not configured (set PARKRR_BACKUP_KEY)")
 		return
@@ -192,6 +203,7 @@ func safeBackupName(name string) bool {
 
 // BackupDownloadFile serves one scheduled backup from the backup directory.
 func (h *Handler) BackupDownloadFile(w http.ResponseWriter, r *http.Request) {
+	clearWriteDeadline(w)
 	if h.BackupDir == "" {
 		writeError(w, http.StatusNotFound, "no scheduled backup directory configured")
 		return
@@ -246,6 +258,7 @@ func (h *Handler) BackupValidate(w http.ResponseWriter, r *http.Request) {
 // requires confirm=RESTORE and validates the archive first. The restore itself is
 // atomic (pg_restore --single-transaction): a failure rolls back with no change.
 func (h *Handler) BackupRestore(w http.ResponseWriter, r *http.Request) {
+	clearWriteDeadline(w)
 	enc, key, err := readBackupUpload(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -305,6 +318,7 @@ func readBackupUpload(r *http.Request) (enc []byte, key string, err error) {
 // CreateBackupS3 makes an encrypted backup and uploads it to the S3 bucket
 // (no download). keep=0 here so a manual upload never prunes.
 func (h *Handler) CreateBackupS3(w http.ResponseWriter, r *http.Request) {
+	clearWriteDeadline(w)
 	if h.BackupKey == "" || !h.S3.Enabled() {
 		writeError(w, http.StatusServiceUnavailable, "S3 backup is not configured")
 		return
@@ -324,6 +338,7 @@ func (h *Handler) CreateBackupS3(w http.ResponseWriter, r *http.Request) {
 
 // BackupS3Download streams one backup object from the bucket.
 func (h *Handler) BackupS3Download(w http.ResponseWriter, r *http.Request) {
+	clearWriteDeadline(w)
 	if !h.S3.Enabled() {
 		writeError(w, http.StatusNotFound, "S3 is not configured")
 		return
@@ -344,6 +359,7 @@ func (h *Handler) BackupS3Download(w http.ResponseWriter, r *http.Request) {
 // BackupRestoreS3 restores directly from an S3 object — no browser upload, so it
 // handles any size. Requires the matching key and confirm=RESTORE; atomic.
 func (h *Handler) BackupRestoreS3(w http.ResponseWriter, r *http.Request) {
+	clearWriteDeadline(w)
 	if !h.S3.Enabled() {
 		writeError(w, http.StatusServiceUnavailable, "S3 is not configured")
 		return
