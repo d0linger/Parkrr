@@ -225,7 +225,54 @@ func (h *Handler) ListCharges(w http.ResponseWriter, r *http.Request) {
 	// covering Pauschale settles only the base rent, so it does NOT fold into the
 	// charge's displayed paid state. VehiclePaid stays the vehicle's own paid flag
 	// (as scanned) — the explicit settlement path — matching invoiceLines.
+	if err := h.setChargeInvoiceStatus(r.Context(), out); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// setChargeInvoiceStatus derives each charge's Invoiced / InvoiceOpen flags from the
+// invoices that bill it (invoice_source, kind='charge'), the charge-level twin of
+// setVehicleInvoiceStatus. A bound Zusatzkosten settled through a paid Rechnung then
+// shows "bezahlt · Rechnung" instead of a stale "offen" — PayInvoices settles the
+// invoice, not the underlying charge's raw flag, so the state must be derived here.
+func (h *Handler) setChargeInvoiceStatus(ctx context.Context, charges []models.Charge) error {
+	if len(charges) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(charges))
+	for i := range charges {
+		ids = append(ids, charges[i].ID)
+	}
+	rows, err := h.Pool.Query(ctx,
+		`SELECT s.ref_id, count(*) FILTER (WHERE (i.total - i.paid_amount) > 0.005) AS open_n
+		   FROM invoice_source s JOIN invoices i ON i.id = s.invoice_id
+		  WHERE s.kind='charge' AND NOT i.canceled AND s.ref_id = ANY($1)
+		  GROUP BY s.ref_id`, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	openN := map[int64]int{}
+	for rows.Next() {
+		var ref int64
+		var n int
+		if err := rows.Scan(&ref, &n); err != nil {
+			return err
+		}
+		openN[ref] = n // presence of the key = invoiced (≥1 covering invoice)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range charges {
+		if n, ok := openN[charges[i].ID]; ok {
+			charges[i].Invoiced = true
+			charges[i].InvoiceOpen = n > 0
+		}
+	}
+	return nil
 }
 
 type chargeRequest struct {

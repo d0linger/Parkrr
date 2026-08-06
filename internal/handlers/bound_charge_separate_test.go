@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/preining/parkrr/internal/models"
 )
 
 // TestBoundChargeBilledDespitePauschale (#4, Option A): a one-off Zusatzkosten
@@ -124,6 +126,68 @@ func TestBoundChargeSettledByVehicleSlider(t *testing.T) {
 	}
 	if s.PaymentsTotal+0.005 < 60 {
 		t.Errorf("the auto-payment must include the bound extra (>=60), got %.2f", s.PaymentsTotal)
+	}
+}
+
+// listChargesT returns a person's charges via the ListCharges endpoint.
+func listChargesT(t *testing.T, h *Handler, pid int64) []models.Charge {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/charges?person_id="+strconv.FormatInt(pid, 10), nil)
+	rec := httptest.NewRecorder()
+	h.ListCharges(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list charges: %d %s", rec.Code, rec.Body.String())
+	}
+	var out []models.Charge
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	return out
+}
+
+// TestBoundChargeInvoiceStatusSettledWhenInvoicePaid (Fix 3): a bound Zusatzkosten
+// billed on a Rechnung shows "fakturiert" while the invoice is open and flips to
+// "bezahlt · Rechnung" once the invoice is fully paid — PayInvoices settles the
+// invoice, not the raw charge flag, so the status is derived from the covering
+// invoice (mirroring the vehicle). Before the fix it lingered as "offen" forever.
+func TestBoundChargeInvoiceStatusSettledWhenInvoicePaid(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	vid := mkStoredVehicle(t, h, pid, 30, firstOfMonthMonthsAgo(2).Format("2006-01-02"))
+
+	// A bound one-off extra, billed alongside the rent.
+	chBody, _ := json.Marshal(map[string]any{
+		"person_id": pid, "vehicle_id": vid, "description": "Innenreinigung", "amount": 60, "quantity": 1,
+	})
+	chrec := httptest.NewRecorder()
+	h.CreateCharge(chrec, httptest.NewRequest(http.MethodPost, "/api/charges", bytes.NewReader(chBody)))
+	if chrec.Code != http.StatusCreated {
+		t.Fatalf("bound charge: %d %s", chrec.Code, chrec.Body.String())
+	}
+
+	iv := createInvoice(t, h, pid) // bills the rent + the 60€ extra
+
+	// While the invoice is open: the bound charge is "fakturiert" (invoiced, open),
+	// not settled.
+	boundOf := func() models.Charge {
+		for _, c := range listChargesT(t, h, pid) {
+			if c.VehicleID != nil {
+				return c
+			}
+		}
+		t.Fatalf("bound charge not found in list")
+		return models.Charge{}
+	}
+	if c := boundOf(); !c.Invoiced || !c.InvoiceOpen {
+		t.Errorf("before payment the bound charge must be invoiced+open (fakturiert), got invoiced=%v open=%v", c.Invoiced, c.InvoiceOpen)
+	}
+
+	// Pay the invoice in full.
+	full := getInvoiceT(t, h, iv.ID)
+	payInvoices(t, h, pid, map[string]any{"amount": full.Total, "auto": true})
+
+	// Now the bound charge is settled through the paid Rechnung: invoiced, not open.
+	if c := boundOf(); !c.Invoiced || c.InvoiceOpen {
+		t.Errorf("after paying the invoice the bound charge must read bezahlt·Rechnung (invoiced, not open), got invoiced=%v open=%v", c.Invoiced, c.InvoiceOpen)
 	}
 }
 

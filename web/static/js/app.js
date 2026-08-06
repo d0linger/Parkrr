@@ -2425,7 +2425,12 @@
     }
     function financeRow(it) {
         const bound = it.vehicle_id != null;
-        const paidEff = bound ? !!it.vehicle_paid : !!it.paid;
+        // A bound charge is settled either by its vehicle's slider (vehicle_paid) or
+        // through a fully-paid Rechnung (invoiced && !invoice_open) — PayInvoices
+        // settles the invoice, not the raw charge flag, so the paid Rechnung must
+        // count here too, else the extra lingers as "offen" after being paid.
+        const invoiceSettled = bound && it.invoiced && !it.invoice_open;
+        const paidEff = bound ? (!!it.vehicle_paid || invoiceSettled) : !!it.paid;
         const title = it.description ? esc(it.description) : 'Zusatzkosten';
         const metaBits = [esc(it.person_name), fmtDate(it.charged_on)];
         if (it.quantity !== 1) metaBits.push(`${it.quantity}×${eur(it.amount)}`);
@@ -2434,7 +2439,14 @@
         // its vehicle (read-only badge); a free charge gets its offen/bezahlt
         // slider. Keeping it left of the amount keeps the right rail slim.
         let statusEl;
-        if (bound) statusEl = el('span', { class: 'badge ' + (paidEff ? 'badge-active' : 'badge-ended'), title: 'über ' + esc(it.vehicle_label || 'Gefährt') }, (paidEff ? 'bezahlt' : 'offen') + ' · Gefährt');
+        if (bound && it.invoiced) {
+            // Billed on a Rechnung: mirror the vehicle's derived status exactly —
+            // "fakturiert" while a covering invoice is open, "bezahlt · Rechnung" once
+            // all are paid.
+            statusEl = it.invoice_open
+                ? el('span', { class: 'badge badge-collected', title: 'Fakturiert – über die Rechnung begleichen' }, 'fakturiert')
+                : el('span', { class: 'badge badge-active', title: 'Über eine bezahlte Rechnung beglichen' }, 'bezahlt · Rechnung');
+        } else if (bound) statusEl = el('span', { class: 'badge ' + (paidEff ? 'badge-active' : 'badge-ended'), title: 'über ' + esc(it.vehicle_label || 'Gefährt') }, (paidEff ? 'bezahlt' : 'offen') + ' · Gefährt');
         else if (canBill()) statusEl = chargePaidSlider(it);
         else statusEl = el('span', { class: 'badge ' + (paidEff ? 'badge-active' : 'badge-ended') }, paidEff ? 'bezahlt' : 'offen');
         // Right rail: just the amount and (for billers) the row actions.

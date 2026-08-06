@@ -509,8 +509,15 @@ type Charge struct {
 	Total       float64   `json:"total"`
 	// Paid is the charge's own settle flag, used when it is not bound to a
 	// vehicle. Bound charges instead follow VehiclePaid.
-	Paid         bool   `json:"paid"`
-	VehiclePaid  bool   `json:"vehicle_paid"`
+	Paid        bool `json:"paid"`
+	VehiclePaid bool `json:"vehicle_paid"`
+	// Invoiced is set when at least one non-canceled invoice bills this charge;
+	// InvoiceOpen is true while such an invoice is not fully paid. Invoiced &&
+	// !InvoiceOpen means the charge is settled through a paid Rechnung (shown as
+	// "bezahlt · Rechnung"), mirroring the vehicle's derived invoice status — so a
+	// bound Zusatzkosten billed on a paid invoice no longer lingers as "offen".
+	Invoiced     bool   `json:"invoiced"`
+	InvoiceOpen  bool   `json:"invoice_open"`
 	VehicleLabel string `json:"vehicle_label,omitempty"`
 }
 
