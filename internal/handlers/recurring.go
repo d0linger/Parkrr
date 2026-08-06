@@ -96,7 +96,7 @@ func (h *Handler) getRecurring(ctx context.Context, id int64) (models.RecurringC
 	return scanRecurring(h.Pool.QueryRow(ctx, recurringSelect+` WHERE rc.id=$1`, id))
 }
 
-func (h *Handler) loadRecurringCharges(ctx context.Context, personID int64, agreements []models.FlatRatePeriod, vehPaid map[int64]bool, now time.Time) ([]models.RecurringCharge, error) {
+func (h *Handler) loadRecurringCharges(ctx context.Context, personID int64, now time.Time) ([]models.RecurringCharge, error) {
 	rows, err := h.Pool.Query(ctx,
 		recurringSelect+` WHERE rc.person_id=$1 ORDER BY rc.start_date DESC, rc.id DESC`, personID)
 	if err != nil {
@@ -118,7 +118,7 @@ func (h *Handler) loadRecurringCharges(ctx context.Context, personID int64, agre
 // loadAllRecurringCharges groups every recurring charge by person (dashboard),
 // settling bound charges via each person's agreements and the global vehicle
 // paid map.
-func (h *Handler) loadAllRecurringCharges(ctx context.Context, agByPerson map[int64][]models.FlatRatePeriod, vehPaid map[int64]bool, now time.Time) (map[int64][]models.RecurringCharge, error) {
+func (h *Handler) loadAllRecurringCharges(ctx context.Context, now time.Time) (map[int64][]models.RecurringCharge, error) {
 	rows, err := h.Pool.Query(ctx, recurringSelect)
 	if err != nil {
 		return nil, err
@@ -182,19 +182,9 @@ func (h *Handler) ListRecurringCharges(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	now := time.Now()
-	// Bound charges settle via the person's Pauschalen / vehicle paid flags.
-	agreements, err := h.loadAgreements(r.Context(), id, now)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	vehicles, _, err := h.loadVehiclesWithCategories(r, id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	list, err := h.loadRecurringCharges(r.Context(), id, agreements, vehiclePaidMap(vehicles), now)
+	// Settlement is derived from each charge's own per-period flags (Option A), so
+	// no agreements/vehicles load is needed here.
+	list, err := h.loadRecurringCharges(r.Context(), id, time.Now())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return

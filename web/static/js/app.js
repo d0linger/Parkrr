@@ -2005,7 +2005,7 @@
             title: existing ? 'Pauschale bearbeiten' : 'Neue Pauschale',
             submitLabel: 'Speichern',
             fields: [
-                { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', min: 0, required: true, value: existing?.amount ?? '' },
+                { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', min: 0.01, required: true, value: existing?.amount ?? '' },
                 { name: 'period', label: 'Zeitraum', type: 'select', value: existing?.period || 'monthly', options: [{ value: 'monthly', label: 'pro Monat' }, { value: 'yearly', label: 'pro Jahr' }] },
                 { name: 'start_date', label: 'Gültig ab', type: 'date', required: true, value: existing?.start_date ? existing.start_date.slice(0, 10) : today() },
                 { name: 'end_date', label: 'Gültig bis (optional)', type: 'date', value: existing?.end_date ? existing.end_date.slice(0, 10) : '', help: 'Leer = laufend. Läuft die Pauschale aus, werden die Gefährte automatisch archiviert.' },
@@ -2030,34 +2030,38 @@
                 for (const vid of boundInitially) addRow(vehicles.find((x) => x.id === vid) || { id: vid, category_id: state.categories[0].id });
                 refreshControls();
             },
+            // Save inside the modal so a server rejection (409/400) keeps the dialog
+            // open with an inline error instead of closing and losing the operator's
+            // input (incl. newly-added vehicle rows) — matching the other forms.
+            save: async (data) => {
+                const vehicleIDs = [];
+                const newVehicles = [];
+                const editVehicles = [];
+                for (const r of rows) {
+                    const catId = Number(r.cat.value);
+                    if (!catId) continue;
+                    const label = r.label.value.trim();
+                    const plate = r.plate.value.trim();
+                    if (r.id) { vehicleIDs.push(r.id); editVehicles.push({ id: r.id, category_id: catId, label, license_plate: plate }); }
+                    else newVehicles.push({ category_id: catId, label, license_plate: plate });
+                }
+                const payload = {
+                    amount: data.amount === '' ? null : Number(data.amount),
+                    period: data.period,
+                    start_date: data.start_date,
+                    end_date: data.end_date === '' ? null : data.end_date,
+                    note: data.note,
+                    vehicle_ids: vehicleIDs,
+                    new_vehicles: newVehicles,
+                    edit_vehicles: editVehicles,
+                };
+                if (existing) await api.put('/agreements/' + existing.id, payload);
+                else await api.post('/persons/' + personId + '/agreements', payload);
+            },
         });
-        if (!data) return;
-        const vehicleIDs = [];
-        const newVehicles = [];
-        const editVehicles = [];
-        for (const r of rows) {
-            const catId = Number(r.cat.value);
-            if (!catId) continue;
-            const label = r.label.value.trim();
-            const plate = r.plate.value.trim();
-            if (r.id) { vehicleIDs.push(r.id); editVehicles.push({ id: r.id, category_id: catId, label, license_plate: plate }); }
-            else newVehicles.push({ category_id: catId, label, license_plate: plate });
-        }
-        const payload = {
-            amount: data.amount === '' ? null : Number(data.amount),
-            period: data.period,
-            start_date: data.start_date,
-            end_date: data.end_date === '' ? null : data.end_date,
-            note: data.note,
-            vehicle_ids: vehicleIDs,
-            new_vehicles: newVehicles,
-            edit_vehicles: editVehicles,
-        };
-        try {
-            if (existing) await api.put('/agreements/' + existing.id, payload);
-            else await api.post('/persons/' + personId + '/agreements', payload);
-            toast('Pauschale gespeichert', 'success'); render();
-        } catch (e) { toast(e.message, 'error'); }
+        if (!data) return; // cancelled
+        toast('Pauschale gespeichert', 'success');
+        render();
     }
 
     // Sliding thumb for seg-mini sliders: a coloured pill that glides to the

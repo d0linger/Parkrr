@@ -131,10 +131,8 @@ type User struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
-// Person is a customer who stores one or more vehicles.
-//
-// FlatRate, when set, replaces per-vehicle billing: the person is charged one
-// agreed amount (monthly or yearly) that covers all of their vehicles.
+// Person is a customer who stores one or more vehicles. Flat-rate billing lives
+// in flat_rate_periods (Pauschalen); HasFlatRate just flags that one exists.
 type Person struct {
 	ID        int64     `json:"id"`
 	FirstName string    `json:"first_name"`
@@ -146,14 +144,7 @@ type Person struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 
-	// Flat rate (Pauschale). FlatRate == nil means per-vehicle billing.
-	FlatRate       *float64   `json:"flat_rate"`
-	FlatRatePeriod string     `json:"flat_rate_period"`
-	FlatRateStart  *time.Time `json:"flat_rate_start"`
-	FlatRateEnd    *time.Time `json:"flat_rate_end"`
-	FlatRatePaid   bool       `json:"flat_rate_paid"`
-
-	// Derived (not stored).
+	// Derived (not stored): whether the person has any Pauschale.
 	HasFlatRate bool `json:"has_flat_rate"`
 }
 
@@ -330,10 +321,14 @@ func (a *FlatRatePeriod) ElapsedPeriodsDetailed(asOf time.Time) []OpenPeriod {
 			end = *a.EndDate
 		}
 		out = append(out, OpenPeriod{
-			Key:      key,
-			Start:    s,
-			Cost:     float64(fractionCents(cents, days(s, e), days(pStart, pEnd))) / 100,
-			Complete: !end.After(asOf),
+			Key:   key,
+			Start: s,
+			Cost:  float64(fractionCents(cents, days(s, e), days(pStart, pEnd))) / 100,
+			// Complete (billable) when the period's end is reached under the SAME
+			// whole-day cutoff accrual uses (DayAfter): on a period's last calendar
+			// day the balance already owes it in full, so it becomes invoiceable that
+			// day instead of lagging to the next — aligning owed with billable (S2).
+			Complete: !end.After(DayAfter(asOf)),
 		})
 	})
 	return out

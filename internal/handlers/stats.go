@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -11,6 +12,39 @@ import (
 
 	"github.com/preining/parkrr/internal/models"
 )
+
+// reconcileMonthsToYear nudges the 12 monthly values (euros) so they sum EXACTLY
+// to the year total, moving the small per-month proration residual onto the
+// largest months (largest-remainder). Display-only: the Balance/year card use the
+// exact whole-span figure; this just keeps the "Umsatz nach Monat" bars summing
+// to it (independent per-month rounding of a yearly-billed item drifts a cent or two).
+func reconcileMonthsToYear(months []float64, yearTotal float64) {
+	cents := make([]int64, len(months))
+	var sum int64
+	for i, m := range months {
+		cents[i] = int64(math.Round(m * 100))
+		sum += cents[i]
+	}
+	residual := int64(math.Round(yearTotal*100)) - sum
+	if residual == 0 || len(months) == 0 {
+		return
+	}
+	order := make([]int, len(months))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool { return cents[order[a]] > cents[order[b]] })
+	step, n := int64(1), residual
+	if n < 0 {
+		step, n = -1, -n
+	}
+	for k := int64(0); k < n; k++ {
+		cents[order[int(k)%len(order)]] += step
+	}
+	for i := range months {
+		months[i] = float64(cents[i]) / 100
+	}
+}
 
 // personStatsResponse is the payload for a single person's statistics.
 type personStatsResponse struct {
@@ -286,7 +320,7 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 	rentAccrued, _ := personRent(agreements, vehicles, cats, time.Time{}, until)
 
 	vehPaid := vehiclePaidMap(vehicles)
-	recurs, err := h.loadRecurringCharges(r.Context(), id, agreements, vehPaid, now)
+	recurs, err := h.loadRecurringCharges(r.Context(), id, now)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -343,6 +377,8 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 			resp.Years = append(resp.Years, models.YearStat{Year: y, Cost: c})
 		}
 	}
+	// Make the monthly bars sum exactly to the selected year's total (S1).
+	reconcileMonthsToYear(resp.MonthlyAccrued, round2(byYear[year]))
 
 	// Extra charges are billed on top of rent; a bound charge is paid when its
 	// covering Pauschale's period is paid (or the vehicle's own paid flag is set),
@@ -434,7 +470,7 @@ func (h *Handler) personAccruedTotal(r *http.Request, id int64) (float64, error)
 	until := models.DayAfter(now)
 	rentAccrued, _ := personRent(ags, vehicles, cats, time.Time{}, until)
 	vehPaid := vehiclePaidMap(vehicles)
-	recurs, err := h.loadRecurringCharges(ctx, id, ags, vehPaid, now)
+	recurs, err := h.loadRecurringCharges(ctx, id, now)
 	if err != nil {
 		return 0, err
 	}
@@ -498,7 +534,7 @@ func (h *Handler) outstandingByPerson(r *http.Request) (map[int64]float64, error
 	}
 
 	// Recurring extra costs accrue into the same charge totals.
-	recurByPerson, err := h.loadAllRecurringCharges(ctx, agByPerson, vehPaid, now)
+	recurByPerson, err := h.loadAllRecurringCharges(ctx, now)
 	if err != nil {
 		return nil, err
 	}
@@ -713,7 +749,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Recurring extra costs accrue per period into the same charge totals.
-	recurByPerson, err := h.loadAllRecurringCharges(ctx, agByPerson, vehPaid, now)
+	recurByPerson, err := h.loadAllRecurringCharges(ctx, now)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -819,6 +855,8 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	for m := range resp.RevenueByMonth {
 		resp.RevenueByMonth[m] = round2(resp.RevenueByMonth[m] + chargeByMonth[m])
 	}
+	// Bars sum exactly to the year's accrual (rent + charges), same composition (S1).
+	reconcileMonthsToYear(resp.RevenueByMonth, resp.AccruedThisYear)
 
 	// Largest open balances first, capped so the dashboard stays a summary.
 	sort.Slice(resp.TopOutstanding, func(i, j int) bool {

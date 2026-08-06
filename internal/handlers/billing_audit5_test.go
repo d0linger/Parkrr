@@ -419,3 +419,18 @@ func TestAgreementMembershipFrozenWhenInvoiced(t *testing.T) {
 		t.Errorf("changing covered vehicles of an invoiced agreement must be 409, got %d %s", urec.Code, urec.Body.String())
 	}
 }
+
+// TestReconcileMonthsToYear (S1): monthly bars must sum exactly to the year total
+// after the largest-remainder reconcile (per-month rounding of a yearly item
+// drifts a cent or two on its own).
+func TestReconcileMonthsToYear(t *testing.T) {
+	months := []float64{84.93, 76.71, 84.93, 82.19, 84.93, 82.19, 84.93, 84.93, 82.19, 84.93, 82.19, 84.93}
+	reconcileMonthsToYear(months, 1000.00) // raw sum 999.98 → +0.02 distributed
+	var sum float64
+	for _, m := range months {
+		sum += m
+	}
+	if math.Abs(sum-1000.00) > 0.005 {
+		t.Errorf("months must sum to the year total 1000.00, got %.2f", sum)
+	}
+}

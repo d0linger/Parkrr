@@ -227,7 +227,6 @@ func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, err
 		return nil, err
 	}
 	setFlatRateCoverage(vehicles, map[int64][]models.FlatRatePeriod{personID: ags}, now)
-	vehPaid := vehiclePaidMap(vehicles)
 	vehLabel := func(vid int64) string {
 		for i := range vehicles {
 			if vehicles[i].ID == vid {
@@ -357,7 +356,7 @@ func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, err
 	// Recurring extra costs ("Wiederkehrende Nebenkosten"): likewise per completed
 	// sub-period, per charge. A bound charge settles via its vehicle's Pauschale /
 	// paid flag; a person-level one via its own per-period flags.
-	recurs, err := h.loadRecurringCharges(ctx, personID, ags, vehPaid, now)
+	recurs, err := h.loadRecurringCharges(ctx, personID, now)
 	if err != nil {
 		return nil, err
 	}
