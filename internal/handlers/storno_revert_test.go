@@ -12,7 +12,7 @@ import (
 	"github.com/preining/parkrr/internal/models"
 )
 
-// TestStornoRevertsAgreementAndChargeSettlement (Storno-Gegenprobe): cancelling the
+// TestStornoRevertsAgreementAndChargeSettlement (Storno-Gegenprobe): canceling the
 // invoice that settled a Pauschale and its bound Zusatzkosten must make both revert
 // to "offen" — the invoice-status derivations filter NOT canceled, so a Storno drops
 // the settlement signal without any per-item change.

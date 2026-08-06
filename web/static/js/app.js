@@ -3188,6 +3188,7 @@
         } else {
             s3box.append(el('div', { class: 'card-row', style: 'align-items:center;margin-bottom:.5rem' },
                 el('div', { style: 'flex:1;min-width:0' }, el('div', { class: 'card-meta' }, 'Bucket: ' + esc(st.s3_bucket))),
+                el('button', { class: 'btn btn-ghost btn-sm', onclick: (e) => testS3Connection(e.currentTarget) }, 'Verbindung testen'),
                 el('button', { class: 'btn btn-primary btn-sm', onclick: (e) => uploadToS3(e.currentTarget) }, 'Jetzt in S3 sichern')));
             if (!st.s3_files.length) s3box.append(el('div', { class: 'card-meta' }, 'Noch keine Objekte im Bucket.'));
             else s3box.append(collapsibleRows(st.s3_files, (f) => backupFileRow(f, '/api/backup/s3/file/', () => restoreFromS3(f.name))));
@@ -3251,6 +3252,16 @@
             toast('Wiederhergestellt — bitte neu anmelden', 'success');
             setTimeout(() => logout(), 1800);
         } catch (e) { toast(e.message, 'error'); btn.disabled = false; btn.textContent = o; }
+    }
+    async function testS3Connection(btn) {
+        const o = btn.textContent; btn.disabled = true; btn.textContent = 'Teste …';
+        try {
+            const res = await fetch('/api/backup/s3/test', { method: 'POST', headers: { 'X-CSRF-Token': getCookie('parkrr_csrf') }, credentials: 'same-origin' });
+            const j = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(j.error || 'S3-Verbindung fehlgeschlagen');
+            toast('S3-Verbindung ok — Bucket „' + (j.bucket || '') + '" erreichbar', 'success');
+        } catch (e) { toast(e.message, 'error'); }
+        finally { btn.disabled = false; btn.textContent = o; }
     }
     async function uploadToS3(btn) {
         const o = btn.textContent; btn.disabled = true; btn.textContent = 'Lade hoch …';

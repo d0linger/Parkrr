@@ -346,6 +346,25 @@ func readBackupUpload(r *http.Request) (enc []byte, key string, err error) {
 	return enc, key, nil
 }
 
+// BackupS3Test checks the configured bucket is reachable (read-only BucketExists) —
+// the panel's "Verbindung testen". Admin-only; the diagnostic error is returned so
+// the operator sees why it failed (missing bucket, bad credentials, unreachable
+// endpoint). Modeled on Treckrr's S3Test.
+func (h *Handler) BackupS3Test(w http.ResponseWriter, r *http.Request) {
+	if !h.S3.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "S3 ist nicht konfiguriert (S3_* setzen).")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	if err := backup.TestS3(ctx, h.S3); err != nil {
+		slog.Warn("backup: S3 connection test failed", "err", err)
+		writeError(w, http.StatusBadGateway, "S3-Verbindung fehlgeschlagen: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "bucket": h.S3.Bucket})
+}
+
 // CreateBackupS3 makes an encrypted backup and uploads it to the S3 bucket
 // (no download). keep=0 here so a manual upload never prunes.
 func (h *Handler) CreateBackupS3(w http.ResponseWriter, r *http.Request) {

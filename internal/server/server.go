@@ -178,6 +178,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/backup/file/{name}", admin(hf(h.BackupDownloadFile)))
 	mux.Handle("POST /api/backup/validate", admin(hf(h.BackupValidate)))
 	mux.Handle("POST /api/backup/restore", admin(hf(h.BackupRestore)))
+	mux.Handle("POST /api/backup/s3/test", admin(hf(h.BackupS3Test)))
 	mux.Handle("POST /api/backup/s3", admin(hf(h.CreateBackupS3)))
 	mux.Handle("GET /api/backup/s3/file/{name}", admin(hf(h.BackupS3Download)))
 	mux.Handle("POST /api/backup/restore-s3", admin(hf(h.BackupRestoreS3)))
