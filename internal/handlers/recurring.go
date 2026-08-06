@@ -460,6 +460,13 @@ func (h *Handler) SetRecurringChargePaid(w http.ResponseWriter, r *http.Request)
 	if req.Paid {
 		verb = "recurring marked paid"
 	}
+	// Periods settled through an invoice must not also be booked here (double-count);
+	// reuse the same period-lock check the per-period toggle uses.
+	locked, lerr := h.lockedPositions(ctx, rc.PersonID)
+	if lerr != nil {
+		writeError(w, http.StatusInternalServerError, "could not update recurring charge")
+		return
+	}
 	txErr := pgx.BeginFunc(ctx, h.Pool, func(tx pgx.Tx) error {
 		// "Reset all": clear the per-period flags and this charge's settle payments,
 		// then re-derive from the master flag (mirrors the Pauschale slider).
@@ -474,8 +481,8 @@ func (h *Handler) SetRecurringChargePaid(w http.ResponseWriter, r *http.Request)
 		if req.Paid {
 			p := rc.AsPeriod()
 			for _, per := range p.ElapsedPeriodsDetailed(time.Now()) {
-				if !per.Complete {
-					continue
+				if !per.Complete || locked[lockKey("recurring", id, per.Key)] {
+					continue // running, or settled through an invoice → skip
 				}
 				if err := recordPeriodPaymentTx(ctx, tx, rc.PersonID, "recurring", id, per.Key, per.Cost, createdBy); err != nil {
 					return err

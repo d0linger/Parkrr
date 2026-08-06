@@ -658,9 +658,9 @@
         const overflow = el('div', { style: 'display:none' });
         rest.forEach((it) => overflow.append(renderFn(it)));
         let open = false;
-        const btn = el('button', { class: 'btn btn-ghost btn-sm btn-block', style: 'margin-top:.4rem' });
+        const btn = el('button', { class: 'btn btn-ghost btn-sm btn-block', type: 'button', 'aria-expanded': 'false', style: 'margin-top:.4rem' });
         const label = () => { btn.textContent = open ? 'Weniger anzeigen' : `${rest.length} weitere anzeigen`; };
-        btn.addEventListener('click', () => { open = !open; overflow.style.display = open ? '' : 'none'; label(); });
+        btn.addEventListener('click', () => { open = !open; overflow.style.display = open ? '' : 'none'; btn.setAttribute('aria-expanded', String(open)); label(); });
         label();
         wrap.append(overflow, btn);
         return wrap;
@@ -993,13 +993,16 @@
     routes.person = async (page, id) => {
         await refreshLookups();
         const stats = await api.get('/persons/' + id + '/stats');
-        const [vehicles, charges] = await Promise.all([
+        // Load all billing reads together and let a failure propagate to the route's
+        // error handling — a failed read must not masquerade as "no data" (which would
+        // hide real records and invite writes against a wrong picture). `|| []` only
+        // covers an empty body, never an error.
+        const [vehicles, charges, paymentsR, invoicesR] = await Promise.all([
             api.get('/vehicles?person_id=' + id), api.get('/charges?person_id=' + id),
+            api.get('/persons/' + id + '/payments'), api.get('/persons/' + id + '/invoices'),
         ]);
-        let payments = [];
-        try { payments = (await api.get('/persons/' + id + '/payments')) || []; } catch (e) { /* keep empty */ }
-        let invoices = [];
-        try { invoices = (await api.get('/persons/' + id + '/invoices')) || []; } catch (e) { /* keep empty */ }
+        const payments = paymentsR || [];
+        const invoices = invoicesR || [];
         const recs = stats.recurring_charges || [];
         // Per-vehicle summary of bound extra costs (one-off total + recurring
         // accrued), surfaced on the vehicle cards and their Pauschale nesting.

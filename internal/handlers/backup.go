@@ -272,7 +272,14 @@ func (h *Handler) BackupValidate(w http.ResponseWriter, r *http.Request) {
 //     (there is no matching migration to apply and downgrading is never done).
 func (h *Handler) reconcileSchemaAfterRestore(ctx context.Context) error {
 	h.Pool.Reset()
-	return database.Migrate(ctx, h.Pool)
+	if err := database.Migrate(ctx, h.Pool); err != nil {
+		return err
+	}
+	// The restored data may carry period settlements as off-book flags only (an older
+	// backup, pre-migration 036). Book their real Zahlungseingänge now — idempotent,
+	// exactly as at startup — so a legacy paid Pauschale/Nebenkosten shows its payment
+	// without waiting for a restart.
+	return h.BackfillPeriodPayments(ctx)
 }
 
 // atomic (pg_restore --single-transaction): a failure rolls back with no change.

@@ -16,7 +16,11 @@ func TestReconcileSchemaAfterRestoreReappliesMigrations(t *testing.T) {
 	ctx := t.Context()
 	// The test DB is shared; guarantee it is left fully migrated even if an
 	// assertion below fails after we deliberately drop part of the schema.
-	t.Cleanup(func() { _ = database.Migrate(context.Background(), h.Pool) })
+	t.Cleanup(func() {
+		if err := database.Migrate(context.Background(), h.Pool); err != nil {
+			t.Errorf("cleanup: re-migrate shared test DB: %v", err)
+		}
+	})
 
 	// Simulate restoring a pre-036 backup: its schema_migrations and the columns
 	// migration 036 added are the older ones (the unique index drops with them).

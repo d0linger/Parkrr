@@ -805,6 +805,22 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// An invoiced Pauschale is settled through its Rechnung, not the master slider.
+	// Block the toggle (both directions) when a non-canceled invoice bills any of its
+	// periods: booking per-period payments here would double-count the invoice payment
+	// (phantom Guthaben). Mirrors the per-period handler's fakturier guard.
+	var invoiced bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+		   WHERE s.kind='agreement' AND s.ref_id=$1 AND NOT i.canceled)`, id).Scan(&invoiced); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update agreement")
+		return
+	}
+	if invoiced {
+		writeError(w, http.StatusConflict, "Pauschale ist fakturiert – über die Rechnung begleichen")
+		return
+	}
+
 	// Set the flag and load the money fields in one shot — needed to book the real
 	// per-period rent payments below, not just flip paid.
 	var ag models.FlatRatePeriod
@@ -857,7 +873,7 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 		}
 		// (b) Extras: settle the bound Zusatzkosten open on covered vehicles right now
 		// (charges added later stay billable — Option A).
-		if err := h.settleAgreementExtrasTx(ctx, tx, id, pid, createdBy); err != nil {
+		if err := h.settleAgreementExtrasTx(ctx, tx, ag, createdBy); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not update agreement")
 			return
 		}
@@ -890,9 +906,10 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 // the recorded amount matches exactly what this settles. Nothing open → no row. The
 // payment carries settles_period='extras' so SetAgreementPaid can find and reverse
 // exactly it on "offen".
-func (h *Handler) settleAgreementExtrasTx(ctx context.Context, tx pgx.Tx, agreementID, personID int64, createdBy *int64) error {
+func (h *Handler) settleAgreementExtrasTx(ctx context.Context, tx pgx.Tx, ag models.FlatRatePeriod, createdBy *int64) error {
+	agreementID, personID := ag.ID, ag.PersonID
 	// Covered vehicles: the explicit links, or — for a person-wide agreement with no
-	// links — all of the person's vehicles.
+	// links — the person's vehicles that fall within the agreement's window.
 	vrows, err := tx.Query(ctx, `SELECT vehicle_id FROM flat_rate_period_vehicles WHERE period_id=$1`, agreementID)
 	if err != nil {
 		return err
@@ -911,15 +928,27 @@ func (h *Handler) settleAgreementExtrasTx(ctx context.Context, tx pgx.Tx, agreem
 		return err
 	}
 
-	// Open bound charges on those vehicles not already settled by another allocation.
-	const base = `SELECT c.id, c.amount, c.quantity FROM charges c
-	   WHERE c.person_id=$1 AND c.vehicle_id IS NOT NULL AND NOT c.paid
-	     AND NOT EXISTS (SELECT 1 FROM payment_allocations pa WHERE pa.kind='charge' AND pa.ref_id=c.id)`
+	// Open bound charges not already settled — neither by another payment allocation
+	// nor by an invoice (an invoiced charge is settled through its Rechnung; settling
+	// it again here would double-count it).
+	const notSettled = `NOT c.paid
+	     AND NOT EXISTS (SELECT 1 FROM payment_allocations pa WHERE pa.kind='charge' AND pa.ref_id=c.id)
+	     AND NOT EXISTS (SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+	                      WHERE s.kind='charge' AND s.ref_id=c.id AND NOT i.canceled)`
 	var crows pgx.Rows
 	if len(vids) == 0 {
-		crows, err = tx.Query(ctx, base, personID)
+		// Person-wide agreement: covers the person's vehicles that existed within its
+		// window. A vehicle that began on/after the agreement's (exclusive) end date was
+		// never covered (coveringAgreements' start guard), so its extras aren't settled.
+		crows, err = tx.Query(ctx,
+			`SELECT c.id, c.amount, c.quantity FROM charges c JOIN vehicles v ON v.id=c.vehicle_id
+			  WHERE c.person_id=$1 AND `+notSettled+`
+			    AND ($2::timestamptz IS NULL OR v.start_date < $2)`, personID, ag.EndDate)
 	} else {
-		crows, err = tx.Query(ctx, base+` AND c.vehicle_id = ANY($2)`, personID, vids)
+		crows, err = tx.Query(ctx,
+			`SELECT c.id, c.amount, c.quantity FROM charges c
+			  WHERE c.person_id=$1 AND c.vehicle_id IS NOT NULL AND `+notSettled+`
+			    AND c.vehicle_id = ANY($2)`, personID, vids)
 	}
 	if err != nil {
 		return err
