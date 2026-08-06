@@ -49,6 +49,21 @@ func TestLengthPredicates(t *testing.T) {
 		{"password min", validPasswordLength, rep(minPasswordLen), true},
 		{"password max", validPasswordLength, rep(maxPasswordLen), true},
 		{"password max+1", validPasswordLength, rep(maxPasswordLen + 1), false},
+
+		// date: 0..maxDateLen
+		{"date empty", validDateLength, "", true},
+		{"date max", validDateLength, rep(maxDateLen), true},
+		{"date max+1", validDateLength, rep(maxDateLen + 1), false},
+
+		// cron expression: 0..maxCronLen
+		{"cron empty", validCronLength, "", true},
+		{"cron max", validCronLength, rep(maxCronLen), true},
+		{"cron max+1", validCronLength, rep(maxCronLen + 1), false},
+
+		// backup key: 0..maxBackupKeyLen
+		{"backup key empty", validBackupKeyLength, "", true},
+		{"backup key max", validBackupKeyLength, rep(maxBackupKeyLen), true},
+		{"backup key max+1", validBackupKeyLength, rep(maxBackupKeyLen + 1), false},
 	}
 	for _, tc := range cases {
 		if got := tc.fn(tc.in); got != tc.want {

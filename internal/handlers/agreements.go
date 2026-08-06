@@ -233,9 +233,15 @@ func (req *agreementRequest) parse() (models.FlatRatePeriod, string) {
 	if period != models.BillingMonthly && period != models.BillingYearly {
 		return a, "period must be 'monthly' or 'yearly'"
 	}
+	if !validDateLength(req.StartDate) {
+		return a, "start_date is too long"
+	}
 	start, err := time.Parse(dateLayout, trim(req.StartDate))
 	if err != nil {
 		return a, "start_date must be YYYY-MM-DD"
+	}
+	if req.EndDate != nil && trim(*req.EndDate) != "" && !validDateLength(*req.EndDate) {
+		return a, "end_date is too long"
 	}
 	end, err := parseOptDate(req.EndDate)
 	if err != nil {

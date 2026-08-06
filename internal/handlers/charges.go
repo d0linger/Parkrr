@@ -290,6 +290,9 @@ func (h *Handler) validateCharge(ctx context.Context, req *chargeRequest) (time.
 	}
 	chargedOn := time.Now()
 	if trim(req.ChargedOn) != "" {
+		if !validDateLength(req.ChargedOn) {
+			return time.Time{}, "charged_on is too long", nil
+		}
 		t, perr := time.Parse(dateLayout, trim(req.ChargedOn))
 		if perr != nil {
 			return time.Time{}, "charged_on must be YYYY-MM-DD", nil

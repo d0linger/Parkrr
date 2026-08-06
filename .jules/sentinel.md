@@ -27,3 +27,8 @@
 *Vulnerability:* Although vehicle notes were restricted on creation/modification, the vehicle status change endpoint accepted an unrestricted `Note` field for logging the transition in the history database. This allowed users with editor permissions to bypass length controls and submit massive string payloads.
 *Learning:* Input sanitization and length bounds must be applied to text fields across all mutating endpoints, including transition/history logs, to prevent DB bloat and DoS/memory pressure.
 *Prevention:* Enforce the centralized note length validator (`validNoteLength`) on all endpoints receiving text notes or transition details.
+
+## 2026-07-16 - [Missing Early Input Length Limits on Dates, Cron Expressions, and Backup Keys]
+*Vulnerability:* Missing length constraints on strings passed to heavy parsers (such as `time.Parse`, cron parsers, and cryptographic key parameters) created a potential vector for Denial of Service (DoS) and computational exhaustion.
+*Learning:* Early input length limits must be enforced on all unstructured user-provided inputs prior to parsing, matching the normalization and validation patterns of other sensitive text fields.
+*Prevention:* Always define strict and centralized length caps for all string inputs, and apply them at the outermost request boundary (e.g. payload parsing/request decoding) to prevent parsers from processing oversized, malicious payloads.

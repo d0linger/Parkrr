@@ -155,6 +155,9 @@ func parseOptDate(s *string) (*time.Time, error) {
 	if s == nil || trim(*s) == "" {
 		return nil, nil
 	}
+	if !validDateLength(*s) {
+		return nil, errors.New("date is too long")
+	}
 	t, err := time.Parse(dateLayout, trim(*s))
 	if err != nil {
 		return nil, err
@@ -202,9 +205,15 @@ func (h *Handler) parseVehicleRequest(r *http.Request) (*parsedVehicle, error) {
 		return nil, errors.New("notes is too long")
 	}
 
+	if !validDateLength(req.StartDate) {
+		return nil, errors.New("start_date is too long")
+	}
 	start, err := time.Parse(dateLayout, trim(req.StartDate))
 	if err != nil {
 		return nil, errors.New("start_date must be YYYY-MM-DD")
+	}
+	if req.EndDate != nil && trim(*req.EndDate) != "" && !validDateLength(*req.EndDate) {
+		return nil, errors.New("end_date is too long")
 	}
 	endPtr, err := parseOptDate(req.EndDate)
 	if err != nil {
@@ -213,9 +222,15 @@ func (h *Handler) parseVehicleRequest(r *http.Request) (*parsedVehicle, error) {
 	if endPtr != nil && endPtr.Before(start) {
 		return nil, errors.New("end_date must not be before start_date")
 	}
+	if req.ReservedFrom != nil && trim(*req.ReservedFrom) != "" && !validDateLength(*req.ReservedFrom) {
+		return nil, errors.New("reserved_from is too long")
+	}
 	resFrom, err := parseOptDate(req.ReservedFrom)
 	if err != nil {
 		return nil, errors.New("reserved_from must be YYYY-MM-DD")
+	}
+	if req.ReservedUntil != nil && trim(*req.ReservedUntil) != "" && !validDateLength(*req.ReservedUntil) {
+		return nil, errors.New("reserved_until is too long")
 	}
 	resUntil, err := parseOptDate(req.ReservedUntil)
 	if err != nil {
@@ -416,6 +431,10 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 	// given (allows back-dating), otherwise keep any existing end date or today.
 	switch {
 	case req.Status == models.StatusCollected && trim(req.Date) != "":
+		if !validDateLength(req.Date) {
+			writeError(w, http.StatusBadRequest, "date is too long")
+			return
+		}
 		end, perr := time.Parse(dateLayout, trim(req.Date))
 		if perr != nil {
 			writeError(w, http.StatusBadRequest, "date must be YYYY-MM-DD")
@@ -569,6 +588,10 @@ func (h *Handler) DuplicateVehicle(w http.ResponseWriter, r *http.Request) {
 	}
 	start := time.Now()
 	if trim(req.StartDate) != "" {
+		if !validDateLength(req.StartDate) {
+			writeError(w, http.StatusBadRequest, "start_date is too long")
+			return
+		}
 		s, err := time.Parse(dateLayout, trim(req.StartDate))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "start_date must be YYYY-MM-DD")
