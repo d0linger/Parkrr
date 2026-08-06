@@ -568,7 +568,11 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 	if err := h.Pool.QueryRow(r.Context(),
 		`SELECT first_name, last_name, COALESCE(address,'') FROM persons WHERE id=$1`, pid,
 	).Scan(&person.First, &person.Last, &person.Address); err != nil {
-		writeError(w, http.StatusNotFound, "person not found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "person not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 
@@ -727,7 +731,11 @@ func (h *Handler) CancelInvoice(w http.ResponseWriter, r *http.Request) {
 		   FROM invoices WHERE id=$1`, id,
 	).Scan(&o.number, &o.personID, &o.subtotal, &o.ustRate, &o.tax, &o.total, &o.klein,
 		&o.sellerJSON, &o.buyerJSON, &o.canceled, &o.cancelsID, &o.leistungFrom, &o.leistungTo); err != nil {
-		writeError(w, http.StatusNotFound, "invoice not found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "invoice not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if o.canceled {

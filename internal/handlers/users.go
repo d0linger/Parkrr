@@ -32,6 +32,10 @@ func (h *Handler) ListUsers(w http.ResponseWriter, r *http.Request) {
 		}
 		users = append(users, u)
 	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 	writeJSON(w, http.StatusOK, users)
 }
 

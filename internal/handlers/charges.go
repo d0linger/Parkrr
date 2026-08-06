@@ -32,6 +32,10 @@ func (h *Handler) ListServiceTypes(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, s)
 	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 

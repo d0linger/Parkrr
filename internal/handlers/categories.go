@@ -28,6 +28,10 @@ func (h *Handler) ListCategories(w http.ResponseWriter, r *http.Request) {
 		}
 		cats = append(cats, c)
 	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 	writeJSON(w, http.StatusOK, cats)
 }
 

@@ -53,6 +53,10 @@ func (h *Handler) ListPhotos(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, p)
 	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -65,10 +69,13 @@ func (h *Handler) UploadPhoto(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+	// Count is for the per-vehicle cap; a nonexistent vehicle is caught by the FK
+	// violation on INSERT below. A scan error here is a real DB failure (500), not
+	// a missing vehicle.
 	var count int
 	if err := h.Pool.QueryRow(r.Context(),
 		`SELECT count(*) FROM vehicle_photos WHERE vehicle_id=$1`, id).Scan(&count); err != nil {
-		writeError(w, http.StatusNotFound, "vehicle not found")
+		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if count >= maxPhotosPerVehicle {
