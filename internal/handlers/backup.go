@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/preining/parkrr/internal/backup"
+	"github.com/preining/parkrr/internal/database"
 )
 
 // clearWriteDeadline lifts the server's WriteTimeout for a long-running response
@@ -256,6 +257,24 @@ func (h *Handler) BackupValidate(w http.ResponseWriter, r *http.Request) {
 
 // BackupRestore restores an uploaded backup into the live database. DESTRUCTIVE:
 // requires confirm=RESTORE and validates the archive first. The restore itself is
+// reconcileSchemaAfterRestore brings the database back in step with THIS binary
+// after a restore, so no manual restart is needed. A restored backup can be a
+// schema version behind the running code (its schema_migrations, and thus the
+// columns migrations added, are the backup's) — the app would then serve against a
+// stale schema and fail every query touching the newer columns. Two steps:
+//
+//  1. Pool.Reset() — pg_restore --clean dropped and recreated every table, so any
+//     pooled connection may hold cached statements bound to the old relations
+//     ("cached plan must not change result type"). Discard them; the pool reopens
+//     fresh connections on demand, and Migrate then runs on a clean one.
+//  2. Migrate — re-apply whatever the backup lacked (the same embedded migrations
+//     run at startup). Forward-only: a backup NEWER than this binary is left as-is
+//     (there is no matching migration to apply and downgrading is never done).
+func (h *Handler) reconcileSchemaAfterRestore(ctx context.Context) error {
+	h.Pool.Reset()
+	return database.Migrate(ctx, h.Pool)
+}
+
 // atomic (pg_restore --single-transaction): a failure rolls back with no change.
 func (h *Handler) BackupRestore(w http.ResponseWriter, r *http.Request) {
 	clearWriteDeadline(w)
@@ -277,6 +296,11 @@ func (h *Handler) BackupRestore(w http.ResponseWriter, r *http.Request) {
 	if err := backup.Restore(ctx, h.DatabaseURL, enc, key); err != nil {
 		slog.Error("backup restore failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "restore failed")
+		return
+	}
+	if err := h.reconcileSchemaAfterRestore(ctx); err != nil {
+		slog.Error("post-restore migration failed", "err", err)
+		writeError(w, http.StatusInternalServerError, "restored, but the schema upgrade failed — restart the app to complete it")
 		return
 	}
 	h.audit(r, "restore", "system", 0, "restored the database from an uploaded backup")
@@ -396,6 +420,11 @@ func (h *Handler) BackupRestoreS3(w http.ResponseWriter, r *http.Request) {
 	if err := backup.Restore(ctx, h.DatabaseURL, enc, key); err != nil {
 		slog.Error("backup restore (S3) failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "restore failed")
+		return
+	}
+	if err := h.reconcileSchemaAfterRestore(ctx); err != nil {
+		slog.Error("post-restore migration failed (S3)", "err", err)
+		writeError(w, http.StatusInternalServerError, "restored, but the schema upgrade failed — restart the app to complete it")
 		return
 	}
 	h.audit(r, "restore", "system", 0, "restored the database from S3 backup "+name)
