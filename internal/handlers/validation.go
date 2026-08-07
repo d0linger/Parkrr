@@ -24,7 +24,29 @@ const (
 	maxTOTPCodeLen = 20
 	minPasswordLen = 8
 	maxPasswordLen = 72
+	// Date strings are YYYY-MM-DD (10 chars); 20 leaves headroom while capping an
+	// over-long payload before time.Parse. Cron/backup-key caps bound cron parsing
+	// and key-derivation input — defense-in-depth behind the request body limit.
+	maxDateLen      = 20
+	maxCronLen      = 100
+	maxBackupKeyLen = 100
 )
+
+// validDateLength reports whether s is within the date length cap (checked before
+// time.Parse so an over-long date string is rejected early).
+func validDateLength(s string) bool {
+	return len(s) <= maxDateLen
+}
+
+// validCronLength reports whether s is within the cron expression length cap.
+func validCronLength(s string) bool {
+	return len(s) <= maxCronLen
+}
+
+// validBackupKeyLength reports whether s is within the backup key length cap.
+func validBackupKeyLength(s string) bool {
+	return len(s) <= maxBackupKeyLen
+}
 
 // validUsernameLength reports whether s is a non-empty username within the
 // length cap. Bounding it protects the rate limiter (which keys on the
