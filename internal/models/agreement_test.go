@@ -82,8 +82,11 @@ func TestAgreementActiveAt(t *testing.T) {
 	if a.ActiveAt(date(2024, time.December, 31)) {
 		t.Error("should be inactive before the start")
 	}
-	if a.ActiveAt(date(2026, time.January, 1)) {
-		t.Error("end date is exclusive: should be inactive on the end date")
+	if !a.ActiveAt(date(2026, time.January, 1)) {
+		t.Error("end date is inclusive: should be active on the end date")
+	}
+	if a.ActiveAt(date(2026, time.January, 2)) {
+		t.Error("should be inactive the day after the end date")
 	}
 	if a.ActiveAt(date(2026, time.July, 9)) {
 		t.Error("should be inactive after the window has ended")

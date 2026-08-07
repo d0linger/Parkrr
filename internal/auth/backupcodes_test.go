@@ -3,9 +3,11 @@ package auth
 import (
 	"regexp"
 	"testing"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
-var codeRe = regexp.MustCompile(`^[A-Z0-9]{4}-[A-Z0-9]{4}$`)
+var codeRe = regexp.MustCompile(`^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$`)
 
 func TestRandomCodeFormat(t *testing.T) {
 	seen := map[string]bool{}
@@ -24,15 +26,20 @@ func TestRandomCodeFormat(t *testing.T) {
 	}
 }
 
-func TestHashCodeNormalizes(t *testing.T) {
-	// Case and surrounding whitespace must not change the hash.
-	if hashCode("abcd-efgh") != hashCode("  ABCD-EFGH  ") {
-		t.Fatal("hashCode should be case- and space-insensitive")
+func TestHashCode(t *testing.T) {
+	h, err := hashCode("ABCD-EFGH-IJKL")
+	if err != nil {
+		t.Fatalf("hashCode failed: %v", err)
 	}
-	if hashCode("ABCD-EFGH") == hashCode("ABCD-EFGX") {
-		t.Fatal("different codes must hash differently")
+	// Matching codes compare true, regardless of case and surrounding space.
+	if bcrypt.CompareHashAndPassword([]byte(h), []byte("ABCD-EFGH-IJKL")) != nil {
+		t.Fatal("hash should compare true for the original code")
 	}
-	if len(hashCode("x")) != 64 {
-		t.Fatal("expected hex sha-256 (64 chars)")
+	if bcrypt.CompareHashAndPassword([]byte(h), []byte(normalizeCode("  abcd-efgh-ijkl  "))) != nil {
+		t.Fatal("hash should compare true for a case/space-normalized code")
+	}
+	// A wrong code compares false.
+	if bcrypt.CompareHashAndPassword([]byte(h), []byte("ABCD-EFGH-IJKX")) == nil {
+		t.Fatal("hash should compare false for a different code")
 	}
 }

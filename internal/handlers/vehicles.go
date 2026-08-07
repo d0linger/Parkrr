@@ -610,25 +610,45 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// P2.3: keep the money in step — record the auto-payment while still open (so
-	// its amount is visible in openOwedItems), then flip the flag.
+	// its amount is visible in openOwedItems), then flip the flag, all in ONE
+	// transaction so a failure between them can't leave a phantom payment/credit.
+	// The owed amount is read BEFORE the tx (openOwedItems uses the pool; reading
+	// it while holding the tx's connection can deadlock the pool under
+	// concurrency).
+	var amt float64
+	var bound []boundCharge
 	if req.Paid && !curPaid {
-		if err := h.syncTogglePayment(r, "vehicle", id, personID, true); err != nil {
+		var err error
+		if amt, bound, err = h.toggleOwed(r, "vehicle", id, personID); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not record payment")
 			return
 		}
 	}
-	if _, err := h.Pool.Exec(r.Context(),
-		`UPDATE vehicles SET paid=$1, updated_at=now() WHERE id=$2`, req.Paid, id); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not update payment status")
-		return
-	}
-	if !req.Paid && curPaid {
-		// Don't swallow this: if removing the auto-payment fails the flag is already
-		// open, so a discarded error leaves a phantom money-in inflating the balance.
-		if err := h.syncTogglePayment(r, "vehicle", id, personID, false); err != nil {
-			writeError(w, http.StatusInternalServerError, "could not reverse payment")
-			return
+	failMsg := "could not update payment status"
+	if err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		if req.Paid && !curPaid {
+			if err := h.syncTogglePaymentTx(r.Context(), tx, "vehicle", id, personID, true, amt, bound); err != nil {
+				failMsg = "could not record payment"
+				return err
+			}
 		}
+		if _, err := tx.Exec(r.Context(),
+			`UPDATE vehicles SET paid=$1, updated_at=now() WHERE id=$2`, req.Paid, id); err != nil {
+			return err
+		}
+		if !req.Paid && curPaid {
+			// Don't swallow this: if removing the auto-payment fails the flag flips
+			// open with it (same tx) — a discarded error would leave a phantom
+			// money-in inflating the balance.
+			if err := h.syncTogglePaymentTx(r.Context(), tx, "vehicle", id, personID, false, 0, nil); err != nil {
+				failMsg = "could not reverse payment"
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, failMsg)
+		return
 	}
 	label := "offen"
 	if req.Paid {

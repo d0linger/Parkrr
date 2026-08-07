@@ -163,7 +163,7 @@ func TestInvoicedPeriodNotDoubleCredited(t *testing.T) {
 
 // TestReToggleManuallySettledChargeNoError (review P0-#2): a charge settled by a
 // manual payment, toggled open, then paid again must not hit the (kind,ref_id)
-// unique index and 500 — syncTogglePayment sees the existing allocation and no-ops.
+// unique index and 500 — syncTogglePaymentTx sees the existing allocation and no-ops.
 func TestReToggleManuallySettledChargeNoError(t *testing.T) {
 	h := testHandler(t)
 	pid := createIntegrationPerson(t, h)

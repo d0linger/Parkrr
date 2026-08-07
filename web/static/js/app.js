@@ -3850,7 +3850,7 @@
         label.textContent = backup ? 'Backup-Code' : 'Zwei-Faktor-Code';
         $('#login-backup-toggle').textContent = backup ? 'Stattdessen App-Code' : 'Backup-Code verwenden';
         $('#login-totp-help').textContent = backup
-            ? 'Einmal-Code aus deiner Backup-Liste (Format ABCD-EFGH).'
+            ? 'Einmal-Code aus deiner Backup-Liste (Format ABCD-EFGH-IJKL).'
             : '6-stelliger Code aus der App – oder ein Backup-Code, falls kein Handy zur Hand.';
         clearTotp();
     }

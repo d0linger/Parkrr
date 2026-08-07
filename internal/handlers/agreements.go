@@ -941,12 +941,12 @@ func (h *Handler) settleAgreementExtrasTx(ctx context.Context, tx pgx.Tx, ag mod
 	var crows pgx.Rows
 	if len(vids) == 0 {
 		// Person-wide agreement: covers the person's vehicles that existed within its
-		// window. A vehicle that began on/after the agreement's (exclusive) end date was
+		// window. A vehicle that began after the agreement's (inclusive) end date was
 		// never covered (coveringAgreements' start guard), so its extras aren't settled.
 		crows, err = tx.Query(ctx,
 			`SELECT c.id, c.amount, c.quantity FROM charges c JOIN vehicles v ON v.id=c.vehicle_id
 			  WHERE c.person_id=$1 AND `+notSettled+`
-			    AND ($2::timestamptz IS NULL OR v.start_date < $2)`, personID, ag.EndDate)
+			    AND ($2::timestamptz IS NULL OR v.start_date <= $2)`, personID, ag.EndDate)
 	} else {
 		crows, err = tx.Query(ctx,
 			`SELECT c.id, c.amount, c.quantity FROM charges c
@@ -1236,8 +1236,8 @@ func setFlatRateCoverage(vehicles []models.Vehicle, agByPerson map[int64][]model
 }
 
 // coveringAgreements returns the agreements that cover the given vehicle. A
-// vehicle that started on or after an agreement's (exclusive) end date never
-// existed during that agreement, so it is not covered by it — this matters for
+// vehicle that started after an agreement's (inclusive) end date never existed
+// during that agreement, so it is not covered by it — this matters for
 // person-wide agreements (empty VehicleIDs), which would otherwise implicitly
 // "cover" vehicles created long after the agreement ended.
 func coveringAgreements(agreements []models.FlatRatePeriod, vehicleID int64, vehicleStart time.Time) []models.FlatRatePeriod {
@@ -1247,7 +1247,7 @@ func coveringAgreements(agreements []models.FlatRatePeriod, vehicleID int64, veh
 		if !a.Covers(vehicleID) {
 			continue
 		}
-		if a.EndDate != nil && !vehicleStart.Before(*a.EndDate) {
+		if a.EndDate != nil && vehicleStart.After(*a.EndDate) {
 			continue // vehicle started after this agreement had already ended
 		}
 		out = append(out, agreements[i])
