@@ -53,3 +53,9 @@ coverage.out
 cover
 cover.out
 *.cover
+
+# Local Kimi Code config (contains machine-specific junctions)
+.kimi-code/
+
+# graphify knowledge graph output
+graphify-out/
