@@ -1176,22 +1176,27 @@
             el('div', { class: 'konto-v' }, value),
             el('div', { class: 'konto-l' }, label));
     }
-    // attrHeadline is the one-line summary of what a payment/invoice settles: the
-    // distinct position labels, capped so the collapsed row stays short.
+    // attrText names a position with its kind context: a Gefährt line reads as rent
+    // ("… · Miete"); the other kinds already carry it in the label.
+    function attrText(it) {
+        return it.kind === 'vehicle' ? it.label + ' · Miete' : it.label;
+    }
+    // attrHeadline is the one-line summary of what a payment settles: the distinct
+    // position labels, capped so the collapsed row stays short.
     function attrHeadline(items) {
         const labels = [...new Set(items.map((i) => i.label))];
         if (labels.length <= 2) return labels.join(' · ');
         return labels.slice(0, 2).join(' · ') + ' · +' + (labels.length - 2);
     }
-    // attrDetails is the Variant-D collapsible: a summary line (Gefährt/Pauschale ·
-    // Zeitraum) that expands to the full breakdown with per-position amount.
+    // attrDetails is the Variant-D collapsible (only used for ≥2 positions): a summary
+    // line that expands to the full breakdown with per-position amount.
     function attrDetails(items) {
         const det = el('details', { class: 'pay-attr' });
         det.append(el('summary', {}, el('span', { class: 'caret' }, '▸'), el('span', {}, attrHeadline(items))));
         const list = el('div', { class: 'attr-list' });
         for (const it of items) {
             list.append(el('div', { class: 'attr-row' },
-                el('div', { class: 'attr-lab' }, esc(it.label),
+                el('div', { class: 'attr-lab' }, esc(attrText(it)),
                     it.period ? el('div', { class: 'attr-per' }, esc(it.period)) : null),
                 (Number(it.amount) || 0) > 0.005 ? el('div', { class: 'attr-amt' }, eur(it.amount)) : el('span', {})));
         }
@@ -1211,8 +1216,15 @@
             head.append(el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Zahlung stornieren', title: 'Zahlung stornieren', onclick: (e) => delPayment(p, e.currentTarget.closest('.card')) }, icon('trash', 15)));
         }
         const card = el('div', { class: 'card pay-card' + (p.reversed ? ' is-reversed' : '') }, head);
-        // What the payment settled (Gefährt/Pauschale · Zeitraum), collapsible.
-        if ((p.items || []).length) card.append(attrDetails(p.items));
+        // What the payment settled. One position → a compact line (no redundant
+        // expand, amount already in the header); several → the collapsible breakdown.
+        const items = p.items || [];
+        if (items.length === 1) {
+            const it = items[0];
+            card.append(el('div', { class: 'pay-attr1' }, attrText(it) + (it.period ? ' · ' + it.period : '')));
+        } else if (items.length > 1) {
+            card.append(attrDetails(items));
+        }
         return card;
     }
     function delPayment(p, node) {

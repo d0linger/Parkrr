@@ -1176,6 +1176,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .pay-head .pay-method{ font-weight:650; font-size:.9rem; }
 .pay-head .pay-date{ font-size:.75rem; color:var(--text-muted); word-break:break-word; }
 .pay-head .pay-amt{ font-weight:750; font-size:.98rem; font-variant-numeric:tabular-nums; color:var(--success-text, var(--success)); white-space:nowrap; }
+.pay-attr1{ margin-top:.4rem; font-size:.78rem; color:var(--text-muted); word-break:break-word; }
 .pay-attr{ margin-top:.5rem; border-top:1px dashed var(--border); padding-top:.45rem; }
 .pay-attr > summary{ list-style:none; cursor:pointer; display:flex; align-items:center; gap:.4rem; font-size:.8rem; color:var(--text-muted); }
 .pay-attr > summary::-webkit-details-marker{ display:none; }

@@ -8,7 +8,62 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 )
+
+// TestPaymentItemVehicleFallbackToCategory: a Gefährt with no label and no plate is
+// named by its category everywhere (like the vehicle card) — the payment attribution
+// must do the same, not fall back to the generic "Gefährt".
+func TestPaymentItemVehicleFallbackToCategory(t *testing.T) {
+	h := testHandler(t)
+	pid := createIntegrationPerson(t, h)
+	catName := "PKW (Halle)-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	cbody, _ := json.Marshal(map[string]any{"name": catName, "default_monthly_cost": 30, "default_yearly_cost": 300})
+	crec := httptest.NewRecorder()
+	h.CreateCategory(crec, httptest.NewRequest(http.MethodPost, "/api/categories", bytes.NewReader(cbody)))
+	var cat struct {
+		ID int64 `json:"id"`
+	}
+	_ = json.Unmarshal(crec.Body.Bytes(), &cat)
+
+	vbody, _ := json.Marshal(map[string]any{"person_id": pid, "category_id": cat.ID, "billing_period": "monthly",
+		"status": "stored", "start_date": firstOfMonthMonthsAgo(1).Format("2006-01-02")}) // no label, no plate
+	vrec := httptest.NewRecorder()
+	h.CreateVehicle(vrec, httptest.NewRequest(http.MethodPost, "/api/vehicles", bytes.NewReader(vbody)))
+	if vrec.Code != http.StatusCreated {
+		t.Fatalf("vehicle: %d %s", vrec.Code, vrec.Body.String())
+	}
+	var veh struct {
+		ID int64 `json:"id"`
+	}
+	_ = json.Unmarshal(vrec.Body.Bytes(), &veh)
+
+	pbody, _ := json.Marshal(map[string]any{"paid": true})
+	preq := httptest.NewRequest(http.MethodPost, "/api/vehicles/"+strconv.FormatInt(veh.ID, 10)+"/paid", bytes.NewReader(pbody))
+	preq.SetPathValue("id", strconv.FormatInt(veh.ID, 10))
+	preq.Header.Set("Content-Type", "application/json")
+	prec := httptest.NewRecorder()
+	h.MarkPaid(prec, preq)
+	if prec.Code != http.StatusOK {
+		t.Fatalf("markpaid: %d %s", prec.Code, prec.Body.String())
+	}
+
+	items, err := h.resolvePaymentItems(t.Context(), pid)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	var vehLabel string
+	for _, list := range items {
+		for _, it := range list {
+			if it.Kind == "vehicle" {
+				vehLabel = it.Label
+			}
+		}
+	}
+	if vehLabel != catName {
+		t.Errorf("a label-less Gefährt must be named by its category (%q), got %q", catName, vehLabel)
+	}
+}
 
 // TestResolvePaymentItems: a vehicle's "bezahlt" slider records one auto-payment that
 // settles the rent AND its bound Zusatzkosten — the resolved items must attribute it

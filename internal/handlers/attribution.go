@@ -38,12 +38,13 @@ func (h *Handler) resolvePaymentItems(ctx context.Context, personID int64) (map[
 	// (1) Vehicle-rent and one-off Zusatzkosten allocations.
 	arows, err := h.Pool.Query(ctx,
 		`SELECT pa.payment_id, pa.kind, pa.amount,
-		        COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), 'Gefährt'), v.start_date, v.end_date,
+		        COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), cat.name, 'Gefährt'), v.start_date, v.end_date,
 		        c.description, c.charged_on
 		   FROM payment_allocations pa
 		   JOIN payments p ON p.id = pa.payment_id
-		   LEFT JOIN vehicles v ON pa.kind='vehicle' AND v.id = pa.ref_id
-		   LEFT JOIN charges  c ON pa.kind='charge'  AND c.id = pa.ref_id
+		   LEFT JOIN vehicles   v   ON pa.kind='vehicle' AND v.id = pa.ref_id
+		   LEFT JOIN categories cat ON cat.id = v.category_id
+		   LEFT JOIN charges    c   ON pa.kind='charge'  AND c.id = pa.ref_id
 		  WHERE p.person_id=$1 AND NOT p.reversed
 		  ORDER BY pa.payment_id, pa.id`, personID)
 	if err != nil {
@@ -84,8 +85,9 @@ func (h *Handler) resolvePaymentItems(ctx context.Context, personID int64) (map[
 	// allocations (handled above), so skip it here.
 	srows, err := h.Pool.Query(ctx,
 		`SELECT p.id, p.settles_period, p.amount,
-		        (SELECT string_agg(COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), 'Gefährt'), ', ' ORDER BY v.id)
+		        (SELECT string_agg(COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), cat.name, 'Gefährt'), ', ' ORDER BY v.id)
 		           FROM flat_rate_period_vehicles fv JOIN vehicles v ON v.id = fv.vehicle_id
+		           LEFT JOIN categories cat ON cat.id = v.category_id
 		          WHERE fv.period_id = p.settles_ref)
 		   FROM payments p
 		  WHERE p.person_id=$1 AND NOT p.reversed AND p.settles_kind='agreement' AND p.settles_period <> 'extras'`, personID)
@@ -167,15 +169,17 @@ func (h *Handler) resolveInvoiceItems(ctx context.Context, personID int64) (map[
 	out := map[int64][]attrItem{}
 	rows, err := h.Pool.Query(ctx,
 		`SELECT s.invoice_id, s.kind, s.period_key,
-		        COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), 'Gefährt'),
+		        COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), cat.name, 'Gefährt'),
 		        c.description, rc.description,
-		        (SELECT string_agg(COALESCE(NULLIF(v2.label,''), NULLIF(v2.license_plate,''), 'Gefährt'), ', ' ORDER BY v2.id)
+		        (SELECT string_agg(COALESCE(NULLIF(v2.label,''), NULLIF(v2.license_plate,''), cat2.name, 'Gefährt'), ', ' ORDER BY v2.id)
 		           FROM flat_rate_period_vehicles fv JOIN vehicles v2 ON v2.id = fv.vehicle_id
+		           LEFT JOIN categories cat2 ON cat2.id = v2.category_id
 		          WHERE s.kind='agreement' AND fv.period_id = s.ref_id)
 		   FROM invoice_source s
 		   JOIN invoices i ON i.id = s.invoice_id
-		   LEFT JOIN vehicles v ON s.kind='vehicle' AND v.id = s.ref_id
-		   LEFT JOIN charges  c ON s.kind='charge'  AND c.id = s.ref_id
+		   LEFT JOIN vehicles   v   ON s.kind='vehicle' AND v.id = s.ref_id
+		   LEFT JOIN categories cat ON cat.id = v.category_id
+		   LEFT JOIN charges    c   ON s.kind='charge'  AND c.id = s.ref_id
 		   LEFT JOIN recurring_charges rc ON s.kind='recurring' AND rc.id = s.ref_id
 		  WHERE i.person_id=$1 AND NOT i.canceled
 		  ORDER BY s.invoice_id, s.kind, s.period_key`, personID)
