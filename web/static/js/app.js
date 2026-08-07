@@ -1176,19 +1176,44 @@
             el('div', { class: 'konto-v' }, value),
             el('div', { class: 'konto-l' }, label));
     }
+    // attrHeadline is the one-line summary of what a payment/invoice settles: the
+    // distinct position labels, capped so the collapsed row stays short.
+    function attrHeadline(items) {
+        const labels = [...new Set(items.map((i) => i.label))];
+        if (labels.length <= 2) return labels.join(' · ');
+        return labels.slice(0, 2).join(' · ') + ' · +' + (labels.length - 2);
+    }
+    // attrDetails is the Variant-D collapsible: a summary line (Gefährt/Pauschale ·
+    // Zeitraum) that expands to the full breakdown with per-position amount.
+    function attrDetails(items) {
+        const det = el('details', { class: 'pay-attr' });
+        det.append(el('summary', {}, el('span', { class: 'caret' }, '▸'), el('span', {}, attrHeadline(items))));
+        const list = el('div', { class: 'attr-list' });
+        for (const it of items) {
+            list.append(el('div', { class: 'attr-row' },
+                el('div', { class: 'attr-lab' }, esc(it.label),
+                    it.period ? el('div', { class: 'attr-per' }, esc(it.period)) : null),
+                (Number(it.amount) || 0) > 0.005 ? el('div', { class: 'attr-amt' }, eur(it.amount)) : el('span', {})));
+        }
+        det.append(list);
+        return det;
+    }
     function paymentRow(personId, p) {
         const meta = new Date(p.paid_on).toLocaleDateString('de-DE') + (p.note ? ' · ' + p.note : '')
             + (p.reversed ? ' · storniert' : '');
-        const row = el('div', { class: 'card pay-row' + (p.reversed ? ' is-reversed' : '') },
+        const head = el('div', { class: 'pay-head' },
             el('div', { class: 'pay-main' },
                 el('div', { class: 'pay-method' }, payMethodLabel(p.method)),
                 el('div', { class: 'pay-date' }, meta)),
             el('div', { class: 'pay-amt' }, eur(p.amount)));
         // A reversed payment is kept for the record (BAO) — no further action on it.
         if (canBill() && !p.reversed) {
-            row.append(el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Zahlung stornieren', title: 'Zahlung stornieren', onclick: (e) => delPayment(p, e.currentTarget.closest('.card')) }, icon('trash', 15)));
+            head.append(el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Zahlung stornieren', title: 'Zahlung stornieren', onclick: (e) => delPayment(p, e.currentTarget.closest('.card')) }, icon('trash', 15)));
         }
-        return row;
+        const card = el('div', { class: 'card pay-card' + (p.reversed ? ' is-reversed' : '') }, head);
+        // What the payment settled (Gefährt/Pauschale · Zeitraum), collapsible.
+        if ((p.items || []).length) card.append(attrDetails(p.items));
+        return card;
     }
     function delPayment(p, node) {
         // BAO: the payment is not deleted but reversed (Storno) — the record is kept.
@@ -1281,14 +1306,29 @@
         const [label, tone] = INV_STATUS[iv.status] || [iv.status || '', 'muted'];
         return el('span', { class: 'inv-badge ' + tone }, label);
     }
+    // invSummary groups an invoice's billed positions by label with their periods:
+    // "Wohnwagen (2025, 2026) · Frostschutz-Check".
+    function invSummary(positions) {
+        const byLabel = new Map();
+        for (const p of positions) {
+            if (!byLabel.has(p.label)) byLabel.set(p.label, new Set());
+            if (p.period) byLabel.get(p.label).add(p.period);
+        }
+        return [...byLabel].map(([label, pers]) => label + (pers.size ? ' (' + [...pers].join(', ') + ')' : '')).join(' · ');
+    }
     function invoiceRow(iv) {
         const neg = iv.status === 'storno' || Number(iv.total) < 0;
-        return el('a', { class: 'card pay-row inv-link', href: '#/invoices/' + iv.id },
-            el('div', { class: 'pay-main' },
-                el('div', { class: 'pay-method' }, 'Rechnung ' + esc(iv.number), ' ', invStatusBadge(iv)),
-                el('div', { class: 'pay-date' }, new Date(iv.issued_on).toLocaleDateString('de-DE')
-                    + (iv.kleinunternehmer ? '' : ' · inkl. USt')
-                    + (iv.status === 'teilbezahlt' ? ' · offen ' + eur(iv.open_amount) : ''))),
+        const main = el('div', { class: 'pay-main' },
+            el('div', { class: 'pay-method' }, 'Rechnung ' + esc(iv.number), ' ', invStatusBadge(iv)),
+            el('div', { class: 'pay-date' }, new Date(iv.issued_on).toLocaleDateString('de-DE')
+                + (iv.kleinunternehmer ? '' : ' · inkl. USt')
+                + (iv.status === 'teilbezahlt' ? ' · offen ' + eur(iv.open_amount) : '')));
+        // What the invoice bills (Gefährt/Pauschale · Periode) — one muted line; the
+        // card links to the invoice page for the full positions.
+        if ((iv.positions || []).length) {
+            main.append(el('div', { class: 'inv-bills' }, 'berechnet: ' + invSummary(iv.positions)));
+        }
+        return el('a', { class: 'card pay-row inv-link', href: '#/invoices/' + iv.id }, main,
             el('div', { class: 'pay-amt', style: neg ? 'color:var(--danger)' : 'color:var(--text)' }, eur(iv.total)));
     }
     async function payInvoiceFor(iv) {

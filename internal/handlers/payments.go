@@ -36,6 +36,10 @@ type payment struct {
 	VehicleID *int64    `json:"vehicle_id"`
 	CreatedAt time.Time `json:"created_at"`
 	Reversed  bool      `json:"reversed"` // storniert: kept for audit, excluded from all money sums
+	// Items are the resolved positions this payment settles (Gefährt/Pauschale/
+	// Zusatzkosten + Zeitraum + Betrag), filled by ListPayments so the overview can
+	// show what a payment covers — even across several Gefährte or Pauschalen.
+	Items []attrItem `json:"items,omitempty"`
 }
 
 // paymentMethods is the closed set the UI offers; anything else is rejected so a
@@ -76,6 +80,15 @@ func (h *Handler) ListPayments(w http.ResponseWriter, r *http.Request) {
 	if rows.Err() != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
+	}
+	// Attach the resolved positions (Gefährt/Pauschale/Zeitraum) each payment settles.
+	items, ierr := h.resolvePaymentItems(r.Context(), id)
+	if ierr != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	for i := range out {
+		out[i].Items = items[out[i].ID]
 	}
 	writeJSON(w, http.StatusOK, out)
 }
