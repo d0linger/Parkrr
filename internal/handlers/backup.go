@@ -14,11 +14,23 @@ import (
 	"time"
 
 	"github.com/preining/parkrr/internal/backup"
+	"github.com/preining/parkrr/internal/database"
 )
+
+// clearWriteDeadline lifts the server's WriteTimeout for a long-running response
+// (a large encrypted backup stream, an S3 upload, or a multi-minute pg_restore)
+// so the write isn't aborted mid-flight — which would truncate a download into a
+// corrupt archive or drop a restore's connection before its status is returned.
+// The per-handler context still bounds the work; only the socket write deadline
+// is cleared. Best-effort: a no-op if the writer doesn't support it.
+func clearWriteDeadline(w http.ResponseWriter) {
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+}
 
 // CreateBackup runs an encrypted pg_dump and streams it to the operator as a
 // download (admin-only). Encrypted with PARKRR_BACKUP_KEY (AES-256-GCM).
 func (h *Handler) CreateBackup(w http.ResponseWriter, r *http.Request) {
+	clearWriteDeadline(w)
 	if h.BackupKey == "" {
 		writeError(w, http.StatusServiceUnavailable, "backup is not configured (set PARKRR_BACKUP_KEY)")
 		return
@@ -192,6 +204,7 @@ func safeBackupName(name string) bool {
 
 // BackupDownloadFile serves one scheduled backup from the backup directory.
 func (h *Handler) BackupDownloadFile(w http.ResponseWriter, r *http.Request) {
+	clearWriteDeadline(w)
 	if h.BackupDir == "" {
 		writeError(w, http.StatusNotFound, "no scheduled backup directory configured")
 		return
@@ -244,8 +257,34 @@ func (h *Handler) BackupValidate(w http.ResponseWriter, r *http.Request) {
 
 // BackupRestore restores an uploaded backup into the live database. DESTRUCTIVE:
 // requires confirm=RESTORE and validates the archive first. The restore itself is
+// reconcileSchemaAfterRestore brings the database back in step with THIS binary
+// after a restore, so no manual restart is needed. A restored backup can be a
+// schema version behind the running code (its schema_migrations, and thus the
+// columns migrations added, are the backup's) — the app would then serve against a
+// stale schema and fail every query touching the newer columns. Two steps:
+//
+//  1. Pool.Reset() — pg_restore --clean dropped and recreated every table, so any
+//     pooled connection may hold cached statements bound to the old relations
+//     ("cached plan must not change result type"). Discard them; the pool reopens
+//     fresh connections on demand, and Migrate then runs on a clean one.
+//  2. Migrate — re-apply whatever the backup lacked (the same embedded migrations
+//     run at startup). Forward-only: a backup NEWER than this binary is left as-is
+//     (there is no matching migration to apply and downgrading is never done).
+func (h *Handler) reconcileSchemaAfterRestore(ctx context.Context) error {
+	h.Pool.Reset()
+	if err := database.Migrate(ctx, h.Pool); err != nil {
+		return err
+	}
+	// The restored data may carry period settlements as off-book flags only (an older
+	// backup, pre-migration 036). Book their real Zahlungseingänge now — idempotent,
+	// exactly as at startup — so a legacy paid Pauschale/Nebenkosten shows its payment
+	// without waiting for a restart.
+	return h.BackfillPeriodPayments(ctx)
+}
+
 // atomic (pg_restore --single-transaction): a failure rolls back with no change.
 func (h *Handler) BackupRestore(w http.ResponseWriter, r *http.Request) {
+	clearWriteDeadline(w)
 	enc, key, err := readBackupUpload(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -263,7 +302,12 @@ func (h *Handler) BackupRestore(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := backup.Restore(ctx, h.DatabaseURL, enc, key); err != nil {
 		slog.Error("backup restore failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "restore failed: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "restore failed")
+		return
+	}
+	if err := h.reconcileSchemaAfterRestore(ctx); err != nil {
+		slog.Error("post-restore migration failed", "err", err)
+		writeError(w, http.StatusInternalServerError, "restored, but the schema upgrade failed — restart the app to complete it")
 		return
 	}
 	h.audit(r, "restore", "system", 0, "restored the database from an uploaded backup")
@@ -302,9 +346,29 @@ func readBackupUpload(r *http.Request) (enc []byte, key string, err error) {
 	return enc, key, nil
 }
 
+// BackupS3Test checks the configured bucket is reachable (read-only BucketExists) —
+// the panel's "Verbindung testen". Admin-only; the diagnostic error is returned so
+// the operator sees why it failed (missing bucket, bad credentials, unreachable
+// endpoint). Modeled on Treckrr's S3Test.
+func (h *Handler) BackupS3Test(w http.ResponseWriter, r *http.Request) {
+	if !h.S3.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "S3 ist nicht konfiguriert (S3_* setzen).")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	if err := backup.TestS3(ctx, h.S3); err != nil {
+		slog.Warn("backup: S3 connection test failed", "err", err)
+		writeError(w, http.StatusBadGateway, "S3-Verbindung fehlgeschlagen: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "bucket": h.S3.Bucket})
+}
+
 // CreateBackupS3 makes an encrypted backup and uploads it to the S3 bucket
 // (no download). keep=0 here so a manual upload never prunes.
 func (h *Handler) CreateBackupS3(w http.ResponseWriter, r *http.Request) {
+	clearWriteDeadline(w)
 	if h.BackupKey == "" || !h.S3.Enabled() {
 		writeError(w, http.StatusServiceUnavailable, "S3 backup is not configured")
 		return
@@ -324,6 +388,7 @@ func (h *Handler) CreateBackupS3(w http.ResponseWriter, r *http.Request) {
 
 // BackupS3Download streams one backup object from the bucket.
 func (h *Handler) BackupS3Download(w http.ResponseWriter, r *http.Request) {
+	clearWriteDeadline(w)
 	if !h.S3.Enabled() {
 		writeError(w, http.StatusNotFound, "S3 is not configured")
 		return
@@ -344,6 +409,7 @@ func (h *Handler) BackupS3Download(w http.ResponseWriter, r *http.Request) {
 // BackupRestoreS3 restores directly from an S3 object — no browser upload, so it
 // handles any size. Requires the matching key and confirm=RESTORE; atomic.
 func (h *Handler) BackupRestoreS3(w http.ResponseWriter, r *http.Request) {
+	clearWriteDeadline(w)
 	if !h.S3.Enabled() {
 		writeError(w, http.StatusServiceUnavailable, "S3 is not configured")
 		return
@@ -379,7 +445,12 @@ func (h *Handler) BackupRestoreS3(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := backup.Restore(ctx, h.DatabaseURL, enc, key); err != nil {
 		slog.Error("backup restore (S3) failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "restore failed: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "restore failed")
+		return
+	}
+	if err := h.reconcileSchemaAfterRestore(ctx); err != nil {
+		slog.Error("post-restore migration failed (S3)", "err", err)
+		writeError(w, http.StatusInternalServerError, "restored, but the schema upgrade failed — restart the app to complete it")
 		return
 	}
 	h.audit(r, "restore", "system", 0, "restored the database from S3 backup "+name)

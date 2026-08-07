@@ -34,7 +34,12 @@
     const eur = (n) => new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(Number(n) || 0);
     const fmtDate = (s) => (s ? new Date(s).toLocaleDateString('de-DE') : '–');
     const fmtDateTime = (s) => (s ? new Date(s).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' }) : '–');
-    const today = () => new Date().toISOString().slice(0, 10);
+    // Local calendar date (not UTC): toISOString() would yield yesterday between
+    // local midnight and the UTC offset, wrong-dating a payment/charge default.
+    const today = () => {
+        const d = new Date();
+        return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    };
     const norm = (s) => String(s ?? '').toLowerCase();
 
     // ---------- icons ----------
@@ -551,6 +556,7 @@
         trend: '<path d="M4 15l5-5 3 3 6-7"/><path d="M16 6h3v3"/>',
         check: '<circle cx="12" cy="12" r="8.2"/><path d="M8.5 12.3l2.3 2.3 4.6-4.9"/>',
         clock: '<circle cx="12" cy="12" r="8.2"/><path d="M12 7.5V12l3 2"/>',
+        receipt: '<path d="M6 3h12v18l-2.2-1.3-2 1.3-2-1.3-2 1.3-2-1.3L6 21V3Z"/><path d="M9.2 8.5h5.6M9.2 12h5.6"/>',
     };
     function statIcon(key) {
         const p = STAT_ICONS[key];
@@ -636,6 +642,28 @@
         opts.refresh = refresh;
         refresh();
         return opts;
+    }
+
+    // collapsibleRows renders the first `limit` items and tucks the rest behind a
+    // "N weitere anzeigen" toggle, so long Zahlungs-/Rechnungslisten don't flood the
+    // page. All data is already loaded — this is pure client-side reveal, no paging.
+    function collapsibleRows(items, renderFn, limit = 5) {
+        // margin-bottom matches a .card so the list (and its toggle button, which is
+        // inline-flex and wouldn't space the next section on its own) keeps the normal
+        // 0.75rem gap to whatever follows. Verified: 12px in the rendered layout.
+        const wrap = el('div', { style: 'margin-bottom:.75rem' });
+        items.slice(0, limit).forEach((it) => wrap.append(renderFn(it)));
+        const rest = items.slice(limit);
+        if (!rest.length) return wrap;
+        const overflow = el('div', { style: 'display:none' });
+        rest.forEach((it) => overflow.append(renderFn(it)));
+        let open = false;
+        const btn = el('button', { class: 'btn btn-ghost btn-sm btn-block', type: 'button', 'aria-expanded': 'false', style: 'margin-top:.4rem' });
+        const label = () => { btn.textContent = open ? 'Weniger anzeigen' : `${rest.length} weitere anzeigen`; };
+        btn.addEventListener('click', () => { open = !open; overflow.style.display = open ? '' : 'none'; btn.setAttribute('aria-expanded', String(open)); label(); });
+        label();
+        wrap.append(overflow, btn);
+        return wrap;
     }
 
     // ================= ROUTER =================
@@ -803,10 +831,14 @@
             umsatz.querySelector('.value').append(el('span', { class: 'yoy ' + yd.cls, title: yd.title }, ' ' + yd.txt));
             umsatz.querySelector('.label').textContent = yd.label;
         }
-        page.append(el('div', { class: 'stat-grid' },
-            umsatz,
-            stat(eur(ov.paid_total), 'Bezahlt', { icon: 'check', tone: 'green' }),
-        ));
+        // "Eingegangen" = recorded payments (money-in log); surfaced next to Umsatz
+        // once any payment exists, distinct from "Bezahlt" (the paid-flag total).
+        const moneyRow = el('div', { class: 'stat-grid' }, umsatz);
+        if ((Number(ov.payments_this_year) || 0) > 0 || (Number(ov.payments_total) || 0) > 0) {
+            moneyRow.append(stat(eur(ov.payments_this_year), 'Eingegangen ' + ov.year, { icon: 'receipt', tone: 'teal' }));
+        }
+        moneyRow.append(stat(eur(ov.paid_total), 'Bezahlt', { icon: 'check', tone: 'green' }));
+        page.append(moneyRow);
         // Compare-mode switch for the Umsatz delta — only when there is a prior year
         // to compare against. Choice is persisted across visits.
         if ((Number(ov.accrued_prev_year) || 0) > 0 || (Number(ov.accrued_prev_full) || 0) > 0) {
@@ -837,6 +869,23 @@
                     el('span', { class: 'owe-amt' }, eur(o.outstanding), el('span', { class: 'owe-chev' }, '›'))));
             });
             page.append(oweCard);
+        }
+
+        // Überfällige Rechnungen — Mahnwesen light: wen mahnen, ein Tap zur Rechnung.
+        let overdue = [];
+        try { overdue = (await api.get('/invoices/overdue')) || []; } catch (e) { /* ignore */ }
+        if (overdue.length) {
+            const odCard = el('div', { class: 'owe-card' });
+            const odTotal = overdue.reduce((s, o) => s + (Number(o.open_amount) || 0), 0);
+            odCard.append(el('div', { class: 'owe-head' },
+                el('span', { class: 'sec-eyebrow', style: 'color:var(--danger)' }, 'Überfällige Rechnungen'),
+                el('span', { class: 'muted', style: 'font-size:.75rem' }, overdue.length + ' · ' + eur(odTotal) + ' offen')));
+            overdue.slice(0, 6).forEach((o) => {
+                odCard.append(el('a', { class: 'owe-row', href: '#/invoices/' + o.id, style: 'text-decoration:none' },
+                    el('span', { class: 'owe-nm' }, esc(o.person_name), el('span', { class: 'muted', style: 'font-size:.72rem;margin-left:.4rem' }, 'Nr ' + esc(o.number) + ' · ' + o.days_overdue + ' Tg. überfällig')),
+                    el('span', { class: 'owe-amt', style: 'color:var(--danger)' }, eur(o.open_amount), el('span', { class: 'owe-chev' }, '›'))));
+            });
+            page.append(odCard);
         }
 
         // Revenue chart
@@ -944,9 +993,16 @@
     routes.person = async (page, id) => {
         await refreshLookups();
         const stats = await api.get('/persons/' + id + '/stats');
-        const [vehicles, charges] = await Promise.all([
+        // Load all billing reads together and let a failure propagate to the route's
+        // error handling — a failed read must not masquerade as "no data" (which would
+        // hide real records and invite writes against a wrong picture). `|| []` only
+        // covers an empty body, never an error.
+        const [vehicles, charges, paymentsR, invoicesR] = await Promise.all([
             api.get('/vehicles?person_id=' + id), api.get('/charges?person_id=' + id),
+            api.get('/persons/' + id + '/payments'), api.get('/persons/' + id + '/invoices'),
         ]);
+        const payments = paymentsR || [];
+        const invoices = invoicesR || [];
         const recs = stats.recurring_charges || [];
         // Per-vehicle summary of bound extra costs (one-off total + recurring
         // accrued), surfaced on the vehicle cards and their Pauschale nesting.
@@ -969,13 +1025,22 @@
         page.append(el('div', { class: 'card' },
             el('div', { class: 'bal-hero-label' }, 'Offener Saldo'),
             el('div', { class: 'bal-hero-num ' + (owed ? 'is-owed' : 'is-clear') }, eur(stats.balance)),
-            el('div', { class: 'bal-hero-sub' }, 'Stand heute · Miete + Zusatzkosten − Bezahlt')));
-        // Derivation lives in its own card below the hero: three labelled figures
-        // (Miete / Zusatzkosten / Bezahlt) so the breakdown reads as a small ledger.
-        page.append(el('div', { class: 'card bal-figs' },
+            el('div', { class: 'bal-hero-sub' }, 'Stand heute · Aufgelaufen − Bezahlt')));
+        // Derivation lives in its own card below the hero: labelled figures that add
+        // up to the hero exactly. USt (only when invoiced) and per-period Pauschale
+        // payments (only when used) appear so the small ledger always reconciles.
+        const figs = [
             el('div', { class: 'fig' }, el('div', { class: 'fig-l' }, 'Miete'), el('div', { class: 'fig-v' }, eur(stats.total_accrued))),
             el('div', { class: 'fig' }, el('div', { class: 'fig-l' }, 'Zusatzkosten'), el('div', { class: 'fig-v' }, eur(stats.total_charges))),
-            el('div', { class: 'fig' }, el('div', { class: 'fig-l' }, 'Bezahlt'), el('div', { class: 'fig-v is-paid' }, eur(stats.total_paid)))));
+        ];
+        if ((stats.invoiced_tax || 0) > 0.005) {
+            figs.push(el('div', { class: 'fig' }, el('div', { class: 'fig-l' }, 'USt (fakturiert)'), el('div', { class: 'fig-v' }, eur(stats.invoiced_tax))));
+        }
+        figs.push(el('div', { class: 'fig' }, el('div', { class: 'fig-l' }, 'Bezahlt'), el('div', { class: 'fig-v is-paid' }, eur(stats.total_paid))));
+        if ((stats.period_paid || 0) > 0.005) {
+            figs.push(el('div', { class: 'fig' }, el('div', { class: 'fig-l' }, 'Pauschale-Zahlung'), el('div', { class: 'fig-v is-paid' }, eur(stats.period_paid))));
+        }
+        page.append(el('div', { class: 'card bal-figs' }, ...figs));
 
         // flat-rate agreements (Pauschalen). Per-vehicle coverage badges/payment
         // come from the backend (v.flat_rate_covered / v.uncovered_cost).
@@ -983,8 +1048,10 @@
         if (canBill() || ags.length) {
             // A Pauschale only moves to the archive once it has ended AND is fully
             // paid — an ended-but-unpaid agreement stays visible so the open payment
-            // isn't hidden. End date is exclusive (matches the backend).
-            const ended = (a) => a.settled && a.end_date && a.end_date.slice(0, 10) <= today();
+            // isn't hidden. "Fully paid" uses the same invoice-aware state as the
+            // progress bar (agreementPaid().done), so a Pauschale settled through a
+            // paid Rechnung archives too — not only ones cleared via the paid flags.
+            const ended = (a) => agreementPaid(a).done && a.end_date && a.end_date.slice(0, 10) <= today();
             const activeAg = ags.filter((a) => !ended(a));
             const endedAg = ags.filter(ended);
             const frCard = el('div', { class: 'card' });
@@ -1038,6 +1105,38 @@
             if (charges.length) page.append(financeList(charges));
         }
 
+        // Zahlungen (recorded money-in). A dedicated log + Kontoauszug, separate
+        // from the per-item "bezahlt" toggle above (which drives the Saldo).
+        const activePayments = payments.filter((p) => !p.reversed).length; // count excludes storniert, like the money figures
+        const pz = el('div', { class: 'page-head section-head' },
+            el('div', { class: 'sec-group' }, el('h3', { class: 'sec-eyebrow' }, 'Zahlungen'),
+                activePayments ? el('span', { class: 'sec-count' }, activePayments) : null));
+        if (canBill()) pz.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => paymentForm(id, stats) }, '+ Zahlung'));
+        page.append(pz);
+        const kontoCard = el('div', { class: 'card konto' },
+            kontoFig('Eingegangen ' + stats.year, eur(stats.payments_year), 'in'),
+            kontoFig('Eingegangen gesamt', eur(stats.payments_total), ''));
+        if ((Number(stats.credit) || 0) > 0.005) {
+            kontoCard.append(kontoFig('Guthaben', eur(stats.credit), 'in'));
+        }
+        page.append(kontoCard);
+        if ((Number(stats.credit) || 0) > 0.005 && canBill()) {
+            page.append(el('div', { class: 'card-row', style: 'margin:-.3rem 0 .2rem;align-items:center;gap:.5rem' },
+                el('div', { class: 'card-meta', style: 'flex:1' }, 'Guthaben ' + eur(stats.credit) + ' verfügbar.'),
+                el('button', { class: 'btn btn-ghost btn-sm', onclick: (e) => applyCredit(id, e.currentTarget) }, 'Guthaben anrechnen')));
+        }
+        if (!payments.length) page.append(el('p', { class: 'muted' }, 'Noch keine Zahlungen erfasst.'));
+        else page.append(collapsibleRows(payments, (p) => paymentRow(id, p)));
+
+        // Rechnungen (fortlaufend nummeriert, unveränderlich)
+        const rz = el('div', { class: 'page-head section-head' },
+            el('div', { class: 'sec-group' }, el('h3', { class: 'sec-eyebrow' }, 'Rechnungen'),
+                invoices.length ? el('span', { class: 'sec-count' }, invoices.length) : null));
+        if (canBill()) rz.append(el('button', { class: 'btn btn-primary btn-sm', onclick: (e) => createInvoiceFor(id, e.currentTarget) }, '+ Rechnung'));
+        page.append(rz);
+        if (!invoices.length) page.append(el('p', { class: 'muted' }, 'Noch keine Rechnungen. „+ Rechnung" erstellt eine aus den offenen Einzelposten.'));
+        else page.append(collapsibleRows(invoices, (iv) => invoiceRow(iv)));
+
         // statistics at the bottom, below the actionable sections
         const chartCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Kosten pro Monat · ' + stats.year));
         chartCard.append(chartBars(stats.monthly_accrued, MONTHS));
@@ -1067,6 +1166,290 @@
             yc.append(bars);
             page.append(yc);
         }
+    };
+
+    // ---------- Payments (Zahlungen / Kontoauszug) ----------
+    const PAY_METHODS = [{ v: 'bar', l: 'Bar' }, { v: 'ueberweisung', l: 'Überweisung' }, { v: 'paypal', l: 'PayPal' }, { v: 'sonstiges', l: 'Sonstiges' }];
+    const payMethodLabel = (m) => (PAY_METHODS.find((x) => x.v === m) || { l: m }).l;
+    function kontoFig(label, value, tone) {
+        return el('div', { class: 'konto-fig' + (tone ? ' tone-' + tone : '') },
+            el('div', { class: 'konto-v' }, value),
+            el('div', { class: 'konto-l' }, label));
+    }
+    function paymentRow(personId, p) {
+        const meta = new Date(p.paid_on).toLocaleDateString('de-DE') + (p.note ? ' · ' + p.note : '')
+            + (p.reversed ? ' · storniert' : '');
+        const row = el('div', { class: 'card pay-row' + (p.reversed ? ' is-reversed' : '') },
+            el('div', { class: 'pay-main' },
+                el('div', { class: 'pay-method' }, payMethodLabel(p.method)),
+                el('div', { class: 'pay-date' }, meta)),
+            el('div', { class: 'pay-amt' }, eur(p.amount)));
+        // A reversed payment is kept for the record (BAO) — no further action on it.
+        if (canBill() && !p.reversed) {
+            row.append(el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Zahlung stornieren', title: 'Zahlung stornieren', onclick: (e) => delPayment(p, e.currentTarget.closest('.card')) }, icon('trash', 15)));
+        }
+        return row;
+    }
+    function delPayment(p, node) {
+        // BAO: the payment is not deleted but reversed (Storno) — the record is kept.
+        deleteWithUndo('Zahlung stornieren?',
+            eur(p.amount) + ' vom ' + new Date(p.paid_on).toLocaleDateString('de-DE') + ' wird storniert (Datensatz bleibt erhalten).',
+            () => api.del('/payments/' + p.id), () => render(), node);
+    }
+    async function paymentForm(personId, stats) {
+        const open = Math.max(0, Number(stats && stats.balance) || 0);
+        let items = [];
+        try { items = (await api.get('/persons/' + personId + '/open-items')) || []; } catch (e) { /* keep empty */ }
+        // Selection state: default = automatic (oldest first), everything ticked.
+        const sel = { auto: true, checked: new Set(items.map((i) => i.kind + ':' + i.id)) };
+
+        await formModal({
+            title: 'Zahlung erfassen',
+            fields: [
+                { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', required: true, value: open ? open.toFixed(2) : '', help: open ? 'Vorausgefüllt: offener Saldo – für Teil-/Vorauszahlung anpassen.' : '' },
+                { name: 'paid_on', label: 'Datum', type: 'date', value: today() },
+                { name: 'method', label: 'Methode', type: 'select', value: 'bar', options: PAY_METHODS.map((m) => ({ value: m.v, label: m.l })) },
+                { name: 'note', label: 'Notiz (optional)', value: '' },
+            ],
+            onRender: (body) => {
+                segmentedField(body, 'method', PAY_METHODS);
+                const amountEl = () => body.querySelector('#f_amount');
+                const box = el('div', { class: 'alloc-box' });
+                const foot = el('div', { class: 'alloc-foot' });
+                const list = el('div', { class: 'alloc-list' });
+
+                const refresh = () => {
+                    const amt = Number(amountEl().value) || 0;
+                    let selTotal = 0;
+                    items.forEach((it) => { if (sel.checked.has(it.kind + ':' + it.id)) selTotal += Number(it.owed) || 0; });
+                    list.style.display = sel.auto ? 'none' : '';
+                    const covered = sel.auto ? Math.min(amt, items.reduce((s, i) => s + (Number(i.owed) || 0), 0)) : Math.min(amt, selTotal);
+                    const credit = Math.max(0, amt - covered);
+                    foot.innerHTML = '';
+                    foot.append(el('span', {}, sel.auto ? 'Automatisch – älteste zuerst' : ('Zugeordnet ' + eur(covered))));
+                    foot.append(el('span', { class: credit > 0.005 ? 'is-credit' : '' }, credit > 0.005 ? ('Guthaben ' + eur(credit)) : 'Rest ' + eur(0)));
+                };
+
+                const autoChk = el('input', { type: 'checkbox' }); autoChk.checked = true;
+                autoChk.addEventListener('change', () => { sel.auto = autoChk.checked; refresh(); });
+                box.append(el('label', { class: 'switch alloc-auto' }, autoChk, el('span', { class: 'track' }), el('span', {}, 'Automatisch – offene Posten älteste zuerst begleichen')));
+
+                if (!items.length) {
+                    box.append(el('div', { class: 'card-meta', style: 'margin:.3rem 0' }, 'Keine offenen Einzelposten – der Betrag wird als Guthaben verbucht.'));
+                } else {
+                    items.forEach((it) => {
+                        const key = it.kind + ':' + it.id;
+                        const cb = el('input', { type: 'checkbox' }); cb.checked = true;
+                        cb.addEventListener('change', () => { if (cb.checked) sel.checked.add(key); else sel.checked.delete(key); refresh(); });
+                        list.append(el('label', { class: 'alloc-item' }, cb,
+                            el('span', { class: 'ai-m' }, esc(it.label)),
+                            el('span', { class: 'ai-a' }, eur(it.owed))));
+                    });
+                    box.append(list);
+                }
+                box.append(foot);
+                body.append(box);
+                amountEl().addEventListener('input', refresh);
+                refresh();
+            },
+            save: async (data) => {
+                if (!(Number(data.amount) > 0)) { toast('Betrag muss größer als 0 sein', 'error'); throw new Error('invalid amount'); }
+                const payload = { amount: Number(data.amount), paid_on: data.paid_on, method: data.method, note: data.note || '' };
+                if (sel.auto) payload.allocate = true;
+                else payload.allocations = [...sel.checked].map((k) => { const [kind, id] = k.split(':'); return { kind, id: Number(id) }; });
+                const res = await api.post('/persons/' + personId + '/payments', payload);
+                const n = res && res.settled;
+                toast(n ? `Zahlung erfasst · ${n} Posten abgestempelt` : 'Zahlung erfasst', 'success'); render();
+            },
+        });
+    }
+    async function applyCredit(personId, btn) {
+        const o = btn.textContent; btn.disabled = true; btn.textContent = 'Rechne an …';
+        try {
+            const r = await api.post('/persons/' + personId + '/apply-credit', {});
+            const n = r && r.settled;
+            toast(n ? `Guthaben angerechnet · ${n} Posten abgestempelt` : 'Kein offener Posten zum Anrechnen', n ? 'success' : 'error');
+            render();
+        } catch (e) { toast(e.message, 'error'); btn.disabled = false; btn.textContent = o; }
+    }
+
+    // ---------- Rechnungen (invoices) ----------
+    const fmtQty = (q) => Number(q).toLocaleString('de-DE', { maximumFractionDigits: 2 });
+    const fmtRate = (r) => Number(r).toLocaleString('de-DE', { maximumFractionDigits: 2 });
+    const INV_STATUS = { offen: ['offen', 'warn'], teilbezahlt: ['teilbezahlt', 'warn'], bezahlt: ['bezahlt', 'ok'], storniert: ['storniert', 'muted'], storno: ['Storno', 'muted'] };
+    function invStatusBadge(iv) {
+        const [label, tone] = INV_STATUS[iv.status] || [iv.status || '', 'muted'];
+        return el('span', { class: 'inv-badge ' + tone }, label);
+    }
+    function invoiceRow(iv) {
+        const neg = iv.status === 'storno' || Number(iv.total) < 0;
+        return el('a', { class: 'card pay-row inv-link', href: '#/invoices/' + iv.id },
+            el('div', { class: 'pay-main' },
+                el('div', { class: 'pay-method' }, 'Rechnung ' + esc(iv.number), ' ', invStatusBadge(iv)),
+                el('div', { class: 'pay-date' }, new Date(iv.issued_on).toLocaleDateString('de-DE')
+                    + (iv.kleinunternehmer ? '' : ' · inkl. USt')
+                    + (iv.status === 'teilbezahlt' ? ' · offen ' + eur(iv.open_amount) : ''))),
+            el('div', { class: 'pay-amt', style: neg ? 'color:var(--danger)' : 'color:var(--text)' }, eur(iv.total)));
+    }
+    async function payInvoiceFor(iv) {
+        await formModal({
+            title: 'Rechnung ' + iv.number + ' bezahlen',
+            fields: [
+                { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', required: true, value: Number(iv.open_amount).toFixed(2), help: 'Offen: ' + eur(iv.open_amount) + ' – für Teilzahlung anpassen.' },
+                { name: 'paid_on', label: 'Datum', type: 'date', value: today() },
+                { name: 'method', label: 'Methode', type: 'select', value: 'bar', options: PAY_METHODS.map((m) => ({ value: m.v, label: m.l })) },
+            ],
+            onRender: (body) => segmentedField(body, 'method', PAY_METHODS),
+            save: async (d) => {
+                if (!(Number(d.amount) > 0)) { toast('Betrag muss größer als 0 sein', 'error'); throw new Error('invalid amount'); }
+                const r = await api.post('/persons/' + iv.person_id + '/pay-invoices', {
+                    amount: Number(d.amount), paid_on: d.paid_on, method: d.method,
+                    allocations: [{ invoice_id: iv.id, amount: Number(d.amount) }],
+                });
+                toast((r && r.unallocated > 0.005) ? ('Bezahlt · Rest ' + eur(r.unallocated) + ' nicht zugeordnet') : 'Rechnung bezahlt', 'success');
+                render();
+            },
+        });
+    }
+    async function stornoInvoice(iv) {
+        if (!await confirmDialog('Rechnung stornieren?', 'Erstellt einen unveränderlichen Storno-Gegenbeleg (§ Unveränderbarkeit). Die abgerechneten Positionen werden wieder fakturierbar.', 'Stornieren')) return;
+        try {
+            const st = await api.post('/invoices/' + iv.id + '/cancel', {});
+            toast('Storniert · Gegenbeleg ' + st.number, 'success');
+            location.hash = '#/invoices/' + st.id;
+        } catch (e) { toast(e.message, 'error'); }
+    }
+    async function createInvoiceFor(personId, btn) {
+        if (!await confirmDialog('Rechnung erstellen?', 'Erstellt eine fortlaufend nummerierte Rechnung aus allen offenen Einzelposten (Gefährte + Einmal-Zusatzkosten). Rechnungen sind unveränderlich.', 'Erstellen')) return;
+        const o = btn.textContent; btn.disabled = true; btn.textContent = 'Erstelle …';
+        try {
+            const iv = await api.post('/persons/' + personId + '/invoices', {});
+            toast('Rechnung ' + iv.number + ' erstellt', 'success');
+            location.hash = '#/invoices/' + iv.id;
+        } catch (e) { toast(e.message, 'error'); btn.disabled = false; btn.textContent = o; }
+    }
+    const metaRow = (l, v) => el('div', { class: 'inv-metarow' }, el('span', { class: 'inv-muted' }, l), el('span', {}, v));
+    const totRow = (l, v, strong) => el('div', { class: 'inv-totrow' + (strong ? ' strong' : '') }, el('span', {}, l), el('span', { class: 'num' }, v));
+    function leistungLabel(from, to) {
+        const f = new Date(from).toLocaleDateString('de-DE');
+        const t = to ? new Date(to).toLocaleDateString('de-DE') : f;
+        return f === t ? f : (f + ' – ' + t);
+    }
+    function invoiceDocument(iv) {
+        const s = iv.seller || {}, b = iv.buyer || {};
+        const doc = el('div', { class: 'invoice-doc' });
+        doc.append(el('div', { class: 'inv-head' },
+            el('div', { class: 'inv-seller' },
+                el('div', { class: 'inv-seller-name' }, esc(s.name || 'Aussteller')),
+                s.address ? el('div', { class: 'inv-muted pre' }, esc(s.address)) : null,
+                s.uid ? el('div', { class: 'inv-muted' }, 'UID: ' + esc(s.uid)) : null),
+            el('div', { class: 'inv-title' }, el('div', { class: 'inv-h' }, 'RECHNUNG'), el('div', { class: 'inv-num' }, esc(iv.number)))));
+        doc.append(el('div', { class: 'inv-parties' },
+            el('div', {}, el('div', { class: 'inv-label' }, 'Rechnung an'),
+                el('div', { class: 'inv-strong' }, esc(b.name || '')),
+                b.address ? el('div', { class: 'inv-muted pre' }, esc(b.address)) : null),
+            el('div', { class: 'inv-meta' },
+                metaRow('Rechnungsdatum', new Date(iv.issued_on).toLocaleDateString('de-DE')),
+                iv.due_on ? metaRow('Fällig bis', new Date(iv.due_on).toLocaleDateString('de-DE')) : null,
+                // § 11 Abs 1 Z 4: Leistungszeitraum (a period, or a single date if from==to).
+                iv.leistung_from ? metaRow('Leistungszeitraum', leistungLabel(iv.leistung_from, iv.leistung_to)) : null,
+                metaRow('Rechnungsnr.', esc(iv.number)))));
+        const tb = el('tbody', {});
+        (iv.items || []).forEach((it) => tb.append(el('tr', {},
+            el('td', {}, String(it.pos)), el('td', {}, esc(it.description)),
+            el('td', { class: 'r' }, fmtQty(it.quantity)),
+            el('td', { class: 'r' }, eur(it.unit_amount)),
+            el('td', { class: 'r' }, eur(it.line_total)))));
+        doc.append(el('table', { class: 'inv-table' },
+            el('thead', {}, el('tr', {}, el('th', {}, 'Pos'), el('th', {}, 'Beschreibung'),
+                el('th', { class: 'r' }, 'Menge'), el('th', { class: 'r' }, iv.kleinunternehmer ? 'Betrag' : 'Netto'), el('th', { class: 'r' }, 'Summe'))),
+            tb));
+        const tot = el('div', { class: 'inv-totals' });
+        if (iv.kleinunternehmer) {
+            tot.append(totRow('Gesamt', eur(iv.total), true));
+        } else {
+            tot.append(totRow('Netto', eur(iv.subtotal)));
+            tot.append(totRow('USt ' + fmtRate(iv.ust_rate) + ' %', eur(iv.tax_amount)));
+            tot.append(totRow('Gesamt (brutto)', eur(iv.total), true));
+        }
+        doc.append(tot);
+        if (iv.kleinunternehmer) doc.append(el('div', { class: 'inv-note' }, 'Umsatzsteuerbefreit gemäß § 6 Abs. 1 Z 27 UStG (Kleinunternehmer).'));
+        if (s.iban) doc.append(el('div', { class: 'inv-pay' }, 'Zahlbar auf: ' + esc(s.iban) + (s.bic ? ' · BIC ' + esc(s.bic) : '')));
+        if (iv.note) doc.append(el('div', { class: 'inv-note' }, esc(iv.note)));
+        if (s.footer) doc.append(el('div', { class: 'inv-footer' }, esc(s.footer)));
+        return doc;
+    }
+    routes.invoices = async (page, id) => {
+        if (!id) { page.innerHTML = ''; page.append(emptyState('receipt', 'Keine Rechnung gewählt.')); return; }
+        const iv = await api.get('/invoices/' + id);
+        page.innerHTML = '';
+        page.append(el('div', { class: 'detail-head no-print' },
+            el('button', { class: 'back-btn', onclick: () => history.back(), 'aria-label': 'Zurück' }, '‹'),
+            el('h2', { style: 'margin:0;flex:1' }, 'Rechnung ' + esc(iv.number), ' ', invStatusBadge(iv)),
+            (canBill() && (iv.status === 'offen' || iv.status === 'teilbezahlt')) ? el('button', { class: 'btn btn-primary btn-sm', onclick: () => payInvoiceFor(iv) }, 'Bezahlen') : null,
+            (canBill() && !iv.canceled && iv.status !== 'storno') ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => stornoInvoice(iv) }, 'Storno') : null,
+            el('button', { class: 'btn btn-ghost btn-sm', onclick: () => window.print() }, icon('receipt', 15), ' Drucken / PDF')));
+        if (iv.status === 'teilbezahlt' || iv.status === 'bezahlt') {
+            page.append(el('div', { class: 'card-meta no-print', style: 'margin:-.3rem 0 .4rem' }, 'Bezahlt ' + eur(iv.paid_amount) + ' von ' + eur(iv.total) + (iv.open_amount > 0.005 ? ' · offen ' + eur(iv.open_amount) : '')));
+        }
+        page.append(invoiceDocument(iv));
+    };
+
+    // ---------- Rechnungs-Einstellungen (admin) ----------
+    routes.billing = async (page) => {
+        if (!isAdmin()) { page.innerHTML = ''; page.append(emptyState('shield', 'Nur für Administratoren.')); return; }
+        const s = (await api.get('/billing/settings')) || {};
+        page.innerHTML = '';
+        page.append(el('div', { class: 'detail-head' },
+            el('button', { class: 'back-btn', onclick: () => navigate('dashboard'), 'aria-label': 'Zurück' }, '‹'),
+            el('h2', { style: 'margin:0' }, 'Rechnungs-Einstellungen')));
+
+        const field = (label, input, help) => el('div', { class: 'bill-field' },
+            el('label', {}, label), input, help ? el('div', { class: 'card-meta' }, help) : null);
+        const inp = (name, val, attrs = {}) => el('input', Object.assign({ id: 'bs_' + name, value: val ?? '' }, attrs));
+
+        const seller = el('div', { class: 'card' }, el('h3', {}, 'Aussteller'),
+            field('Name / Firma', inp('seller_name', s.seller_name)),
+            field('Adresse', el('textarea', { id: 'bs_seller_address', rows: '2' }, s.seller_address || '')),
+            field('UID-Nummer (ATU…)', inp('seller_uid', s.seller_uid), 'Pflicht bei USt-Ausweis.'));
+
+        const klCheck = el('input', { type: 'checkbox', id: 'bs_klein' });
+        klCheck.checked = s.kleinunternehmer !== false;
+        const rateSel = el('select', { id: 'bs_rate' },
+            ...[20, 13, 10].map((r) => { const o = el('option', { value: String(r) }, r + ' %'); if (Number(s.ust_rate) === r) o.selected = true; return o; }));
+        const rateWrap = field('USt-Satz', rateSel, 'Österreich: 20 % (Regelsatz, u. a. Einstellplatz), 13 %, 10 %.');
+        const applyKl = () => { rateWrap.style.display = klCheck.checked ? 'none' : ''; };
+        klCheck.addEventListener('change', applyKl);
+        const tax = el('div', { class: 'card' }, el('h3', {}, 'Steuer'),
+            el('label', { class: 'switch' }, klCheck, el('span', { class: 'track' }), el('span', {}, 'Kleinunternehmer (§ 6 Abs 1 Z 27 UStG – keine USt)')),
+            rateWrap);
+        applyKl();
+
+        const numbering = el('div', { class: 'card' }, el('h3', {}, 'Nummerierung & Zahlung'),
+            field('Rechnungsnr.-Präfix', inp('prefix', s.invoice_prefix, { placeholder: '2026-' })),
+            field('Nächste Nummer', inp('next_no', s.next_invoice_no ?? 1, { type: 'number', min: '1' }), 'Kann nur vorwärts gesetzt werden.'),
+            field('Stellen (Nullen)', inp('pad', s.number_pad ?? 4, { type: 'number', min: '1', max: '10' })),
+            field('Zahlungsziel (Tage)', inp('terms', s.payment_terms_days ?? 14, { type: 'number', min: '0' })),
+            field('IBAN', inp('iban', s.iban)),
+            field('BIC', inp('bic', s.bic)),
+            field('Fußnote', el('textarea', { id: 'bs_footer', rows: '2' }, s.footer_note || '')));
+
+        const saveBtn = el('button', { class: 'btn btn-primary' }, 'Einstellungen speichern');
+        saveBtn.addEventListener('click', async () => {
+            const val = (id) => (document.getElementById(id) || {}).value;
+            const payload = {
+                seller_name: val('bs_seller_name'), seller_address: val('bs_seller_address'), seller_uid: val('bs_seller_uid'),
+                kleinunternehmer: klCheck.checked, ust_rate: Number(rateSel.value),
+                invoice_prefix: val('bs_prefix'), next_invoice_no: Number(val('bs_next_no')) || 1,
+                number_pad: Number(val('bs_pad')) || 4, payment_terms_days: Number(val('bs_terms')) || 0,
+                iban: val('bs_iban'), bic: val('bs_bic'), footer_note: val('bs_footer'),
+            };
+            saveBtn.disabled = true;
+            try { await api.post('/billing/settings', payload); toast('Gespeichert', 'success'); }
+            catch (e) { toast(e.message, 'error'); }
+            saveBtn.disabled = false;
+        });
+        page.append(seller, tax, numbering, el('div', { style: 'margin-top:1rem' }, saveBtn));
     };
 
     // ================= VEHICLES =================
@@ -1157,6 +1540,12 @@
         const wrap = el('div', { class: 'controls-row' });
         const c = coverage(v);
         const pauschaleBadge = (label, title) => el('span', { class: 'badge badge-cat', title }, label);
+        // An invoiced vehicle settles via its invoice, not the per-vehicle slider:
+        // "fakturiert" while a covering invoice is still open, "bezahlt · Rechnung"
+        // once all covering invoices are paid.
+        const invoiceBadge = () => v.invoice_open
+            ? el('span', { class: 'badge badge-collected', title: 'Fakturiert – über die Rechnung begleichen' }, 'fakturiert')
+            : el('span', { class: 'badge badge-active', title: 'Über eine bezahlte Rechnung beglichen' }, 'bezahlt · Rechnung');
         // Archived (closed) vehicles are read-only: show the settled state as
         // badges and offer a one-tap reactivate instead of the live sliders.
         if (v.archived) {
@@ -1165,6 +1554,8 @@
             // the per-vehicle paid state.
             if (c.settled) {
                 wrap.append(pauschaleBadge('über Pauschale abgerechnet', 'Zahlung erfolgt über die Pauschale'));
+            } else if (v.invoiced) {
+                wrap.append(invoiceBadge());
             } else {
                 wrap.append(el('span', { class: 'badge ' + (v.paid ? 'badge-active' : 'badge-ended') }, v.paid ? 'bezahlt' : 'offen'));
                 if (c.active) wrap.append(pauschaleBadge('in Pauschale', 'Teilweise über eine Pauschale abgerechnet'));
@@ -1184,6 +1575,9 @@
             if (c.settled) {
                 // Nothing owed per vehicle; payment belongs to the Pauschale.
                 wrap.append(pauschaleBadge('über Pauschale abgerechnet', 'Zahlung erfolgt über die Pauschale'));
+            } else if (v.invoiced) {
+                // Settled via its invoice, not the slider — show the invoice state.
+                wrap.append(invoiceBadge());
             } else {
                 // A remainder is owed (e.g. the Pauschale has ended, or covers only
                 // part of the period) — settle it with the per-vehicle slider.
@@ -1215,11 +1609,17 @@
         } else {
             paidAcc = 0;
             const costs = a.period_costs || {};
-            const paidP = a.paid_periods || [];
-            for (const k of paidP) paidAcc += Number(costs[k]) || 0;
+            const counted = new Set();
+            // Whole periods paid via the per-period toggle, then those settled through
+            // a fully-paid Rechnung (invoice_paid_periods) — both count at full cost.
+            for (const k of (a.paid_periods || [])) { paidAcc += Number(costs[k]) || 0; counted.add(k); }
+            for (const k of (a.invoice_paid_periods || [])) {
+                if (counted.has(k)) continue;
+                paidAcc += Number(costs[k]) || 0; counted.add(k);
+            }
             const fixed = a.paid_fixed || {};
             for (const k in fixed) {
-                if (paidP.includes(k)) continue; // whole period already counted
+                if (counted.has(k)) continue; // whole period already counted
                 const c = Number(costs[k]) || 0;
                 paidAcc += c > 0 ? Math.min(Number(fixed[k]) || 0, c) : (Number(fixed[k]) || 0);
             }
@@ -1398,6 +1798,9 @@
                 const current = fixed != null ? { mode: 'partial', amount: fixed } : (paid ? { mode: 'full' } : null);
                 const choice = await periodPayDialog(key, defAmt, current);
                 if (!choice) { render(); return; } // cancelled -> reset optimistic state
+                // A partial of 0/blank is not a payment — revert instead of sending
+                // an empty Teilbetrag the server rejects (mirrors the recurring slider).
+                if (choice.amount != null && !(choice.amount > 0)) { render(); return; }
                 await post(true, choice.amount);
                 return;
             }
@@ -1646,7 +2049,7 @@
             title: existing ? 'Pauschale bearbeiten' : 'Neue Pauschale',
             submitLabel: 'Speichern',
             fields: [
-                { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', min: 0, required: true, value: existing?.amount ?? '' },
+                { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', min: 0.01, required: true, value: existing?.amount ?? '' },
                 { name: 'period', label: 'Zeitraum', type: 'select', value: existing?.period || 'monthly', options: [{ value: 'monthly', label: 'pro Monat' }, { value: 'yearly', label: 'pro Jahr' }] },
                 { name: 'start_date', label: 'Gültig ab', type: 'date', required: true, value: existing?.start_date ? existing.start_date.slice(0, 10) : today() },
                 { name: 'end_date', label: 'Gültig bis (optional)', type: 'date', value: existing?.end_date ? existing.end_date.slice(0, 10) : '', help: 'Leer = laufend. Läuft die Pauschale aus, werden die Gefährte automatisch archiviert.' },
@@ -1671,34 +2074,38 @@
                 for (const vid of boundInitially) addRow(vehicles.find((x) => x.id === vid) || { id: vid, category_id: state.categories[0].id });
                 refreshControls();
             },
+            // Save inside the modal so a server rejection (409/400) keeps the dialog
+            // open with an inline error instead of closing and losing the operator's
+            // input (incl. newly-added vehicle rows) — matching the other forms.
+            save: async (data) => {
+                const vehicleIDs = [];
+                const newVehicles = [];
+                const editVehicles = [];
+                for (const r of rows) {
+                    const catId = Number(r.cat.value);
+                    if (!catId) continue;
+                    const label = r.label.value.trim();
+                    const plate = r.plate.value.trim();
+                    if (r.id) { vehicleIDs.push(r.id); editVehicles.push({ id: r.id, category_id: catId, label, license_plate: plate }); }
+                    else newVehicles.push({ category_id: catId, label, license_plate: plate });
+                }
+                const payload = {
+                    amount: data.amount === '' ? null : Number(data.amount),
+                    period: data.period,
+                    start_date: data.start_date,
+                    end_date: data.end_date === '' ? null : data.end_date,
+                    note: data.note,
+                    vehicle_ids: vehicleIDs,
+                    new_vehicles: newVehicles,
+                    edit_vehicles: editVehicles,
+                };
+                if (existing) await api.put('/agreements/' + existing.id, payload);
+                else await api.post('/persons/' + personId + '/agreements', payload);
+            },
         });
-        if (!data) return;
-        const vehicleIDs = [];
-        const newVehicles = [];
-        const editVehicles = [];
-        for (const r of rows) {
-            const catId = Number(r.cat.value);
-            if (!catId) continue;
-            const label = r.label.value.trim();
-            const plate = r.plate.value.trim();
-            if (r.id) { vehicleIDs.push(r.id); editVehicles.push({ id: r.id, category_id: catId, label, license_plate: plate }); }
-            else newVehicles.push({ category_id: catId, label, license_plate: plate });
-        }
-        const payload = {
-            amount: data.amount === '' ? null : Number(data.amount),
-            period: data.period,
-            start_date: data.start_date,
-            end_date: data.end_date === '' ? null : data.end_date,
-            note: data.note,
-            vehicle_ids: vehicleIDs,
-            new_vehicles: newVehicles,
-            edit_vehicles: editVehicles,
-        };
-        try {
-            if (existing) await api.put('/agreements/' + existing.id, payload);
-            else await api.post('/persons/' + personId + '/agreements', payload);
-            toast('Pauschale gespeichert', 'success'); render();
-        } catch (e) { toast(e.message, 'error'); }
+        if (!data) return; // cancelled
+        toast('Pauschale gespeichert', 'success');
+        render();
     }
 
     // Sliding thumb for seg-mini sliders: a coloured pill that glides to the
@@ -2011,7 +2418,7 @@
             await api.post('/vehicles/' + v.id + '/status', { status: s, note, date });
             toast('Status: ' + STATUS_LABEL[s], 'success');
             render();
-        } catch (e) { toast(e.message, 'error'); }
+        } catch (e) { toast(e.message, 'error'); render(); } // roll back the optimistic slider on a rejected write
     }
     async function uploadPhoto(vehicleId, file) {
         if (!file) return;
@@ -2051,7 +2458,13 @@
     }
     function financeRow(it) {
         const bound = it.vehicle_id != null;
-        const paidEff = bound ? !!it.vehicle_paid : !!it.paid;
+        // A bound charge is settled by its vehicle's slider (vehicle_paid), its
+        // covering Pauschale slider (which sets the charge's own paid flag), or a
+        // fully-paid Rechnung (invoiced && !invoice_open — PayInvoices settles the
+        // invoice, not the raw flag). Honour all three, else a paid extra lingers
+        // as "offen".
+        const invoiceSettled = bound && it.invoiced && !it.invoice_open;
+        const paidEff = bound ? (!!it.paid || !!it.vehicle_paid || invoiceSettled) : !!it.paid;
         const title = it.description ? esc(it.description) : 'Zusatzkosten';
         const metaBits = [esc(it.person_name), fmtDate(it.charged_on)];
         if (it.quantity !== 1) metaBits.push(`${it.quantity}×${eur(it.amount)}`);
@@ -2060,7 +2473,14 @@
         // its vehicle (read-only badge); a free charge gets its offen/bezahlt
         // slider. Keeping it left of the amount keeps the right rail slim.
         let statusEl;
-        if (bound) statusEl = el('span', { class: 'badge ' + (paidEff ? 'badge-active' : 'badge-ended'), title: 'über ' + esc(it.vehicle_label || 'Gefährt') }, (paidEff ? 'bezahlt' : 'offen') + ' · Gefährt');
+        if (bound && it.invoiced) {
+            // Billed on a Rechnung: mirror the vehicle's derived status exactly —
+            // "fakturiert" while a covering invoice is open, "bezahlt · Rechnung" once
+            // all are paid.
+            statusEl = it.invoice_open
+                ? el('span', { class: 'badge badge-collected', title: 'Fakturiert – über die Rechnung begleichen' }, 'fakturiert')
+                : el('span', { class: 'badge badge-active', title: 'Über eine bezahlte Rechnung beglichen' }, 'bezahlt · Rechnung');
+        } else if (bound) statusEl = el('span', { class: 'badge ' + (paidEff ? 'badge-active' : 'badge-ended'), title: 'über ' + esc(it.vehicle_label || 'Gefährt') }, (paidEff ? 'bezahlt' : 'offen') + ' · Gefährt');
         else if (canBill()) statusEl = chargePaidSlider(it);
         else statusEl = el('span', { class: 'badge ' + (paidEff ? 'badge-active' : 'badge-ended') }, paidEff ? 'bezahlt' : 'offen');
         // Right rail: just the amount and (for billers) the row actions.
@@ -2757,7 +3177,7 @@
             sched.append(el('div', { class: 'card-meta' }, 'Verzeichnis: ' + esc(st.dir) + ' — noch keine Dateien.'));
         } else {
             sched.append(el('div', { class: 'card-meta', style: 'margin-bottom:.5rem' }, 'Verzeichnis: ' + esc(st.dir)));
-            for (const f of st.files) sched.append(backupFileRow(f, '/api/backup/file/'));
+            sched.append(collapsibleRows(st.files, (f) => backupFileRow(f, '/api/backup/file/')));
         }
         page.append(el('div', { class: 'card', style: 'margin-top:1rem' }, el('h3', {}, 'Volume-Backups'), sched));
 
@@ -2768,9 +3188,10 @@
         } else {
             s3box.append(el('div', { class: 'card-row', style: 'align-items:center;margin-bottom:.5rem' },
                 el('div', { style: 'flex:1;min-width:0' }, el('div', { class: 'card-meta' }, 'Bucket: ' + esc(st.s3_bucket))),
+                el('button', { class: 'btn btn-ghost btn-sm', onclick: (e) => testS3Connection(e.currentTarget) }, 'Verbindung testen'),
                 el('button', { class: 'btn btn-primary btn-sm', onclick: (e) => uploadToS3(e.currentTarget) }, 'Jetzt in S3 sichern')));
             if (!st.s3_files.length) s3box.append(el('div', { class: 'card-meta' }, 'Noch keine Objekte im Bucket.'));
-            else for (const f of st.s3_files) s3box.append(backupFileRow(f, '/api/backup/s3/file/', () => restoreFromS3(f.name)));
+            else s3box.append(collapsibleRows(st.s3_files, (f) => backupFileRow(f, '/api/backup/s3/file/', () => restoreFromS3(f.name))));
         }
         page.append(el('div', { class: 'card', style: 'margin-top:1rem' }, el('h3', {}, 'S3-Sicherung (extern)'), s3box));
 
@@ -2831,6 +3252,16 @@
             toast('Wiederhergestellt — bitte neu anmelden', 'success');
             setTimeout(() => logout(), 1800);
         } catch (e) { toast(e.message, 'error'); btn.disabled = false; btn.textContent = o; }
+    }
+    async function testS3Connection(btn) {
+        const o = btn.textContent; btn.disabled = true; btn.textContent = 'Teste …';
+        try {
+            const res = await fetch('/api/backup/s3/test', { method: 'POST', headers: { 'X-CSRF-Token': getCookie('parkrr_csrf') }, credentials: 'same-origin' });
+            const j = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(j.error || 'S3-Verbindung fehlgeschlagen');
+            toast('S3-Verbindung ok — Bucket „' + (j.bucket || '') + '" erreichbar', 'success');
+        } catch (e) { toast(e.message, 'error'); }
+        finally { btn.disabled = false; btn.textContent = o; }
     }
     async function uploadToS3(btn) {
         const o = btn.textContent; btn.disabled = true; btn.textContent = 'Lade hoch …';
@@ -2942,7 +3373,7 @@
 
     // ================= AUDIT (admin) =================
     const AUDIT_ACTIONS = { create: 'Erstellt', update: 'Geändert', delete: 'Gelöscht', login: 'Login', logout: 'Logout' };
-    const AUDIT_ENTITIES = { person: 'Person', vehicle: 'Gefährt', category: 'Tarif', service: 'Dienst', charge: 'Zusatzkosten', user: 'Benutzer', photo: 'Foto', passkey: 'Passkey' };
+    const AUDIT_ENTITIES = { person: 'Person', vehicle: 'Gefährt', category: 'Tarif', service: 'Dienst', charge: 'Zusatzkosten', payment: 'Zahlung', invoice: 'Rechnung', billing: 'Rechnungs-Einstellungen', user: 'Benutzer', photo: 'Foto', passkey: 'Passkey' };
 
     function fmtAuditVal(x) {
         if (x === null || x === undefined || x === '') return '∅';
@@ -3258,6 +3689,7 @@
         body.append(item('settings', 'Einstellungen', () => navigate('settings')));
         if (isAdmin()) body.append(item('users', 'Benutzer', () => navigate('users')));
         if (isAdmin()) body.append(item('log', 'Audit-Log', () => navigate('audit')));
+        if (isAdmin()) body.append(item('receipt', 'Rechnungen', () => navigate('billing')));
         if (isAdmin()) body.append(item('archive', 'Backup', () => navigate('backup')));
         body.append(item('theme', 'Design wechseln', () => toggleTheme()));
         body.append(item('logout', 'Abmelden', () => logout(), 'danger'));

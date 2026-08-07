@@ -71,22 +71,32 @@ func recurringPaidBound(rc *models.RecurringCharge, agreements []models.FlatRate
 // deriveRecurring fills the derived accrual/settlement fields as of now. A bound
 // charge is settled via its Gefährt/Pauschale; a person-level one via its own
 // per-period flags.
-func deriveRecurring(rc *models.RecurringCharge, agreements []models.FlatRatePeriod, vehPaid map[int64]bool, now time.Time) {
+func deriveRecurring(rc *models.RecurringCharge, now time.Time) {
 	p := rc.AsPeriod()
 	rc.Accrued = round2(p.AccruedAsOf(now))
 	rc.PeriodCosts = p.ElapsedPeriodCosts(now)
-	if rc.VehicleID != nil {
-		rc.Settled = recurringPaidBound(rc, agreements, vehPaid[*rc.VehicleID], now)+0.005 >= rc.Accrued
-	} else {
-		rc.Settled = p.SettledAsOf(now)
+	// Settled must match how the charge is actually billed and balanced — Option A:
+	// its OWN per-period flags only, for bound and person-level alike. A covering
+	// Pauschale does NOT settle a Nebenkosten (billing.go bills it, personPeriodPaid
+	// credits it only from own flags), so a coverage-based badge would show a bound
+	// charge as paid while it is still billed and owed.
+	rc.Settled = p.SettledAsOf(now)
+}
+
+// ptrInt64Differs reports whether two nullable ints differ, matching SQL's
+// IS DISTINCT FROM (nil vs non-nil counts as different).
+func ptrInt64Differs(a, b *int64) bool {
+	if a == nil || b == nil {
+		return (a == nil) != (b == nil)
 	}
+	return *a != *b
 }
 
 func (h *Handler) getRecurring(ctx context.Context, id int64) (models.RecurringCharge, error) {
 	return scanRecurring(h.Pool.QueryRow(ctx, recurringSelect+` WHERE rc.id=$1`, id))
 }
 
-func (h *Handler) loadRecurringCharges(ctx context.Context, personID int64, agreements []models.FlatRatePeriod, vehPaid map[int64]bool, now time.Time) ([]models.RecurringCharge, error) {
+func (h *Handler) loadRecurringCharges(ctx context.Context, personID int64, now time.Time) ([]models.RecurringCharge, error) {
 	rows, err := h.Pool.Query(ctx,
 		recurringSelect+` WHERE rc.person_id=$1 ORDER BY rc.start_date DESC, rc.id DESC`, personID)
 	if err != nil {
@@ -99,7 +109,7 @@ func (h *Handler) loadRecurringCharges(ctx context.Context, personID int64, agre
 		if serr != nil {
 			return nil, serr
 		}
-		deriveRecurring(&rc, agreements, vehPaid, now)
+		deriveRecurring(&rc, now)
 		out = append(out, rc)
 	}
 	return out, rows.Err()
@@ -108,7 +118,7 @@ func (h *Handler) loadRecurringCharges(ctx context.Context, personID int64, agre
 // loadAllRecurringCharges groups every recurring charge by person (dashboard),
 // settling bound charges via each person's agreements and the global vehicle
 // paid map.
-func (h *Handler) loadAllRecurringCharges(ctx context.Context, agByPerson map[int64][]models.FlatRatePeriod, vehPaid map[int64]bool, now time.Time) (map[int64][]models.RecurringCharge, error) {
+func (h *Handler) loadAllRecurringCharges(ctx context.Context, now time.Time) (map[int64][]models.RecurringCharge, error) {
 	rows, err := h.Pool.Query(ctx, recurringSelect)
 	if err != nil {
 		return nil, err
@@ -120,7 +130,7 @@ func (h *Handler) loadAllRecurringCharges(ctx context.Context, agByPerson map[in
 		if serr != nil {
 			return nil, serr
 		}
-		deriveRecurring(&rc, agByPerson[rc.PersonID], vehPaid, now)
+		deriveRecurring(&rc, now)
 		out[rc.PersonID] = append(out[rc.PersonID], rc)
 	}
 	return out, rows.Err()
@@ -130,7 +140,7 @@ func (h *Handler) loadAllRecurringCharges(ctx context.Context, agByPerson map[in
 // the given year (index 0 = January), capped at now for the current year.
 func recurringMonthly(list []models.RecurringCharge, year int, now time.Time) []float64 {
 	out := make([]float64, 12)
-	until := now.AddDate(0, 0, 1)
+	until := models.DayAfter(now)
 	for i := range list {
 		p := list[i].AsPeriod()
 		for m := 0; m < 12; m++ {
@@ -151,7 +161,7 @@ func recurringMonthly(list []models.RecurringCharge, year int, now time.Time) []
 // recurring charges as of now, reusing the flat-rate period math. A bound charge
 // is settled via its Gefährt/Pauschale; a person-level one via its own flags.
 func recurringSums(list []models.RecurringCharge, agreements []models.FlatRatePeriod, vehPaid map[int64]bool, now time.Time) (accrued, paid float64) {
-	until := now.AddDate(0, 0, 1)
+	until := models.DayAfter(now)
 	for i := range list {
 		rc := &list[i]
 		p := rc.AsPeriod()
@@ -172,19 +182,9 @@ func (h *Handler) ListRecurringCharges(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	now := time.Now()
-	// Bound charges settle via the person's Pauschalen / vehicle paid flags.
-	agreements, err := h.loadAgreements(r.Context(), id, now)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	vehicles, _, err := h.loadVehiclesWithCategories(r, id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	list, err := h.loadRecurringCharges(r.Context(), id, agreements, vehiclePaidMap(vehicles), now)
+	// Settlement is derived from each charge's own per-period flags (Option A), so
+	// no agreements/vehicles load is needed here.
+	list, err := h.loadRecurringCharges(r.Context(), id, time.Now())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -230,6 +230,9 @@ func (req *recurringRequest) parse() (desc, period string, amount float64, start
 	}
 	if req.Amount == nil || *req.Amount < 0 {
 		return "", "", 0, time.Time{}, nil, "amount must not be negative"
+	}
+	if *req.Amount > maxMoneyAmount {
+		return "", "", 0, time.Time{}, nil, "amount is out of range"
 	}
 	switch req.Period {
 	case models.BillingMonthly, models.BillingYearly:
@@ -331,6 +334,34 @@ func (h *Handler) UpdateRecurringCharge(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, badMsg)
 		return
 	}
+	// Once a period of this charge is invoiced, its billing-defining fields are
+	// frozen: changing period/start/amount would desync the period-keyed
+	// invoice_source lock (re-billing an already-invoiced span) or make the balance
+	// disagree with the issued document. end_date may extend but must not RETRACT
+	// below an invoiced period (that drops it from accrual while its payment stays).
+	retract, rerr := h.endDateRetractsBelowInvoiced(r.Context(), h.Pool, "recurring", id, end)
+	if rerr != nil {
+		writeError(w, http.StatusInternalServerError, "could not check invoices")
+		return
+	}
+	if period != existing.Period || !start.Equal(existing.StartDate) || amount != existing.Amount || retract {
+		if inv, ierr := h.refInvoiced(r.Context(), h.Pool, "recurring", id); ierr != nil {
+			writeError(w, http.StatusInternalServerError, "could not check invoices")
+			return
+		} else if inv {
+			writeError(w, http.StatusConflict, "Nebenkosten sind fakturiert – Betrag/Zeitraum nicht änderbar (Storno über die Rechnung)")
+			return
+		}
+	}
+	// Re-binding (person-level ↔ vehicle, or to a different vehicle) wipes the
+	// per-period settlement flags — for a person-level charge those flags are the
+	// ONLY record that its periods were paid. Refuse while any settlement exists so
+	// already-paid periods can't silently reopen and re-bill the customer (A2-4).
+	if ptrInt64Differs(existing.VehicleID, req.VehicleID) &&
+		(existing.Paid || len(existing.PaidPeriods) > 0 || len(existing.PaidFixed) > 0) {
+		writeError(w, http.StatusConflict, "Nebenkosten haben bezahlte Perioden – Bindung nicht änderbar (erst offen stellen)")
+		return
+	}
 	ct, err := h.Pool.Exec(r.Context(),
 		`UPDATE recurring_charges SET description=$1, amount=$2, period=$3, start_date=$4, end_date=$5,
 		        vehicle_id=$6,
@@ -362,12 +393,34 @@ func (h *Handler) DeleteRecurringCharge(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM recurring_charges WHERE id=$1`, id)
-	if err != nil {
+	// An invoiced recurring charge must not be deleted: it would orphan the
+	// invoice_source lock and sever the invoice→source trail (BAO reconstruction).
+	if inv, err := h.refInvoiced(r.Context(), h.Pool, "recurring", id); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not check invoices")
+		return
+	} else if inv {
+		writeError(w, http.StatusConflict, "Nebenkosten sind fakturiert – nicht löschbar (Storno über die Rechnung)")
+		return
+	}
+	// Remove its auto settle-payments in the same tx as the delete, so a paid-then-
+	// deleted Nebenkosten leaves no orphan Zahlungseingang (phantom money-in).
+	var affected int64
+	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		if err := clearRecurringSettlementTx(r.Context(), tx, id); err != nil {
+			return err
+		}
+		ct, err := tx.Exec(r.Context(), `DELETE FROM recurring_charges WHERE id=$1`, id)
+		if err != nil {
+			return err
+		}
+		affected = ct.RowsAffected()
+		return nil
+	})
+	if txErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete recurring charge")
 		return
 	}
-	if ct.RowsAffected() == 0 {
+	if affected == 0 {
 		writeError(w, http.StatusNotFound, "recurring charge not found")
 		return
 	}
@@ -375,7 +428,10 @@ func (h *Handler) DeleteRecurringCharge(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
-// SetRecurringChargePaid toggles the whole-charge paid flag.
+// SetRecurringChargePaid toggles the whole Nebenkosten paid via its master slider.
+// Like the Pauschale slider, "bezahlt" now books a real Zahlungseingang per completed
+// period (a running period stays on the off-book credit) and "offen" reverses it, so
+// a paid recurring charge shows up in the payments list — not just as a flag.
 func (h *Handler) SetRecurringChargePaid(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
@@ -389,22 +445,67 @@ func (h *Handler) SetRecurringChargePaid(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE recurring_charges SET paid=$1, updated_at=now() WHERE id=$2`, req.Paid, id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not update recurring charge")
+	ctx := r.Context()
+	createdBy := createdByFrom(ctx)
+	rc, err := h.getRecurring(ctx, id)
+	if err == pgx.ErrNoRows {
+		writeError(w, http.StatusNotFound, "recurring charge not found")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "recurring charge not found")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update recurring charge")
 		return
 	}
 	verb := "recurring marked open"
 	if req.Paid {
 		verb = "recurring marked paid"
 	}
-	h.audit(r, "update", "recurring_charge", id, verb)
+	// Periods settled through an invoice must not also be booked here (double-count);
+	// reuse the same period-lock check the per-period toggle uses.
+	locked, lerr := h.lockedPositions(ctx, rc.PersonID)
+	if lerr != nil {
+		writeError(w, http.StatusInternalServerError, "could not update recurring charge")
+		return
+	}
+	txErr := pgx.BeginFunc(ctx, h.Pool, func(tx pgx.Tx) error {
+		// "Reset all": clear the per-period flags and this charge's settle payments,
+		// then re-derive from the master flag (mirrors the Pauschale slider).
+		if _, err := tx.Exec(ctx,
+			`UPDATE recurring_charges SET paid=$1, paid_periods='{}', paid_fixed='{}'::jsonb, updated_at=now() WHERE id=$2`,
+			req.Paid, id); err != nil {
+			return err
+		}
+		if err := clearRecurringSettlementTx(ctx, tx, id); err != nil {
+			return err
+		}
+		if req.Paid {
+			p := rc.AsPeriod()
+			for _, per := range p.ElapsedPeriodsDetailed(time.Now()) {
+				if !per.Complete || locked[lockKey("recurring", id, per.Key)] {
+					continue // running, or settled through an invoice → skip
+				}
+				if err := recordPeriodPaymentTx(ctx, tx, rc.PersonID, "recurring", id, per.Key, per.Cost, createdBy); err != nil {
+					return err
+				}
+			}
+		}
+		// Audit in the tx: the settlement change and its trail commit together (C7).
+		return h.auditTx(ctx, tx, r, "update", "recurring_charge", id, verb)
+	})
+	if txErr != nil {
+		writeError(w, http.StatusInternalServerError, "could not update recurring charge")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// clearRecurringSettlementTx removes a recurring charge's auto settle-payments — used
+// when it is toggled open and before it is deleted, so no orphan Zahlungseingang
+// (phantom money-in) outlives the settlement or the row.
+func clearRecurringSettlementTx(ctx context.Context, tx pgx.Tx, id int64) error {
+	_, err := tx.Exec(ctx,
+		`DELETE FROM payments WHERE auto AND settles_kind='recurring' AND settles_ref=$1`, id)
+	return err
 }
 
 // SetRecurringChargePeriodPaid settles a single elapsed sub-period: a whole
@@ -424,9 +525,10 @@ func (h *Handler) SetRecurringChargePeriodPaid(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	// A fixed partial payment must be positive; a whole-period prepayment omits it.
-	if req.Paid && req.Amount != nil && *req.Amount <= 0 {
-		writeError(w, http.StatusBadRequest, "amount must be positive")
+	// A fixed partial payment must be positive and in range; a whole-period
+	// prepayment omits it.
+	if req.Paid && req.Amount != nil && (*req.Amount <= 0 || *req.Amount > maxMoneyAmount) {
+		writeError(w, http.StatusBadRequest, "amount is out of range")
 		return
 	}
 	rc, err := h.getRecurring(r.Context(), id)
@@ -451,28 +553,77 @@ func (h *Handler) SetRecurringChargePeriodPaid(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, "invalid period")
 		return
 	}
-
-	periods := removeString(rc.PaidPeriods, req.PeriodKey)
-	fixed := rc.PaidFixed
-	if fixed == nil {
-		fixed = map[string]float64{}
-	}
-	delete(fixed, req.PeriodKey)
-	if req.Paid {
-		if req.Amount == nil {
-			periods = append(periods, req.PeriodKey) // whole period prepaid
-		} else {
-			fixed[req.PeriodKey] = *req.Amount // fixed partial (validated > 0 above)
+	// An invoiced period is settled through the invoice, not the per-period flag.
+	// Block BOTH directions: marking would double-credit once the invoice is
+	// Storno'd; UNmarking would drop a fixed partial the invoice already billed
+	// around (open = cost − partial), leaving a phantom debt equal to the partial.
+	{
+		locked, lerr := h.lockedPositions(r.Context(), rc.PersonID)
+		if lerr != nil {
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		if locked[lockKey("recurring", id, req.PeriodKey)] {
+			writeError(w, http.StatusConflict, "Periode ist fakturiert – über die Rechnung begleichen")
+			return
 		}
 	}
-	fixedJSON, _ := json.Marshal(fixed)
-	if _, err := h.Pool.Exec(r.Context(),
-		`UPDATE recurring_charges SET paid_periods=$1, paid_fixed=$2, updated_at=now() WHERE id=$3`,
-		periods, string(fixedJSON), id); err != nil {
+	// Serialize the read-modify-write of the whole paid_periods/paid_fixed columns
+	// under FOR UPDATE (the agreement path is already tx-guarded); otherwise two
+	// concurrent per-period settlements clobber each other and lose one.
+	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		var periodsRaw []string
+		var fixedRaw []byte
+		if err := tx.QueryRow(r.Context(),
+			`SELECT paid_periods, paid_fixed FROM recurring_charges WHERE id=$1 FOR UPDATE`, id).
+			Scan(&periodsRaw, &fixedRaw); err != nil {
+			return err
+		}
+		fixed := map[string]float64{}
+		if len(fixedRaw) > 0 {
+			// Fail the tx on malformed paid_fixed rather than silently proceeding with
+			// an empty map, which would wipe the other periods' recorded partials.
+			if err := json.Unmarshal(fixedRaw, &fixed); err != nil {
+				return err
+			}
+		}
+		periods := removeString(periodsRaw, req.PeriodKey)
+		delete(fixed, req.PeriodKey)
+		if req.Paid {
+			if req.Amount == nil {
+				periods = append(periods, req.PeriodKey) // whole period prepaid
+			} else {
+				fixed[req.PeriodKey] = *req.Amount // fixed partial (validated > 0 above)
+			}
+		}
+		fixedJSON, _ := json.Marshal(fixed)
+		if _, err := tx.Exec(r.Context(),
+			`UPDATE recurring_charges SET paid_periods=$1, paid_fixed=$2, updated_at=now() WHERE id=$3`,
+			periods, string(fixedJSON), id); err != nil {
+			return err
+		}
+		// Book/remove the real Zahlungseingang mirroring the off-book flag (Fix 1): a
+		// completed whole period or an explicit partial becomes a payments row; a
+		// toggle-off deletes it. The off-book credit skips periods with such a payment,
+		// so the balance never double-counts.
+		if req.Paid {
+			if amt, ok := periodPaymentAmount(rc.AsPeriod(), req.PeriodKey, req.Amount, time.Now()); ok {
+				if err := recordPeriodPaymentTx(r.Context(), tx, rc.PersonID, "recurring", id, req.PeriodKey, amt, createdByFrom(r.Context())); err != nil {
+					return err
+				}
+			} else if err := deletePeriodPaymentTx(r.Context(), tx, "recurring", id, req.PeriodKey); err != nil {
+				return err
+			}
+		} else if err := deletePeriodPaymentTx(r.Context(), tx, "recurring", id, req.PeriodKey); err != nil {
+			return err
+		}
+		return h.auditTx(r.Context(), tx, r, "update", "recurring_charge", id,
+			"Nebenkosten-Periode "+req.PeriodKey+": "+periodPaidAuditState(req.Paid, req.Amount))
+	})
+	if txErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not update recurring charge")
 		return
 	}
-	h.audit(r, "update", "recurring_charge", id, "recurring period "+req.PeriodKey)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

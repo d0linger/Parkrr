@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/preining/parkrr/internal/auth"
 	"github.com/preining/parkrr/internal/models"
@@ -52,7 +53,16 @@ func (h *Handler) autoArchiveIfClosed(r *http.Request, id int64) {
 	ct, err := h.Pool.Exec(r.Context(),
 		`UPDATE vehicles SET archived=true, updated_at=now()
 		 WHERE id=$1 AND archived=false
-		   AND (status='cancelled' OR (status='collected' AND paid))`, id)
+		   AND (status='cancelled'
+		        OR (status='collected' AND paid)
+		        -- collected + settled through invoice(s): has a covering non-canceled
+		        -- invoice and none of them is still open (all fully paid).
+		        OR (status='collected'
+		            AND EXISTS (SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+		                        WHERE s.kind='vehicle' AND s.ref_id=$1 AND NOT i.canceled)
+		            AND NOT EXISTS (SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+		                            WHERE s.kind='vehicle' AND s.ref_id=$1 AND NOT i.canceled
+		                              AND (i.total - i.paid_amount) > 0.005)))`, id)
 	if err == nil && ct.RowsAffected() > 0 {
 		h.audit(r, "update", "vehicle", id, "Gefährt archiviert (abgeschlossen): "+h.vehicleDesc(r, id))
 	}
@@ -124,6 +134,10 @@ func (h *Handler) ListVehicles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setFlatRateCoverage(vehicles, agByPerson, now)
+	if err := h.setVehicleInvoiceStatus(r.Context(), vehicles); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 	writeJSON(w, http.StatusOK, vehicles)
 }
 
@@ -185,11 +199,11 @@ func (h *Handler) parseVehicleRequest(r *http.Request) (*parsedVehicle, error) {
 	if req.PersonID <= 0 || req.CategoryID <= 0 {
 		return nil, errors.New("person_id and category_id are required")
 	}
-	if req.CostOverride != nil && *req.CostOverride < 0 {
-		return nil, errors.New("cost_override must not be negative")
+	if req.CostOverride != nil && (*req.CostOverride < 0 || *req.CostOverride > maxMoneyAmount) {
+		return nil, errors.New("cost_override is out of range")
 	}
-	if req.Rate != nil && *req.Rate < 0 {
-		return nil, errors.New("rate must not be negative")
+	if req.Rate != nil && (*req.Rate < 0 || *req.Rate > maxMoneyAmount) {
+		return nil, errors.New("rate is out of range")
 	}
 
 	if !validNameLength(req.Label) {
@@ -317,16 +331,42 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	var oldStatus string
+	var oldStatus, oldPeriod string
 	var oldRate float64
+	var oldStart time.Time
+	var oldPersonID int64
 	var archived bool
 	scanErr := h.Pool.QueryRow(r.Context(),
-		`SELECT status, rate, archived FROM vehicles WHERE id=$1`, id).Scan(&oldStatus, &oldRate, &archived)
+		`SELECT status, rate, billing_period, start_date, person_id, archived FROM vehicles WHERE id=$1`, id).
+		Scan(&oldStatus, &oldRate, &oldPeriod, &oldStart, &oldPersonID, &archived)
 	if !ensureVehicleWritable(w, archived, scanErr) {
 		return
 	}
 	// Fallback is the existing rate, so an omitted rate keeps the locked price.
 	rate := effectiveRate(pv.req, oldRate)
+	// Freeze the billing-defining fields once a period is invoiced: changing
+	// rate/period/start/person would desync the period-keyed invoice_source lock
+	// (re-billing an invoiced span) or make the balance disagree with the issued
+	// document. Mirrors the agreement/recurring freeze. end_date stays editable
+	// (collect/re-store), but must not RETRACT below an invoiced period.
+	billingChanged := rate != oldRate || pv.req.BillingPeriod != oldPeriod ||
+		!pv.startDate.Equal(oldStart) || pv.req.PersonID != oldPersonID
+	if billingChanged {
+		if inv, ierr := h.refInvoiced(r.Context(), h.Pool, "vehicle", id); ierr != nil {
+			writeError(w, http.StatusInternalServerError, "could not check invoices")
+			return
+		} else if inv {
+			writeError(w, http.StatusConflict, "Gefährt ist fakturiert – Preis/Zeitraum nicht änderbar (Storno über die Rechnung)")
+			return
+		}
+	}
+	if retract, ierr := h.endDateRetractsBelowInvoiced(r.Context(), h.Pool, "vehicle", id, pv.endDate); ierr != nil {
+		writeError(w, http.StatusInternalServerError, "could not check invoices")
+		return
+	} else if retract {
+		writeError(w, http.StatusConflict, "Enddatum liegt vor einer fakturierten Periode – Storno über die Rechnung")
+		return
+	}
 	ct, err := h.Pool.Exec(r.Context(),
 		`UPDATE vehicles SET person_id=$1, category_id=$2, label=$3, license_plate=$4,
 		        notes=$5, billing_period=$6, rate=$7, cost_override=$8, start_date=$9,
@@ -362,6 +402,13 @@ func (h *Handler) DeleteVehicle(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if inv, ierr := h.refInvoiced(r.Context(), h.Pool, "vehicle", id); ierr != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete vehicle")
+		return
+	} else if inv {
+		writeError(w, http.StatusConflict, "Fahrzeug ist Teil einer ausgestellten Rechnung und kann nicht gelöscht werden (Storno statt Löschen).")
 		return
 	}
 	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM vehicles WHERE id = $1`, id)
@@ -414,23 +461,53 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	// When collecting, set the pickup/end date: use the caller-supplied date if
 	// given (allows back-dating), otherwise keep any existing end date or today.
+	var ct pgconn.CommandTag
+	var uerr error
 	switch {
-	case req.Status == models.StatusCollected && trim(req.Date) != "":
+	// A closing status (collected OR cancelled) ends storage, so it MUST set an
+	// end_date — otherwise rent keeps accruing forever on a cancelled vehicle that
+	// is then archived and can never be invoiced/paid/cleared (perpetual phantom
+	// receivable).
+	case (req.Status == models.StatusCollected || req.Status == models.StatusCancelled) && trim(req.Date) != "":
 		end, perr := time.Parse(dateLayout, trim(req.Date))
 		if perr != nil {
 			writeError(w, http.StatusBadRequest, "date must be YYYY-MM-DD")
 			return
 		}
-		_, _ = h.Pool.Exec(r.Context(),
+		// A back-dated close must not fall below an already-invoiced period — that
+		// would drop it from accrual while its payment stays → phantom Guthaben
+		// (mirrors the UpdateVehicle guard).
+		if retract, ierr := h.endDateRetractsBelowInvoiced(r.Context(), h.Pool, "vehicle", id, &end); ierr != nil {
+			writeError(w, http.StatusInternalServerError, "could not check invoices")
+			return
+		} else if retract {
+			writeError(w, http.StatusConflict, "Enddatum liegt vor einer fakturierten Periode – Storno über die Rechnung")
+			return
+		}
+		ct, uerr = h.Pool.Exec(r.Context(),
 			`UPDATE vehicles SET status=$1, end_date=$2, updated_at=now() WHERE id=$3`,
 			req.Status, end, id)
-	case req.Status == models.StatusCollected:
-		_, _ = h.Pool.Exec(r.Context(),
+	case req.Status == models.StatusCollected || req.Status == models.StatusCancelled:
+		ct, uerr = h.Pool.Exec(r.Context(),
 			`UPDATE vehicles SET status=$1, end_date=COALESCE(end_date, CURRENT_DATE), updated_at=now() WHERE id=$2`,
 			req.Status, id)
 	default:
-		_, _ = h.Pool.Exec(r.Context(),
-			`UPDATE vehicles SET status=$1, updated_at=now() WHERE id=$2`, req.Status, id)
+		// stored / reserved re-open storage: clear any end_date left by a prior
+		// collected/cancelled, otherwise CostInRange stays capped at the stale date
+		// and the (now active-looking) vehicle silently accrues nothing.
+		ct, uerr = h.Pool.Exec(r.Context(),
+			`UPDATE vehicles SET status=$1, end_date=NULL, updated_at=now() WHERE id=$2`, req.Status, id)
+	}
+	// Don't record history/audit for a write that never landed: a swallowed error
+	// (or 0 rows) would claim a transition that didn't happen — and for a closing
+	// status that means rent keeps accruing while the log says "collected".
+	if uerr != nil {
+		writeError(w, http.StatusInternalServerError, "could not change status")
+		return
+	}
+	if ct.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "vehicle not found")
+		return
 	}
 	h.recordStatus(r, id, oldStatus, req.Status, trim(req.Note))
 	h.audit(r, "update", "vehicle", id, "Status "+h.vehicleDesc(r, id)+": "+oldStatus+" → "+req.Status)
@@ -463,6 +540,10 @@ func (h *Handler) VehicleHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, s)
 	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -492,16 +573,52 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	var archived bool
+	var archived, curPaid bool
+	var personID int64
 	scanErr := h.Pool.QueryRow(r.Context(),
-		`SELECT archived FROM vehicles WHERE id=$1`, id).Scan(&archived)
+		`SELECT archived, paid, person_id FROM vehicles WHERE id=$1`, id).Scan(&archived, &curPaid, &personID)
 	if !ensureVehicleWritable(w, archived, scanErr) {
 		return
+	}
+	// A vehicle already billed by an active invoice is settled through that invoice.
+	// Marking it globally "bezahlt" would record no payment (it's excluded from
+	// openOwedItems) yet — via the per-period model — suppress ALL its future rent:
+	// silent lost revenue. Block the slider; settle via the invoice instead.
+	if req.Paid && !curPaid {
+		var invoiced bool
+		// Fail CLOSED: a query error must not skip the guard (that would re-open the
+		// silent lost-revenue path the guard exists to prevent).
+		if err := h.Pool.QueryRow(r.Context(),
+			`SELECT EXISTS(SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+			   WHERE s.kind='vehicle' AND s.ref_id=$1 AND NOT i.canceled)`, id).Scan(&invoiced); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not verify invoice status")
+			return
+		}
+		if invoiced {
+			writeError(w, http.StatusConflict, "Fahrzeug ist bereits fakturiert – über die Rechnung begleichen")
+			return
+		}
+	}
+	// P2.3: keep the money in step — record the auto-payment while still open (so
+	// its amount is visible in openOwedItems), then flip the flag.
+	if req.Paid && !curPaid {
+		if err := h.syncTogglePayment(r, "vehicle", id, personID, true); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not record payment")
+			return
+		}
 	}
 	if _, err := h.Pool.Exec(r.Context(),
 		`UPDATE vehicles SET paid=$1, updated_at=now() WHERE id=$2`, req.Paid, id); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update payment status")
 		return
+	}
+	if !req.Paid && curPaid {
+		// Don't swallow this: if removing the auto-payment fails the flag is already
+		// open, so a discarded error leaves a phantom money-in inflating the balance.
+		if err := h.syncTogglePayment(r, "vehicle", id, personID, false); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not reverse payment")
+			return
+		}
 	}
 	label := "offen"
 	if req.Paid {
@@ -626,6 +743,10 @@ func (h *Handler) writeVehicle(w http.ResponseWriter, ctx context.Context, id in
 	}
 	vs := []models.Vehicle{v}
 	setFlatRateCoverage(vs, agByPerson, now)
+	if err := h.setVehicleInvoiceStatus(ctx, vs); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load vehicle")
+		return
+	}
 	writeJSON(w, status, vs[0])
 }
 
@@ -650,6 +771,63 @@ func scanVehicleRow(row rowScanner) (models.Vehicle, models.Category, error) {
 	v.CategoryName = cat.Name
 	v.PersonName = trim(firstName + " " + lastName)
 	return v, cat, nil
+}
+
+// archiveInvoiceSettledCollected archives a person's collected vehicles that are
+// now settled through fully-paid invoice(s) — called after an invoice payment so
+// paying the invoice closes the vehicle out, mirroring autoArchiveIfClosed's
+// invoice branch for the bulk (one payment can settle several invoices/vehicles).
+func (h *Handler) archiveInvoiceSettledCollected(ctx context.Context, personID int64) {
+	_, _ = h.Pool.Exec(ctx,
+		`UPDATE vehicles v SET archived=true, updated_at=now()
+		  WHERE v.person_id=$1 AND v.archived=false AND v.status='collected'
+		    AND EXISTS (SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+		                WHERE s.kind='vehicle' AND s.ref_id=v.id AND NOT i.canceled)
+		    AND NOT EXISTS (SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+		                    WHERE s.kind='vehicle' AND s.ref_id=v.id AND NOT i.canceled
+		                      AND (i.total - i.paid_amount) > 0.005)`, personID)
+}
+
+// setVehicleInvoiceStatus fills Invoiced/InvoiceOpen for each vehicle from the
+// invoice_source → invoices join: Invoiced when a non-canceled invoice bills it,
+// InvoiceOpen when at least one covering invoice is not fully paid. One batched
+// query for the whole slice.
+func (h *Handler) setVehicleInvoiceStatus(ctx context.Context, vehicles []models.Vehicle) error {
+	if len(vehicles) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(vehicles))
+	for i := range vehicles {
+		ids = append(ids, vehicles[i].ID)
+	}
+	rows, err := h.Pool.Query(ctx,
+		`SELECT s.ref_id, count(*) FILTER (WHERE (i.total - i.paid_amount) > 0.005) AS open_n
+		   FROM invoice_source s JOIN invoices i ON i.id = s.invoice_id
+		  WHERE s.kind='vehicle' AND NOT i.canceled AND s.ref_id = ANY($1)
+		  GROUP BY s.ref_id`, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	openN := map[int64]int{}
+	for rows.Next() {
+		var ref int64
+		var n int
+		if err := rows.Scan(&ref, &n); err != nil {
+			return err
+		}
+		openN[ref] = n // presence of the key = invoiced (≥1 covering invoice)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range vehicles {
+		if n, ok := openN[vehicles[i].ID]; ok {
+			vehicles[i].Invoiced = true
+			vehicles[i].InvoiceOpen = n > 0
+		}
+	}
+	return nil
 }
 
 // enrich fills in derived cost/status fields on a vehicle as of the given time.

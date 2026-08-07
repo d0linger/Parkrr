@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"path"
@@ -92,6 +93,27 @@ func listWith(ctx context.Context, cl *minio.Client, c S3Config) ([]S3Object, er
 	}
 	sort.Slice(objs, func(i, j int) bool { return objs[i].Name > objs[j].Name }) // timestamped -> newest first
 	return objs, nil
+}
+
+// TestS3 checks that the configured bucket is reachable — the backup panel's
+// "Verbindung testen". A read-only BucketExists probe: it neither writes nor lists
+// objects, so it's a safe, fast connectivity/credentials check.
+func TestS3(ctx context.Context, c S3Config) error {
+	if !c.Enabled() {
+		return errors.New("S3 ist nicht konfiguriert")
+	}
+	cl, err := c.client()
+	if err != nil {
+		return err
+	}
+	ok, err := cl.BucketExists(ctx, c.Bucket)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("bucket %q nicht gefunden", c.Bucket)
+	}
+	return nil
 }
 
 // DownloadS3 fetches one backup object (used for restore-from-S3, no size limit).

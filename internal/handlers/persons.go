@@ -11,22 +11,27 @@ import (
 // derived live from the agreement records — the legacy persons.flat_rate_*
 // columns are frozen (no writer remains) and must not drive the badge.
 const personColumns = `id, first_name, last_name, email, phone, address, notes,
-	flat_rate, flat_rate_period, flat_rate_start, flat_rate_end, flat_rate_paid,
 	created_at, updated_at,
 	EXISTS(SELECT 1 FROM flat_rate_periods fp WHERE fp.person_id = persons.id)`
 
 func scanPerson(row rowScanner) (models.Person, error) {
 	var p models.Person
 	err := row.Scan(&p.ID, &p.FirstName, &p.LastName, &p.Email, &p.Phone, &p.Address,
-		&p.Notes, &p.FlatRate, &p.FlatRatePeriod, &p.FlatRateStart, &p.FlatRateEnd,
-		&p.FlatRatePaid, &p.CreatedAt, &p.UpdatedAt, &p.HasFlatRate)
+		&p.Notes, &p.CreatedAt, &p.UpdatedAt, &p.HasFlatRate)
 	return p, err
 }
 
 // personLabel returns a person's display name for audit messages ("" on error).
 func (h *Handler) personLabel(r *http.Request, id int64) string {
+	return personLabelTx(r.Context(), h.Pool, id)
+}
+
+// personLabelTx resolves a person's display label through the given querier —
+// pass the caller's tx when one is open, so this doesn't grab a second pooled
+// connection while the tx is held (which would deadlock the pool).
+func personLabelTx(ctx context.Context, q rowQuerier, id int64) string {
 	var name string
-	_ = h.Pool.QueryRow(r.Context(),
+	_ = q.QueryRow(ctx,
 		`SELECT trim(first_name || ' ' || last_name) FROM persons WHERE id=$1`, id).Scan(&name)
 	return name
 }
@@ -57,6 +62,10 @@ func (h *Handler) ListPersons(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		persons = append(persons, p)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
 	}
 	writeJSON(w, http.StatusOK, persons)
 }
@@ -170,8 +179,29 @@ func (h *Handler) DeletePerson(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+	// BAO §132: recorded payments are money-in Grundaufzeichnungen and must be kept.
+	// The payments/charges FKs cascade, so a person with a booked payment would have
+	// it silently wiped on delete — block that (invoices are already FK-RESTRICTed).
+	var hasPayments bool
+	if err := h.Pool.QueryRow(r.Context(),
+		`SELECT EXISTS(SELECT 1 FROM payments WHERE person_id=$1)`, id).Scan(&hasPayments); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete person")
+		return
+	}
+	if hasPayments {
+		writeError(w, http.StatusConflict,
+			"Person hat erfasste Zahlungen und kann nicht gelöscht werden (Aufbewahrungspflicht).")
+		return
+	}
 	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM persons WHERE id = $1`, id)
 	if err != nil {
+		if isForeignKeyViolation(err) {
+			// Invoices reference the person (ON DELETE RESTRICT) for immutability —
+			// a person with issued invoices must be kept (storniere statt löschen).
+			writeError(w, http.StatusConflict,
+				"Person hat ausgestellte Rechnungen und kann nicht gelöscht werden (Storno statt Löschen).")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete person")
 		return
 	}

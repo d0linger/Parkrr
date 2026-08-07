@@ -28,6 +28,10 @@ func (h *Handler) ListCategories(w http.ResponseWriter, r *http.Request) {
 		}
 		cats = append(cats, c)
 	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 	writeJSON(w, http.StatusOK, cats)
 }
 
@@ -153,6 +157,12 @@ func (h *Handler) DeleteCategory(w http.ResponseWriter, r *http.Request) {
 	}
 	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM categories WHERE id = $1`, id)
 	if err != nil {
+		// A vehicle referencing this tariff can be inserted between the count and
+		// the DELETE (ON DELETE RESTRICT) — report that as a clean 409, not a 500.
+		if isForeignKeyViolation(err) {
+			writeError(w, http.StatusConflict, "category is still used by vehicles")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete category")
 		return
 	}

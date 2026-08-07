@@ -32,6 +32,10 @@ func (h *Handler) ListServiceTypes(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, s)
 	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -182,7 +186,12 @@ func (h *Handler) ListCharges(w http.ResponseWriter, r *http.Request) {
 	         LEFT JOIN vehicles v ON v.id = c.vehicle_id
 	         LEFT JOIN categories cat ON cat.id = v.category_id`
 	limit, offset := pageParams(r, 1000, 1000)
-	if pid := r.URL.Query().Get("person_id"); pid != "" {
+	if raw := r.URL.Query().Get("person_id"); raw != "" {
+		pid, perr := strconv.ParseInt(raw, 10, 64)
+		if perr != nil {
+			writeError(w, http.StatusBadRequest, "invalid person_id")
+			return
+		}
 		rows, err = h.Pool.Query(r.Context(),
 			base+` WHERE c.person_id=$1 ORDER BY c.charged_on DESC, c.id DESC LIMIT $2 OFFSET $3`, pid, limit, offset)
 	} else {
@@ -206,26 +215,64 @@ func (h *Handler) ListCharges(w http.ResponseWriter, r *http.Request) {
 		c.Total = round2(c.Amount * c.Quantity)
 		out = append(out, c)
 	}
-	rows.Close()
-
-	// Fold Pauschale settlement into bound charges' displayed paid state: a bound
-	// charge is paid when its covering agreement's period for the charge date is
-	// paid, else it follows the vehicle's own flag (already scanned).
-	var pfilter int64
-	if pid := r.URL.Query().Get("person_id"); pid != "" {
-		pfilter, _ = strconv.ParseInt(pid, 10, 64)
-	}
-	agByPerson, aerr := h.loadAllAgreements(r.Context(), pfilter)
-	if aerr != nil {
+	if err := rows.Err(); err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	for i := range out {
-		if c := &out[i]; c.VehicleID != nil {
-			c.VehiclePaid = chargeSettled(agByPerson[c.PersonID], c.VehicleID, c.ChargedOn, false, c.VehiclePaid)
-		}
+	rows.Close()
+
+	// A bound Zusatzkosten is billed separately from the flat rate (Option A): a
+	// covering Pauschale settles only the base rent, so it does NOT fold into the
+	// charge's displayed paid state. VehiclePaid stays the vehicle's own paid flag
+	// (as scanned) — the explicit settlement path — matching invoiceLines.
+	if err := h.setChargeInvoiceStatus(r.Context(), out); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// setChargeInvoiceStatus derives each charge's Invoiced / InvoiceOpen flags from the
+// invoices that bill it (invoice_source, kind='charge'), the charge-level twin of
+// setVehicleInvoiceStatus. A bound Zusatzkosten settled through a paid Rechnung then
+// shows "bezahlt · Rechnung" instead of a stale "offen" — PayInvoices settles the
+// invoice, not the underlying charge's raw flag, so the state must be derived here.
+func (h *Handler) setChargeInvoiceStatus(ctx context.Context, charges []models.Charge) error {
+	if len(charges) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(charges))
+	for i := range charges {
+		ids = append(ids, charges[i].ID)
+	}
+	rows, err := h.Pool.Query(ctx,
+		`SELECT s.ref_id, count(*) FILTER (WHERE (i.total - i.paid_amount) > 0.005) AS open_n
+		   FROM invoice_source s JOIN invoices i ON i.id = s.invoice_id
+		  WHERE s.kind='charge' AND NOT i.canceled AND s.ref_id = ANY($1)
+		  GROUP BY s.ref_id`, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	openN := map[int64]int{}
+	for rows.Next() {
+		var ref int64
+		var n int
+		if err := rows.Scan(&ref, &n); err != nil {
+			return err
+		}
+		openN[ref] = n // presence of the key = invoiced (≥1 covering invoice)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range charges {
+		if n, ok := openN[charges[i].ID]; ok {
+			charges[i].Invoiced = true
+			charges[i].InvoiceOpen = n > 0
+		}
+	}
+	return nil
 }
 
 type chargeRequest struct {
@@ -256,6 +303,7 @@ func (h *Handler) chargeChartData(ctx context.Context, personID int64, year int,
 		if err := rows.Scan(&chargedOn, &s); err != nil {
 			return nil, nil, err
 		}
+		s = round2(s) // per-line cent rounding, consistent with the balance/invoice
 		yearly[chargedOn.Year()] += s
 		if chargedOn.Year() == year {
 			monthly[int(chargedOn.Month())-1] += s
@@ -277,6 +325,14 @@ func (h *Handler) validateCharge(ctx context.Context, req *chargeRequest) (time.
 	}
 	if req.Quantity <= 0 {
 		req.Quantity = 1
+	}
+	// Bound amount and line total so out-of-range input is a clean 400 rather than a
+	// NUMERIC(12,2) overflow 500 on insert.
+	if req.Amount < 0 || req.Amount > maxMoneyAmount || req.Quantity > maxQuantity {
+		return time.Time{}, "amount or quantity is out of range", nil
+	}
+	if lt := req.Amount * req.Quantity; lt > maxMoneyAmount {
+		return time.Time{}, "amount × quantity exceeds the allowed maximum", nil
 	}
 	if req.VehicleID != nil {
 		var owner int64
@@ -387,6 +443,13 @@ func (h *Handler) DeleteCharge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+	if inv, ierr := h.refInvoiced(r.Context(), h.Pool, "charge", id); ierr != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete charge")
+		return
+	} else if inv {
+		writeError(w, http.StatusConflict, "Zusatzkosten sind Teil einer ausgestellten Rechnung und können nicht gelöscht werden (Storno statt Löschen).")
+		return
+	}
 	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM charges WHERE id=$1`, id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete charge")
@@ -416,26 +479,43 @@ func (h *Handler) SetChargePaid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A charge bound to a vehicle is settled via that vehicle; its own flag is
-	// meaningless there. Update only standalone charges in one atomic statement.
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE charges SET paid=$1 WHERE id=$2 AND vehicle_id IS NULL`, req.Paid, id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not update charge")
-		return
-	}
-	if ct.RowsAffected() == 0 {
-		// No row updated: either the charge is missing (404) or it is bound to a
-		// vehicle (409). Distinguish the two only on this edge.
+	// meaningless there. Only standalone charges carry their own paid flag.
+	var personID int64
+	var curPaid bool
+	switch e := h.Pool.QueryRow(r.Context(),
+		`SELECT person_id, paid FROM charges WHERE id=$1 AND vehicle_id IS NULL`, id).Scan(&personID, &curPaid); {
+	case e == pgx.ErrNoRows:
+		// Missing (404) or bound to a vehicle (409).
 		var exists bool
-		switch e := h.Pool.QueryRow(r.Context(), `SELECT true FROM charges WHERE id=$1`, id).Scan(&exists); {
-		case e == pgx.ErrNoRows:
+		if h.Pool.QueryRow(r.Context(), `SELECT true FROM charges WHERE id=$1`, id).Scan(&exists) == pgx.ErrNoRows {
 			writeError(w, http.StatusNotFound, "charge not found")
-		case e != nil:
-			writeError(w, http.StatusInternalServerError, "query failed")
-		default:
+		} else {
 			writeError(w, http.StatusConflict, "charge is settled via its vehicle")
 		}
 		return
+	case e != nil:
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	// P2.3: record the auto-payment while still open, then flip the flag.
+	if req.Paid && !curPaid {
+		if err := h.syncTogglePayment(r, "charge", id, personID, true); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not record payment")
+			return
+		}
+	}
+	if _, err := h.Pool.Exec(r.Context(),
+		`UPDATE charges SET paid=$1 WHERE id=$2 AND vehicle_id IS NULL`, req.Paid, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update charge")
+		return
+	}
+	if !req.Paid && curPaid {
+		// Don't swallow: a discarded error would leave a phantom auto-payment while
+		// the charge shows open, inflating the balance.
+		if err := h.syncTogglePayment(r, "charge", id, personID, false); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not reverse payment")
+			return
+		}
 	}
 	verb := "charge marked open"
 	if req.Paid {

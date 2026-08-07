@@ -22,6 +22,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Minify the embedded static JS before the image build so the shipped image
+      # (go:embed web/static) carries the compact assets. Runs in the ephemeral
+      # workspace only — the committed sources stay readable.
+      - name: Minify static JavaScript
+        run: |
+          npx --yes esbuild@0.24.2 web/static/js/app.js --minify --allow-overwrite --outfile=web/static/js/app.js
+          npx --yes esbuild@0.24.2 web/static/sw.js     --minify --allow-overwrite --outfile=web/static/sw.js
+          node --check web/static/js/app.js
+          node --check web/static/sw.js
+
       - name: Set up QEMU (for arm64 emulation)
         uses: docker/setup-qemu-action@v4
 

@@ -45,7 +45,7 @@ func TestOutstandingByPersonMatchesStats(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		_, _ = pool.Exec(ctx, `DELETE FROM recurring_charges WHERE id=$1`, rcID)
-		_, _ = pool.Exec(ctx, `DELETE FROM persons WHERE id=$1`, personID)
+		_ = purgeExec(ctx, pool, `DELETE FROM persons WHERE id=$1`, personID)
 	})
 
 	h := New(pool)
@@ -89,14 +89,16 @@ func TestOutstandingByPersonMatchesStats(t *testing.T) {
 		t.Errorf("outstanding %.2f != stats balance %.2f (beyond timing noise)", got, bal)
 	}
 
-	// Settling clears the balance in both views.
-	if _, err := pool.Exec(ctx, `UPDATE recurring_charges SET paid=true WHERE id=$1`, rcID); err != nil {
-		t.Fatalf("mark paid: %v", err)
+	// P2.2: money truth = recorded payments. Settling = recording a payment of the
+	// open amount (marking the toggle no longer moves the money). The tolerance
+	// covers the same continuous-accrual timing noise as the divergence check.
+	if _, err := pool.Exec(ctx, `INSERT INTO payments (person_id, amount, method) VALUES ($1,$2,'ueberweisung')`, personID, bal); err != nil {
+		t.Fatalf("record payment: %v", err)
 	}
-	if bal := personBalance(); math.Abs(bal) > 0.01 {
+	if bal := personBalance(); math.Abs(bal) > 0.05 {
 		t.Errorf("expected settled balance ~0 in stats, got %.2f", bal)
 	}
-	if got := outstanding()[personID]; math.Abs(got) > 0.01 {
+	if got := outstanding()[personID]; math.Abs(got) > 0.05 {
 		t.Errorf("expected settled balance ~0 in outstanding, got %.2f", got)
 	}
 }

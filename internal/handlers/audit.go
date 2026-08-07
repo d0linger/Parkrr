@@ -54,5 +54,9 @@ func (h *Handler) ListAudit(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, a)
 	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 	writeJSON(w, http.StatusOK, out)
 }

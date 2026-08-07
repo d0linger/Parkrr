@@ -94,6 +94,16 @@ func walkSubPeriods(period string, from, to time.Time, fn func(s, e, pStart, pEn
 
 func days(a, b time.Time) float64 { return b.Sub(a).Hours() / 24.0 }
 
+// DayAfter returns midnight (UTC) at the start of the day following t's calendar
+// day. Accrual windows are half-open [start, DayAfter(today)); snapping the upper
+// bound to a whole day makes day counts integral, so the accrued value counts
+// today as a full day, does not drift within the day, and never bills into
+// tomorrow. It is the single source of truth for "up to and including today".
+func DayAfter(t time.Time) time.Time {
+	y, m, d := t.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
+}
+
 // toCents converts a euro amount to integer cents, rounded to the nearest cent.
 func toCents(euros float64) int64 { return int64(math.Round(euros * 100)) }
 
@@ -121,10 +131,8 @@ type User struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
-// Person is a customer who stores one or more vehicles.
-//
-// FlatRate, when set, replaces per-vehicle billing: the person is charged one
-// agreed amount (monthly or yearly) that covers all of their vehicles.
+// Person is a customer who stores one or more vehicles. Flat-rate billing lives
+// in flat_rate_periods (Pauschalen); HasFlatRate just flags that one exists.
 type Person struct {
 	ID        int64     `json:"id"`
 	FirstName string    `json:"first_name"`
@@ -136,14 +144,7 @@ type Person struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 
-	// Flat rate (Pauschale). FlatRate == nil means per-vehicle billing.
-	FlatRate       *float64   `json:"flat_rate"`
-	FlatRatePeriod string     `json:"flat_rate_period"`
-	FlatRateStart  *time.Time `json:"flat_rate_start"`
-	FlatRateEnd    *time.Time `json:"flat_rate_end"`
-	FlatRatePaid   bool       `json:"flat_rate_paid"`
-
-	// Derived (not stored).
+	// Derived (not stored): whether the person has any Pauschale.
 	HasFlatRate bool `json:"has_flat_rate"`
 }
 
@@ -180,6 +181,12 @@ type FlatRatePeriod struct {
 	// PeriodCosts maps each elapsed sub-period key to its accrued cost (euros),
 	// so the per-period payment list can show the amount beside each year/month.
 	PeriodCosts map[string]float64 `json:"period_costs,omitempty"`
+	// InvoicePaidPeriods lists the sub-period keys billed on a fully-paid,
+	// non-canceled invoice — settled through the Rechnung, not the per-period flag.
+	// The payment-progress bar counts these as paid so an invoiced+paid Pauschale
+	// reads "bezahlt", not "0 % bezahlt" (the Pauschale twin of the charge/vehicle
+	// invoice status).
+	InvoicePaidPeriods []string `json:"invoice_paid_periods,omitempty"`
 }
 
 // paidKeySet returns the set of sub-period keys explicitly marked paid.
@@ -214,7 +221,7 @@ func (a *FlatRatePeriod) Ended(asOf time.Time) bool {
 // paid amount (whole periods + fixed partials + master flag) covers the accrued
 // cost. Used to decide when a finished Pauschale (and its vehicles) may archive.
 func (a *FlatRatePeriod) SettledAsOf(asOf time.Time) bool {
-	until := asOf.AddDate(0, 0, 1)
+	until := DayAfter(asOf)
 	return a.PaidCentsInRange(a.StartDate, until) >= toCents(a.CostInRange(a.StartDate, until))
 }
 
@@ -260,9 +267,16 @@ func (a *FlatRatePeriod) PaidCentsInRange(from, to time.Time) int64 {
 			// paid period always nets to zero.
 			total += fractionCents(cents, days(s, e), days(pStart, pEnd))
 		} else if fx, ok := a.PaidFixed[key]; ok {
-			// Fixed partial payment: credit the lump once (paid totals are computed
-			// over the full accrual range, so each fixed amount is counted once).
-			total += toCents(fx)
+			// Fixed partial payment: credit the lump once, CAPPED at the period's
+			// accrued cost — matching the balance path (periodPaidUnlocked) — so an
+			// over-large partial (mis-entry) can't over-settle the period or archive
+			// its vehicles prematurely.
+			periodCents := fractionCents(cents, days(s, e), days(pStart, pEnd))
+			if fxc := toCents(fx); fxc < periodCents {
+				total += fxc
+			} else {
+				total += periodCents
+			}
 		}
 	})
 	return total
@@ -273,7 +287,7 @@ func (a *FlatRatePeriod) PaidCentsInRange(from, to time.Time) int64 {
 // therefore be marked paid.
 func (a *FlatRatePeriod) ElapsedPeriodKeys(asOf time.Time) []string {
 	var keys []string
-	a.subPeriods(a.StartDate, asOf.AddDate(0, 0, 1), func(_, _, _, _ time.Time, key string) {
+	a.subPeriods(a.StartDate, DayAfter(asOf), func(_, _, _, _ time.Time, key string) {
 		keys = append(keys, key)
 	})
 	return keys
@@ -285,8 +299,43 @@ func (a *FlatRatePeriod) ElapsedPeriodKeys(asOf time.Time) []string {
 func (a *FlatRatePeriod) ElapsedPeriodCosts(asOf time.Time) map[string]float64 {
 	out := map[string]float64{}
 	cents := toCents(a.Amount)
-	a.subPeriods(a.StartDate, asOf.AddDate(0, 0, 1), func(s, e, pStart, pEnd time.Time, key string) {
+	a.subPeriods(a.StartDate, DayAfter(asOf), func(s, e, pStart, pEnd time.Time, key string) {
 		out[key] += float64(fractionCents(cents, days(s, e), days(pStart, pEnd))) / 100
+	})
+	return out
+}
+
+// OpenPeriod describes one elapsed sub-period of a periodic accrual.
+type OpenPeriod struct {
+	Key      string    // sub-period key ("YYYY-MM" monthly / "YYYY" yearly)
+	Start    time.Time // period start within the agreement window (for line dating)
+	Cost     float64   // accrued cost of the period (final once Complete)
+	Complete bool      // the period has fully elapsed as of asOf (safe to bill/lock)
+}
+
+// ElapsedPeriodsDetailed returns every elapsed sub-period from the agreement's
+// start through asOf, oldest first, with its accrued cost and whether it has
+// fully elapsed — its calendar end (or the agreement's EndDate, if earlier) is
+// not after asOf. Only a complete period has a final cost and may be locked, so
+// the still-running current period is never billed twice as it grows.
+func (a *FlatRatePeriod) ElapsedPeriodsDetailed(asOf time.Time) []OpenPeriod {
+	cents := toCents(a.Amount)
+	var out []OpenPeriod
+	a.subPeriods(a.StartDate, DayAfter(asOf), func(s, e, pStart, pEnd time.Time, key string) {
+		end := pEnd
+		if a.EndDate != nil && a.EndDate.Before(end) {
+			end = *a.EndDate
+		}
+		out = append(out, OpenPeriod{
+			Key:   key,
+			Start: s,
+			Cost:  float64(fractionCents(cents, days(s, e), days(pStart, pEnd))) / 100,
+			// Complete (billable) when the period's end is reached under the SAME
+			// whole-day cutoff accrual uses (DayAfter): on a period's last calendar
+			// day the balance already owes it in full, so it becomes invoiceable that
+			// day instead of lagging to the next — aligning owed with billable (S2).
+			Complete: !end.After(DayAfter(asOf)),
+		})
 	})
 	return out
 }
@@ -309,8 +358,12 @@ func (a *FlatRatePeriod) Covers(vehicleID int64) bool {
 func (a *FlatRatePeriod) window(from, to time.Time) (time.Time, time.Time) {
 	s := maxTime(a.StartDate, from)
 	e := to
-	if a.EndDate != nil && a.EndDate.Before(e) {
-		e = *a.EndDate
+	// EndDate is inclusive: the agreement covers through its last day, so the
+	// half-open cost window extends to the start of the following day.
+	if a.EndDate != nil {
+		if endIncl := a.EndDate.AddDate(0, 0, 1); endIncl.Before(e) {
+			e = endIncl
+		}
 	}
 	return s, e
 }
@@ -327,7 +380,7 @@ func (a *FlatRatePeriod) CostInRange(from, to time.Time) float64 {
 
 // AccruedAsOf returns the agreement cost accrued through asOf (inclusive).
 func (a *FlatRatePeriod) AccruedAsOf(asOf time.Time) float64 {
-	return a.CostInRange(a.StartDate, asOf.AddDate(0, 0, 1))
+	return a.CostInRange(a.StartDate, DayAfter(asOf))
 }
 
 // RecurringCharge is a person-level extra cost that accrues per period like rent
@@ -428,6 +481,12 @@ type Vehicle struct {
 	FlatRateCovered bool    `json:"flat_rate_covered"`
 	FlatRateActive  bool    `json:"flat_rate_active"`
 	UncoveredCost   float64 `json:"uncovered_cost"`
+	// Invoiced is true when a non-canceled invoice bills this vehicle (settle via
+	// the invoice, not the per-vehicle slider). InvoiceOpen is true while at least
+	// one covering invoice is not fully paid; when Invoiced && !InvoiceOpen the
+	// vehicle is settled through a paid invoice (shown as "bezahlt", archivable).
+	Invoiced    bool `json:"invoiced"`
+	InvoiceOpen bool `json:"invoice_open"`
 }
 
 // ServiceType is a catalog entry for a chargeable extra service.
@@ -456,8 +515,15 @@ type Charge struct {
 	Total       float64   `json:"total"`
 	// Paid is the charge's own settle flag, used when it is not bound to a
 	// vehicle. Bound charges instead follow VehiclePaid.
-	Paid         bool   `json:"paid"`
-	VehiclePaid  bool   `json:"vehicle_paid"`
+	Paid        bool `json:"paid"`
+	VehiclePaid bool `json:"vehicle_paid"`
+	// Invoiced is set when at least one non-canceled invoice bills this charge;
+	// InvoiceOpen is true while such an invoice is not fully paid. Invoiced &&
+	// !InvoiceOpen means the charge is settled through a paid Rechnung (shown as
+	// "bezahlt · Rechnung"), mirroring the vehicle's derived invoice status — so a
+	// bound Zusatzkosten billed on a paid invoice no longer lingers as "offen".
+	Invoiced     bool   `json:"invoiced"`
+	InvoiceOpen  bool   `json:"invoice_open"`
 	VehicleLabel string `json:"vehicle_label,omitempty"`
 }
 
@@ -518,8 +584,12 @@ func (v *Vehicle) EffectiveRateFor(cat Category) float64 {
 func (v *Vehicle) CostInRange(cat Category, from, to time.Time) float64 {
 	start := maxTime(v.StartDate, from)
 	end := to
-	if v.EndDate != nil && v.EndDate.Before(end) {
-		end = *v.EndDate
+	// EndDate is inclusive: the vehicle occupies the space through its last day
+	// (e.g. the collection day), so the half-open window extends to the next day.
+	if v.EndDate != nil {
+		if endIncl := v.EndDate.AddDate(0, 0, 1); endIncl.Before(end) {
+			end = endIncl
+		}
 	}
 	if !end.After(start) {
 		return 0
@@ -530,7 +600,7 @@ func (v *Vehicle) CostInRange(cat Category, from, to time.Time) float64 {
 // AccruedCostAsOf returns the total cost accrued from the start date until the
 // earlier of the end date or asOf.
 func (v *Vehicle) AccruedCostAsOf(cat Category, asOf time.Time) float64 {
-	return v.CostInRange(cat, v.StartDate, asOf.AddDate(0, 0, 1))
+	return v.CostInRange(cat, v.StartDate, DayAfter(asOf))
 }
 
 // YearStat is the aggregated cost for a person in a single calendar year.

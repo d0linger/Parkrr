@@ -113,7 +113,52 @@ func (h *Handler) loadAgreements(ctx context.Context, personID int64, now time.T
 		out[i].Settled = out[i].SettledAsOf(now)
 		out[i].PeriodCosts = out[i].ElapsedPeriodCosts(now)
 	}
+	if err := h.setAgreementInvoiceStatus(ctx, out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// setAgreementInvoiceStatus marks, per agreement, which sub-periods are settled
+// through a fully-paid Rechnung (invoice_source kind='agreement' × a non-canceled,
+// fully-paid invoice) — the Pauschale twin of setVehicleInvoiceStatus. A period
+// billed on a paid invoice is settled even though its per-period flag is unset, so
+// the progress bar must count it; otherwise an invoiced+paid Pauschale shows
+// "0 % bezahlt".
+func (h *Handler) setAgreementInvoiceStatus(ctx context.Context, agreements []models.FlatRatePeriod) error {
+	if len(agreements) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(agreements))
+	for i := range agreements {
+		ids = append(ids, agreements[i].ID)
+	}
+	rows, err := h.Pool.Query(ctx,
+		`SELECT s.ref_id, s.period_key FROM invoice_source s JOIN invoices i ON i.id = s.invoice_id
+		  WHERE s.kind='agreement' AND NOT i.canceled AND (i.total - i.paid_amount) <= 0.005
+		    AND s.ref_id = ANY($1)`, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	paid := map[int64][]string{}
+	for rows.Next() {
+		var ref int64
+		var period string
+		if err := rows.Scan(&ref, &period); err != nil {
+			return err
+		}
+		paid[ref] = append(paid[ref], period)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range agreements {
+		if keys, ok := paid[agreements[i].ID]; ok {
+			agreements[i].InvoicePaidPeriods = keys
+		}
+	}
+	return nil
 }
 
 // ListAgreements returns the flat-rate agreements of a person.
@@ -205,6 +250,43 @@ func createVehiclesTx(ctx context.Context, tx pgx.Tx, personID int64, period str
 	return out, nil
 }
 
+// currentAgreementVehicles returns the vehicle ids currently covered by an
+// agreement, read through the caller's tx.
+func currentAgreementVehicles(ctx context.Context, tx pgx.Tx, id int64) ([]int64, error) {
+	rows, err := tx.Query(ctx, `SELECT vehicle_id FROM flat_rate_period_vehicles WHERE period_id=$1`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var v int64
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// sameInt64Set reports whether a and b contain the same ids (order-independent);
+// both are expected deduplicated.
+func sameInt64Set(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	m := make(map[int64]bool, len(a))
+	for _, x := range a {
+		m[x] = true
+	}
+	for _, x := range b {
+		if !m[x] {
+			return false
+		}
+	}
+	return true
+}
+
 // agreementSaveError maps a saveAgreement failure to a client (message, status).
 // errNoCategory is classified at its source (createVehiclesTx); a foreign-key
 // violation means the person or a covered vehicle vanished mid-save — telling
@@ -213,11 +295,20 @@ func agreementSaveError(err error, fallback string) (string, int) {
 	if errors.Is(err, errNoCategory) {
 		return "tariff does not exist", http.StatusBadRequest
 	}
+	if errors.Is(err, errAgreementInvoiced) {
+		return "Pauschale ist fakturiert – Betrag/Zeitraum/Gefährte nicht änderbar (Storno über die Rechnung)", http.StatusConflict
+	}
 	if isForeignKeyViolation(err) {
 		return "person or vehicle does not exist", http.StatusBadRequest
 	}
 	return fallback, http.StatusInternalServerError
 }
+
+// errAgreementInvoiced: an edit tried to change the billing-defining fields
+// (period/start/amount) of a Pauschale that already has an invoiced period —
+// which would desync the period-keyed invoice_source lock or make the balance
+// disagree with the issued document.
+var errAgreementInvoiced = errors.New("agreement has an invoiced period")
 
 // parse validates the request and returns a partially-filled agreement (without
 // person id). VehicleIDs is normalised (deduplicated).
@@ -225,6 +316,9 @@ func (req *agreementRequest) parse() (models.FlatRatePeriod, string) {
 	var a models.FlatRatePeriod
 	if req.Amount == nil || *req.Amount <= 0 {
 		return a, "amount must be greater than zero"
+	}
+	if *req.Amount > maxMoneyAmount {
+		return a, "amount is out of range"
 	}
 	period := req.Period
 	if period == "" {
@@ -278,15 +372,18 @@ func (req *agreementRequest) parse() (models.FlatRatePeriod, string) {
 	return a, ""
 }
 
-// agreementsOverlapInTime reports whether the two agreements' windows intersect
-// (end dates exclusive; nil = open-ended).
+// agreementsOverlapInTime reports whether the two agreements' windows intersect.
+// EndDate is INCLUSIVE (matching the billing window, which covers through the
+// last day): the exclusive upper bound is EndDate+1, so two same-vehicle
+// agreements handing off on date D (A ends D, B starts D) DO overlap — both bill
+// D — and are correctly flagged as a conflict. nil = open-ended.
 func agreementsOverlapInTime(a, b models.FlatRatePeriod) bool {
 	aEnd, bEnd := farFuture, farFuture
 	if a.EndDate != nil {
-		aEnd = *a.EndDate
+		aEnd = a.EndDate.AddDate(0, 0, 1)
 	}
 	if b.EndDate != nil {
-		bEnd = *b.EndDate
+		bEnd = b.EndDate.AddDate(0, 0, 1)
 	}
 	return a.StartDate.Before(bEnd) && b.StartDate.Before(aEnd)
 }
@@ -402,7 +499,11 @@ func (h *Handler) UpdateAgreement(w http.ResponseWriter, r *http.Request) {
 	var pid int64
 	if err := h.Pool.QueryRow(r.Context(),
 		`SELECT person_id FROM flat_rate_periods WHERE id=$1`, id).Scan(&pid); err != nil {
-		writeError(w, http.StatusNotFound, "agreement not found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "agreement not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 	h.persistAgreement(w, r, id, pid)
@@ -502,9 +603,37 @@ func (h *Handler) saveAgreement(r *http.Request, id, personID int64, a models.Fl
 		// never be counted by PaidCentsInRange. Clear them so the payment state
 		// is visibly reset instead of silently uncounted.
 		var oldPeriod string
+		var oldStart time.Time
+		var oldAmount float64
 		if err := tx.QueryRow(ctx,
-			`SELECT period FROM flat_rate_periods WHERE id=$1 FOR UPDATE`, id).Scan(&oldPeriod); err != nil {
+			`SELECT period, start_date, amount FROM flat_rate_periods WHERE id=$1 FOR UPDATE`, id).
+			Scan(&oldPeriod, &oldStart, &oldAmount); err != nil {
 			return err
+		}
+		// Freeze the billing-defining fields once a period is invoiced: changing
+		// period/start/amount would desync the period-keyed invoice_source lock
+		// (re-billing an invoiced span) or make the balance disagree with the
+		// issued document. Note/vehicles/end_date stay editable.
+		// Membership too: adding/removing a covered vehicle on an invoiced agreement
+		// re-bills (an unbound vehicle then bills its period individually) or
+		// phantom-credits (a newly-covered vehicle drops its individual accrual for
+		// an already-invoiced period). And end_date must not retract below an
+		// invoiced period (that drops it from accrual while its payment stays).
+		curVeh, verr := currentAgreementVehicles(ctx, tx, id)
+		if verr != nil {
+			return verr
+		}
+		retract, rerr := h.endDateRetractsBelowInvoiced(ctx, tx, "agreement", id, a.EndDate)
+		if rerr != nil {
+			return rerr
+		}
+		if oldPeriod != a.Period || !oldStart.Equal(a.StartDate) || oldAmount != a.Amount ||
+			!sameInt64Set(curVeh, a.VehicleIDs) || retract {
+			if inv, ierr := h.refInvoiced(ctx, tx, "agreement", id); ierr != nil {
+				return ierr
+			} else if inv {
+				return errAgreementInvoiced
+			}
 		}
 		if oldPeriod != a.Period {
 			if _, err := tx.Exec(ctx, `DELETE FROM flat_rate_period_payments WHERE period_id=$1`, id); err != nil {
@@ -543,10 +672,36 @@ func (h *Handler) saveAgreement(r *http.Request, id, personID int64, a models.Fl
 }
 
 // DeleteAgreement removes an agreement.
+// clearAgreementSettlementTx removes an agreement's auto settlement money before the
+// row is deleted: un-settle the bound extras it paid, then delete its period + extras
+// auto-payments. Without this a deleted paid Pauschale leaves orphan Zahlungseingänge
+// that still count as money-in (phantom Guthaben).
+func clearAgreementSettlementTx(ctx context.Context, tx pgx.Tx, id int64) error {
+	if _, err := tx.Exec(ctx,
+		`UPDATE charges SET paid=false WHERE id IN (
+		    SELECT pa.ref_id FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id
+		     WHERE pa.kind='charge' AND p.settles_kind='agreement' AND p.settles_ref=$1 AND p.settles_period='extras')`, id); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx,
+		`DELETE FROM payments WHERE auto AND settles_kind='agreement' AND settles_ref=$1`, id)
+	return err
+}
+
 func (h *Handler) DeleteAgreement(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	// An invoiced Pauschale must not be deleted: its invoice_source lock has no FK
+	// to this row, so deleting it orphans the lock and severs the invoice→source
+	// trail (BAO reconstruction). Mirror DeleteVehicle.
+	if inv, err := h.refInvoiced(r.Context(), h.Pool, "agreement", id); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not check invoices")
+		return
+	} else if inv {
+		writeError(w, http.StatusConflict, "Pauschale ist fakturiert – nicht löschbar (Storno über die Rechnung)")
 		return
 	}
 	// Optionally delete the covered vehicles too; otherwise they are only unbound
@@ -563,6 +718,10 @@ func (h *Handler) DeleteAgreement(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer func() { _ = tx.Rollback(r.Context()) }()
+		if err := clearAgreementSettlementTx(r.Context(), tx, id); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not delete agreement")
+			return
+		}
 		// Delete only vehicles exclusive to this agreement (their join rows
 		// cascade). A vehicle shared with another agreement — possible for
 		// non-overlapping windows — is left intact and merely unbound here.
@@ -583,12 +742,21 @@ func (h *Handler) DeleteAgreement(w http.ResponseWriter, r *http.Request) {
 		}
 		affected = ct.RowsAffected()
 	} else {
-		ct, err := h.Pool.Exec(r.Context(), `DELETE FROM flat_rate_periods WHERE id=$1`, id)
-		if err != nil {
+		txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+			if err := clearAgreementSettlementTx(r.Context(), tx, id); err != nil {
+				return err
+			}
+			ct, err := tx.Exec(r.Context(), `DELETE FROM flat_rate_periods WHERE id=$1`, id)
+			if err != nil {
+				return err
+			}
+			affected = ct.RowsAffected()
+			return nil
+		})
+		if txErr != nil {
 			writeError(w, http.StatusInternalServerError, "could not delete agreement")
 			return
 		}
-		affected = ct.RowsAffected()
 	}
 	if affected == 0 {
 		writeError(w, http.StatusNotFound, "agreement not found")
@@ -610,7 +778,13 @@ type agreementPaidRequest struct {
 	Paid bool `json:"paid"`
 }
 
-// SetAgreementPaid toggles an agreement's paid status.
+// SetAgreementPaid toggles a whole Pauschale paid via the master slider. "bezahlt"
+// now moves real money, mirroring the per-item sliders: it books a real
+// Zahlungseingang for every completed rent period AND settles the bound Zusatzkosten
+// open on the covered vehicles at that moment (Fix 2 semantics, extended to the
+// Pauschale). "offen" reverses both. Before this, the slider only flipped a flag and
+// deleted the per-period rows — so a paid Pauschale showed no payment and left its
+// extras owed.
 func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
@@ -622,38 +796,210 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	// The master flag is the "reset all" control: it also clears any per-period
-	// payment rows, so "bezahlt" = everything paid and "offen" = nothing paid.
-	tx, err := h.Pool.Begin(r.Context())
+	ctx := r.Context()
+	createdBy := createdByFrom(ctx)
+	tx, err := h.Pool.Begin(ctx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update agreement")
 		return
 	}
-	defer func() { _ = tx.Rollback(r.Context()) }()
-	var pid int64
-	if err := tx.QueryRow(r.Context(),
-		`UPDATE flat_rate_periods SET paid=$1, updated_at=now() WHERE id=$2 RETURNING person_id`,
-		req.Paid, id).Scan(&pid); err != nil {
-		writeError(w, http.StatusNotFound, "agreement not found")
-		return
-	}
-	if _, err := tx.Exec(r.Context(),
-		`DELETE FROM flat_rate_period_payments WHERE period_id=$1`, id); err != nil {
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// An invoiced Pauschale is settled through its Rechnung, not the master slider.
+	// Block the toggle (both directions) when a non-canceled invoice bills any of its
+	// periods: booking per-period payments here would double-count the invoice payment
+	// (phantom Guthaben). Mirrors the per-period handler's fakturier guard.
+	var invoiced bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+		   WHERE s.kind='agreement' AND s.ref_id=$1 AND NOT i.canceled)`, id).Scan(&invoiced); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update agreement")
 		return
 	}
-	if err := tx.Commit(r.Context()); err != nil {
+	if invoiced {
+		writeError(w, http.StatusConflict, "Pauschale ist fakturiert – über die Rechnung begleichen")
+		return
+	}
+
+	// Set the flag and load the money fields in one shot — needed to book the real
+	// per-period rent payments below, not just flip paid.
+	var ag models.FlatRatePeriod
+	if err := tx.QueryRow(ctx,
+		`UPDATE flat_rate_periods SET paid=$1, updated_at=now() WHERE id=$2
+		 RETURNING person_id, amount, period, start_date, end_date`,
+		req.Paid, id).Scan(&ag.PersonID, &ag.Amount, &ag.Period, &ag.StartDate, &ag.EndDate); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "agreement not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not update agreement")
 		return
 	}
+	ag.ID = id
+	pid := ag.PersonID
+
+	// "Reset all": drop the per-period rows and every real Zahlungseingang this
+	// agreement's settlement had booked (rent periods + extras), then re-derive from
+	// the new state. Also un-settles bound extras this agreement had settled — and
+	// clears any orphan a per-period toggle followed by a master toggle left behind.
+	if _, err := tx.Exec(ctx, `DELETE FROM flat_rate_period_payments WHERE period_id=$1`, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update agreement")
+		return
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE charges SET paid=false WHERE id IN (
+		    SELECT pa.ref_id FROM payment_allocations pa JOIN payments p ON p.id=pa.payment_id
+		     WHERE pa.kind='charge' AND p.settles_kind='agreement' AND p.settles_ref=$1 AND p.settles_period='extras')`, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update agreement")
+		return
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM payments WHERE auto AND settles_kind='agreement' AND settles_ref=$1`, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update agreement")
+		return
+	}
+
+	if req.Paid {
+		// (a) Rent: one real Zahlungseingang per COMPLETED elapsed period. A still-
+		// running period keeps the off-book credit (its cost is not final yet).
+		for _, per := range ag.ElapsedPeriodsDetailed(time.Now()) {
+			if !per.Complete {
+				continue
+			}
+			if err := recordPeriodPaymentTx(ctx, tx, pid, "agreement", id, per.Key, per.Cost, createdBy); err != nil {
+				writeError(w, http.StatusInternalServerError, "could not update agreement")
+				return
+			}
+		}
+		// (b) Extras: settle the bound Zusatzkosten open on covered vehicles right now
+		// (charges added later stay billable — Option A).
+		if err := h.settleAgreementExtrasTx(ctx, tx, ag, createdBy); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not update agreement")
+			return
+		}
+	}
+
 	state := "offen"
 	if req.Paid {
 		state = "bezahlt"
 	}
-	h.audit(r, "update", "flatrate", id, "Pauschale "+h.personLabel(r, pid)+" "+state)
+	// Audit inside the tx (before commit): the settlement change and its trail
+	// commit together (C7 / BAO §131).
+	if err := h.auditTx(ctx, tx, r, "update", "flatrate", id,
+		"Pauschale "+personLabelTx(ctx, tx, pid)+" "+state); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update agreement")
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update agreement")
+		return
+	}
 	// Settling the last open period may finish the agreement -> archive vehicles.
-	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), pid)
+	_, _ = h.ArchiveSettledExpiredVehicles(ctx, pid)
 	h.writeAgreements(w, r, pid)
+}
+
+// settleAgreementExtrasTx books ONE auto-payment covering the bound Zusatzkosten
+// currently open on the agreement's covered vehicles, allocates a line per charge,
+// and marks them paid — the Pauschale-slider twin of the vehicle slider (Fix 2). A
+// charge already settled elsewhere (its (kind,ref) allocation exists) is skipped, so
+// the recorded amount matches exactly what this settles. Nothing open → no row. The
+// payment carries settles_period='extras' so SetAgreementPaid can find and reverse
+// exactly it on "offen".
+func (h *Handler) settleAgreementExtrasTx(ctx context.Context, tx pgx.Tx, ag models.FlatRatePeriod, createdBy *int64) error {
+	agreementID, personID := ag.ID, ag.PersonID
+	// Covered vehicles: the explicit links, or — for a person-wide agreement with no
+	// links — the person's vehicles that fall within the agreement's window.
+	vrows, err := tx.Query(ctx, `SELECT vehicle_id FROM flat_rate_period_vehicles WHERE period_id=$1`, agreementID)
+	if err != nil {
+		return err
+	}
+	var vids []int64
+	for vrows.Next() {
+		var v int64
+		if err := vrows.Scan(&v); err != nil {
+			vrows.Close()
+			return err
+		}
+		vids = append(vids, v)
+	}
+	vrows.Close()
+	if err := vrows.Err(); err != nil {
+		return err
+	}
+
+	// Open bound charges not already settled — neither by another payment allocation
+	// nor by an invoice (an invoiced charge is settled through its Rechnung; settling
+	// it again here would double-count it).
+	const notSettled = `NOT c.paid
+	     AND NOT EXISTS (SELECT 1 FROM payment_allocations pa WHERE pa.kind='charge' AND pa.ref_id=c.id)
+	     AND NOT EXISTS (SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+	                      WHERE s.kind='charge' AND s.ref_id=c.id AND NOT i.canceled)`
+	var crows pgx.Rows
+	if len(vids) == 0 {
+		// Person-wide agreement: covers the person's vehicles that existed within its
+		// window. A vehicle that began on/after the agreement's (exclusive) end date was
+		// never covered (coveringAgreements' start guard), so its extras aren't settled.
+		crows, err = tx.Query(ctx,
+			`SELECT c.id, c.amount, c.quantity FROM charges c JOIN vehicles v ON v.id=c.vehicle_id
+			  WHERE c.person_id=$1 AND `+notSettled+`
+			    AND ($2::timestamptz IS NULL OR v.start_date < $2)`, personID, ag.EndDate)
+	} else {
+		crows, err = tx.Query(ctx,
+			`SELECT c.id, c.amount, c.quantity FROM charges c
+			  WHERE c.person_id=$1 AND c.vehicle_id IS NOT NULL AND `+notSettled+`
+			    AND c.vehicle_id = ANY($2)`, personID, vids)
+	}
+	if err != nil {
+		return err
+	}
+	type ext struct {
+		id    int64
+		total float64
+	}
+	var exts []ext
+	var total float64
+	for crows.Next() {
+		var cid int64
+		var amt, qty float64
+		if err := crows.Scan(&cid, &amt, &qty); err != nil {
+			crows.Close()
+			return err
+		}
+		if qty <= 0 {
+			qty = 1
+		}
+		if t := round2(amt * qty); t > 0.005 {
+			exts = append(exts, ext{cid, t})
+			total += t
+		}
+	}
+	crows.Close()
+	if err := crows.Err(); err != nil {
+		return err
+	}
+	if round2(total) < 0.005 {
+		return nil
+	}
+
+	var payID int64
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO payments (person_id, amount, method, note, auto, settles_kind, settles_ref, settles_period, created_by)
+		 VALUES ($1,$2,'bar','Pauschale Zusatzkosten (Slider)',true,'agreement',$3,'extras',$4) RETURNING id`,
+		personID, round2(total), agreementID, createdBy).Scan(&payID); err != nil {
+		return err
+	}
+	for _, e := range exts {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO payment_allocations (payment_id, kind, ref_id, amount) VALUES ($1,'charge',$2,$3)
+			 ON CONFLICT (kind, ref_id) DO NOTHING`, payID, e.id, e.total); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE charges SET paid=true WHERE id=$1`, e.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type agreementPeriodPaidRequest struct {
@@ -684,8 +1030,10 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "period_key is required")
 		return
 	}
-	if req.Amount != nil && *req.Amount < 0 {
-		writeError(w, http.StatusBadRequest, "amount must not be negative")
+	// A set fixed partial must be positive and in range (a whole-period prepayment
+	// omits Amount entirely) — symmetric with the recurring path.
+	if req.Amount != nil && (*req.Amount <= 0 || *req.Amount > maxMoneyAmount) {
+		writeError(w, http.StatusBadRequest, "amount is out of range")
 		return
 	}
 	tx, err := h.Pool.Begin(r.Context())
@@ -699,9 +1047,9 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 	// below acts on a consistent snapshot even under concurrent paid toggles.
 	var a models.FlatRatePeriod
 	if err := tx.QueryRow(r.Context(),
-		`SELECT id, person_id, period, start_date, end_date, paid
+		`SELECT id, person_id, period, start_date, end_date, amount, paid
 		 FROM flat_rate_periods WHERE id=$1 FOR UPDATE`, id).
-		Scan(&a.ID, &a.PersonID, &a.Period, &a.StartDate, &a.EndDate, &a.Paid); err != nil {
+		Scan(&a.ID, &a.PersonID, &a.Period, &a.StartDate, &a.EndDate, &a.Amount, &a.Paid); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "agreement not found")
 			return
@@ -726,6 +1074,24 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "period_key does not match an elapsed period of this agreement")
 		return
 	}
+	// An invoiced period is settled through the invoice. Block BOTH directions:
+	// marking would double-credit once the invoice is Storno'd; UNmarking would
+	// drop a fixed partial that the invoice already billed around (open = cost −
+	// partial), leaving a phantom debt equal to the partial. The invoice, not this
+	// flag, governs a fakturierte Periode.
+	{
+		var locked bool
+		if err := tx.QueryRow(r.Context(),
+			`SELECT EXISTS(SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+			   WHERE s.kind='agreement' AND s.ref_id=$1 AND s.period_key=$2 AND NOT i.canceled)`, id, key).Scan(&locked); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not update payment")
+			return
+		}
+		if locked {
+			writeError(w, http.StatusConflict, "Periode ist fakturiert – über die Rechnung begleichen")
+			return
+		}
+	}
 
 	if req.Paid {
 		// amount NULL = whole period (prepaid); a value = fixed partial. Upsert so
@@ -733,6 +1099,18 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 		if _, err := tx.Exec(r.Context(),
 			`INSERT INTO flat_rate_period_payments (period_id, period_key, amount) VALUES ($1,$2,$3)
 			 ON CONFLICT (period_id, period_key) DO UPDATE SET amount = EXCLUDED.amount`, id, key, req.Amount); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not update payment")
+			return
+		}
+		// Book the real Zahlungseingang mirroring this off-book settlement (Fix 1): a
+		// completed whole period or an explicit partial. A still-running whole period
+		// stays off-book (its cost isn't final); its payment is booked once complete.
+		if amt, ok := periodPaymentAmount(a, key, req.Amount, time.Now()); ok {
+			if err := recordPeriodPaymentTx(r.Context(), tx, a.PersonID, "agreement", id, key, amt, createdByFrom(r.Context())); err != nil {
+				writeError(w, http.StatusInternalServerError, "could not update payment")
+				return
+			}
+		} else if err := deletePeriodPaymentTx(r.Context(), tx, "agreement", id, key); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not update payment")
 			return
 		}
@@ -756,16 +1134,25 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusInternalServerError, "could not update payment")
 			return
 		}
+		// Remove the real Zahlungseingang this period's settlement had booked (Fix 1).
+		// Periods materialized from a cleared master flag stay off-book (no payment to
+		// delete), so this only drops the one the toggle created.
+		if err := deletePeriodPaymentTx(r.Context(), tx, "agreement", id, key); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not update payment")
+			return
+		}
+	}
+	// Audit inside the tx, before commit: the paid-state change and its trail
+	// commit together (BAO §131).
+	if err := h.auditTx(r.Context(), tx, r, "update", "flatrate", id,
+		"Pauschale "+personLabelTx(r.Context(), tx, a.PersonID)+" "+key+": "+periodPaidAuditState(req.Paid, req.Amount)); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update payment")
+		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update payment")
 		return
 	}
-	state := "offen"
-	if req.Paid {
-		state = "bezahlt"
-	}
-	h.audit(r, "update", "flatrate", id, "Pauschale "+h.personLabel(r, a.PersonID)+" "+key+": "+state)
 	// Settling the last open period may finish the agreement -> archive vehicles.
 	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), a.PersonID)
 	h.writeAgreements(w, r, a.PersonID)
@@ -950,12 +1337,9 @@ func (h *Handler) ArchiveSettledExpiredVehicles(ctx context.Context, personID in
 // and a vehicle bound to any Pauschale bills nothing itself (ownership model —
 // the agreement's flat amount is the only charge, regardless of how long each
 // bound vehicle is stored).
-func personRent(agreements []models.FlatRatePeriod, vehicles []models.Vehicle, cats map[int64]models.Category, from, to time.Time) (accrued, paid float64) {
+func personRent(agreements []models.FlatRatePeriod, vehicles []models.Vehicle, cats map[int64]models.Category, from, to time.Time) (accrued float64) {
 	for i := range agreements {
 		accrued += agreements[i].CostInRange(from, to)
-		// Paid is tracked per sub-period (year/month); the master Paid flag counts
-		// every sub-period as paid, preserving legacy behavior.
-		paid += float64(agreements[i].PaidCentsInRange(from, to)) / 100
 	}
 	for i := range vehicles {
 		v := &vehicles[i]
@@ -964,11 +1348,7 @@ func personRent(agreements []models.FlatRatePeriod, vehicles []models.Vehicle, c
 		if len(coveringAgreements(agreements, v.ID, v.StartDate)) > 0 {
 			continue
 		}
-		c := v.CostInRange(cats[v.CategoryID], from, to)
-		accrued += c
-		if v.Paid {
-			paid += c
-		}
+		accrued += v.CostInRange(cats[v.CategoryID], from, to)
 	}
-	return accrued, paid
+	return accrued
 }

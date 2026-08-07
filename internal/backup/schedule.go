@@ -47,15 +47,17 @@ func RunVolume(ctx context.Context, pool *pgxpool.Pool, dbURL, key, dir string, 
 		return 0, err
 	}
 	// Verify the just-written archive is decryptable and structurally restorable.
-	tested := false
+	size := int64(len(enc))
 	if _, verr := Validate(ctx, enc, key); verr != nil {
-		slog.Warn("backup: archive verify failed", "path", p, "err", verr)
-	} else {
-		tested = true
+		// Do NOT rotate the older (verified) archives out behind an UNVERIFIED new
+		// one, and record the run as not-OK — otherwise a persistent verify failure
+		// would prune away the last good backup while last_volume_ok stayed green.
+		slog.Warn("backup: archive verify failed – keeping older archives", "path", p, "err", verr)
+		_ = recordVolume(ctx, pool, time.Now(), size, false, false)
+		return size, nil
 	}
 	pruneDir(dir, keep)
-	size := int64(len(enc))
-	_ = recordVolume(ctx, pool, time.Now(), size, true, tested)
+	_ = recordVolume(ctx, pool, time.Now(), size, true, true)
 	return size, nil
 }
 

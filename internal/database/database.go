@@ -163,7 +163,16 @@ func PruneAuditLog(ctx context.Context, pool *pgxpool.Pool, keep time.Duration) 
 		if _, err := tx.Exec(ctx, `SET LOCAL parkrr.allow_audit_prune = 'on'`); err != nil {
 			return err
 		}
-		ct, err := tx.Exec(ctx, `DELETE FROM audit_log WHERE created_at < $1`, cutoff)
+		// Never prune the trail of records of account: invoice issuance/Storno,
+		// payment and its reversal, billing-settings changes (UID / USt-rate /
+		// Nummernkreis), and per-period Pauschale/Nebenkosten settlements — for a
+		// person-level charge the audit row is the only record it was paid. These
+		// explain documents/receipts kept for 7 years (BAO §132). Only operational
+		// noise (logins, CRUD of tariffs, etc.) ages out.
+		ct, err := tx.Exec(ctx,
+			`DELETE FROM audit_log
+			   WHERE created_at < $1
+			     AND entity NOT IN ('invoice','payment','billing','flatrate','recurring_charge')`, cutoff)
 		if err != nil {
 			return err
 		}

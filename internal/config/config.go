@@ -81,8 +81,10 @@ func Load() (*Config, error) {
 		WebAuthnRPDisplayName: getenv("PARKRR_WEBAUTHN_RP_NAME", "Parkrr"),
 		WebAuthnOrigins:       splitList(os.Getenv("PARKRR_WEBAUTHN_ORIGINS")),
 
-		MetricsToken:       getenv("PARKRR_METRICS_TOKEN", ""),
-		AuditRetentionDays: getenvInt("PARKRR_AUDIT_RETENTION_DAYS", 365),
+		MetricsToken: getenv("PARKRR_METRICS_TOKEN", ""),
+		// Default to the 7-year BAO §132 retention window; money-trail rows
+		// (invoice/payment/billing) are never pruned regardless (see PruneAuditLog).
+		AuditRetentionDays: getenvInt("PARKRR_AUDIT_RETENTION_DAYS", 2555),
 
 		CheckBreachedPasswords: getenvBool("PARKRR_CHECK_BREACHED_PASSWORDS", true),
 		FailClosedOnBreach:     getenvBool("PARKRR_BREACH_CHECK_FAIL_CLOSED", false),

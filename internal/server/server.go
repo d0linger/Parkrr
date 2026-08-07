@@ -38,6 +38,15 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	// Archive vehicles of finished-and-settled Pauschalen in the background.
 	go startFlatRateArchival(h, stop)
 
+	// Idempotent one-shot: book real Zahlungseingänge for Pauschale/Nebenkosten
+	// period settlements made before migration 036 (they only flipped an off-book
+	// flag). Runs in the background so a large dataset never delays serving.
+	go func() {
+		if err := h.BackfillPeriodPayments(context.Background()); err != nil {
+			slog.Error("period-payment backfill failed", "err", err)
+		}
+	}()
+
 	mux := http.NewServeMux()
 
 	// Middleware shortcuts.
@@ -80,6 +89,23 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("PUT /api/persons/{id}", editor(hf(h.UpdatePerson)))
 	mux.Handle("DELETE /api/persons/{id}", editor(hf(h.DeletePerson)))
 	mux.Handle("GET /api/persons/{id}/stats", authed(hf(h.PersonStats)))
+
+	// --- Payments (recorded money-in / Kontoauszug) ---
+	mux.Handle("GET /api/persons/{id}/payments", authed(hf(h.ListPayments)))
+	mux.Handle("POST /api/persons/{id}/payments", editor(hf(h.CreatePayment)))
+	mux.Handle("DELETE /api/payments/{id}", editor(hf(h.DeletePayment)))
+	mux.Handle("GET /api/persons/{id}/open-items", authed(hf(h.OpenItems)))
+	mux.Handle("POST /api/persons/{id}/apply-credit", editor(hf(h.ApplyCredit)))
+
+	// --- Invoicing (Rechnungen) ---
+	mux.Handle("GET /api/billing/settings", admin(hf(h.GetBillingSettings)))
+	mux.Handle("POST /api/billing/settings", admin(hf(h.SaveBillingSettings)))
+	mux.Handle("GET /api/persons/{id}/invoices", authed(hf(h.ListInvoices)))
+	mux.Handle("POST /api/persons/{id}/invoices", editor(hf(h.CreateInvoice)))
+	mux.Handle("GET /api/invoices/{id}", authed(hf(h.GetInvoice)))
+	mux.Handle("POST /api/invoices/{id}/cancel", editor(hf(h.CancelInvoice)))
+	mux.Handle("POST /api/persons/{id}/pay-invoices", editor(hf(h.PayInvoices)))
+	mux.Handle("GET /api/invoices/overdue", authed(hf(h.OverdueInvoices)))
 
 	// --- Flat-rate agreements (Pauschale-Einträge) ---
 	mux.Handle("GET /api/persons/{id}/agreements", authed(hf(h.ListAgreements)))
@@ -152,6 +178,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/backup/file/{name}", admin(hf(h.BackupDownloadFile)))
 	mux.Handle("POST /api/backup/validate", admin(hf(h.BackupValidate)))
 	mux.Handle("POST /api/backup/restore", admin(hf(h.BackupRestore)))
+	mux.Handle("POST /api/backup/s3/test", admin(hf(h.BackupS3Test)))
 	mux.Handle("POST /api/backup/s3", admin(hf(h.CreateBackupS3)))
 	mux.Handle("GET /api/backup/s3/file/{name}", admin(hf(h.BackupS3Download)))
 	mux.Handle("POST /api/backup/restore-s3", admin(hf(h.BackupRestoreS3)))

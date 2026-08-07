@@ -32,6 +32,10 @@ func (h *Handler) ListUsers(w http.ResponseWriter, r *http.Request) {
 		}
 		users = append(users, u)
 	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 	writeJSON(w, http.StatusOK, users)
 }
 
@@ -236,7 +240,11 @@ func (h *Handler) ResetUserTOTP(w http.ResponseWriter, r *http.Request) {
 	var username string
 	if err := h.Pool.QueryRow(r.Context(),
 		`SELECT username FROM users WHERE id=$1`, id).Scan(&username); err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 	if _, err := h.Pool.Exec(r.Context(),

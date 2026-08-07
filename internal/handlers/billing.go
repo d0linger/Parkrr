@@ -1,0 +1,1152 @@
+package handlers
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/preining/parkrr/internal/auth"
+	"github.com/preining/parkrr/internal/models"
+)
+
+// errAlreadyCanceled signals that a Storno lost the race to a concurrent one —
+// the invoice was already canceled, so the second attempt aborts (409) instead of
+// issuing a duplicate counter-document.
+var errAlreadyCanceled = errors.New("invoice already canceled")
+
+// complianceError carries a §11-gate message from inside the CreateInvoice tx so
+// the handler can roll back (restoring the number) and answer 422 with the reason.
+type complianceError struct{ msg string }
+
+func (e *complianceError) Error() string { return e.msg }
+
+// billingSettings is the GUI-editable invoicing configuration (one row, id=1).
+// Austria: kleinunternehmer => § 6 Abs 1 Z 27 UStG (no USt); otherwise ust_rate
+// (20 / 13 / 10) is shown. next_invoice_no drives the gapless invoice number.
+type billingSettings struct {
+	SellerName       string  `json:"seller_name"`
+	SellerAddress    string  `json:"seller_address"`
+	SellerUID        string  `json:"seller_uid"`
+	Kleinunternehmer bool    `json:"kleinunternehmer"`
+	UStRate          float64 `json:"ust_rate"`
+	InvoicePrefix    string  `json:"invoice_prefix"`
+	NextInvoiceNo    int     `json:"next_invoice_no"`
+	NumberPad        int     `json:"number_pad"`
+	IBAN             string  `json:"iban"`
+	BIC              string  `json:"bic"`
+	PaymentTermsDays int     `json:"payment_terms_days"`
+	FooterNote       string  `json:"footer_note"`
+}
+
+// austrianRates are the valid USt rates when not a Kleinunternehmer.
+var austrianRates = map[float64]bool{20: true, 13: true, 10: true}
+
+func (h *Handler) loadBillingSettings(ctx context.Context) (billingSettings, error) {
+	var s billingSettings
+	err := h.Pool.QueryRow(ctx,
+		`SELECT seller_name, seller_address, seller_uid, kleinunternehmer, ust_rate,
+		        invoice_prefix, next_invoice_no, number_pad, iban, bic, payment_terms_days, footer_note
+		   FROM billing_settings WHERE id=1`,
+	).Scan(&s.SellerName, &s.SellerAddress, &s.SellerUID, &s.Kleinunternehmer, &s.UStRate,
+		&s.InvoicePrefix, &s.NextInvoiceNo, &s.NumberPad, &s.IBAN, &s.BIC, &s.PaymentTermsDays, &s.FooterNote)
+	return s, err
+}
+
+// GetBillingSettings returns the invoicing configuration (admin).
+func (h *Handler) GetBillingSettings(w http.ResponseWriter, r *http.Request) {
+	s, err := h.loadBillingSettings(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load billing settings")
+		return
+	}
+	writeJSON(w, http.StatusOK, s)
+}
+
+// SaveBillingSettings updates the invoicing configuration (admin). next_invoice_no
+// is only allowed to move forward, so a gap can be opened deliberately but the
+// sequence can't be rewound onto an already-used number.
+func (h *Handler) SaveBillingSettings(w http.ResponseWriter, r *http.Request) {
+	var in billingSettings
+	if err := decodeJSON(r, &in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	in.SellerName = trim(in.SellerName)
+	in.SellerAddress = trim(in.SellerAddress)
+	in.SellerUID = trim(in.SellerUID)
+	in.InvoicePrefix = trim(in.InvoicePrefix)
+	in.IBAN = trim(in.IBAN)
+	in.BIC = trim(in.BIC)
+	in.FooterNote = trim(in.FooterNote)
+	if !in.Kleinunternehmer && !austrianRates[in.UStRate] {
+		writeError(w, http.StatusBadRequest, "USt-Satz muss 20, 13 oder 10 sein")
+		return
+	}
+	if !in.Kleinunternehmer && in.SellerUID == "" {
+		writeError(w, http.StatusBadRequest, "bei USt-Ausweis ist die UID-Nummer Pflicht")
+		return
+	}
+	if in.NumberPad < 1 || in.NumberPad > 10 {
+		in.NumberPad = 4
+	}
+	if in.NextInvoiceNo < 1 {
+		in.NextInvoiceNo = 1
+	}
+	if in.PaymentTermsDays < 0 {
+		in.PaymentTermsDays = 0
+	}
+	// Read the current sequence and write under one FOR UPDATE lock (the same row
+	// CreateInvoice locks) so the no-rewind guard can't race a concurrently-issued
+	// number — and the read error is no longer swallowed.
+	var oldNext int
+	var oldUID string
+	var oldRate float64
+	var oldKlein bool
+	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(r.Context(),
+			`SELECT next_invoice_no, seller_uid, ust_rate, kleinunternehmer FROM billing_settings WHERE id=1 FOR UPDATE`).
+			Scan(&oldNext, &oldUID, &oldRate, &oldKlein); err != nil {
+			return err
+		}
+		if in.NextInvoiceNo < oldNext {
+			in.NextInvoiceNo = oldNext
+		}
+		if _, err := tx.Exec(r.Context(),
+			`UPDATE billing_settings SET seller_name=$1, seller_address=$2, seller_uid=$3,
+			        kleinunternehmer=$4, ust_rate=$5, invoice_prefix=$6, next_invoice_no=$7,
+			        number_pad=$8, iban=$9, bic=$10, payment_terms_days=$11, footer_note=$12
+			  WHERE id=1`,
+			in.SellerName, in.SellerAddress, in.SellerUID, in.Kleinunternehmer, in.UStRate,
+			in.InvoicePrefix, in.NextInvoiceNo, in.NumberPad, in.IBAN, in.BIC, in.PaymentTermsDays, in.FooterNote); err != nil {
+			return err
+		}
+		// Audit the §11- / number-integrity-critical changes with before→after so a UID,
+		// tax-rate, or deliberate invoice-number jump is reconstructable from the trail.
+		// Built and written inside the tx: the change and its trail commit together.
+		var chg []string
+		if oldUID != in.SellerUID {
+			chg = append(chg, fmt.Sprintf("UID %q→%q", oldUID, in.SellerUID))
+		}
+		if oldRate != in.UStRate {
+			chg = append(chg, fmt.Sprintf("USt %.0f%%→%.0f%%", oldRate, in.UStRate))
+		}
+		if oldKlein != in.Kleinunternehmer {
+			chg = append(chg, fmt.Sprintf("Kleinunternehmer %v→%v", oldKlein, in.Kleinunternehmer))
+		}
+		if in.NextInvoiceNo != oldNext {
+			chg = append(chg, fmt.Sprintf("Nummernkreis %d→%d", oldNext, in.NextInvoiceNo))
+		}
+		msg := "Rechnungs-Einstellungen geändert"
+		if len(chg) > 0 {
+			msg += ": " + strings.Join(chg, ", ")
+		}
+		return h.auditTx(r.Context(), tx, r, "update", "billing", 0, msg)
+	})
+	if txErr != nil {
+		writeError(w, http.StatusInternalServerError, "could not save billing settings")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
+}
+
+// --- Invoices ---
+
+type invoiceItem struct {
+	Pos         int     `json:"pos"`
+	Description string  `json:"description"`
+	Quantity    float64 `json:"quantity"`
+	UnitAmount  float64 `json:"unit_amount"`
+	LineTotal   float64 `json:"line_total"`
+}
+
+type invoice struct {
+	ID               int64          `json:"id"`
+	Number           string         `json:"number"`
+	PersonID         int64          `json:"person_id"`
+	IssuedOn         time.Time      `json:"issued_on"`
+	DueOn            *time.Time     `json:"due_on"`
+	LeistungFrom     *time.Time     `json:"leistung_from,omitempty"` // § 11 Abs 1 Z 4: Leistungszeitraum (von)
+	LeistungTo       *time.Time     `json:"leistung_to,omitempty"`   // Leistungszeitraum (bis)
+	Subtotal         float64        `json:"subtotal"`
+	UStRate          float64        `json:"ust_rate"`
+	TaxAmount        float64        `json:"tax_amount"`
+	Total            float64        `json:"total"`
+	Kleinunternehmer bool           `json:"kleinunternehmer"`
+	Seller           map[string]any `json:"seller"`
+	Buyer            map[string]any `json:"buyer"`
+	Note             string         `json:"note"`
+	Canceled         bool           `json:"canceled"`             // storniert (immutable original, superseded)
+	CancelsID        *int64         `json:"cancels_id,omitempty"` // set on a Storno document -> the original
+	PaidAmount       float64        `json:"paid_amount"`          // sum of payments allocated to this invoice
+	OpenAmount       float64        `json:"open_amount"`          // total - paid_amount (the open item)
+	Status           string         `json:"status"`               // offen | teilbezahlt | bezahlt | storniert | storno
+	Items            []invoiceItem  `json:"items,omitempty"`
+}
+
+// invoiceStatus derives the OP status from the amounts and lifecycle flags.
+func invoiceStatus(total, paid float64, canceled bool, cancelsID *int64) string {
+	switch {
+	case cancelsID != nil:
+		return "storno" // the counter-document itself
+	case canceled:
+		return "storniert"
+	case total > 0.005 && paid+0.005 >= total:
+		return "bezahlt"
+	case paid > 0.005:
+		return "teilbezahlt"
+	default:
+		return "offen"
+	}
+}
+
+type createInvoiceRequest struct {
+	Note string `json:"note"`
+}
+
+// invoiceLines composes the full list of a person's open positions for an
+// invoice — everything they owe, not just the boolean-settled items: standalone
+// vehicle rent, standalone AND vehicle-bound unsettled one-off charges, open
+// Pauschalen, and the open recurring total. The line totals sum to the person's
+// open balance.
+func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, error) {
+	ctx := r.Context()
+	now := time.Now()
+
+	vehicles, _, err := h.loadVehiclesWithCategories(r, personID)
+	if err != nil {
+		return nil, err
+	}
+	ags, err := h.loadAgreements(ctx, personID, now)
+	if err != nil {
+		return nil, err
+	}
+	setFlatRateCoverage(vehicles, map[int64][]models.FlatRatePeriod{personID: ags}, now)
+	vehLabel := func(vid int64) string {
+		for i := range vehicles {
+			if vehicles[i].ID == vid {
+				v := &vehicles[i]
+				if s := strings.TrimSpace(v.Label); s != "" {
+					return s
+				}
+				if s := strings.TrimSpace(v.LicensePlate); s != "" {
+					return s
+				}
+				return v.CategoryName
+			}
+		}
+		return "Gefährt"
+	}
+
+	// Positions already billed by an active (non-canceled) invoice are locked so
+	// nothing is invoiced twice — discrete kinds wholesale, periodic kinds per
+	// completed sub-period.
+	locked, err := h.lockedPositions(ctx, personID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Standalone one-off charges (the vehicle rent is rebuilt per period below, so
+	// drop openOwedItems' wholesale vehicle lines here).
+	owed, err := h.openOwedItems(r, personID)
+	if err != nil {
+		return nil, err
+	}
+	var lines []owedItem
+	for _, it := range owed {
+		if it.Kind == "vehicle" {
+			continue
+		}
+		lines = append(lines, it)
+	}
+
+	// Uncovered vehicle rent: one line per COMPLETED sub-period, locked per period
+	// (like Pauschalen) so a once-invoiced vehicle still bills its future rent and
+	// the running period is deferred. A Pauschale-covered vehicle bills via the
+	// Pauschale (FlatRateCovered set by setFlatRateCoverage above — it honors
+	// person-wide agreements with empty VehicleIDs and the start-date guard, unlike
+	// a raw VehicleIDs scan); a paid vehicle nets to zero.
+	for i := range vehicles {
+		v := &vehicles[i]
+		if v.Archived || v.FlatRateCovered {
+			continue
+		}
+		vp := models.FlatRatePeriod{
+			Amount: v.EffectiveRate, Period: v.BillingPeriod,
+			StartDate: v.StartDate, EndDate: v.EndDate, Paid: v.Paid,
+		}
+		paid := v.Paid
+		lines = append(lines, periodOwedLines(vp, now, "vehicle", v.ID, "Einstellplatz: "+vehLabel(v.ID), locked,
+			func(_ string, _ time.Time, cost float64) float64 {
+				if paid {
+					return cost
+				}
+				return 0
+			})...)
+	}
+
+	// Vehicle-bound one-off charges not settled via their vehicle/Pauschale.
+	crows, err := h.Pool.Query(ctx,
+		`SELECT id, description, quantity, amount, charged_on, vehicle_id
+		   FROM charges WHERE person_id=$1 AND vehicle_id IS NOT NULL AND NOT paid`, personID)
+	if err != nil {
+		return nil, err
+	}
+	type bound struct {
+		id          int64
+		desc        string
+		qty, amount float64
+		on          time.Time
+		vid         int64
+	}
+	var bcs []bound
+	for crows.Next() {
+		var b bound
+		if err := crows.Scan(&b.id, &b.desc, &b.qty, &b.amount, &b.on, &b.vid); err != nil {
+			crows.Close()
+			return nil, err
+		}
+		bcs = append(bcs, b)
+	}
+	crows.Close()
+	if crows.Err() != nil {
+		return nil, crows.Err()
+	}
+	for _, b := range bcs {
+		vid := b.vid
+		// A one-off Zusatzkosten is billed separately from the flat rate (Option A):
+		// neither a covering Pauschale NOR the vehicle's own "bezahlt" toggle settles
+		// the extra — it drops out only via its own paid flag (already filtered by the
+		// NOT paid query) or by paying the invoice. Otherwise a vehicle-paid toggle
+		// would un-bill it while the balance still owes it (uncollectable).
+		if b.qty <= 0 {
+			b.qty = 1
+		}
+		lt := round2(b.amount * b.qty)
+		if lt <= 0.005 {
+			continue
+		}
+		lines = append(lines, owedItem{Kind: "charge", ID: b.id, Label: vehLabel(vid) + ": " + b.desc, Quantity: b.qty, UnitAmount: b.amount, LineTotal: lt})
+	}
+
+	// Open Pauschalen (flat-rate): one line per COMPLETED, unpaid, not-yet-locked
+	// sub-period. The still-running current period is left for the next cycle.
+	for i := range ags {
+		a := &ags[i]
+		label := "Pauschale"
+		if s := strings.TrimSpace(a.Note); s != "" {
+			label += ": " + s
+		}
+		paidSet := periodKeySet(a.PaidPeriods)
+		ag := a
+		lines = append(lines, periodOwedLines(*a, now, "agreement", a.ID, label, locked,
+			func(key string, _ time.Time, cost float64) float64 {
+				if ag.Paid || paidSet[key] {
+					return cost
+				}
+				return ag.PaidFixed[key]
+			})...)
+	}
+
+	// Recurring extra costs ("Wiederkehrende Nebenkosten"): likewise per completed
+	// sub-period, per charge. A bound charge settles via its vehicle's Pauschale /
+	// paid flag; a person-level one via its own per-period flags.
+	recurs, err := h.loadRecurringCharges(ctx, personID, now)
+	if err != nil {
+		return nil, err
+	}
+	for i := range recurs {
+		rc := &recurs[i]
+		p := rc.AsPeriod()
+		label := "Nebenkosten"
+		if s := strings.TrimSpace(rc.Description); s != "" {
+			label = s
+		}
+		if rc.VehicleID != nil {
+			label = vehLabel(*rc.VehicleID) + ": " + label
+		}
+		// Option A: a Pauschale never settles a recurring Nebenkosten — bound and
+		// person-level alike settle only via their own per-period flags (or by paying
+		// the invoice). Coverage no longer zeroes the line, so a covered bound
+		// Nebenkosten is billed instead of owing forever in the balance.
+		paidSet := periodKeySet(rc.PaidPeriods)
+		rcp := rc
+		paidFor := func(key string, _ time.Time, cost float64) float64 {
+			if rcp.Paid || paidSet[key] {
+				return cost
+			}
+			return rcp.PaidFixed[key]
+		}
+		lines = append(lines, periodOwedLines(p, now, "recurring", rc.ID, label, locked, paidFor)...)
+	}
+
+	// One-off charges (standalone + vehicle-bound) an active invoice already billed
+	// are dropped so nothing is invoiced twice (they lock wholesale, period "").
+	// Vehicles and the periodic kinds are already locked per period above.
+	if len(locked) > 0 {
+		kept := lines[:0]
+		for _, it := range lines {
+			if it.Kind == "charge" && locked[lockKey(it.Kind, it.ID, "")] {
+				continue
+			}
+			kept = append(kept, it)
+		}
+		lines = kept
+	}
+	return lines, nil
+}
+
+// periodOwedLines turns a periodic accrual (Pauschale or recurring, via its
+// FlatRatePeriod view) into one invoice line per COMPLETED, still-open, not-yet-
+// locked sub-period, oldest first. paidFor returns how much of a period's cost is
+// already settled (whole-period payment, fixed partial, or vehicle coverage).
+func periodOwedLines(p models.FlatRatePeriod, now time.Time, kind string, refID int64, labelBase string, locked map[string]bool, paidFor func(key string, start time.Time, cost float64) float64) []owedItem {
+	var out []owedItem
+	for _, per := range p.ElapsedPeriodsDetailed(now) {
+		if !per.Complete {
+			continue // running period — billed once it closes
+		}
+		cost := round2(per.Cost)
+		if cost <= 0.005 {
+			continue
+		}
+		open := round2(cost - paidFor(per.Key, per.Start, cost))
+		if open <= 0.005 {
+			continue
+		}
+		if locked[lockKey(kind, refID, per.Key)] {
+			continue
+		}
+		out = append(out, owedItem{
+			Date: per.Start, Kind: kind, ID: refID, Period: per.Key,
+			Label: labelBase + " · " + per.Key, Quantity: 1, UnitAmount: open, LineTotal: open,
+		})
+	}
+	return out
+}
+
+// lockedPositions returns the set "kind:ref_id" of positions already billed by a
+// non-canceled invoice of the person.
+func (h *Handler) lockedPositions(ctx context.Context, personID int64) (map[string]bool, error) {
+	rows, err := h.Pool.Query(ctx,
+		`SELECT s.kind, s.ref_id, s.period_key FROM invoice_source s
+		    JOIN invoices i ON i.id = s.invoice_id
+		   WHERE i.person_id = $1 AND NOT i.canceled`, personID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var kind, period string
+		var ref int64
+		if err := rows.Scan(&kind, &ref, &period); err != nil {
+			return nil, err
+		}
+		out[lockKey(kind, ref, period)] = true
+	}
+	return out, rows.Err()
+}
+
+// refInvoiced reports whether a position (kind, ref_id) is billed by an active
+// (non-canceled) invoice — used to block deleting a master record an issued invoice
+// was built from, which would orphan its invoice_source lock and lose history.
+// periodKeyEnd returns the exclusive end (start of the next period) of a
+// sub-period key — "YYYY-MM" (monthly) or "YYYY" (yearly). Zero time on a bad key.
+func periodKeyEnd(key string) time.Time {
+	if t, err := time.Parse("2006-01", key); err == nil {
+		return t.AddDate(0, 1, 0)
+	}
+	if t, err := time.Parse("2006", key); err == nil {
+		return t.AddDate(1, 0, 0)
+	}
+	return time.Time{}
+}
+
+// endDateRetractsBelowInvoiced reports whether setting newEnd (inclusive; nil =
+// open-ended) would move a ref's accrual window before the end of a period that
+// a non-canceled invoice already billed — which would drop that period from the
+// balance while its payment remains, i.e. a phantom Guthaben. Extending (or
+// closing at/after the last invoiced period) is fine.
+func (h *Handler) endDateRetractsBelowInvoiced(ctx context.Context, q rowQuerier, kind string, refID int64, newEnd *time.Time) (bool, error) {
+	if newEnd == nil {
+		return false, nil // open-ended can't retract below anything
+	}
+	var maxKey *string
+	if err := q.QueryRow(ctx,
+		`SELECT max(s.period_key) FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+		   WHERE s.kind=$1 AND s.ref_id=$2 AND NOT i.canceled AND s.period_key <> ''`, kind, refID).
+		Scan(&maxKey); err != nil {
+		return false, err
+	}
+	if maxKey == nil {
+		return false, nil
+	}
+	// Inclusive EndDate → the window covers through newEnd, i.e. its exclusive
+	// upper bound is newEnd+1. It must reach the end of the latest invoiced period.
+	return newEnd.AddDate(0, 0, 1).Before(periodKeyEnd(*maxKey)), nil
+}
+
+// refInvoiced takes a rowQuerier (pool or tx) so callers already holding a
+// transaction pass their tx — running it on h.Pool mid-tx would grab a second
+// pooled connection while the first is held and can deadlock the pool.
+func (h *Handler) refInvoiced(ctx context.Context, q rowQuerier, kind string, refID int64) (bool, error) {
+	var yes bool
+	err := q.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+		   WHERE s.kind=$1 AND s.ref_id=$2 AND NOT i.canceled)`, kind, refID).Scan(&yes)
+	return yes, err
+}
+
+// invoiceComplianceError checks the §11 UStG (AT) mandatory invoice fields and
+// returns a non-empty message naming what's missing, so an incomplete/non-compliant
+// invoice is never issued (GoBD/BAO: Richtigkeit & Vollständigkeit).
+func invoiceComplianceError(s billingSettings, buyerName, buyerAddress string, grossTotal float64) string {
+	var missing []string
+	if strings.TrimSpace(s.SellerName) == "" {
+		missing = append(missing, "Name des Ausstellers")
+	}
+	if strings.TrimSpace(s.SellerAddress) == "" {
+		missing = append(missing, "Anschrift des Ausstellers")
+	}
+	if strings.TrimSpace(buyerName) == "" {
+		missing = append(missing, "Name des Leistungsempfängers")
+	}
+	// § 11 Abs 1: over the €400 Kleinbetragsrechnung threshold the recipient's
+	// address is mandatory too (below it, name alone suffices — § 11 Abs 6).
+	if grossTotal > 400 && strings.TrimSpace(buyerAddress) == "" {
+		missing = append(missing, "Anschrift des Leistungsempfängers (> 400 € brutto)")
+	}
+	if !s.Kleinunternehmer {
+		if strings.TrimSpace(s.SellerUID) == "" {
+			missing = append(missing, "UID-Nummer (bei USt-Ausweis Pflicht)")
+		}
+		if !austrianRates[s.UStRate] {
+			missing = append(missing, "gültiger USt-Satz (20/13/10)")
+		}
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return "Rechnung nicht ausstellbar – Pflichtangaben fehlen (§ 11 UStG): " + strings.Join(missing, ", ") +
+		". Bitte unter Rechnungen → Einstellungen ergänzen."
+}
+
+// CreateInvoice issues an invoice for a person's open positions. It allocates the
+// next gapless number, snapshots seller/buyer + tax, and stores the line items —
+// all in one transaction so a failure never burns a number. Austrian tax: no USt
+// for a Kleinunternehmer (§ 6 Abs 1 Z 27 UStG); otherwise USt on top of the net
+// line totals.
+func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
+	pid, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req createInvoiceRequest
+	if err := decodeJSON(r, &req); err != nil && err != errNotJSON {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	items, err := h.invoiceLines(r, pid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not read open positions")
+		return
+	}
+	if len(items) == 0 {
+		writeError(w, http.StatusBadRequest, "keine offenen Positionen zum Abrechnen")
+		return
+	}
+
+	var person struct{ First, Last, Address string }
+	if err := h.Pool.QueryRow(r.Context(),
+		`SELECT first_name, last_name, COALESCE(address,'') FROM persons WHERE id=$1`, pid,
+	).Scan(&person.First, &person.Last, &person.Address); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "person not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+
+	// §11 UStG mandatory-field check BEFORE burning a number.
+	settings, err := h.loadBillingSettings(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not load billing settings")
+		return
+	}
+	buyerName := trim(person.First + " " + person.Last)
+	if msg := invoiceComplianceError(settings, buyerName, person.Address, 0); msg != "" {
+		writeError(w, http.StatusUnprocessableEntity, msg)
+		return
+	}
+
+	var createdBy *int64
+	if u, ok := auth.UserFrom(r.Context()); ok {
+		createdBy = &u.ID
+	}
+
+	var out invoice
+	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		s, err := loadBillingSettingsTx(r.Context(), tx)
+		if err != nil {
+			return err
+		}
+		number := s.InvoicePrefix + fmt.Sprintf("%0*d", s.NumberPad, s.NextInvoiceNo)
+		if _, err := tx.Exec(r.Context(),
+			`UPDATE billing_settings SET next_invoice_no = next_invoice_no + 1 WHERE id=1`); err != nil {
+			return err
+		}
+
+		var subtotal float64
+		for _, it := range items {
+			subtotal += it.LineTotal
+		}
+		subtotal = round2(subtotal)
+		rate := 0.0
+		tax := 0.0
+		if !s.Kleinunternehmer {
+			rate = s.UStRate
+			tax = round2(subtotal * rate / 100)
+		}
+		total := round2(subtotal + tax)
+
+		// Re-run the §11 gate INSIDE the tx against the FOR UPDATE snapshot (settings
+		// can't change under us) and now with the real gross total (the > 400 €
+		// recipient-address rule). A failure rolls the whole tx back, so the number
+		// bumped above is restored — no burned number, no non-compliant document.
+		if msg := invoiceComplianceError(s, buyerName, person.Address, total); msg != "" {
+			return &complianceError{msg: msg}
+		}
+
+		seller := map[string]any{"name": s.SellerName, "address": s.SellerAddress, "uid": s.SellerUID,
+			"iban": s.IBAN, "bic": s.BIC, "footer": s.FooterNote}
+		buyer := map[string]any{"name": trim(person.First + " " + person.Last), "address": person.Address}
+		sellerJSON, _ := json.Marshal(seller)
+		buyerJSON, _ := json.Marshal(buyer)
+
+		issued := time.Now()
+		// Terms of 0 mean "sofort fällig" — due on the issue date (overdue the next
+		// day). A nil due_on would instead hide it from Mahnwesen forever, so always
+		// setting it is the fix.
+		d := issued.AddDate(0, 0, s.PaymentTermsDays)
+		due := &d
+
+		// § 11 Leistungszeitraum: from the earliest billed position through the issue
+		// date (the service accrued up to issuance).
+		leistungFrom := issued
+		for _, it := range items {
+			if !it.Date.IsZero() && it.Date.Before(leistungFrom) {
+				leistungFrom = it.Date
+			}
+		}
+
+		var invID int64
+		if err := tx.QueryRow(r.Context(),
+			`INSERT INTO invoices (number, person_id, issued_on, due_on, subtotal, ust_rate,
+			        tax_amount, total, kleinunternehmer, seller_snapshot, buyer_snapshot, note, created_by,
+			        leistung_from, leistung_to)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+			number, pid, issued, due, subtotal, rate, tax, total, s.Kleinunternehmer,
+			string(sellerJSON), string(buyerJSON), trim(req.Note), createdBy,
+			leistungFrom, issued,
+		).Scan(&invID); err != nil {
+			return err
+		}
+		for i, it := range items {
+			if _, err := tx.Exec(r.Context(),
+				`INSERT INTO invoice_items (invoice_id, pos, description, quantity, unit_amount, line_total)
+				 VALUES ($1,$2,$3,$4,$5,$6)`,
+				invID, i+1, it.Label, it.Quantity, it.UnitAmount, it.LineTotal); err != nil {
+				return err
+			}
+			// Lock the position so it can't be invoiced again (released on Storno):
+			// discrete kinds wholesale (period ""), periodic kinds per sub-period.
+			switch it.Kind {
+			case "vehicle", "charge", "agreement", "recurring":
+				if _, err := tx.Exec(r.Context(),
+					`INSERT INTO invoice_source (invoice_id, kind, ref_id, period_key) VALUES ($1,$2,$3,$4)`,
+					invID, it.Kind, it.ID, it.Period); err != nil {
+					return err
+				}
+			}
+		}
+		lf := leistungFrom
+		out = invoice{ID: invID, Number: number, PersonID: pid, IssuedOn: issued, DueOn: due,
+			LeistungFrom: &lf, LeistungTo: &issued,
+			Subtotal: subtotal, UStRate: rate, TaxAmount: tax, Total: total,
+			Kleinunternehmer: s.Kleinunternehmer, Seller: seller, Buyer: buyer, Note: trim(req.Note)}
+		// Audit inside the tx: the immutable document and its trail commit together.
+		return h.auditTx(r.Context(), tx, r, "create", "invoice", invID,
+			"issued invoice "+number+" ("+fmt.Sprintf("%.2f €", total)+")")
+	})
+	if txErr != nil {
+		var ce *complianceError
+		if errors.As(txErr, &ce) {
+			writeError(w, http.StatusUnprocessableEntity, ce.msg)
+			return
+		}
+		// A concurrent CreateInvoice for the same person raced us and already billed
+		// one of these positions (uq_invoice_source_ref_period). The tx rolled back —
+		// no double-bill, no burned number — so ask the caller to reload and retry.
+		if isUniqueViolation(txErr) {
+			writeError(w, http.StatusConflict, "Positionen wurden soeben abgerechnet – bitte neu laden")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "could not create invoice")
+		return
+	}
+	writeJSON(w, http.StatusCreated, out)
+}
+
+// CancelInvoice issues a Storno (canceling document) for an invoice: no delete
+// (Unveränderbarkeit) — a new numbered document mirrors the original with negated
+// amounts, points at it via cancels_id, marks the original canceled, and releases
+// its locked positions so they can be re-invoiced.
+func (h *Handler) CancelInvoice(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var o struct {
+		number                        string
+		personID                      int64
+		subtotal, ustRate, tax, total float64
+		klein, canceled               bool
+		sellerJSON, buyerJSON         []byte
+		cancelsID                     *int64
+		leistungFrom, leistungTo      *time.Time
+	}
+	if err := h.Pool.QueryRow(r.Context(),
+		`SELECT number, person_id, subtotal, ust_rate, tax_amount, total, kleinunternehmer,
+		        seller_snapshot, buyer_snapshot, canceled, cancels_id, leistung_from, leistung_to
+		   FROM invoices WHERE id=$1`, id,
+	).Scan(&o.number, &o.personID, &o.subtotal, &o.ustRate, &o.tax, &o.total, &o.klein,
+		&o.sellerJSON, &o.buyerJSON, &o.canceled, &o.cancelsID, &o.leistungFrom, &o.leistungTo); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "invoice not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if o.canceled {
+		writeError(w, http.StatusConflict, "Rechnung ist bereits storniert")
+		return
+	}
+	if o.cancelsID != nil {
+		writeError(w, http.StatusBadRequest, "ein Storno-Beleg kann nicht storniert werden")
+		return
+	}
+	var createdBy *int64
+	if u, ok := auth.UserFrom(r.Context()); ok {
+		createdBy = &u.ID
+	}
+
+	// Read the original items up front (single-conn tx can't interleave query+exec).
+	type row struct {
+		pos                  int
+		desc                 string
+		qty, unit, lineTotal float64
+	}
+	var origItems []row
+	irows, err := h.Pool.Query(r.Context(),
+		`SELECT pos, description, quantity, unit_amount, line_total FROM invoice_items WHERE invoice_id=$1 ORDER BY pos`, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	for irows.Next() {
+		var it row
+		if err := irows.Scan(&it.pos, &it.desc, &it.qty, &it.unit, &it.lineTotal); err != nil {
+			irows.Close()
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		origItems = append(origItems, it)
+	}
+	irows.Close()
+	if irows.Err() != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+
+	note := "Storno zu Rechnung " + o.number
+	var out invoice
+	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		s, err := loadBillingSettingsTx(r.Context(), tx)
+		if err != nil {
+			return err
+		}
+		number := s.InvoicePrefix + fmt.Sprintf("%0*d", s.NumberPad, s.NextInvoiceNo)
+		if _, err := tx.Exec(r.Context(), `UPDATE billing_settings SET next_invoice_no = next_invoice_no + 1 WHERE id=1`); err != nil {
+			return err
+		}
+		issued := time.Now()
+		var stornoID int64
+		if err := tx.QueryRow(r.Context(),
+			`INSERT INTO invoices (number, person_id, issued_on, subtotal, ust_rate, tax_amount, total,
+			        kleinunternehmer, seller_snapshot, buyer_snapshot, note, cancels_id, created_by,
+			        leistung_from, leistung_to)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+			number, o.personID, issued, -o.subtotal, o.ustRate, -o.tax, -o.total, o.klein,
+			string(o.sellerJSON), string(o.buyerJSON), note, id, createdBy,
+			o.leistungFrom, o.leistungTo,
+		).Scan(&stornoID); err != nil {
+			return err
+		}
+		for _, it := range origItems {
+			if _, err := tx.Exec(r.Context(),
+				`INSERT INTO invoice_items (invoice_id, pos, description, quantity, unit_amount, line_total)
+				 VALUES ($1,$2,$3,$4,$5,$6)`,
+				stornoID, it.pos, it.desc, it.qty, -it.unit, -it.lineTotal); err != nil {
+				return err
+			}
+		}
+		// Guard against a concurrent Storno: only the first to flip canceled wins;
+		// if no row is affected the invoice was already canceled, so abort (rolling
+		// back this duplicate counter-document + its burned number).
+		ct, err := tx.Exec(r.Context(), `UPDATE invoices SET canceled=true, paid_amount=0 WHERE id=$1 AND NOT canceled`, id)
+		if err != nil {
+			return err
+		}
+		if ct.RowsAffected() == 0 {
+			return errAlreadyCanceled
+		}
+		if _, err := tx.Exec(r.Context(), `DELETE FROM invoice_source WHERE invoice_id=$1`, id); err != nil {
+			return err
+		}
+		// Release any payments tied to the original -> back to on-account (Guthaben).
+		if _, err := tx.Exec(r.Context(), `DELETE FROM invoice_payments WHERE invoice_id=$1`, id); err != nil {
+			return err
+		}
+		out = invoice{ID: stornoID, Number: number, PersonID: o.personID, IssuedOn: issued,
+			Subtotal: -o.subtotal, UStRate: o.ustRate, TaxAmount: -o.tax, Total: -o.total,
+			Kleinunternehmer: o.klein, Note: note, CancelsID: &id}
+		// Both trail rows commit with the Storno itself (atomic).
+		if err := h.auditTx(r.Context(), tx, r, "update", "invoice", id, "storniert – Gegenbeleg "+number); err != nil {
+			return err
+		}
+		// The counter-document is a distinct gapless-numbered Beleg — audit its issuance
+		// under its own id/number (it releases the original's payments to Guthaben).
+		return h.auditTx(r.Context(), tx, r, "create", "invoice", stornoID,
+			"Storno-Gegenbeleg "+number+" zu Rechnung "+o.number)
+	})
+	if txErr != nil {
+		if errors.Is(txErr, errAlreadyCanceled) {
+			writeError(w, http.StatusConflict, "Rechnung ist bereits storniert")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "could not cancel invoice")
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+type invoiceAlloc struct {
+	InvoiceID int64   `json:"invoice_id"`
+	Amount    float64 `json:"amount"`
+}
+
+type payInvoicesRequest struct {
+	Amount      float64        `json:"amount"`
+	PaidOn      string         `json:"paid_on"`
+	Method      string         `json:"method"`
+	Note        string         `json:"note"`
+	Auto        bool           `json:"auto"`        // allocate oldest-first across open invoices
+	Allocations []invoiceAlloc `json:"allocations"` // explicit per-invoice
+}
+
+// PayInvoices records a payment and allocates it to the person's open invoices —
+// the whole thing in ONE transaction. Paying an invoice settles every position on
+// it (rent, Pauschale, recurring, charges) at once. Any amount beyond the open
+// invoices stays as the person's Guthaben (on-account). Guthaben itself is still
+// payments − accrued (unchanged), so this never double-counts.
+func (h *Handler) PayInvoices(w http.ResponseWriter, r *http.Request) {
+	pid, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req payInvoicesRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	pr := paymentRequest{Amount: req.Amount, Method: req.Method, Note: req.Note, PaidOn: req.PaidOn}
+	paidOn, badMsg := h.validatePayment(&pr)
+	if badMsg != "" {
+		writeError(w, http.StatusBadRequest, badMsg)
+		return
+	}
+	explicit := map[int64]float64{}
+	for _, a := range req.Allocations {
+		explicit[a.InvoiceID] = a.Amount
+	}
+
+	var createdBy *int64
+	if u, ok := auth.UserFrom(r.Context()); ok {
+		createdBy = &u.ID
+	}
+
+	type result struct {
+		PaymentID   int64   `json:"payment_id"`
+		Allocated   float64 `json:"allocated"`
+		Unallocated float64 `json:"unallocated"`
+		Invoices    int     `json:"invoices_settled"`
+	}
+	var out result
+	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(r.Context(),
+			`INSERT INTO payments (person_id, amount, paid_on, method, note, created_by)
+			 VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+			pid, pr.Amount, paidOn, pr.Method, pr.Note, createdBy).Scan(&out.PaymentID); err != nil {
+			return err
+		}
+		// Lock the person's open invoices, oldest first.
+		rows, err := tx.Query(r.Context(),
+			`SELECT id, total, paid_amount FROM invoices
+			  WHERE person_id=$1 AND NOT canceled AND cancels_id IS NULL AND (total - paid_amount) > 0.005
+			  ORDER BY issued_on, id FOR UPDATE`, pid)
+		if err != nil {
+			return err
+		}
+		type inv struct {
+			id          int64
+			total, paid float64
+		}
+		var open []inv
+		for rows.Next() {
+			var iv inv
+			if err := rows.Scan(&iv.id, &iv.total, &iv.paid); err != nil {
+				rows.Close()
+				return err
+			}
+			open = append(open, iv)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		openSet := map[int64]bool{}
+		for _, iv := range open {
+			openSet[iv.id] = true
+		}
+		for id := range explicit {
+			if !openSet[id] {
+				return errInvoiceNotOpen
+			}
+		}
+
+		remaining := pr.Amount
+		for _, iv := range open {
+			if remaining < 0.005 {
+				break
+			}
+			if len(explicit) > 0 {
+				amt, ok := explicit[iv.id]
+				if !ok {
+					continue // explicit selection: skip unchosen invoices
+				}
+				if amt <= 0 {
+					continue // chosen but amount ≤ 0 → allocate nothing to it
+				}
+			} else if !req.Auto {
+				break // no explicit selection and auto off → leave the rest as Guthaben
+			}
+			pay := round2(iv.total - iv.paid)
+			if pay > remaining {
+				pay = round2(remaining)
+			}
+			if amt, ok := explicit[iv.id]; ok && amt < pay {
+				pay = round2(amt)
+			}
+			if pay < 0.005 {
+				continue
+			}
+			if _, err := tx.Exec(r.Context(),
+				`INSERT INTO invoice_payments (invoice_id, payment_id, amount) VALUES ($1,$2,$3)`,
+				iv.id, out.PaymentID, pay); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(r.Context(),
+				`UPDATE invoices SET paid_amount = paid_amount + $1 WHERE id=$2`, pay, iv.id); err != nil {
+				return err
+			}
+			remaining -= pay
+			out.Invoices++
+		}
+		out.Allocated = round2(pr.Amount - remaining)
+		out.Unallocated = round2(remaining)
+		return h.auditTx(r.Context(), tx, r, "create", "payment", out.PaymentID,
+			fmt.Sprintf("Zahlung %.2f € auf %d Rechnung(en) (Rest %.2f € nicht zugeordnet)", pr.Amount, out.Invoices, out.Unallocated))
+	})
+	if txErr != nil {
+		if errors.Is(txErr, errInvoiceNotOpen) {
+			writeError(w, http.StatusBadRequest, "eine gewählte Rechnung ist nicht offen (storniert/bezahlt/fremd)")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "could not record payment")
+		return
+	}
+	// Paying an invoice can fully settle a collected vehicle → close it out.
+	h.archiveInvoiceSettledCollected(r.Context(), pid)
+	writeJSON(w, http.StatusCreated, out)
+}
+
+var errInvoiceNotOpen = fmt.Errorf("invoice not open")
+
+// overdueInvoice is one row of the dunning ("Mahnwesen") view.
+type overdueInvoice struct {
+	ID          int64     `json:"id"`
+	Number      string    `json:"number"`
+	PersonID    int64     `json:"person_id"`
+	PersonName  string    `json:"person_name"`
+	DueOn       time.Time `json:"due_on"`
+	Total       float64   `json:"total"`
+	OpenAmount  float64   `json:"open_amount"`
+	Status      string    `json:"status"`
+	DaysOverdue int       `json:"days_overdue"`
+}
+
+// OverdueInvoices lists non-canceled, unpaid/partly-paid invoices whose due date
+// has passed — the "who do I need to chase" list (Mahnwesen light).
+func (h *Handler) OverdueInvoices(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.Pool.Query(r.Context(),
+		`SELECT i.id, i.number, i.person_id, trim(p.first_name || ' ' || p.last_name),
+		        i.due_on, i.total, i.paid_amount, (CURRENT_DATE - i.due_on) AS days
+		   FROM invoices i JOIN persons p ON p.id = i.person_id
+		  WHERE NOT i.canceled AND i.cancels_id IS NULL AND i.due_on IS NOT NULL
+		    AND i.due_on < CURRENT_DATE AND (i.total - i.paid_amount) > 0.005
+		  ORDER BY i.due_on`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+	out := []overdueInvoice{}
+	for rows.Next() {
+		var o overdueInvoice
+		var paid float64
+		if err := rows.Scan(&o.ID, &o.Number, &o.PersonID, &o.PersonName, &o.DueOn, &o.Total, &paid, &o.DaysOverdue); err != nil {
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		o.OpenAmount = round2(o.Total - paid)
+		o.Status = invoiceStatus(o.Total, paid, false, nil)
+		out = append(out, o)
+	}
+	if rows.Err() != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func loadBillingSettingsTx(ctx context.Context, tx pgx.Tx) (billingSettings, error) {
+	var s billingSettings
+	err := tx.QueryRow(ctx,
+		`SELECT seller_name, seller_address, seller_uid, kleinunternehmer, ust_rate,
+		        invoice_prefix, next_invoice_no, number_pad, iban, bic, payment_terms_days, footer_note
+		   FROM billing_settings WHERE id=1 FOR UPDATE`,
+	).Scan(&s.SellerName, &s.SellerAddress, &s.SellerUID, &s.Kleinunternehmer, &s.UStRate,
+		&s.InvoicePrefix, &s.NextInvoiceNo, &s.NumberPad, &s.IBAN, &s.BIC, &s.PaymentTermsDays, &s.FooterNote)
+	return s, err
+}
+
+// ListInvoices returns a person's invoices, newest first (no line items).
+func (h *Handler) ListInvoices(w http.ResponseWriter, r *http.Request) {
+	pid, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	rows, err := h.Pool.Query(r.Context(),
+		`SELECT id, number, issued_on, due_on, subtotal, ust_rate, tax_amount, total, kleinunternehmer, canceled, cancels_id, paid_amount
+		   FROM invoices WHERE person_id=$1 ORDER BY issued_on DESC, id DESC`, pid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+	out := []invoice{}
+	for rows.Next() {
+		var iv invoice
+		iv.PersonID = pid
+		if err := rows.Scan(&iv.ID, &iv.Number, &iv.IssuedOn, &iv.DueOn, &iv.Subtotal,
+			&iv.UStRate, &iv.TaxAmount, &iv.Total, &iv.Kleinunternehmer, &iv.Canceled, &iv.CancelsID, &iv.PaidAmount); err != nil {
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		iv.OpenAmount = round2(iv.Total - iv.PaidAmount)
+		iv.Status = invoiceStatus(iv.Total, iv.PaidAmount, iv.Canceled, iv.CancelsID)
+		out = append(out, iv)
+	}
+	if rows.Err() != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// GetInvoice returns one invoice with its line items and seller/buyer snapshots
+// (for the printable view).
+func (h *Handler) GetInvoice(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var iv invoice
+	var sellerJSON, buyerJSON []byte
+	if err := h.Pool.QueryRow(r.Context(),
+		`SELECT id, number, person_id, issued_on, due_on, subtotal, ust_rate, tax_amount, total,
+		        kleinunternehmer, seller_snapshot, buyer_snapshot, note, canceled, cancels_id, paid_amount,
+		        leistung_from, leistung_to
+		   FROM invoices WHERE id=$1`, id,
+	).Scan(&iv.ID, &iv.Number, &iv.PersonID, &iv.IssuedOn, &iv.DueOn, &iv.Subtotal, &iv.UStRate,
+		&iv.TaxAmount, &iv.Total, &iv.Kleinunternehmer, &sellerJSON, &buyerJSON, &iv.Note,
+		&iv.Canceled, &iv.CancelsID, &iv.PaidAmount, &iv.LeistungFrom, &iv.LeistungTo); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "invoice not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	iv.OpenAmount = round2(iv.Total - iv.PaidAmount)
+	iv.Status = invoiceStatus(iv.Total, iv.PaidAmount, iv.Canceled, iv.CancelsID)
+	_ = json.Unmarshal(sellerJSON, &iv.Seller)
+	_ = json.Unmarshal(buyerJSON, &iv.Buyer)
+
+	rows, err := h.Pool.Query(r.Context(),
+		`SELECT pos, description, quantity, unit_amount, line_total FROM invoice_items
+		   WHERE invoice_id=$1 ORDER BY pos`, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+	iv.Items = []invoiceItem{}
+	for rows.Next() {
+		var it invoiceItem
+		if err := rows.Scan(&it.Pos, &it.Description, &it.Quantity, &it.UnitAmount, &it.LineTotal); err != nil {
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		iv.Items = append(iv.Items, it)
+	}
+	if rows.Err() != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, iv)
+}
