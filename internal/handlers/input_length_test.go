@@ -17,6 +17,8 @@ func TestInputLengthValidation(t *testing.T) {
 	longNote := strings.Repeat("c", maxNoteLen+1)
 	longPhone := strings.Repeat("d", maxPhoneLen+1)
 	longAddress := strings.Repeat("e", maxAddressLen+1)
+	longDate := strings.Repeat("2", maxDateLen+1)
+	longCron := strings.Repeat("*", maxCronLen+1)
 
 	tests := []struct {
 		name       string
@@ -162,6 +164,54 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "notes is too long",
 		},
+		{
+			name:       "CreateVehicle: StartDate too long",
+			path:       "/api/vehicles",
+			method:     "POST",
+			body:       vehicleRequest{PersonID: 1, CategoryID: 1, Label: "My Car", StartDate: longDate},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "start_date is too long",
+		},
+		{
+			name:       "CreatePayment: PaidOn too long",
+			path:       "/api/persons/1/payments",
+			method:     "POST",
+			body:       paymentRequest{Amount: 10.0, Method: "bar", PaidOn: longDate},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "paid_on is too long",
+		},
+		{
+			name:       "CreateCharge: ChargedOn too long",
+			path:       "/api/charges",
+			method:     "POST",
+			body:       chargeRequest{PersonID: 1, Description: "Extra", Amount: 5.0, ChargedOn: longDate},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "charged_on is too long",
+		},
+		{
+			name:       "CreateRecurringCharge: StartDate too long",
+			path:       "/api/persons/1/recurring",
+			method:     "POST",
+			body:       recurringRequest{Description: "Monthly Fee", Amount: floatPtr(10.0), Period: "monthly", StartDate: longDate},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "start_date is too long",
+		},
+		{
+			name:       "CreateAgreement: StartDate too long",
+			path:       "/api/persons/1/agreements",
+			method:     "POST",
+			body:       agreementRequest{Amount: floatPtr(100.0), StartDate: longDate},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "start_date is too long",
+		},
+		{
+			name:       "SaveBackupSchedule: VolumeCron too long",
+			path:       "/api/backup/schedule",
+			method:     "POST",
+			body:       map[string]any{"volume_cron": longCron, "s3_cron": "* * * * *"},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "cron expression is too long",
+		},
 	}
 
 	for _, tt := range tests {
@@ -193,6 +243,21 @@ func TestInputLengthValidation(t *testing.T) {
 			case "ChangeVehicleStatus: Note too long":
 				req.SetPathValue("id", "1")
 				h.ChangeVehicleStatus(w, req)
+			case "CreateVehicle: StartDate too long":
+				h.CreateVehicle(w, req)
+			case "CreatePayment: PaidOn too long":
+				req.SetPathValue("id", "1")
+				h.CreatePayment(w, req)
+			case "CreateCharge: ChargedOn too long":
+				h.CreateCharge(w, req)
+			case "CreateRecurringCharge: StartDate too long":
+				req.SetPathValue("id", "1")
+				h.CreateRecurringCharge(w, req)
+			case "CreateAgreement: StartDate too long":
+				req.SetPathValue("id", "1")
+				h.CreateAgreement(w, req)
+			case "SaveBackupSchedule: VolumeCron too long":
+				h.SaveBackupSchedule(w, req)
 			}
 
 			if w.Code != tt.wantStatus {

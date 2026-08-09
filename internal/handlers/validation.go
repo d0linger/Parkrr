@@ -15,15 +15,18 @@ package handlers
 // match the API-wide error strings). Callers emit it via writeError or by
 // returning the message string, per each handler's existing style.
 const (
-	maxUsernameLen = 100
-	maxNameLen     = 100
-	maxEmailLen    = 255
-	maxNoteLen     = 2000
-	maxPhoneLen    = 50
-	maxAddressLen  = 500
-	maxTOTPCodeLen = 20
-	minPasswordLen = 8
-	maxPasswordLen = 72
+	maxUsernameLen  = 100
+	maxNameLen      = 100
+	maxEmailLen     = 255
+	maxNoteLen      = 2000
+	maxPhoneLen     = 50
+	maxAddressLen   = 500
+	maxTOTPCodeLen  = 20
+	minPasswordLen  = 8
+	maxPasswordLen  = 72
+	maxDateLen      = 20
+	maxCronLen      = 100
+	maxBackupKeyLen = 100
 )
 
 // validUsernameLength reports whether s is a non-empty username within the
@@ -68,4 +71,19 @@ func validTOTPCodeLength(s string) bool {
 // minPasswordLen and maxPasswordLen bytes).
 func validPasswordLength(pw string) bool {
 	return len(pw) >= minPasswordLen && len(pw) <= maxPasswordLen
+}
+
+// validDateLength reports whether s is within the date length cap.
+func validDateLength(s string) bool {
+	return len(s) <= maxDateLen
+}
+
+// validCronLength reports whether s is within the cron expression length cap.
+func validCronLength(s string) bool {
+	return len(s) <= maxCronLen
+}
+
+// validBackupKeyLength reports whether s is within the backup key length cap.
+func validBackupKeyLength(s string) bool {
+	return len(s) <= maxBackupKeyLen
 }
