@@ -1,0 +1,76 @@
+name: a11y
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  a11y:
+    name: Accessibility (Playwright + axe-core)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: parkrr
+          POSTGRES_PASSWORD: parkrr
+          POSTGRES_DB: parkrr
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U parkrr"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.5"
+          cache: true
+
+      - name: Build parkrr
+        run: go build -o parkrr ./cmd/parkrr
+
+      - name: Start parkrr
+        env:
+          PARKRR_DATABASE_URL: postgres://parkrr:parkrr@localhost:5432/parkrr?sslmode=disable
+          PARKRR_LISTEN_ADDR: ":8080"
+          PARKRR_SESSION_SECRET: ci-a11y-session-secret-not-a-real-secret
+          PARKRR_ADMIN_USERNAME: admin
+          PARKRR_ADMIN_PASSWORD: ci-a11y-admin-password
+          PARKRR_SECURE_COOKIES: "false"
+        run: |
+          ./parkrr &
+          echo "PARKRR_PID=$!" >> "$GITHUB_ENV"
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/ >/dev/null; then echo "parkrr up"; exit 0; fi
+            sleep 1
+          done
+          echo "::error::parkrr did not become ready" && exit 1
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Accessibility tests
+        working-directory: tests/a11y
+        env:
+          PARKRR_BASE_URL: http://localhost:8080
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+          npm test
+
+      - name: Stop parkrr
+        if: always()
+        run: kill "${PARKRR_PID}" 2>/dev/null || true

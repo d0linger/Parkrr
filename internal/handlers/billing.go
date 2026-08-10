@@ -187,6 +187,10 @@ type invoice struct {
 	OpenAmount       float64        `json:"open_amount"`          // total - paid_amount (the open item)
 	Status           string         `json:"status"`               // offen | teilbezahlt | bezahlt | storniert | storno
 	Items            []invoiceItem  `json:"items,omitempty"`
+	// Positions is the structured summary of what the invoice bills (Gefährt/Pauschale
+	// + Periode), for the one-line attribution in the person overview. Distinct from
+	// Items (the detail line snapshot shown on the invoice page).
+	Positions []attrItem `json:"positions,omitempty"`
 }
 
 // invoiceStatus derives the OP status from the amounts and lifecycle flags.
@@ -1093,6 +1097,15 @@ func (h *Handler) ListInvoices(w http.ResponseWriter, r *http.Request) {
 	if rows.Err() != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
+	}
+	// Attach the structured "what does it bill" summary (Gefährt/Pauschale + Periode).
+	pos, perr := h.resolveInvoiceItems(r.Context(), pid)
+	if perr != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	for i := range out {
+		out[i].Positions = pos[out[i].ID]
 	}
 	writeJSON(w, http.StatusOK, out)
 }

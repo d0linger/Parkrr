@@ -36,6 +36,10 @@ type payment struct {
 	VehicleID *int64    `json:"vehicle_id"`
 	CreatedAt time.Time `json:"created_at"`
 	Reversed  bool      `json:"reversed"` // storniert: kept for audit, excluded from all money sums
+	// Items are the resolved positions this payment settles (Gefährt/Pauschale/
+	// Zusatzkosten + Zeitraum + Betrag), filled by ListPayments so the overview can
+	// show what a payment covers — even across several Gefährte or Pauschalen.
+	Items []attrItem `json:"items,omitempty"`
 }
 
 // paymentMethods is the closed set the UI offers; anything else is rejected so a
@@ -76,6 +80,15 @@ func (h *Handler) ListPayments(w http.ResponseWriter, r *http.Request) {
 	if rows.Err() != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
+	}
+	// Attach the resolved positions (Gefährt/Pauschale/Zeitraum) each payment settles.
+	items, ierr := h.resolvePaymentItems(r.Context(), id)
+	if ierr != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	for i := range out {
+		out[i].Items = items[out[i].ID]
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -293,35 +306,27 @@ func (h *Handler) openOwedItems(r *http.Request, personID int64) ([]owedItem, er
 	return items, nil
 }
 
-// syncTogglePayment keeps a per-item "auto" payment in step with its paid toggle,
-// so flipping the one-tap slider actually moves money (P2.3): setting an item paid
-// records a payment for its open amount linked to it; setting it open removes that
-// auto-payment. Manual payments (auto=false) are never touched. Idempotent.
-func (h *Handler) syncTogglePayment(r *http.Request, kind string, refID, personID int64, paid bool) error {
+// boundCharge is one open Zusatzkosten charge bound to a vehicle: a vehicle's
+// slider also settles the charges bound to it (they follow the Gefährt via
+// chargeSettled), so their open amount folds into the same auto-payment — the
+// money matches the "bezahlt · Gefährt" display and the balance nets to 0
+// (otherwise the bound charge stays owed while showing paid).
+type boundCharge struct {
+	id    int64
+	total float64
+}
+
+// toggleOwed computes what a paid-toggle's auto-payment must cover: the item's
+// own open amount plus (vehicle only) its bound open charges. Only standalone,
+// still-open items are in openOwedItems; that's their owed amount. Reads via the
+// pool — call BEFORE opening the write tx: openOwedItems uses the pool, and
+// reading it while holding the tx's connection can deadlock the pool under
+// concurrency (see settlePaymentTx).
+func (h *Handler) toggleOwed(r *http.Request, kind string, refID, personID int64) (float64, []boundCharge, error) {
 	ctx := r.Context()
-	if !paid {
-		return pgx.BeginFunc(ctx, h.Pool, func(tx pgx.Tx) error {
-			// A vehicle's auto-payment also settled the charges bound to it — reopen
-			// them (their paid flag was set by this payment) before removing it.
-			if kind == "vehicle" {
-				if _, err := tx.Exec(ctx,
-					`UPDATE charges SET paid=false WHERE vehicle_id=$1 AND id IN (
-					   SELECT ca.ref_id FROM payment_allocations ca
-					    WHERE ca.kind='charge' AND ca.payment_id IN (
-					      SELECT payment_id FROM payment_allocations WHERE kind='vehicle' AND ref_id=$1))`, refID); err != nil {
-					return err
-				}
-			}
-			_, err := tx.Exec(ctx,
-				`DELETE FROM payments WHERE auto AND id IN (
-				   SELECT payment_id FROM payment_allocations WHERE kind=$1 AND ref_id=$2)`, kind, refID)
-			return err
-		})
-	}
-	// Only standalone, still-open items are in openOwedItems; that's their owed amount.
 	items, err := h.openOwedItems(r, personID)
 	if err != nil {
-		return err
+		return 0, nil, err
 	}
 	var amt float64
 	for _, it := range items {
@@ -329,27 +334,19 @@ func (h *Handler) syncTogglePayment(r *http.Request, kind string, refID, personI
 			amt = it.LineTotal
 		}
 	}
-	// A vehicle's slider also settles the Zusatzkosten bound to it (they follow the
-	// Gefährt via chargeSettled): fold their open amount into the same auto-payment
-	// so the money matches the "bezahlt · Gefährt" display and the balance nets to 0
-	// (otherwise the bound charge stays owed while showing paid).
-	type boundCharge struct {
-		id    int64
-		total float64
-	}
 	var bound []boundCharge
 	if kind == "vehicle" {
 		rows, qerr := h.Pool.Query(ctx,
 			`SELECT id, amount, quantity FROM charges WHERE vehicle_id=$1 AND NOT paid`, refID)
 		if qerr != nil {
-			return qerr
+			return 0, nil, qerr
 		}
 		for rows.Next() {
 			var id int64
 			var a, q float64
 			if err := rows.Scan(&id, &a, &q); err != nil {
 				rows.Close()
-				return err
+				return 0, nil, err
 			}
 			if q <= 0 {
 				q = 1
@@ -360,8 +357,39 @@ func (h *Handler) syncTogglePayment(r *http.Request, kind string, refID, personI
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
-			return err
+			return 0, nil, err
 		}
+	}
+	return amt, bound, nil
+}
+
+// syncTogglePaymentTx keeps a per-item "auto" payment in step with its paid
+// toggle, so flipping the one-tap slider actually moves money (P2.3): setting an
+// item paid records a payment for its open amount linked to it; setting it open
+// removes that auto-payment. Manual payments (auto=false) are never touched.
+// Idempotent.
+//
+// Runs inside the caller's transaction together with the item's paid-flag
+// UPDATE, so a failure can never leave a phantom payment/credit: both commit or
+// neither does. amt/bound come from toggleOwed, read before the tx while the
+// item is still open.
+func (h *Handler) syncTogglePaymentTx(ctx context.Context, tx pgx.Tx, kind string, refID, personID int64, paid bool, amt float64, bound []boundCharge) error {
+	if !paid {
+		// A vehicle's auto-payment also settled the charges bound to it — reopen
+		// them (their paid flag was set by this payment) before removing it.
+		if kind == "vehicle" {
+			if _, err := tx.Exec(ctx,
+				`UPDATE charges SET paid=false WHERE vehicle_id=$1 AND id IN (
+				   SELECT ca.ref_id FROM payment_allocations ca
+				    WHERE ca.kind='charge' AND ca.payment_id IN (
+				      SELECT payment_id FROM payment_allocations WHERE kind='vehicle' AND ref_id=$1))`, refID); err != nil {
+				return err
+			}
+		}
+		_, err := tx.Exec(ctx,
+			`DELETE FROM payments WHERE auto AND id IN (
+			   SELECT payment_id FROM payment_allocations WHERE kind=$1 AND ref_id=$2)`, kind, refID)
+		return err
 	}
 	var boundTotal float64
 	for _, b := range bound {
@@ -374,52 +402,50 @@ func (h *Handler) syncTogglePayment(r *http.Request, kind string, refID, personI
 	if u, ok := auth.UserFrom(ctx); ok {
 		createdBy = &u.ID
 	}
-	return pgx.BeginFunc(ctx, h.Pool, func(tx pgx.Tx) error {
-		// Serialize concurrent toggles of the SAME item: a transaction-scoped
-		// advisory lock makes the exists-check below reliable, so racing toggles
-		// (double-tap, retry, two tabs) mint exactly one auto-payment, not N.
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
-			kind+":"+strconv.FormatInt(refID, 10)); err != nil {
-			return err
-		}
-		// Any allocation (auto OR manual) already settles this item — don't mint a
-		// second one. Checking only p.auto would let a manually-settled item that was
-		// toggled open and paid again hit the (kind,ref_id) unique index → 500.
-		var exists bool
-		if err := tx.QueryRow(ctx,
-			`SELECT EXISTS(SELECT 1 FROM payment_allocations WHERE kind=$1 AND ref_id=$2)`,
-			kind, refID).Scan(&exists); err != nil {
-			return err
-		}
-		if exists {
-			return nil // already covered (won the race elsewhere)
-		}
-		var pid int64
-		if err := tx.QueryRow(ctx,
-			`INSERT INTO payments (person_id, amount, method, note, auto, created_by)
-			 VALUES ($1,$2,'bar','Slider „bezahlt"',true,$3) RETURNING id`, personID, amt+boundTotal, createdBy).Scan(&pid); err != nil {
-			return err
-		}
-		// ON CONFLICT guards the toggle-vs-manual-payment race the advisory lock
-		// doesn't cover (CreatePayment takes no such lock). The primary allocation is
-		// the "settled" marker even when amt is 0 (a 0-rent vehicle with bound charges).
+	// Serialize concurrent toggles of the SAME item: a transaction-scoped
+	// advisory lock makes the exists-check below reliable, so racing toggles
+	// (double-tap, retry, two tabs) mint exactly one auto-payment, not N.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
+		kind+":"+strconv.FormatInt(refID, 10)); err != nil {
+		return err
+	}
+	// Any allocation (auto OR manual) already settles this item — don't mint a
+	// second one. Checking only p.auto would let a manually-settled item that was
+	// toggled open and paid again hit the (kind,ref_id) unique index → 500.
+	var exists bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM payment_allocations WHERE kind=$1 AND ref_id=$2)`,
+		kind, refID).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return nil // already covered (won the race elsewhere)
+	}
+	var pid int64
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO payments (person_id, amount, method, note, auto, created_by)
+		 VALUES ($1,$2,'bar','Slider „bezahlt"',true,$3) RETURNING id`, personID, amt+boundTotal, createdBy).Scan(&pid); err != nil {
+		return err
+	}
+	// ON CONFLICT guards the toggle-vs-manual-payment race the advisory lock
+	// doesn't cover (CreatePayment takes no such lock). The primary allocation is
+	// the "settled" marker even when amt is 0 (a 0-rent vehicle with bound charges).
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO payment_allocations (payment_id, kind, ref_id, amount) VALUES ($1,$2,$3,$4)
+		 ON CONFLICT (kind, ref_id) DO NOTHING`, pid, kind, refID, amt); err != nil {
+		return err
+	}
+	for _, b := range bound {
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO payment_allocations (payment_id, kind, ref_id, amount) VALUES ($1,$2,$3,$4)
-			 ON CONFLICT (kind, ref_id) DO NOTHING`, pid, kind, refID, amt); err != nil {
+			`INSERT INTO payment_allocations (payment_id, kind, ref_id, amount) VALUES ($1,'charge',$2,$3)
+			 ON CONFLICT (kind, ref_id) DO NOTHING`, pid, b.id, b.total); err != nil {
 			return err
 		}
-		for _, b := range bound {
-			if _, err := tx.Exec(ctx,
-				`INSERT INTO payment_allocations (payment_id, kind, ref_id, amount) VALUES ($1,'charge',$2,$3)
-				 ON CONFLICT (kind, ref_id) DO NOTHING`, pid, b.id, b.total); err != nil {
-				return err
-			}
-			if _, err := tx.Exec(ctx, `UPDATE charges SET paid=true WHERE id=$1`, b.id); err != nil {
-				return err
-			}
+		if _, err := tx.Exec(ctx, `UPDATE charges SET paid=true WHERE id=$1`, b.id); err != nil {
+			return err
 		}
-		return nil
-	})
+	}
+	return nil
 }
 
 // settleItemTx settles ONE open position inside a transaction, atomically and

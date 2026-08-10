@@ -195,6 +195,13 @@ func Decrypt(enc []byte, key string) ([]byte, error) {
 // DESTRUCTIVE: --clean --if-exists drops and recreates objects. The archive is
 // validated (pg_restore --list) before the DB is touched.
 func Restore(ctx context.Context, dbURL string, enc []byte, key string) error {
+	// Serialize against the dump path (RunVolume/RunS3): pg_restore --clean drops
+	// and recreates every table, so a scheduled backup firing mid-restore would dump
+	// a half-wiped DB and rotate that corrupt archive over a good one. runMu makes
+	// restore and backup mutually exclusive.
+	runMu.Lock()
+	defer runMu.Unlock()
+
 	plain, err := Decrypt(enc, key)
 	if err != nil {
 		return err

@@ -3,9 +3,9 @@ package auth
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"strings"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 const backupCodeCount = 10
@@ -13,14 +13,22 @@ const backupCodeCount = 10
 // codeAlphabet excludes easily-confused characters (0/O, 1/I/L).
 const codeAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 
-func hashCode(code string) string {
-	sum := sha256.Sum256([]byte(strings.ToUpper(strings.TrimSpace(code))))
-	return hex.EncodeToString(sum[:])
+// normalizeCode upper-cases and trims a code so user entry is case- and
+// whitespace-insensitive.
+func normalizeCode(code string) string {
+	return strings.ToUpper(strings.TrimSpace(code))
+}
+
+// hashCode returns a bcrypt hash of the normalized code, at the same cost as
+// password hashing.
+func hashCode(code string) (string, error) {
+	b, err := bcrypt.GenerateFromPassword([]byte(normalizeCode(code)), bcrypt.DefaultCost)
+	return string(b), err
 }
 
 // GenerateBackupCodes creates a fresh set of human-friendly one-time codes
-// (formatted like ABCD-EFGH) and stores their hashes, replacing any existing
-// codes for the user. The plaintext codes are returned once for display.
+// (formatted like ABCD-EFGH-IJKL) and stores their hashes, replacing any
+// existing codes for the user. The plaintext codes are returned once for display.
 func (m *Manager) GenerateBackupCodes(ctx context.Context, userID int64) ([]string, error) {
 	codes := make([]string, 0, backupCodeCount)
 	for i := 0; i < backupCodeCount; i++ {
@@ -33,7 +41,11 @@ func (m *Manager) GenerateBackupCodes(ctx context.Context, userID int64) ([]stri
 
 	batch := make([][]any, 0, len(codes))
 	for _, c := range codes {
-		batch = append(batch, []any{userID, hashCode(c)})
+		h, err := hashCode(c)
+		if err != nil {
+			return nil, err
+		}
+		batch = append(batch, []any{userID, h})
 	}
 
 	tx, err := m.pool.Begin(ctx)
@@ -61,14 +73,32 @@ func (m *Manager) GenerateBackupCodes(ctx context.Context, userID int64) ([]stri
 // ConsumeBackupCode marks a matching unused code as used and returns true if it
 // was valid. Codes are single-use.
 func (m *Manager) ConsumeBackupCode(ctx context.Context, userID int64, code string) bool {
-	var id int64
-	err := m.pool.QueryRow(ctx,
-		`UPDATE totp_backup_codes SET used_at = now()
-		 WHERE id = (SELECT id FROM totp_backup_codes
-		             WHERE user_id=$1 AND code_hash=$2 AND used_at IS NULL
-		             LIMIT 1)
-		 RETURNING id`, userID, hashCode(code)).Scan(&id)
-	return err == nil
+	// bcrypt hashes are salted, so the code can't be looked up by hash; compare
+	// against each of the user's unused codes instead.
+	rows, err := m.pool.Query(ctx,
+		`SELECT id, code_hash FROM totp_backup_codes WHERE user_id=$1 AND used_at IS NULL`, userID)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+
+	norm := normalizeCode(code)
+	for rows.Next() {
+		var id int64
+		var hash string
+		if err := rows.Scan(&id, &hash); err != nil {
+			return false
+		}
+		if bcrypt.CompareHashAndPassword([]byte(hash), []byte(norm)) != nil {
+			continue
+		}
+		// Claim the code atomically: the used_at IS NULL guard means a concurrent
+		// spend of the same code affects zero rows and is rejected.
+		ct, err := m.pool.Exec(ctx,
+			`UPDATE totp_backup_codes SET used_at = now() WHERE id = $1 AND used_at IS NULL`, id)
+		return err == nil && ct.RowsAffected() == 1
+	}
+	return false
 }
 
 // DeleteBackupCodes removes all backup codes for a user (on 2FA disable).
@@ -86,7 +116,7 @@ func (m *Manager) RemainingBackupCodes(ctx context.Context, userID int64) (int, 
 }
 
 func randomCode() (string, error) {
-	const n = 8
+	const n = 12
 	// Reject bytes at or above the largest multiple of the alphabet length so the
 	// modulo maps uniformly (no bias toward the low residues).
 	limit := 256 - (256 % len(codeAlphabet))
@@ -101,5 +131,5 @@ func randomCode() (string, error) {
 		}
 		chars = append(chars, codeAlphabet[int(buf[0])%len(codeAlphabet)])
 	}
-	return string(chars[:4]) + "-" + string(chars[4:]), nil
+	return string(chars[:4]) + "-" + string(chars[4:8]) + "-" + string(chars[8:]), nil
 }

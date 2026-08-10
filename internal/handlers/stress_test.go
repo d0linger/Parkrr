@@ -145,7 +145,7 @@ func TestStress_ConcurrentPayOneInvoice(t *testing.T) {
 
 // TestStress_ConcurrentSliderSameCharge toggles the same charge 'paid' from N
 // goroutines and asserts idempotency: at most one auto-payment is minted, so the
-// balance nets to ~0 (not N×). Guards syncTogglePayment under concurrency.
+// balance nets to ~0 (not N×). Guards syncTogglePaymentTx under concurrency.
 func TestStress_ConcurrentSliderSameCharge(t *testing.T) {
 	h := testHandler(t)
 	pid := createIntegrationPerson(t, h)

@@ -1162,10 +1162,28 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .pay-row{ display:flex; align-items:center; gap:.6rem; }
 .pay-row.is-reversed{ opacity:.5; }
 .pay-row.is-reversed .pay-amt{ text-decoration:line-through; }
-.pay-row .pay-main{ flex:1; min-width:0; }
-.pay-row .pay-method{ font-weight:650; font-size:.9rem; }
-.pay-row .pay-date{ font-size:.75rem; color:var(--text-muted); word-break:break-word; }
-.pay-row .pay-amt{ font-weight:750; font-size:.98rem; font-variant-numeric:tabular-nums; color:var(--success-text, var(--success)); white-space:nowrap; }
+.pay-row .pay-main, .pay-head .pay-main{ flex:1; min-width:0; }
+.pay-row .pay-method, .pay-head .pay-method{ font-weight:650; font-size:.9rem; }
+.pay-row .pay-date, .pay-head .pay-date{ font-size:.75rem; color:var(--text-muted); overflow-wrap:anywhere; }
+.pay-row .pay-amt, .pay-head .pay-amt{ font-weight:750; font-size:.98rem; font-variant-numeric:tabular-nums; color:var(--success-text, var(--success)); white-space:nowrap; }
+
+/* Payment card with a collapsible attribution breakdown (which Gefährt/Zeitraum). */
+.pay-card{ display:flex; flex-direction:column; }
+.pay-card.is-reversed{ opacity:.5; }
+.pay-card.is-reversed .pay-amt{ text-decoration:line-through; }
+.pay-head{ display:flex; align-items:center; gap:.6rem; } /* .pay-* shared with .pay-row above */
+.pay-attr1{ margin-top:.4rem; font-size:.78rem; color:var(--text-muted); overflow-wrap:anywhere; }
+.pay-attr{ margin-top:.5rem; border-top:1px dashed var(--border); padding-top:.45rem; }
+.pay-attr > summary{ list-style:none; cursor:pointer; display:flex; align-items:center; gap:.4rem; font-size:.8rem; color:var(--text-muted); }
+.pay-attr > summary::-webkit-details-marker{ display:none; }
+.pay-attr .caret{ color:var(--primary); font-size:.65rem; transition:transform .15s; flex:none; }
+.pay-attr[open] .caret{ transform:rotate(90deg); }
+.pay-attr .attr-list{ margin-top:.45rem; display:flex; flex-direction:column; gap:.34rem; }
+.attr-row{ display:grid; grid-template-columns:1fr auto; gap:.6rem; align-items:baseline; font-size:.82rem; }
+.attr-lab{ color:var(--text); min-width:0; }
+.attr-per{ color:var(--text-muted); font-size:.76rem; font-variant-numeric:tabular-nums; margin-top:.1rem; }
+.attr-amt{ color:var(--text-muted); font-weight:600; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.inv-bills{ font-size:.75rem; color:var(--text-muted); margin-top:.15rem; overflow-wrap:anywhere; }
 
 /* Rechnungs-Einstellungen + Rechnungsbeleg */
 .bill-field{ margin:.5rem 0; }

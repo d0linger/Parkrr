@@ -327,12 +327,17 @@ func (req *agreementRequest) parse() (models.FlatRatePeriod, string) {
 	if period != models.BillingMonthly && period != models.BillingYearly {
 		return a, "period must be 'monthly' or 'yearly'"
 	}
+	if !validDateLength(trim(req.StartDate)) {
+		return a, "start_date is too long"
+	}
 	start, err := time.Parse(dateLayout, trim(req.StartDate))
 	if err != nil {
 		return a, "start_date must be YYYY-MM-DD"
 	}
 	end, err := parseOptDate(req.EndDate)
-	if err != nil {
+	if errors.Is(err, errDateTooLong) {
+		return a, "end_date is too long"
+	} else if err != nil {
 		return a, "end_date must be YYYY-MM-DD"
 	}
 	if end != nil && end.Before(start) {
@@ -938,12 +943,12 @@ func (h *Handler) settleAgreementExtrasTx(ctx context.Context, tx pgx.Tx, ag mod
 	var crows pgx.Rows
 	if len(vids) == 0 {
 		// Person-wide agreement: covers the person's vehicles that existed within its
-		// window. A vehicle that began on/after the agreement's (exclusive) end date was
+		// window. A vehicle that began after the agreement's (inclusive) end date was
 		// never covered (coveringAgreements' start guard), so its extras aren't settled.
 		crows, err = tx.Query(ctx,
 			`SELECT c.id, c.amount, c.quantity FROM charges c JOIN vehicles v ON v.id=c.vehicle_id
 			  WHERE c.person_id=$1 AND `+notSettled+`
-			    AND ($2::timestamptz IS NULL OR v.start_date < $2)`, personID, ag.EndDate)
+			    AND ($2::timestamptz IS NULL OR v.start_date <= $2)`, personID, ag.EndDate)
 	} else {
 		crows, err = tx.Query(ctx,
 			`SELECT c.id, c.amount, c.quantity FROM charges c
@@ -1068,6 +1073,15 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 		if k == key {
 			valid = true
 			break
+		}
+	}
+	// A fixed partial must not exceed the period's own cost — a mistyped Teilbetrag
+	// would otherwise become a real overpayment and inflate the Guthaben. A genuine
+	// prepayment is entered as a regular Zahlung (which correctly becomes credit).
+	if valid && req.Amount != nil {
+		if cost, ok := periodCostForKey(a, key, time.Now()); ok && *req.Amount > cost+0.005 {
+			writeError(w, http.StatusBadRequest, "Teilbetrag übersteigt die Periodenkosten – für eine Vorauszahlung eine reguläre Zahlung erfassen")
+			return
 		}
 	}
 	if !valid {
@@ -1233,8 +1247,8 @@ func setFlatRateCoverage(vehicles []models.Vehicle, agByPerson map[int64][]model
 }
 
 // coveringAgreements returns the agreements that cover the given vehicle. A
-// vehicle that started on or after an agreement's (exclusive) end date never
-// existed during that agreement, so it is not covered by it — this matters for
+// vehicle that started after an agreement's (inclusive) end date never existed
+// during that agreement, so it is not covered by it — this matters for
 // person-wide agreements (empty VehicleIDs), which would otherwise implicitly
 // "cover" vehicles created long after the agreement ended.
 func coveringAgreements(agreements []models.FlatRatePeriod, vehicleID int64, vehicleStart time.Time) []models.FlatRatePeriod {
@@ -1244,7 +1258,7 @@ func coveringAgreements(agreements []models.FlatRatePeriod, vehicleID int64, veh
 		if !a.Covers(vehicleID) {
 			continue
 		}
-		if a.EndDate != nil && !vehicleStart.Before(*a.EndDate) {
+		if a.EndDate != nil && vehicleStart.After(*a.EndDate) {
 			continue // vehicle started after this agreement had already ended
 		}
 		out = append(out, agreements[i])

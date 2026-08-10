@@ -27,17 +27,24 @@ type AuthHandler struct {
 	// credential-stuffing defense (breached-password checks, per-account lockout,
 	// 2FA, passkeys) is layered on top and does not depend on the source IP.
 	IPLimiter *auth.LoginLimiter
+	// UserLimiter throttles failures per username REGARDLESS of IP, closing the
+	// IP-rotation gap: a distributed attacker guessing one account from many source
+	// addresses is bounded to ~20 tries / 15 min. The cooldown is deliberately SHORT
+	// (1 min) so that this account-wide counter can't be weaponized to lock a real
+	// user out for long — it slows brute force without becoming a lockout-DoS.
+	UserLimiter *auth.LoginLimiter
 }
 
 // NewAuthHandler constructs an AuthHandler. The background login-throttle
 // cleanup goroutine runs until stop is closed.
 func NewAuthHandler(h *Handler, mgr *auth.Manager, wa *auth.WebAuthnService, stop <-chan struct{}) *AuthHandler {
 	ah := &AuthHandler{
-		Handler:   h,
-		Auth:      mgr,
-		WebAuthn:  wa,
-		Limiter:   auth.NewLoginLimiter(5, 10*time.Minute, 15*time.Minute),
-		IPLimiter: auth.NewLoginLimiter(20, 10*time.Minute, 15*time.Minute),
+		Handler:     h,
+		Auth:        mgr,
+		WebAuthn:    wa,
+		Limiter:     auth.NewLoginLimiter(5, 10*time.Minute, 15*time.Minute),
+		IPLimiter:   auth.NewLoginLimiter(20, 10*time.Minute, 15*time.Minute),
+		UserLimiter: auth.NewStickyLoginLimiter(20, 15*time.Minute, 1*time.Minute),
 	}
 	go func() {
 		t := time.NewTicker(10 * time.Minute)
@@ -49,6 +56,7 @@ func NewAuthHandler(h *Handler, mgr *auth.Manager, wa *auth.WebAuthnService, sto
 			case <-t.C:
 				ah.Limiter.Cleanup()
 				ah.IPLimiter.Cleanup()
+				ah.UserLimiter.Cleanup()
 			}
 		}
 	}()
@@ -68,15 +76,29 @@ type loginRequest struct {
 // not on post-auth endpoints that also use this helper.
 func (h *AuthHandler) checkRateLimit(w http.ResponseWriter, r *http.Request, username string) (key, ip string, ok bool) {
 	ip = h.Auth.ClientIP(r)
-	key = strings.ToLower(username) + "|" + ip
+	uname := strings.ToLower(username)
+	key = uname + "|" + ip
 	if allowed, wait := h.Limiter.Allowed(key); !allowed {
 		w.Header().Set("Retry-After", formatSeconds(wait))
-		slog.Warn("throttle active", "user", username, "ip", ip, "path", r.URL.Path)
+		// Don't log the request-supplied username (clear-text-logging / PII): a
+		// throttle event is identified by IP + path; the account isn't needed here.
+		slog.Warn("throttle active", "ip", ip, "path", r.URL.Path)
+		writeError(w, http.StatusTooManyRequests, "too many attempts, try again in "+formatMinutes(wait))
+		return key, ip, false
+	}
+	// Per-username (IP-independent) throttle — bounds distributed brute force.
+	if allowed, wait := h.UserLimiter.Allowed(uname); !allowed {
+		w.Header().Set("Retry-After", formatSeconds(wait))
+		slog.Warn("throttle active (user)", "ip", ip, "path", r.URL.Path)
 		writeError(w, http.StatusTooManyRequests, "too many attempts, try again in "+formatMinutes(wait))
 		return key, ip, false
 	}
 	return key, ip, true
 }
+
+// userKeyOf recovers the per-username throttle key (lower-cased username) from the
+// combined "username|ip" key, by stripping the exact "|ip" suffix.
+func userKeyOf(key, ip string) string { return strings.TrimSuffix(key, "|"+ip) }
 
 // ipThrottled blocks (and 429s) when the client IP has tripped the per-IP
 // spray throttle. Used only on the public login endpoint so that one host
@@ -98,6 +120,7 @@ func (h *AuthHandler) ipThrottled(w http.ResponseWriter, r *http.Request) bool {
 func (h *AuthHandler) recordLoginFailure(key, ip string) {
 	h.Limiter.RecordFailure(key)
 	h.IPLimiter.RecordFailure(ip)
+	h.UserLimiter.RecordFailure(userKeyOf(key, ip))
 }
 
 // Login authenticates a user (with optional TOTP) and starts a session.
@@ -179,6 +202,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	// egress IP would hand a co-located sprayer a fresh budget. It decays on its
 	// own via the failure window.
 	h.Limiter.Reset(key)
+	h.UserLimiter.Reset(userKeyOf(key, ip))
 	if err := h.Auth.CreateSession(r.Context(), w, r, u.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create session")
 		return
@@ -244,16 +268,19 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	// (cheap, local bcrypt) BEFORE spending an outbound HIBP breach lookup on
 	// the candidate password — otherwise the endpoint drives external requests
 	// from arbitrary input before any throttle applies.
-	key, _, ok := h.checkRateLimit(w, r, u.Username)
+	key, ip, ok := h.checkRateLimit(w, r, u.Username)
 	if !ok {
 		return
 	}
 	if _, err := h.Auth.Authenticate(r.Context(), u.Username, req.CurrentPassword); err != nil {
-		h.Limiter.RecordFailure(key)
+		// checkRateLimit gates this flow on BOTH limiters, so feed both — a wrong
+		// current password counts against the per-username throttle too.
+		h.recordLoginFailure(key, ip)
 		writeError(w, http.StatusForbidden, "current password is incorrect")
 		return
 	}
 	h.Limiter.Reset(key)
+	h.UserLimiter.Reset(userKeyOf(key, ip))
 
 	if h.rejectBreachedPassword(w, r, req.NewPassword) {
 		return

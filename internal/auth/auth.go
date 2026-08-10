@@ -4,6 +4,7 @@ package auth
 import (
 	"context"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -45,6 +46,7 @@ type Manager struct {
 	secureCookies  bool
 	trustProxy     bool
 	aead           cipher.AEAD
+	csrfKey        []byte // HMAC key binding the CSRF token to the session
 }
 
 // SessionConfig groups the session-lifetime settings for NewManager.
@@ -61,6 +63,7 @@ func NewManager(pool *pgxpool.Pool, sc SessionConfig, secureCookies, trustProxy 
 	if err != nil {
 		return nil, err
 	}
+	csrfSum := sha256.Sum256([]byte(secret + "\x00parkrr-csrf"))
 	return &Manager{
 		pool:           pool,
 		sessionMaxAge:  time.Duration(sc.MaxAge) * time.Second,
@@ -69,7 +72,18 @@ func NewManager(pool *pgxpool.Pool, sc SessionConfig, secureCookies, trustProxy 
 		secureCookies:  secureCookies,
 		trustProxy:     trustProxy,
 		aead:           aead,
+		csrfKey:        csrfSum[:],
 	}, nil
+}
+
+// csrfToken derives the CSRF token for a session: HMAC-SHA256(csrfKey, sessionToken).
+// Because it is bound to the session token AND a server-only key, an attacker who can
+// plant a CSRF cookie (cookie injection) still cannot produce a header the server will
+// accept — the "signed double-submit" pattern, stronger than a plain value match.
+func (m *Manager) csrfToken(sessionToken string) string {
+	mac := hmac.New(sha256.New, m.csrfKey)
+	mac.Write([]byte(sessionToken))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // hashToken returns the hex SHA-256 of a raw token. Session tokens are stored
@@ -191,10 +205,7 @@ func (m *Manager) CreateSession(ctx context.Context, w http.ResponseWriter, r *h
 	if err != nil {
 		return err
 	}
-	csrf, err := randomToken(24)
-	if err != nil {
-		return err
-	}
+	csrf := m.csrfToken(token)
 	expires := time.Now().Add(m.sessionMaxAge)
 	ua := r.UserAgent()
 	if len(ua) > 300 {
@@ -256,10 +267,6 @@ func (m *Manager) slide(ctx context.Context, w http.ResponseWriter, r *http.Requ
 	if err != nil || sc.Value == "" {
 		return
 	}
-	cc, err := r.Cookie(CSRFCookie)
-	if err != nil {
-		return
-	}
 	tokenHash := hashToken(sc.Value)
 	var createdAt, expiresAt time.Time
 	if err := m.pool.QueryRow(ctx,
@@ -282,7 +289,7 @@ func (m *Manager) slide(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		`UPDATE sessions SET expires_at=$1 WHERE token=$2`, newExpiry, tokenHash); err != nil {
 		return
 	}
-	m.writeSessionCookies(w, r, sc.Value, cc.Value, newExpiry)
+	m.writeSessionCookies(w, r, sc.Value, m.csrfToken(sc.Value), newExpiry)
 }
 
 // DestroySession removes the current session and clears cookies.
@@ -418,12 +425,15 @@ func (m *Manager) RequireRole(roles ...string) func(http.Handler) http.Handler {
 }
 
 func (m *Manager) csrfOK(r *http.Request) bool {
-	c, err := r.Cookie(CSRFCookie)
-	if err != nil || c.Value == "" {
+	// Validate the submitted header against the token derived from THIS session, not
+	// merely against a matching cookie — so a planted CSRF cookie alone can't pass.
+	sc, err := r.Cookie(SessionCookie)
+	if err != nil || sc.Value == "" {
 		return false
 	}
+	expected := m.csrfToken(sc.Value)
 	// Constant-time compare so the match doesn't leak via response timing.
-	return subtle.ConstantTimeCompare([]byte(r.Header.Get(CSRFHeader)), []byte(c.Value)) == 1
+	return subtle.ConstantTimeCompare([]byte(r.Header.Get(CSRFHeader)), []byte(expected)) == 1
 }
 
 func isStateChanging(method string) bool {

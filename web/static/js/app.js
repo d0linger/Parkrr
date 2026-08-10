@@ -1126,7 +1126,7 @@
                 el('button', { class: 'btn btn-ghost btn-sm', onclick: (e) => applyCredit(id, e.currentTarget) }, 'Guthaben anrechnen')));
         }
         if (!payments.length) page.append(el('p', { class: 'muted' }, 'Noch keine Zahlungen erfasst.'));
-        else page.append(collapsibleRows(payments, (p) => paymentRow(id, p)));
+        else page.append(collapsibleRows(payments, (p) => paymentRow(p)));
 
         // Rechnungen (fortlaufend nummeriert, unveränderlich)
         const rz = el('div', { class: 'page-head section-head' },
@@ -1176,19 +1176,56 @@
             el('div', { class: 'konto-v' }, value),
             el('div', { class: 'konto-l' }, label));
     }
-    function paymentRow(personId, p) {
+    // attrText names a position with its kind context: a Gefährt line reads as rent
+    // ("… · Miete"); the other kinds already carry it in the label.
+    function attrText(it) {
+        return it.kind === 'vehicle' ? it.label + ' · Miete' : it.label;
+    }
+    // attrHeadline is the one-line summary of what a payment settles: the distinct
+    // position labels, capped so the collapsed row stays short.
+    function attrHeadline(items) {
+        const labels = [...new Set(items.map((i) => i.label))];
+        if (labels.length <= 2) return labels.join(' · ');
+        return labels.slice(0, 2).join(' · ') + ' · +' + (labels.length - 2);
+    }
+    // attrDetails is the Variant-D collapsible (only used for ≥2 positions): a summary
+    // line that expands to the full breakdown with per-position amount.
+    function attrDetails(items) {
+        const det = el('details', { class: 'pay-attr' });
+        det.append(el('summary', {}, el('span', { class: 'caret' }, '▸'), el('span', {}, attrHeadline(items))));
+        const list = el('div', { class: 'attr-list' });
+        for (const it of items) {
+            list.append(el('div', { class: 'attr-row' },
+                el('div', { class: 'attr-lab' }, esc(attrText(it)),
+                    it.period ? el('div', { class: 'attr-per' }, esc(it.period)) : null),
+                (Number(it.amount) || 0) > 0.005 ? el('div', { class: 'attr-amt' }, eur(it.amount)) : el('span', {})));
+        }
+        det.append(list);
+        return det;
+    }
+    function paymentRow(p) {
         const meta = new Date(p.paid_on).toLocaleDateString('de-DE') + (p.note ? ' · ' + p.note : '')
             + (p.reversed ? ' · storniert' : '');
-        const row = el('div', { class: 'card pay-row' + (p.reversed ? ' is-reversed' : '') },
+        const head = el('div', { class: 'pay-head' },
             el('div', { class: 'pay-main' },
                 el('div', { class: 'pay-method' }, payMethodLabel(p.method)),
                 el('div', { class: 'pay-date' }, meta)),
             el('div', { class: 'pay-amt' }, eur(p.amount)));
         // A reversed payment is kept for the record (BAO) — no further action on it.
         if (canBill() && !p.reversed) {
-            row.append(el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Zahlung stornieren', title: 'Zahlung stornieren', onclick: (e) => delPayment(p, e.currentTarget.closest('.card')) }, icon('trash', 15)));
+            head.append(el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Zahlung stornieren', title: 'Zahlung stornieren', onclick: (e) => delPayment(p, e.currentTarget.closest('.card')) }, icon('trash', 15)));
         }
-        return row;
+        const card = el('div', { class: 'card pay-card' + (p.reversed ? ' is-reversed' : '') }, head);
+        // What the payment settled. One position → a compact line (no redundant
+        // expand, amount already in the header); several → the collapsible breakdown.
+        const items = p.items || [];
+        if (items.length === 1) {
+            const it = items[0];
+            card.append(el('div', { class: 'pay-attr1' }, attrText(it) + (it.period ? ' · ' + it.period : '')));
+        } else if (items.length > 1) {
+            card.append(attrDetails(items));
+        }
+        return card;
     }
     function delPayment(p, node) {
         // BAO: the payment is not deleted but reversed (Storno) — the record is kept.
@@ -1281,14 +1318,29 @@
         const [label, tone] = INV_STATUS[iv.status] || [iv.status || '', 'muted'];
         return el('span', { class: 'inv-badge ' + tone }, label);
     }
+    // invSummary groups an invoice's billed positions by label with their periods:
+    // "Wohnwagen (2025, 2026) · Frostschutz-Check".
+    function invSummary(positions) {
+        const byLabel = new Map();
+        for (const p of positions) {
+            if (!byLabel.has(p.label)) byLabel.set(p.label, new Set());
+            if (p.period) byLabel.get(p.label).add(p.period);
+        }
+        return [...byLabel].map(([label, pers]) => label + (pers.size ? ' (' + [...pers].join(', ') + ')' : '')).join(' · ');
+    }
     function invoiceRow(iv) {
         const neg = iv.status === 'storno' || Number(iv.total) < 0;
-        return el('a', { class: 'card pay-row inv-link', href: '#/invoices/' + iv.id },
-            el('div', { class: 'pay-main' },
-                el('div', { class: 'pay-method' }, 'Rechnung ' + esc(iv.number), ' ', invStatusBadge(iv)),
-                el('div', { class: 'pay-date' }, new Date(iv.issued_on).toLocaleDateString('de-DE')
-                    + (iv.kleinunternehmer ? '' : ' · inkl. USt')
-                    + (iv.status === 'teilbezahlt' ? ' · offen ' + eur(iv.open_amount) : ''))),
+        const main = el('div', { class: 'pay-main' },
+            el('div', { class: 'pay-method' }, 'Rechnung ' + esc(iv.number), ' ', invStatusBadge(iv)),
+            el('div', { class: 'pay-date' }, new Date(iv.issued_on).toLocaleDateString('de-DE')
+                + (iv.kleinunternehmer ? '' : ' · inkl. USt')
+                + (iv.status === 'teilbezahlt' ? ' · offen ' + eur(iv.open_amount) : '')));
+        // What the invoice bills (Gefährt/Pauschale · Periode) — one muted line; the
+        // card links to the invoice page for the full positions.
+        if ((iv.positions || []).length) {
+            main.append(el('div', { class: 'inv-bills' }, 'berechnet: ' + invSummary(iv.positions)));
+        }
+        return el('a', { class: 'card pay-row inv-link', href: '#/invoices/' + iv.id }, main,
             el('div', { class: 'pay-amt', style: neg ? 'color:var(--danger)' : 'color:var(--text)' }, eur(iv.total)));
     }
     async function payInvoiceFor(iv) {
@@ -3798,7 +3850,7 @@
         label.textContent = backup ? 'Backup-Code' : 'Zwei-Faktor-Code';
         $('#login-backup-toggle').textContent = backup ? 'Stattdessen App-Code' : 'Backup-Code verwenden';
         $('#login-totp-help').textContent = backup
-            ? 'Einmal-Code aus deiner Backup-Liste (Format ABCD-EFGH).'
+            ? 'Einmal-Code aus deiner Backup-Liste (Format ABCD-EFGH-IJKL).'
             : '6-stelliger Code aus der App – oder ein Backup-Code, falls kein Handy zur Hand.';
         clearTotp();
     }

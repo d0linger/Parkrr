@@ -14,10 +14,11 @@ import (
 // the casing hands the attacker a fresh rate-limit bucket per variant.
 func TestRateLimitBypass_Casing(t *testing.T) {
 	ah := &AuthHandler{
-		Handler:   &Handler{},
-		Auth:      &auth.Manager{}, // trustProxy=false -> ClientIP uses RemoteAddr
-		Limiter:   auth.NewLoginLimiter(2, time.Minute, time.Minute),
-		IPLimiter: auth.NewLoginLimiter(20, time.Minute, time.Minute),
+		Handler:     &Handler{},
+		Auth:        &auth.Manager{}, // trustProxy=false -> ClientIP uses RemoteAddr
+		Limiter:     auth.NewLoginLimiter(2, time.Minute, time.Minute),
+		IPLimiter:   auth.NewLoginLimiter(20, time.Minute, time.Minute),
+		UserLimiter: auth.NewLoginLimiter(1000, time.Minute, time.Minute),
 	}
 
 	ip := "1.2.3.4"
@@ -55,10 +56,11 @@ func TestRateLimitBypass_Casing(t *testing.T) {
 // own threshold.
 func TestLoginSprayingTrippedPerIP(t *testing.T) {
 	ah := &AuthHandler{
-		Handler:   &Handler{},
-		Auth:      &auth.Manager{}, // trustProxy=false -> ClientIP uses RemoteAddr
-		Limiter:   auth.NewLoginLimiter(5, time.Minute, time.Minute),
-		IPLimiter: auth.NewLoginLimiter(3, time.Minute, time.Minute),
+		Handler:     &Handler{},
+		Auth:        &auth.Manager{}, // trustProxy=false -> ClientIP uses RemoteAddr
+		Limiter:     auth.NewLoginLimiter(5, time.Minute, time.Minute),
+		IPLimiter:   auth.NewLoginLimiter(3, time.Minute, time.Minute),
+		UserLimiter: auth.NewLoginLimiter(1000, time.Minute, time.Minute),
 	}
 	ip := "9.9.9.9"
 	req := func() *http.Request {
@@ -97,10 +99,11 @@ func TestLoginSprayingTrippedPerIP(t *testing.T) {
 // hand a co-located sprayer a fresh budget.
 func TestSuccessfulLoginDoesNotResetIPThrottle(t *testing.T) {
 	ah := &AuthHandler{
-		Handler:   &Handler{},
-		Auth:      &auth.Manager{},
-		Limiter:   auth.NewLoginLimiter(5, time.Minute, time.Minute),
-		IPLimiter: auth.NewLoginLimiter(3, time.Minute, time.Minute),
+		Handler:     &Handler{},
+		Auth:        &auth.Manager{},
+		Limiter:     auth.NewLoginLimiter(5, time.Minute, time.Minute),
+		IPLimiter:   auth.NewLoginLimiter(3, time.Minute, time.Minute),
+		UserLimiter: auth.NewLoginLimiter(1000, time.Minute, time.Minute),
 	}
 	ip := "7.7.7.7"
 	key := "someuser|" + ip

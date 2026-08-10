@@ -240,12 +240,18 @@ func (req *recurringRequest) parse() (desc, period string, amount float64, start
 	default:
 		return "", "", 0, time.Time{}, nil, "period must be monthly or yearly"
 	}
+	if !validDateLength(trim(req.StartDate)) {
+		return "", "", 0, time.Time{}, nil, "start_date is too long"
+	}
 	s, err := time.Parse(dateLayout, trim(req.StartDate))
 	if err != nil {
 		return "", "", 0, time.Time{}, nil, "start_date must be YYYY-MM-DD"
 	}
 	start = s
 	if req.EndDate != nil && trim(*req.EndDate) != "" {
+		if !validDateLength(trim(*req.EndDate)) {
+			return "", "", 0, time.Time{}, nil, "end_date is too long"
+		}
 		e, eerr := time.Parse(dateLayout, trim(*req.EndDate))
 		if eerr != nil {
 			return "", "", 0, time.Time{}, nil, "end_date must be YYYY-MM-DD"
@@ -552,6 +558,15 @@ func (h *Handler) SetRecurringChargePeriodPaid(w http.ResponseWriter, r *http.Re
 	if !valid {
 		writeError(w, http.StatusBadRequest, "invalid period")
 		return
+	}
+	// Cap a fixed partial at the period's cost (see the agreement path) — a mistyped
+	// Teilbetrag must not become a silent overpayment; a real prepayment is a regular
+	// Zahlung.
+	if req.Paid && req.Amount != nil {
+		if cost, ok := periodCostForKey(p, req.PeriodKey, time.Now()); ok && *req.Amount > cost+0.005 {
+			writeError(w, http.StatusBadRequest, "Teilbetrag übersteigt die Periodenkosten – für eine Vorauszahlung eine reguläre Zahlung erfassen")
+			return
+		}
 	}
 	// An invoiced period is settled through the invoice, not the per-period flag.
 	// Block BOTH directions: marking would double-credit once the invoice is

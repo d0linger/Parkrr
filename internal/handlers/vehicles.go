@@ -165,9 +165,16 @@ type parsedVehicle struct {
 	reservedUntil *time.Time
 }
 
+// errDateTooLong lets callers distinguish an over-long date (→ "<field> is too
+// long") from a malformed one (→ "<field> must be YYYY-MM-DD").
+var errDateTooLong = errors.New("date is too long")
+
 func parseOptDate(s *string) (*time.Time, error) {
 	if s == nil || trim(*s) == "" {
 		return nil, nil
+	}
+	if !validDateLength(trim(*s)) {
+		return nil, errDateTooLong
 	}
 	t, err := time.Parse(dateLayout, trim(*s))
 	if err != nil {
@@ -216,23 +223,32 @@ func (h *Handler) parseVehicleRequest(r *http.Request) (*parsedVehicle, error) {
 		return nil, errors.New("notes is too long")
 	}
 
+	if !validDateLength(trim(req.StartDate)) {
+		return nil, errors.New("start_date is too long")
+	}
 	start, err := time.Parse(dateLayout, trim(req.StartDate))
 	if err != nil {
 		return nil, errors.New("start_date must be YYYY-MM-DD")
 	}
 	endPtr, err := parseOptDate(req.EndDate)
-	if err != nil {
+	if errors.Is(err, errDateTooLong) {
+		return nil, errors.New("end_date is too long")
+	} else if err != nil {
 		return nil, errors.New("end_date must be YYYY-MM-DD")
 	}
 	if endPtr != nil && endPtr.Before(start) {
 		return nil, errors.New("end_date must not be before start_date")
 	}
 	resFrom, err := parseOptDate(req.ReservedFrom)
-	if err != nil {
+	if errors.Is(err, errDateTooLong) {
+		return nil, errors.New("reserved_from is too long")
+	} else if err != nil {
 		return nil, errors.New("reserved_from must be YYYY-MM-DD")
 	}
 	resUntil, err := parseOptDate(req.ReservedUntil)
-	if err != nil {
+	if errors.Is(err, errDateTooLong) {
+		return nil, errors.New("reserved_until is too long")
+	} else if err != nil {
 		return nil, errors.New("reserved_until must be YYYY-MM-DD")
 	}
 	return &parsedVehicle{
@@ -469,6 +485,10 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 	// is then archived and can never be invoiced/paid/cleared (perpetual phantom
 	// receivable).
 	case (req.Status == models.StatusCollected || req.Status == models.StatusCancelled) && trim(req.Date) != "":
+		if !validDateLength(trim(req.Date)) {
+			writeError(w, http.StatusBadRequest, "date is too long")
+			return
+		}
 		end, perr := time.Parse(dateLayout, trim(req.Date))
 		if perr != nil {
 			writeError(w, http.StatusBadRequest, "date must be YYYY-MM-DD")
@@ -600,25 +620,45 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// P2.3: keep the money in step — record the auto-payment while still open (so
-	// its amount is visible in openOwedItems), then flip the flag.
+	// its amount is visible in openOwedItems), then flip the flag, all in ONE
+	// transaction so a failure between them can't leave a phantom payment/credit.
+	// The owed amount is read BEFORE the tx (openOwedItems uses the pool; reading
+	// it while holding the tx's connection can deadlock the pool under
+	// concurrency).
+	var amt float64
+	var bound []boundCharge
 	if req.Paid && !curPaid {
-		if err := h.syncTogglePayment(r, "vehicle", id, personID, true); err != nil {
+		var err error
+		if amt, bound, err = h.toggleOwed(r, "vehicle", id, personID); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not record payment")
 			return
 		}
 	}
-	if _, err := h.Pool.Exec(r.Context(),
-		`UPDATE vehicles SET paid=$1, updated_at=now() WHERE id=$2`, req.Paid, id); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not update payment status")
-		return
-	}
-	if !req.Paid && curPaid {
-		// Don't swallow this: if removing the auto-payment fails the flag is already
-		// open, so a discarded error leaves a phantom money-in inflating the balance.
-		if err := h.syncTogglePayment(r, "vehicle", id, personID, false); err != nil {
-			writeError(w, http.StatusInternalServerError, "could not reverse payment")
-			return
+	failMsg := "could not update payment status"
+	if err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		if req.Paid && !curPaid {
+			if err := h.syncTogglePaymentTx(r.Context(), tx, "vehicle", id, personID, true, amt, bound); err != nil {
+				failMsg = "could not record payment"
+				return err
+			}
 		}
+		if _, err := tx.Exec(r.Context(),
+			`UPDATE vehicles SET paid=$1, updated_at=now() WHERE id=$2`, req.Paid, id); err != nil {
+			return err
+		}
+		if !req.Paid && curPaid {
+			// Don't swallow this: if removing the auto-payment fails the flag flips
+			// open with it (same tx) — a discarded error would leave a phantom
+			// money-in inflating the balance.
+			if err := h.syncTogglePaymentTx(r.Context(), tx, "vehicle", id, personID, false, 0, nil); err != nil {
+				failMsg = "could not reverse payment"
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, failMsg)
+		return
 	}
 	label := "offen"
 	if req.Paid {
@@ -686,6 +726,10 @@ func (h *Handler) DuplicateVehicle(w http.ResponseWriter, r *http.Request) {
 	}
 	start := time.Now()
 	if trim(req.StartDate) != "" {
+		if !validDateLength(trim(req.StartDate)) {
+			writeError(w, http.StatusBadRequest, "start_date is too long")
+			return
+		}
 		s, err := time.Parse(dateLayout, trim(req.StartDate))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "start_date must be YYYY-MM-DD")

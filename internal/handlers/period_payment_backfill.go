@@ -55,10 +55,14 @@ func (h *Handler) backfillAccrualPayments(ctx context.Context, personID int64, k
 		if !ok || amt < 0.005 {
 			return nil
 		}
+		// NOT EXISTS handles the common (single-instance) case and avoids resurrecting
+		// a reversed period payment; ON CONFLICT is the concurrency backstop so two
+		// simultaneous startups don't error on the uq_payments_settles unique index.
 		_, err := h.Pool.Exec(ctx,
 			`INSERT INTO payments (person_id, amount, method, note, auto, settles_kind, settles_ref, settles_period)
 			 SELECT $1,$2,'bar',$3,true,$4,$5,$6
-			 WHERE NOT EXISTS (SELECT 1 FROM payments WHERE settles_kind=$4 AND settles_ref=$5 AND settles_period=$6)`,
+			 WHERE NOT EXISTS (SELECT 1 FROM payments WHERE settles_kind=$4 AND settles_ref=$5 AND settles_period=$6)
+			 ON CONFLICT (settles_kind, settles_ref, settles_period) WHERE settles_kind IS NOT NULL DO NOTHING`,
 			personID, amt, periodPaymentNote(kind, key), kind, refID, key)
 		return err
 	}

@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -111,6 +112,14 @@ func Load() (*Config, error) {
 		ssl := getenv("PARKRR_DB_SSLMODE", "disable")
 		cfg.DatabaseURL = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
 			user, pass, host, port, name, ssl)
+		// Surface the silent defaults — fine on a private Docker network, a footgun
+		// once the DB is exposed or on a separate host.
+		if pass == "parkrr" {
+			slog.Warn("config: using the default database password 'parkrr' — set PARKRR_DB_PASSWORD in production")
+		}
+		if ssl == "disable" {
+			slog.Warn("config: database TLS is off (sslmode=disable) — set PARKRR_DB_SSLMODE for a remote/separate-host DB")
+		}
 	}
 
 	if cfg.AdminPassword == "" {

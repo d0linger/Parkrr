@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -133,7 +134,13 @@ func run() error {
 	}
 
 	cleanupStop := make(chan struct{})
-	defer close(cleanupStop)
+	// Stop background workers (backup scheduler, session/audit cleanup) BEFORE the
+	// HTTP drain — otherwise the scheduler could fire a backup during shutdown.
+	// sync.Once keeps the pre-shutdown stop and the defer safety-net from
+	// double-closing the channel (a panic).
+	var stopOnce sync.Once
+	stopCleanup := func() { stopOnce.Do(func() { close(cleanupStop) }) }
+	defer stopCleanup()
 
 	s3 := backup.S3Config{
 		Endpoint: cfg.S3Endpoint, Bucket: cfg.S3Bucket,
@@ -177,11 +184,14 @@ func run() error {
 
 	select {
 	case err := <-serverErr:
+		stopCleanup()
 		return err
 	case <-ctx.Done():
 		slog.Info("shutdown signal received")
 	}
 
+	// Halt the background workers before draining in-flight HTTP requests.
+	stopCleanup()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)

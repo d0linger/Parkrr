@@ -346,6 +346,9 @@ func (h *Handler) validateCharge(ctx context.Context, req *chargeRequest) (time.
 	}
 	chargedOn := time.Now()
 	if trim(req.ChargedOn) != "" {
+		if !validDateLength(trim(req.ChargedOn)) {
+			return time.Time{}, "charged_on is too long", nil
+		}
 		t, perr := time.Parse(dateLayout, trim(req.ChargedOn))
 		if perr != nil {
 			return time.Time{}, "charged_on must be YYYY-MM-DD", nil
@@ -497,25 +500,44 @@ func (h *Handler) SetChargePaid(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	// P2.3: record the auto-payment while still open, then flip the flag.
+	// P2.3: record the auto-payment while still open, then flip the flag — all in
+	// ONE transaction so a failure between them can't leave a phantom
+	// payment/credit. The owed amount is read BEFORE the tx (openOwedItems uses
+	// the pool; reading it while holding the tx's connection can deadlock the
+	// pool under concurrency).
+	var amt float64
+	var bound []boundCharge
 	if req.Paid && !curPaid {
-		if err := h.syncTogglePayment(r, "charge", id, personID, true); err != nil {
+		var err error
+		if amt, bound, err = h.toggleOwed(r, "charge", id, personID); err != nil {
 			writeError(w, http.StatusInternalServerError, "could not record payment")
 			return
 		}
 	}
-	if _, err := h.Pool.Exec(r.Context(),
-		`UPDATE charges SET paid=$1 WHERE id=$2 AND vehicle_id IS NULL`, req.Paid, id); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not update charge")
-		return
-	}
-	if !req.Paid && curPaid {
-		// Don't swallow: a discarded error would leave a phantom auto-payment while
-		// the charge shows open, inflating the balance.
-		if err := h.syncTogglePayment(r, "charge", id, personID, false); err != nil {
-			writeError(w, http.StatusInternalServerError, "could not reverse payment")
-			return
+	failMsg := "could not update charge"
+	if err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		if req.Paid && !curPaid {
+			if err := h.syncTogglePaymentTx(r.Context(), tx, "charge", id, personID, true, amt, bound); err != nil {
+				failMsg = "could not record payment"
+				return err
+			}
 		}
+		if _, err := tx.Exec(r.Context(),
+			`UPDATE charges SET paid=$1 WHERE id=$2 AND vehicle_id IS NULL`, req.Paid, id); err != nil {
+			return err
+		}
+		if !req.Paid && curPaid {
+			// Don't swallow: a discarded error would leave a phantom auto-payment
+			// while the charge shows open, inflating the balance.
+			if err := h.syncTogglePaymentTx(r.Context(), tx, "charge", id, personID, false, 0, nil); err != nil {
+				failMsg = "could not reverse payment"
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, failMsg)
+		return
 	}
 	verb := "charge marked open"
 	if req.Paid {

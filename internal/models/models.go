@@ -199,22 +199,24 @@ func (a *FlatRatePeriod) paidKeySet() map[string]bool {
 }
 
 // ActiveAt reports whether the agreement's coverage window includes t, i.e.
-// StartDate <= t < EndDate (EndDate is exclusive; nil means open-ended). Once
-// the end date has passed the agreement no longer covers its vehicles.
+// StartDate <= t <= EndDate (EndDate is inclusive — "eingelagert bis
+// einschließlich", matching window(); nil means open-ended). Only once the day
+// after the end date has begun does the agreement no longer cover its vehicles.
 func (a *FlatRatePeriod) ActiveAt(t time.Time) bool {
 	if t.Before(a.StartDate) {
 		return false
 	}
-	if a.EndDate != nil && !t.Before(*a.EndDate) {
+	if a.EndDate != nil && !t.Before(DayAfter(*a.EndDate)) {
 		return false
 	}
 	return true
 }
 
 // Ended reports whether the agreement's coverage window has closed by asOf
-// (EndDate is exclusive; an open-ended agreement never ends).
+// (EndDate is inclusive: the agreement still covers its end date and has ended
+// only from the following day on; an open-ended agreement never ends).
 func (a *FlatRatePeriod) Ended(asOf time.Time) bool {
-	return a.EndDate != nil && !asOf.Before(*a.EndDate)
+	return a.EndDate != nil && !asOf.Before(DayAfter(*a.EndDate))
 }
 
 // SettledAsOf reports whether everything accrued through asOf has been paid — the
@@ -315,16 +317,20 @@ type OpenPeriod struct {
 
 // ElapsedPeriodsDetailed returns every elapsed sub-period from the agreement's
 // start through asOf, oldest first, with its accrued cost and whether it has
-// fully elapsed — its calendar end (or the agreement's EndDate, if earlier) is
-// not after asOf. Only a complete period has a final cost and may be locked, so
+// fully elapsed — its calendar end (or the day after the agreement's inclusive
+// EndDate, if earlier) is not after asOf. Only a complete period has a final cost and may be locked, so
 // the still-running current period is never billed twice as it grows.
 func (a *FlatRatePeriod) ElapsedPeriodsDetailed(asOf time.Time) []OpenPeriod {
 	cents := toCents(a.Amount)
 	var out []OpenPeriod
 	a.subPeriods(a.StartDate, DayAfter(asOf), func(s, e, pStart, pEnd time.Time, key string) {
 		end := pEnd
-		if a.EndDate != nil && a.EndDate.Before(end) {
-			end = *a.EndDate
+		if a.EndDate != nil {
+			// EndDate is inclusive (see window): the period's effective end is the
+			// start of the day after the end date.
+			if endIncl := DayAfter(*a.EndDate); endIncl.Before(end) {
+				end = endIncl
+			}
 		}
 		out = append(out, OpenPeriod{
 			Key:   key,

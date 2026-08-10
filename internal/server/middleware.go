@@ -29,6 +29,9 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 	return n, err
 }
 
+// Unwrap lets http.ResponseController find optional interfaces on the wrapped writer.
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
 func requestID() string {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {

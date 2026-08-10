@@ -222,6 +222,19 @@ func periodPaidUnlocked(p models.FlatRatePeriod, kind string, refID int64, now t
 // off-book dynamic credit (its cost is not yet final) and gets its real payment when
 // it completes (the startup backfill), so the fixed row never diverges from a
 // growing period.
+// periodCostForKey returns the accrued cost of the given elapsed sub-period, used
+// to cap a fixed partial (Teilbetrag) so a mistyped amount can't exceed the period
+// and silently inflate the Guthaben. A genuine overpayment goes through a regular
+// payment (which correctly becomes credit).
+func periodCostForKey(p models.FlatRatePeriod, key string, now time.Time) (float64, bool) {
+	for _, per := range p.ElapsedPeriodsDetailed(now) {
+		if per.Key == key {
+			return per.Cost, true
+		}
+	}
+	return 0, false
+}
+
 func periodPaymentAmount(p models.FlatRatePeriod, periodKey string, amount *float64, now time.Time) (float64, bool) {
 	if amount != nil {
 		return *amount, true

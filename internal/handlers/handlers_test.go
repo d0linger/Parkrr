@@ -20,6 +20,10 @@ func TestCoveringAgreementsExcludesLaterVehicles(t *testing.T) {
 	if got := coveringAgreements([]models.FlatRatePeriod{personWide}, 7, after); len(got) != 0 {
 		t.Errorf("vehicle started after the agreement ended must not be covered, got %d", len(got))
 	}
+	// EndDate is inclusive: a vehicle started on the end date itself was covered.
+	if got := coveringAgreements([]models.FlatRatePeriod{personWide}, 7, end); len(got) != 1 {
+		t.Errorf("vehicle started on the inclusive end date should be covered, got %d", len(got))
+	}
 	// An open-ended agreement covers regardless of the vehicle's start.
 	open := models.FlatRatePeriod{ID: 2}
 	if got := coveringAgreements([]models.FlatRatePeriod{open}, 7, after); len(got) != 1 {

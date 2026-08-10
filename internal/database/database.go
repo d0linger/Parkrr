@@ -6,6 +6,7 @@ import (
 	"embed"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -21,7 +22,13 @@ func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse database url: %w", err)
 	}
-	cfg.MaxConns = 10
+	// Default to 10, but honor an explicit pool_max_conns in the DSN (ParseConfig
+	// already parsed it) — lets the test suite cap each package's pool so parallel
+	// `go test ./...` doesn't collectively overwhelm a small test-DB container.
+	// Production leaves it unset and keeps 10.
+	if !strings.Contains(url, "pool_max_conns") {
+		cfg.MaxConns = 10
+	}
 	cfg.MinConns = 1
 	cfg.MaxConnLifetime = time.Hour
 	// Server-side backstop: no single statement may run unbounded and pin a
