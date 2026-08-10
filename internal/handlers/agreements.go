@@ -335,7 +335,9 @@ func (req *agreementRequest) parse() (models.FlatRatePeriod, string) {
 		return a, "start_date must be YYYY-MM-DD"
 	}
 	end, err := parseOptDate(req.EndDate)
-	if err != nil {
+	if errors.Is(err, errDateTooLong) {
+		return a, "end_date is too long"
+	} else if err != nil {
 		return a, "end_date must be YYYY-MM-DD"
 	}
 	if end != nil && end.Before(start) {

@@ -143,3 +143,61 @@ func TestResolveInvoiceItems(t *testing.T) {
 		t.Errorf("invoice positions should include the Pauschale (agreement) with a period; got %+v", pos)
 	}
 }
+
+// TestResolvePaymentItemsExcludesReversed: a reversed (storniert) payment must drop
+// out of attribution — the resolver filters `NOT reversed`.
+func TestResolvePaymentItemsExcludesReversed(t *testing.T) {
+	h := testHandler(t)
+	pid := createIntegrationPerson(t, h)
+	vid := mkStoredVehicle(t, h, pid, 30, firstOfMonthMonthsAgo(1).Format("2006-01-02"))
+	pbody, _ := json.Marshal(map[string]any{"paid": true})
+	preq := httptest.NewRequest(http.MethodPost, "/api/vehicles/"+strconv.FormatInt(vid, 10)+"/paid", bytes.NewReader(pbody))
+	preq.SetPathValue("id", strconv.FormatInt(vid, 10))
+	preq.Header.Set("Content-Type", "application/json")
+	prec := httptest.NewRecorder()
+	h.MarkPaid(prec, preq)
+	if prec.Code != http.StatusOK {
+		t.Fatalf("markpaid: %d %s", prec.Code, prec.Body.String())
+	}
+	if items, err := h.resolvePaymentItems(t.Context(), pid); err != nil || len(items) == 0 {
+		t.Fatalf("precondition: expected attribution items before reversal (err=%v)", err)
+	}
+	// Reverse the auto-payment (reversal-state change is permitted by the trigger).
+	if _, err := h.Pool.Exec(t.Context(), `UPDATE payments SET reversed=true WHERE person_id=$1`, pid); err != nil {
+		t.Fatalf("reverse: %v", err)
+	}
+	items, err := h.resolvePaymentItems(t.Context(), pid)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("a reversed payment must be excluded from attribution; got %+v", items)
+	}
+}
+
+// TestResolveInvoiceItemsExcludesCanceled: a canceled (Storno) invoice must drop out
+// of the invoice-row summary — the resolver filters `NOT canceled`.
+func TestResolveInvoiceItemsExcludesCanceled(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	_ = mkAgreement(t, h, pid, 30, "monthly", firstOfMonthMonthsAgo(3).Format("2006-01-02"))
+	iv := createInvoice(t, h, pid)
+	if pos, err := h.resolveInvoiceItems(t.Context(), pid); err != nil || len(pos) == 0 {
+		t.Fatalf("precondition: expected invoice positions (err=%v)", err)
+	}
+	creq := httptest.NewRequest(http.MethodPost, "/api/invoices/"+strconv.FormatInt(iv.ID, 10)+"/cancel", nil)
+	creq.SetPathValue("id", strconv.FormatInt(iv.ID, 10))
+	crec := httptest.NewRecorder()
+	h.CancelInvoice(crec, creq)
+	if crec.Code != http.StatusOK {
+		t.Fatalf("cancel: %d %s", crec.Code, crec.Body.String())
+	}
+	pos, err := h.resolveInvoiceItems(t.Context(), pid)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(pos) != 0 {
+		t.Errorf("a canceled invoice must be excluded from attribution; got %+v", pos)
+	}
+}

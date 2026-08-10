@@ -165,12 +165,16 @@ type parsedVehicle struct {
 	reservedUntil *time.Time
 }
 
+// errDateTooLong lets callers distinguish an over-long date (→ "<field> is too
+// long") from a malformed one (→ "<field> must be YYYY-MM-DD").
+var errDateTooLong = errors.New("date is too long")
+
 func parseOptDate(s *string) (*time.Time, error) {
 	if s == nil || trim(*s) == "" {
 		return nil, nil
 	}
 	if !validDateLength(trim(*s)) {
-		return nil, errors.New("date is too long")
+		return nil, errDateTooLong
 	}
 	t, err := time.Parse(dateLayout, trim(*s))
 	if err != nil {
@@ -227,18 +231,24 @@ func (h *Handler) parseVehicleRequest(r *http.Request) (*parsedVehicle, error) {
 		return nil, errors.New("start_date must be YYYY-MM-DD")
 	}
 	endPtr, err := parseOptDate(req.EndDate)
-	if err != nil {
+	if errors.Is(err, errDateTooLong) {
+		return nil, errors.New("end_date is too long")
+	} else if err != nil {
 		return nil, errors.New("end_date must be YYYY-MM-DD")
 	}
 	if endPtr != nil && endPtr.Before(start) {
 		return nil, errors.New("end_date must not be before start_date")
 	}
 	resFrom, err := parseOptDate(req.ReservedFrom)
-	if err != nil {
+	if errors.Is(err, errDateTooLong) {
+		return nil, errors.New("reserved_from is too long")
+	} else if err != nil {
 		return nil, errors.New("reserved_from must be YYYY-MM-DD")
 	}
 	resUntil, err := parseOptDate(req.ReservedUntil)
-	if err != nil {
+	if errors.Is(err, errDateTooLong) {
+		return nil, errors.New("reserved_until is too long")
+	} else if err != nil {
 		return nil, errors.New("reserved_until must be YYYY-MM-DD")
 	}
 	return &parsedVehicle{

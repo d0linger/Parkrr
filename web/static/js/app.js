@@ -1126,7 +1126,7 @@
                 el('button', { class: 'btn btn-ghost btn-sm', onclick: (e) => applyCredit(id, e.currentTarget) }, 'Guthaben anrechnen')));
         }
         if (!payments.length) page.append(el('p', { class: 'muted' }, 'Noch keine Zahlungen erfasst.'));
-        else page.append(collapsibleRows(payments, (p) => paymentRow(id, p)));
+        else page.append(collapsibleRows(payments, (p) => paymentRow(p)));
 
         // Rechnungen (fortlaufend nummeriert, unveränderlich)
         const rz = el('div', { class: 'page-head section-head' },
@@ -1203,7 +1203,7 @@
         det.append(list);
         return det;
     }
-    function paymentRow(personId, p) {
+    function paymentRow(p) {
         const meta = new Date(p.paid_on).toLocaleDateString('de-DE') + (p.note ? ' · ' + p.note : '')
             + (p.reversed ? ' · storniert' : '');
         const head = el('div', { class: 'pay-head' },

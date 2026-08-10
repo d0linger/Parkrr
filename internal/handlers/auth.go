@@ -39,9 +39,9 @@ type AuthHandler struct {
 // cleanup goroutine runs until stop is closed.
 func NewAuthHandler(h *Handler, mgr *auth.Manager, wa *auth.WebAuthnService, stop <-chan struct{}) *AuthHandler {
 	ah := &AuthHandler{
-		Handler:   h,
-		Auth:      mgr,
-		WebAuthn:  wa,
+		Handler:     h,
+		Auth:        mgr,
+		WebAuthn:    wa,
 		Limiter:     auth.NewLoginLimiter(5, 10*time.Minute, 15*time.Minute),
 		IPLimiter:   auth.NewLoginLimiter(20, 10*time.Minute, 15*time.Minute),
 		UserLimiter: auth.NewLoginLimiter(20, 15*time.Minute, 1*time.Minute),
@@ -80,14 +80,16 @@ func (h *AuthHandler) checkRateLimit(w http.ResponseWriter, r *http.Request, use
 	key = uname + "|" + ip
 	if allowed, wait := h.Limiter.Allowed(key); !allowed {
 		w.Header().Set("Retry-After", formatSeconds(wait))
-		slog.Warn("throttle active", "user", username, "ip", ip, "path", r.URL.Path)
+		// Don't log the request-supplied username (clear-text-logging / PII): a
+		// throttle event is identified by IP + path; the account isn't needed here.
+		slog.Warn("throttle active", "ip", ip, "path", r.URL.Path)
 		writeError(w, http.StatusTooManyRequests, "too many attempts, try again in "+formatMinutes(wait))
 		return key, ip, false
 	}
 	// Per-username (IP-independent) throttle — bounds distributed brute force.
 	if allowed, wait := h.UserLimiter.Allowed(uname); !allowed {
 		w.Header().Set("Retry-After", formatSeconds(wait))
-		slog.Warn("throttle active (user)", "user", username, "ip", ip, "path", r.URL.Path)
+		slog.Warn("throttle active (user)", "ip", ip, "path", r.URL.Path)
 		writeError(w, http.StatusTooManyRequests, "too many attempts, try again in "+formatMinutes(wait))
 		return key, ip, false
 	}

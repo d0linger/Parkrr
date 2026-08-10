@@ -124,13 +124,14 @@ func (h *Handler) resolvePaymentItems(ctx context.Context, personID int64) (map[
 	}
 	for rrows.Next() {
 		var pid int64
-		var period, desc string
+		var period *string // settles_period is a nullable column; guard the scan
+		var desc string    // recurring_charges.description is NOT NULL
 		var amt float64
 		if err := rrows.Scan(&pid, &period, &amt, &desc); err != nil {
 			rrows.Close()
 			return nil, err
 		}
-		out[pid] = append(out[pid], attrItem{Kind: "recurring", Label: desc, Period: period, Amount: amt})
+		out[pid] = append(out[pid], attrItem{Kind: "recurring", Label: desc, Period: derefStr(period, ""), Amount: amt})
 	}
 	rrows.Close()
 	if err := rrows.Err(); err != nil {
