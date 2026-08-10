@@ -30,10 +30,12 @@ jobs:
 
     env:
       # Enables the database-gated integration tests (migrations, handlers).
-      PARKRR_TEST_DATABASE_URL: postgres://parkrr:parkrr@localhost:5432/parkrr_test?sslmode=disable
+      # pool_max_conns caps each package's pool so parallel `go test ./...` doesn't
+      # collectively exhaust the DB's connections (honored by database.Connect).
+      PARKRR_TEST_DATABASE_URL: postgres://parkrr:parkrr@localhost:5432/parkrr_test?sslmode=disable&pool_max_conns=4
       # Coverage ratchet floor. Raise this as coverage grows; the gate fails the
-      # build if total statement coverage drops below it.
-      COVERAGE_MIN: "10"
+      # build if total statement coverage drops below it. (Actual ~48.7%.)
+      COVERAGE_MIN: "40"
 
     steps:
       - uses: actions/checkout@v4
