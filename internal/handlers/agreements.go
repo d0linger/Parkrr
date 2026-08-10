@@ -1073,6 +1073,15 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 			break
 		}
 	}
+	// A fixed partial must not exceed the period's own cost — a mistyped Teilbetrag
+	// would otherwise become a real overpayment and inflate the Guthaben. A genuine
+	// prepayment is entered as a regular Zahlung (which correctly becomes credit).
+	if valid && req.Amount != nil {
+		if cost, ok := periodCostForKey(a, key, time.Now()); ok && *req.Amount > cost+0.005 {
+			writeError(w, http.StatusBadRequest, "Teilbetrag übersteigt die Periodenkosten – für eine Vorauszahlung eine reguläre Zahlung erfassen")
+			return
+		}
+	}
 	if !valid {
 		writeError(w, http.StatusBadRequest, "period_key does not match an elapsed period of this agreement")
 		return

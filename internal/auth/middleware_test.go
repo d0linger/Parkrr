@@ -13,27 +13,31 @@ import (
 	"github.com/preining/parkrr/internal/database"
 )
 
-// TestCSRFOK covers the double-submit check in isolation (no DB): the header must
-// equal the cookie, both must be present.
+// TestCSRFOK covers the signed double-submit check in isolation (no DB): the header
+// must equal HMAC(csrfKey, session token) — a matching cookie alone is not enough,
+// and the session cookie must be present. csrfToken is deterministic even with a nil
+// key, so a bare Manager suffices.
 func TestCSRFOK(t *testing.T) {
 	m := &Manager{}
+	const token = "session-token-abcdef"
+	valid := m.csrfToken(token)
 	cases := []struct {
-		name        string
-		cookie, hdr string
-		setCookie   bool
-		want        bool
+		name       string
+		hdr        string
+		sessCookie string // "" = no session cookie
+		want       bool
 	}{
-		{name: "match", cookie: "tok123", hdr: "tok123", setCookie: true, want: true},
-		{name: "mismatch", cookie: "tok123", hdr: "other", setCookie: true, want: false},
-		{name: "missing header", cookie: "tok123", hdr: "", setCookie: true, want: false},
-		{name: "missing cookie", cookie: "", hdr: "tok123", setCookie: false, want: false},
-		{name: "empty cookie value", cookie: "", hdr: "", setCookie: true, want: false},
+		{name: "valid signed token", hdr: valid, sessCookie: token, want: true},
+		{name: "wrong header", hdr: "deadbeef", sessCookie: token, want: false},
+		{name: "empty header", hdr: "", sessCookie: token, want: false},
+		{name: "no session cookie", hdr: valid, sessCookie: "", want: false},
+		{name: "token for a different session", hdr: m.csrfToken("other-token"), sessCookie: token, want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodPost, "/api/x", nil)
-			if tc.setCookie {
-				r.AddCookie(&http.Cookie{Name: CSRFCookie, Value: tc.cookie})
+			if tc.sessCookie != "" {
+				r.AddCookie(&http.Cookie{Name: SessionCookie, Value: tc.sessCookie})
 			}
 			if tc.hdr != "" {
 				r.Header.Set(CSRFHeader, tc.hdr)

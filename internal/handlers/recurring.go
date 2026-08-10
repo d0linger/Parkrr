@@ -559,6 +559,15 @@ func (h *Handler) SetRecurringChargePeriodPaid(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, "invalid period")
 		return
 	}
+	// Cap a fixed partial at the period's cost (see the agreement path) — a mistyped
+	// Teilbetrag must not become a silent overpayment; a real prepayment is a regular
+	// Zahlung.
+	if req.Paid && req.Amount != nil {
+		if cost, ok := periodCostForKey(p, req.PeriodKey, time.Now()); ok && *req.Amount > cost+0.005 {
+			writeError(w, http.StatusBadRequest, "Teilbetrag übersteigt die Periodenkosten – für eine Vorauszahlung eine reguläre Zahlung erfassen")
+			return
+		}
+	}
 	// An invoiced period is settled through the invoice, not the per-period flag.
 	// Block BOTH directions: marking would double-credit once the invoice is
 	// Storno'd; UNmarking would drop a fixed partial the invoice already billed
