@@ -158,9 +158,18 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var old models.User
-	_ = h.Pool.QueryRow(r.Context(),
+	if err := h.Pool.QueryRow(r.Context(),
 		`SELECT id, username, email, role, is_admin FROM users WHERE id=$1`, id).
-		Scan(&old.ID, &old.Username, &old.Email, &old.Role, &old.IsAdmin)
+		Scan(&old.ID, &old.Username, &old.Email, &old.Role, &old.IsAdmin); err != nil {
+		// A missing user must 404, not silently "succeed": the UPDATE below would
+		// affect 0 rows yet still return 200 with a fabricated audit entry.
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 
 	isAdmin := role == models.RoleAdmin
 	if req.Password != "" {
