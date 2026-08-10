@@ -44,7 +44,7 @@ func NewAuthHandler(h *Handler, mgr *auth.Manager, wa *auth.WebAuthnService, sto
 		WebAuthn:    wa,
 		Limiter:     auth.NewLoginLimiter(5, 10*time.Minute, 15*time.Minute),
 		IPLimiter:   auth.NewLoginLimiter(20, 10*time.Minute, 15*time.Minute),
-		UserLimiter: auth.NewLoginLimiter(20, 15*time.Minute, 1*time.Minute),
+		UserLimiter: auth.NewStickyLoginLimiter(20, 15*time.Minute, 1*time.Minute),
 	}
 	go func() {
 		t := time.NewTicker(10 * time.Minute)
@@ -268,16 +268,19 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	// (cheap, local bcrypt) BEFORE spending an outbound HIBP breach lookup on
 	// the candidate password — otherwise the endpoint drives external requests
 	// from arbitrary input before any throttle applies.
-	key, _, ok := h.checkRateLimit(w, r, u.Username)
+	key, ip, ok := h.checkRateLimit(w, r, u.Username)
 	if !ok {
 		return
 	}
 	if _, err := h.Auth.Authenticate(r.Context(), u.Username, req.CurrentPassword); err != nil {
-		h.Limiter.RecordFailure(key)
+		// checkRateLimit gates this flow on BOTH limiters, so feed both — a wrong
+		// current password counts against the per-username throttle too.
+		h.recordLoginFailure(key, ip)
 		writeError(w, http.StatusForbidden, "current password is incorrect")
 		return
 	}
 	h.Limiter.Reset(key)
+	h.UserLimiter.Reset(userKeyOf(key, ip))
 
 	if h.rejectBreachedPassword(w, r, req.NewPassword) {
 		return

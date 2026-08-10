@@ -186,12 +186,12 @@ func TestResolveInvoiceItemsExcludesCanceled(t *testing.T) {
 	if pos, err := h.resolveInvoiceItems(t.Context(), pid); err != nil || len(pos) == 0 {
 		t.Fatalf("precondition: expected invoice positions (err=%v)", err)
 	}
-	creq := httptest.NewRequest(http.MethodPost, "/api/invoices/"+strconv.FormatInt(iv.ID, 10)+"/cancel", nil)
-	creq.SetPathValue("id", strconv.FormatInt(iv.ID, 10))
-	crec := httptest.NewRecorder()
-	h.CancelInvoice(crec, creq)
-	if crec.Code != http.StatusOK {
-		t.Fatalf("cancel: %d %s", crec.Code, crec.Body.String())
+	// Flip canceled directly (a trigger-sanctioned column) rather than calling
+	// CancelInvoice, which also DELETEs the invoice_source rows the resolver reads
+	// — that would make the invoice drop out by row absence, not by the filter.
+	// Keeping the source rows proves the `NOT i.canceled` filter does the exclusion.
+	if _, err := h.Pool.Exec(t.Context(), `UPDATE invoices SET canceled=true WHERE id=$1`, iv.ID); err != nil {
+		t.Fatalf("cancel: %v", err)
 	}
 	pos, err := h.resolveInvoiceItems(t.Context(), pid)
 	if err != nil {

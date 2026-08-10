@@ -14,6 +14,7 @@ type LoginLimiter struct {
 	maxFails   int
 	lockFor    time.Duration
 	failWindow time.Duration
+	sticky     bool
 }
 
 type attemptState struct {
@@ -31,6 +32,18 @@ func NewLoginLimiter(maxFails int, failWindow, lockDuration time.Duration) *Logi
 		lockFor:    lockDuration,
 		failWindow: failWindow,
 	}
+}
+
+// NewStickyLoginLimiter is like NewLoginLimiter but a cooldown lock does NOT
+// reset the failure window: the maxFails budget is enforced per failWindow no
+// matter how many short cooldowns elapse. Suited to a per-username throttle with
+// a short lock, where a fixed-window reset would let an attacker refill the
+// budget every cooldown (20 guesses per lock, forever) instead of bounding it to
+// maxFails per window.
+func NewStickyLoginLimiter(maxFails int, failWindow, lockDuration time.Duration) *LoginLimiter {
+	l := NewLoginLimiter(maxFails, failWindow, lockDuration)
+	l.sticky = true
+	return l
 }
 
 // Allowed reports whether an attempt for key may proceed, and if not, how long
@@ -62,8 +75,15 @@ func (l *LoginLimiter) RecordFailure(key string) {
 	st.fails++
 	if st.fails >= l.maxFails {
 		st.lockedTill = now.Add(l.lockFor)
-		st.fails = 0
-		st.firstFail = now
+		if !l.sticky {
+			// Fixed-window: each cooldown starts a fresh budget.
+			st.fails = 0
+			st.firstFail = now
+		}
+		// Sticky: keep fails and firstFail so the cooldown does NOT refill the
+		// budget — after the lock expires one more failure re-locks, until the
+		// failWindow elapses from the first failure and the state is rebuilt
+		// above. Bounds distributed brute force to maxFails per window.
 	}
 }
 
