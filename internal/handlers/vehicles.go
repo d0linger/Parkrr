@@ -169,6 +169,37 @@ var plannerSymbols = map[string]bool{
 	"Anhänger": true, "Boot / Trailer": true, "Traktor": true, "Ladewagen": true, "Rückewagen": true, "Kipper": true,
 }
 
+// normPlannerSymbol validates/normalizes a planner_symbol: nil/"" -> nil (auto); one of
+// the built-in keys -> itself; "custom:<id>" -> itself iff that uploaded icon exists.
+// Anything else is rejected so bad values return 400 rather than reaching the DB.
+func (h *Handler) normPlannerSymbol(ctx context.Context, in *string) (*string, error) {
+	if in == nil {
+		return nil, nil
+	}
+	s := trim(*in)
+	if s == "" {
+		return nil, nil
+	}
+	if plannerSymbols[s] {
+		return &s, nil
+	}
+	if len(s) > 7 && s[:7] == "custom:" {
+		id, err := strconv.ParseInt(s[7:], 10, 64)
+		if err != nil || id <= 0 {
+			return nil, errors.New("invalid planner_symbol")
+		}
+		var exists bool
+		if err := h.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM planner_icons WHERE id=$1)`, id).Scan(&exists); err != nil {
+			return nil, errors.New("could not validate planner_symbol")
+		}
+		if !exists {
+			return nil, errors.New("invalid planner_symbol")
+		}
+		return &s, nil
+	}
+	return nil, errors.New("invalid planner_symbol")
+}
+
 type parsedVehicle struct {
 	req           vehicleRequest
 	startDate     time.Time
@@ -263,15 +294,11 @@ func (h *Handler) parseVehicleRequest(r *http.Request) (*parsedVehicle, error) {
 	} else if err != nil {
 		return nil, errors.New("reserved_until must be YYYY-MM-DD")
 	}
-	if req.PlannerSymbol != nil {
-		if s := trim(*req.PlannerSymbol); s == "" {
-			req.PlannerSymbol = nil
-		} else if !plannerSymbols[s] {
-			return nil, errors.New("invalid planner_symbol")
-		} else {
-			req.PlannerSymbol = &s
-		}
+	sym, err := h.normPlannerSymbol(r.Context(), req.PlannerSymbol)
+	if err != nil {
+		return nil, err
 	}
+	req.PlannerSymbol = sym
 	return &parsedVehicle{
 		req: req, startDate: start, endDate: endPtr,
 		reservedFrom: resFrom, reservedUntil: resUntil,
@@ -455,16 +482,10 @@ func (h *Handler) UpdateVehiclePlanner(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	var sym *string
-	if req.PlannerSymbol != nil {
-		if s := trim(*req.PlannerSymbol); s == "" {
-			sym = nil
-		} else if !plannerSymbols[s] {
-			writeError(w, http.StatusBadRequest, "invalid planner_symbol")
-			return
-		} else {
-			sym = &s
-		}
+	sym, err := h.normPlannerSymbol(r.Context(), req.PlannerSymbol)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 	ct, err := h.Pool.Exec(r.Context(),
 		`UPDATE vehicles SET needs_power=$1, planner_symbol=$2, updated_at=now() WHERE id=$3`,

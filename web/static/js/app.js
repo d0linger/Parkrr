@@ -1553,6 +1553,43 @@
         return { covered, active, owed, settled: covered && owed <= 0.005 };
     }
 
+    // Custom planner-icon library: upload PNG/JPEG top-view icons with a name/tag, list
+    // and delete them. Uploaded icons become selectable per vehicle (planner_symbol =
+    // 'custom:<id>'). Returns after the dialog closes so callers can refresh their selects.
+    async function plannerIconsDialog() {
+        const dlg = el('dialog', { class: 'iconmodal' });
+        const body = el('div', {});
+        const render = async () => {
+            body.innerHTML = '';
+            body.append(el('h3', {}, 'Planer-Icons verwalten'));
+            body.append(el('p', { class: 'muted', style: 'font-size:.8rem;margin:.1rem 0 .6rem' }, 'Eigene Draufsicht-Icons (PNG/JPEG) hochladen und benennen. Danach pro Gefährt unter „Planer-Symbol" wählbar.'));
+            const nameIn = el('input', { class: 'gp-stepin', placeholder: 'Name / Tag, z. B. Pferdeanhänger' });
+            const fileIn = el('input', { type: 'file', accept: 'image/png,image/jpeg' });
+            const up = el('button', {
+                class: 'btn btn-primary btn-sm', onclick: async () => {
+                    if (!nameIn.value.trim() || !fileIn.files[0]) { toast('Name und Datei nötig', 'error'); return; }
+                    const fd = new FormData(); fd.append('name', nameIn.value.trim()); fd.append('file', fileIn.files[0]);
+                    try { await api.upload('/planner-icons', fd); toast('Icon hochgeladen', 'success'); await render(); }
+                    catch (err) { toast(err.message || 'Upload fehlgeschlagen', 'error'); }
+                }
+            }, 'Hochladen');
+            body.append(el('div', { class: 'iconup' }, nameIn, fileIn, up));
+            let icons = []; try { icons = await api.get('/planner-icons'); } catch (e) { /* offline */ }
+            const grid = el('div', { class: 'icongrid' });
+            if (!icons.length) grid.append(el('div', { class: 'muted', style: 'font-size:.82rem' }, 'Noch keine eigenen Icons.'));
+            icons.forEach((ic) => grid.append(el('div', { class: 'iconcell' },
+                el('img', { src: '/api/planner-icons/' + ic.id, alt: ic.name }),
+                el('span', { title: ic.name }, ic.name),
+                el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: async () => { try { await api.del('/planner-icons/' + ic.id); await render(); } catch (e) { toast('Löschen fehlgeschlagen', 'error'); } } }, '✕'))));
+            body.append(grid);
+            body.append(el('button', { class: 'btn btn-ghost btn-sm', style: 'margin-top:.7rem', onclick: () => dlg.close() }, 'Schließen'));
+        };
+        dlg.append(body); document.body.append(dlg);
+        dlg.addEventListener('close', () => dlg.remove());
+        await render(); dlg.showModal();
+        await new Promise((res) => dlg.addEventListener('close', res, { once: true }));
+    }
+
     // Standort-Chip: quick link Gefährt → its Stellplatz in the planner (or a muted
     // "not placed"). Click focuses the spot on the plan (pendingSpotFocus + navigate).
     function vehLocationChip(v) {
@@ -2299,6 +2336,7 @@
         const initCat = existing?.category_id ?? state.categories[0].id;
         const initPeriod = existing?.billing_period || 'monthly';
         const initRate = existing?.rate ?? catDefault(initCat, initPeriod);
+        let customIcons = []; try { customIcons = await api.get('/planner-icons'); } catch (e) { /* optional */ }
         await formModal({
             title: existing ? 'Gefährt bearbeiten' : 'Neues Gefährt',
             fields: [
@@ -2312,7 +2350,7 @@
                 { name: 'rate', label: 'Preis (€)', type: 'number', step: '0.01', min: 0, required: true, value: initRate, help: 'Aus dem Tarif übernommen und fest hinterlegt. Eine spätere Tarifänderung ändert diesen Preis nicht.' },
                 { name: 'notes', label: 'Notizen', type: 'textarea', value: existing?.notes },
                 { name: 'needs_power', label: 'Ladebedarf (Strom) — E-Fahrzeug / Kühlung', type: 'checkbox', value: !!existing?.needs_power },
-                { name: 'planner_symbol', label: 'Planer-Symbol', type: 'select', value: existing?.planner_symbol || '', help: 'Standard: automatisch aus dem Tarif/Typ. Hier optional ein festes Draufsicht-Symbol wählen.', options: [{ value: '', label: 'Automatisch (aus Typ)' }].concat(['PKW', 'Motorrad', 'Transporter', 'Wohnmobil', 'Wohnwagen', 'Anhänger', 'Boot / Trailer', 'Traktor', 'Ladewagen', 'Rückewagen', 'Kipper'].map((k) => ({ value: k, label: k }))) },
+                { name: 'planner_symbol', label: 'Planer-Symbol', type: 'select', value: existing?.planner_symbol || '', help: 'Standard: automatisch aus dem Tarif/Typ. Optional ein festes Draufsicht-Symbol oder ein eigenes hochgeladenes Icon wählen (im Planer unter „Eigene Icons verwalten").', options: [{ value: '', label: 'Automatisch (aus Typ)' }].concat(['PKW', 'Motorrad', 'Transporter', 'Wohnmobil', 'Wohnwagen', 'Anhänger', 'Boot / Trailer', 'Traktor', 'Ladewagen', 'Rückewagen', 'Kipper'].map((k) => ({ value: k, label: k }))).concat(customIcons.map((ic) => ({ value: 'custom:' + ic.id, label: 'Eigenes: ' + ic.name }))) },
             ],
             onRender: (body) => {
                 segmentedField(body, 'billing_period', [{ v: 'monthly', l: 'monatlich' }, { v: 'yearly', l: 'jährlich' }]);
@@ -3803,38 +3841,90 @@
     const CATDEF = { PKW: [4.5, 1.9], Motorrad: [2.2, 0.9], Transporter: [5.4, 2.1], Wohnmobil: [7.0, 2.3], Wohnwagen: [6.0, 2.2], 'Anhänger': [4.0, 1.8], 'Boot / Trailer': [6.0, 2.3], Traktor: [4.6, 2.2], Ladewagen: [8.0, 2.5], 'Rückewagen': [7.5, 2.4], Kipper: [6.5, 2.4] };
     const catFoot = (type) => CATDEF[catKey(type)] || [4.5, 2];
 
-    // Top-view category symbol as inner SVG markup in a normalized w x h box (length horizontal).
-    function catSymbol(cat, w, h, c) {
-        var S = '<g fill="' + c + '" fill-opacity="0.18" stroke="' + c + '" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round">';
-        var mx = w * 0.05, my = h * 0.14, bw = w - 2 * mx, bh = h - 2 * my;
-        var wh = Math.max(3, h * 0.15), ww = Math.max(4, w * 0.075), wt = my - wh * 0.5, wb = h - my - wh * 0.5;
-        function wheel(cx, cy) { return '<rect x="' + (cx - ww / 2) + '" y="' + cy + '" width="' + ww + '" height="' + wh + '" rx="2" fill="' + c + '" fill-opacity="0.55" stroke="none"/>'; }
-        function big(cx, cy) { return '<rect x="' + (cx - ww * 0.85) + '" y="' + cy + '" width="' + (ww * 1.7) + '" height="' + (wh * 1.8) + '" rx="3" fill="' + c + '" fill-opacity="0.55" stroke="none"/>'; }
-        function axpair(x1, x2) { return wheel(x1, wt) + wheel(x1, wb) + wheel(x2, wt) + wheel(x2, wb); }
-        function b_() { return '<path d="M' + (w * 0.88) + ' ' + (h * 0.42) + ' L' + (w * 0.99) + ' ' + (h * 0.5) + ' L' + (w * 0.88) + ' ' + (h * 0.58) + ' Z" fill-opacity="0.32"/>'; }
-        var body = '<rect x="' + mx + '" y="' + my + '" width="' + bw + '" height="' + bh + '" rx="' + (h * 0.16) + '"/>';
+    // Top-view category icon (detailed, two-tone) as inner SVG markup in a fixed 62 x 100
+    // box, drawn VERTICAL (front = top): white body, dark rounded outline, green accents.
+    function catSymbol(cat) {
+        var INK = '#333b45', BODY = '#fbfcfd', GRN = '#9cc188', TIRE = '#4a5563';
+        function rr(x, y, w, h, r, f) { return '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="' + r + '" fill="' + (f || BODY) + '" stroke="' + INK + '" stroke-width="2.2" stroke-linejoin="round"/>'; }
+        function gf(x, y, w, h, r) { return '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="' + (r == null ? 2 : r) + '" fill="' + GRN + '"/>'; }
+        function tire(x, y, w, h) { return '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="' + (Math.min(w, h) / 2.2) + '" fill="' + TIRE + '" stroke="' + INK + '" stroke-width="1.4"/>'; }
+        function gw(x, y, w, h) { return '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="' + (Math.min(w, h) / 2.4) + '" fill="' + GRN + '" stroke="' + INK + '" stroke-width="1.6"/>'; }
+        function ln(a, b, c, d) { return '<line x1="' + a + '" y1="' + b + '" x2="' + c + '" y2="' + d + '" stroke="' + INK + '" stroke-width="1.4" stroke-linecap="round"/>'; }
+        function ci(x, y, r, f) { return '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="' + (f || BODY) + '" stroke="' + INK + '" stroke-width="2"/>'; }
+        function dot(x, y, r, f) { return '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="' + (f || GRN) + '"/>'; }
+        function P(d, f) { return '<path d="' + d + '" fill="' + (f || BODY) + '" stroke="' + INK + '" stroke-width="2.2" stroke-linejoin="round"/>'; }
+        function bar() { return ln(31, 3, 31, 14) + ci(31, 4, 2); }
+        var S = '<g stroke-linecap="round">';
         switch (cat) {
-            case 'Motorrad': S += '<rect x="' + (w * 0.28) + '" y="' + (h * 0.35) + '" width="' + (w * 0.44) + '" height="' + (h * 0.3) + '" rx="' + (h * 0.15) + '"/><circle cx="' + (w * 0.2) + '" cy="' + (h * 0.5) + '" r="' + (h * 0.15) + '" fill="' + c + '" fill-opacity="0.55" stroke="none"/><circle cx="' + (w * 0.8) + '" cy="' + (h * 0.5) + '" r="' + (h * 0.17) + '" fill="' + c + '" fill-opacity="0.55" stroke="none"/><line x1="' + (w * 0.26) + '" y1="' + (h * 0.32) + '" x2="' + (w * 0.26) + '" y2="' + (h * 0.68) + '"/>'; break;
-            case 'Transporter': S += '<rect x="' + mx + '" y="' + my + '" width="' + (bw * 0.68) + '" height="' + bh + '" rx="3" fill-opacity="0.12"/><rect x="' + (mx + bw * 0.68) + '" y="' + (my + bh * 0.1) + '" width="' + (bw * 0.32) + '" height="' + (bh * 0.8) + '" rx="' + (h * 0.12) + '"/>' + axpair(w * 0.28, w * 0.8); break;
-            case 'Wohnmobil': S += body + '<rect x="' + (w * 0.7) + '" y="' + (my + bh * 0.16) + '" width="' + (w * 0.22) + '" height="' + (bh * 0.68) + '" rx="3" fill-opacity="0.10"/><rect x="' + (w * 0.18) + '" y="' + (h * 0.36) + '" width="' + (w * 0.34) + '" height="' + (h * 0.28) + '" rx="3" fill-opacity="0.10"/>' + axpair(w * 0.24, w * 0.66); break;
-            case 'Wohnwagen': S += body + '<rect x="' + (w * 0.16) + '" y="' + (h * 0.34) + '" width="' + (w * 0.3) + '" height="' + (h * 0.32) + '" rx="3" fill-opacity="0.10"/>' + b_() + wheel(w * 0.48, wt) + wheel(w * 0.48, wb); break;
-            case 'Anhänger': S += '<rect x="' + mx + '" y="' + my + '" width="' + (bw * 0.84) + '" height="' + bh + '" rx="4" fill-opacity="0.06"/><line x1="' + (w * 0.3) + '" y1="' + my + '" x2="' + (w * 0.3) + '" y2="' + (my + bh) + '" stroke-opacity="0.5"/><line x1="' + (w * 0.52) + '" y1="' + my + '" x2="' + (w * 0.52) + '" y2="' + (my + bh) + '" stroke-opacity="0.5"/>' + b_() + wheel(w * 0.44, wt) + wheel(w * 0.44, wb); break;
-            case 'Boot / Trailer': S += '<rect x="' + mx + '" y="' + my + '" width="' + bw + '" height="' + bh + '" rx="4" fill-opacity="0.08"/><path d="M' + (w * 0.12) + ' ' + (h * 0.5) + ' L' + (w * 0.5) + ' ' + (h * 0.22) + ' L' + (w * 0.88) + ' ' + (h * 0.35) + ' Q' + (w * 0.95) + ' ' + (h * 0.5) + ' ' + (w * 0.88) + ' ' + (h * 0.65) + ' L' + (w * 0.5) + ' ' + (h * 0.78) + ' Z"/>' + wheel(w * 0.4, wb) + wheel(w * 0.6, wb); break;
-            case 'Traktor': S += '<rect x="' + (w * 0.12) + '" y="' + (h * 0.24) + '" width="' + (w * 0.6) + '" height="' + (h * 0.52) + '" rx="' + (h * 0.1) + '"/><rect x="' + (w * 0.3) + '" y="' + (h * 0.3) + '" width="' + (w * 0.26) + '" height="' + (h * 0.4) + '" rx="3" fill-opacity="0.10"/>' + big(w * 0.26, my - wh * 0.9) + big(w * 0.26, h - my - wh * 0.9) + wheel(w * 0.64, wt) + wheel(w * 0.64, wb); break;
-            case 'Ladewagen': S += '<rect x="' + mx + '" y="' + (my * 0.5) + '" width="' + (bw * 0.84) + '" height="' + (h - my) + '" rx="3"/><line x1="' + (w * 0.2) + '" y1="' + (my * 0.5) + '" x2="' + (w * 0.2) + '" y2="' + (h - my * 0.5) + '" stroke-opacity="0.35"/><line x1="' + (w * 0.5) + '" y1="' + (my * 0.5) + '" x2="' + (w * 0.5) + '" y2="' + (h - my * 0.5) + '" stroke-opacity="0.35"/>' + b_() + axpair(w * 0.32, w * 0.54); break;
-            case 'Rückewagen': S += '<rect x="' + mx + '" y="' + my + '" width="' + (bw * 0.82) + '" height="' + bh + '" rx="3" fill-opacity="0.05"/><g stroke-opacity="0.6"><line x1="' + (w * 0.2) + '" y1="' + (my - 4) + '" x2="' + (w * 0.2) + '" y2="' + (my + bh + 4) + '"/><line x1="' + (w * 0.34) + '" y1="' + (my - 4) + '" x2="' + (w * 0.34) + '" y2="' + (my + bh + 4) + '"/><line x1="' + (w * 0.48) + '" y1="' + (my - 4) + '" x2="' + (w * 0.48) + '" y2="' + (my + bh + 4) + '"/></g><circle cx="' + (w * 0.72) + '" cy="' + (h * 0.5) + '" r="' + (h * 0.13) + '"/><line x1="' + (w * 0.72) + '" y1="' + (h * 0.5) + '" x2="' + (w * 0.84) + '" y2="' + (h * 0.5) + '"/>' + b_() + axpair(w * 0.3, w * 0.5); break;
-            case 'Kipper': S += '<rect x="' + mx + '" y="' + my + '" width="' + (bw * 0.84) + '" height="' + bh + '" rx="3"/><line x1="' + mx + '" y1="' + my + '" x2="' + mx + '" y2="' + (my + bh) + '" stroke-width="3.2"/><line x1="' + mx + '" y1="' + my + '" x2="' + (w * 0.34) + '" y2="' + (my + bh) + '" stroke-opacity="0.35"/>' + b_() + axpair(w * 0.34, w * 0.54); break;
-            default: S += body + '<rect x="' + (w * 0.32) + '" y="' + (my + bh * 0.16) + '" width="' + (w * 0.4) + '" height="' + (bh * 0.68) + '" rx="' + (h * 0.16) + '" fill-opacity="0.10"/>' + axpair(w * 0.26, w * 0.74);
+            case 'PKW': case 'Auto':
+                S += tire(6, 22, 7, 16) + tire(49, 22, 7, 16) + tire(6, 60, 7, 16) + tire(49, 60, 7, 16)
+                    + rr(11, 6, 40, 88, 10) + gf(9, 25, 4, 6, 2) + gf(49, 25, 4, 6, 2)
+                    + P('M23,15 L39,15 L45,32 L17,32 Z', GRN)                        // windshield (big, narrow at front)
+                    + gf(14, 36, 6, 26, 2) + gf(42, 36, 6, 26, 2)                    // side windows
+                    + P('M24,71 L38,71 Q42,77 39,83 L23,83 Q20,77 24,71 Z', GRN)     // rear window (small, rounded)
+                    + dot(19, 10, 2) + dot(43, 10, 2); break;
+            case 'Motorrad':
+                S += P('M31,12 C21,13 17,24 17,44 C17,64 22,82 31,96 C40,82 45,64 45,44 C45,24 41,13 31,12 Z')
+                    + '<path d="M15,19 Q31,13 47,19" fill="none" stroke="' + INK + '" stroke-width="2.6" stroke-linecap="round"/>'
+                    + dot(14, 19, 2.4) + dot(48, 19, 2.4)
+                    + ci(31, 27, 5.5) + dot(31, 27, 2.2) + gf(24, 44, 14, 32, 7); break;
+            case 'Transporter':
+                S += tire(4, 20, 7, 15) + tire(51, 20, 7, 15) + tire(4, 66, 7, 15) + tire(51, 66, 7, 15)
+                    + rr(11, 6, 40, 88, 8) + P('M15,11 L47,11 L44,23 L18,23 Z', GRN)
+                    + ln(11, 29, 51, 29) + gf(7, 19, 5, 8, 2) + gf(50, 19, 5, 8, 2)
+                    + rr(15, 34, 32, 56, 3) + ln(31, 34, 31, 90); break;
+            case 'Wohnmobil':
+                S += tire(4, 15, 7, 15) + tire(51, 15, 7, 15) + tire(4, 44, 7, 15) + tire(51, 44, 7, 15) + tire(4, 73, 7, 15) + tire(51, 73, 7, 15)
+                    + rr(11, 5, 40, 90, 7) + P('M15,10 L47,10 L44,21 L18,21 Z', GRN) + ln(11, 26, 51, 26)
+                    + gf(8, 14, 4, 8, 2) + gf(50, 14, 4, 8, 2)
+                    + gf(22, 34, 18, 14, 3) + rr(24, 54, 14, 12, 2) + ln(15, 72, 47, 72) + ln(15, 80, 47, 80) + gf(45, 58, 6, 18, 2); break;
+            case 'Wohnwagen':
+                S += bar() + tire(6, 52, 7, 16) + tire(49, 52, 7, 16)
+                    + P('M31,14 C18,14 13,20 13,30 L13,86 C13,92 16,95 22,95 L40,95 C46,95 49,92 49,86 L49,30 C49,20 44,14 31,14 Z')
+                    + gf(15, 40, 8, 44, 3) + gf(39, 40, 8, 44, 3) + rr(22, 22, 18, 11, 3) + gf(24, 24, 14, 7, 2) + rr(27, 58, 8, 8, 2); break;
+            case 'Anhänger':
+                S += bar() + ln(31, 14, 18, 30) + ln(31, 14, 44, 30)
+                    + tire(5, 46, 7, 16) + tire(50, 46, 7, 16)
+                    + rr(12, 30, 38, 52, 3) + gf(12, 30, 5, 52, 2) + gf(45, 30, 5, 52, 2)
+                    + ln(18, 46, 44, 46) + ln(18, 64, 44, 64); break;
+            case 'Boot / Trailer': case 'Boot':
+                S += tire(6, 58, 7, 16) + tire(49, 58, 7, 16)
+                    + P('M31,4 C21,12 16,28 16,52 L16,84 C16,90 20,94 26,94 L36,94 C42,94 46,90 46,84 L46,52 C46,28 41,12 31,4 Z')
+                    + gf(23, 52, 16, 26, 5) + rr(24, 40, 14, 9, 3) + rr(26, 88, 10, 7, 2); break;
+            case 'Traktor': case 'Landmaschine':
+                S += tire(9, 8, 10, 20) + tire(43, 8, 10, 20) + gw(3, 52, 15, 38) + gw(44, 52, 15, 38)
+                    + ln(6, 60, 15, 60) + ln(6, 70, 15, 70) + ln(6, 80, 15, 80) + ln(47, 60, 56, 60) + ln(47, 70, 56, 70) + ln(47, 80, 56, 80)
+                    + rr(22, 8, 18, 26, 4) + rr(18, 34, 26, 34, 4) + gf(21, 38, 20, 26, 3) + rr(28, 2, 6, 8, 1); break;
+            case 'Ladewagen':
+                S += bar() + tire(4, 42, 7, 15) + tire(4, 62, 7, 15) + tire(51, 42, 7, 15) + tire(51, 62, 7, 15)
+                    + rr(11, 22, 40, 70, 3) + gf(11, 22, 8, 70, 2) + gf(43, 22, 8, 70, 2)
+                    + ln(22, 26, 22, 88) + ln(26, 26, 26, 88) + ln(30, 26, 30, 88) + ln(34, 26, 34, 88) + ln(38, 26, 38, 88)
+                    + P('M19,14 L43,14 L47,22 L15,22 Z'); break;
+            case 'Rückewagen':
+                S += tire(4, 48, 7, 15) + tire(4, 68, 7, 15) + tire(51, 48, 7, 15) + tire(51, 68, 7, 15)
+                    + rr(11, 32, 40, 60, 3)
+                    + ln(11, 42, 6, 42) + ln(11, 58, 6, 58) + ln(11, 74, 6, 74) + ln(11, 88, 6, 88)
+                    + ln(51, 42, 56, 42) + ln(51, 58, 56, 58) + ln(51, 74, 56, 74) + ln(51, 88, 56, 88)
+                    + gf(18, 38, 7, 52, 3) + gf(28, 38, 7, 52, 3) + gf(38, 38, 7, 52, 3)     // logs
+                    + gf(23, 20, 16, 11, 3) + ln(31, 20, 31, 7) + ln(31, 7, 46, 12) + ln(46, 12, 46, 23) + P('M43,23 L49,23 L46,29 Z', GRN); break; // crane + hook
+            case 'Kipper':
+                S += bar() + ln(31, 14, 20, 24) + ln(31, 14, 42, 24)
+                    + tire(4, 44, 7, 15) + tire(4, 64, 7, 15) + tire(51, 44, 7, 15) + tire(51, 64, 7, 15)
+                    + rr(12, 24, 38, 66, 3) + rr(17, 29, 28, 50, 2) + gf(12, 80, 38, 10, 3); break;
+            default:
+                S += tire(6, 24, 7, 15) + tire(49, 24, 7, 15) + tire(6, 60, 7, 15) + tire(49, 60, 7, 15)
+                    + rr(13, 6, 36, 88, 16) + gf(19, 16, 24, 14, 4) + gf(19, 70, 24, 14, 4);
         }
         return S + '</g>';
     }
-    // Cached SVG symbol node keyed by (category, rounded aspect); cloned per block so a plan
-    // with 60-100 vehicles parses each shape once, not once per draw. w guarded against 0.
+    // Cached SVG symbol node keyed by category; cloned per block so a plan with 60-100
+    // vehicles parses each shape once, not once per draw. The icon is drawn vertical
+    // (62x100) and rotated -90° into a 100x62 box so it lies along the (landscape) block.
     const symCache = {};
-    function symbolNode(type, w, h) {
-        const ar = Math.max(0.05, h / Math.max(0.01, w)), cat = catKey(type), key = cat + '|' + ar.toFixed(2);
-        let tpl = symCache[key];
-        if (!tpl) { tpl = svgEl('svg', { class: 'gp-sym', viewBox: '0 0 100 ' + (100 * ar), preserveAspectRatio: 'xMidYMid meet' }); tpl.innerHTML = catSymbol(cat, 100, 100 * ar, 'rgba(9,17,26,.78)'); symCache[key] = tpl; }
+    function symbolNode(type) {
+        const cat = catKey(type);
+        let tpl = symCache[cat];
+        if (!tpl) { tpl = svgEl('svg', { class: 'gp-sym', viewBox: '0 0 100 62', preserveAspectRatio: 'xMidYMid meet' }); tpl.innerHTML = '<g transform="translate(0,62) rotate(-90)">' + catSymbol(cat) + '</g>'; symCache[cat] = tpl; }
         return tpl.cloneNode(true);
     }
 
@@ -3913,7 +4003,7 @@
     // ---- the planner ----
     routes.hall = async (page, id) => {
         const data = await api.get('/halls/' + id + '/plan');
-        const [palette, halls] = await Promise.all([api.get('/vehicles/unassigned'), api.get('/garages/' + data.hall.garage_id + '/halls')]);
+        const [palette, halls, plannerIcons] = await Promise.all([api.get('/vehicles/unassigned'), api.get('/garages/' + data.hall.garage_id + '/halls'), api.get('/planner-icons').catch(() => [])]);
         const geo = asObj(data.hall.geometry);
         const Wm = num(geo.Wm, 14), Hm = num(geo.Hm, 9);
         let floor = Array.isArray(geo.floor) && geo.floor.length >= 3 ? geo.floor.map((p) => [num(p[0], 0), num(p[1], 0)]) : gpShape(geo.shape || 'rect', Wm, Hm);
@@ -3927,7 +4017,7 @@
                 L: s.length_m, W: s.width_m, H: s.height_m, t: s.weight_t, needsPower: !!s.needs_power,
                 plannerSymbol: s.planner_symbol || null, photoUrl: s.photo_id ? '/api/photos/' + s.photo_id : null,
                 x: num(g.x, 1), y: num(g.y, 1), w: num(g.w, s.length_m || catFoot(s.vehicle_type)[0]), h: num(g.h, s.width_m || catFoot(s.vehicle_type)[1]), rot: num(g.rot, 0), status: g.status || 'busy', _dirty: false }; }),
-            palette,
+            palette, plannerIcons,
             mode: 'manage', editMode: false, snap: true, gridStep: 0.5, ortho: false, zoom: 1, sel: null, selEdge: null,
             render: (function () { try { return localStorage.getItem('gp.render') || 'symbol'; } catch (e) { return 'symbol'; } })(),
             maxed: false, CELL: 30, uid: 1, hist: [], hpos: -1, dirty: false,
@@ -4242,12 +4332,15 @@
             P.spots.forEach((b) => {
                 const ctx = !interactive(b), st = GPSTAT[b.status] || GPSTAT.busy;
                 let eff = P.render || 'symbol'; if (eff === 'foto' && !b.photoUrl) eff = 'symbol'; // fallback chain: no photo → symbol
-                const d = el('div', { class: 'gp-block veh ' + b.status + (eff !== 'rect' ? ' gp-media' : '') + (b._id === P.sel ? ' sel' : '') + (warn(b) ? ' invalid' : '') + (ctx ? ' dimctx' : '') });
+                const d = el('div', { class: 'gp-block veh ' + b.status + (eff !== 'rect' ? ' gp-media' : '') + (eff === 'symbol' ? ' gp-symmode' : '') + (b._id === P.sel ? ' sel' : '') + (warn(b) ? ' invalid' : '') + (ctx ? ' dimctx' : '') });
                 d.dataset.id = b._id;
                 const warnTxt = !inside(b) ? '⚠ außerhalb' : ((!heightOK(b) || !weightOK(b)) ? '⚠ Maß' : null);
                 const codeTxt = st.sym + ' ' + (b.type || 'Gefährt'), nameTxt = b.personName || b.label;
                 // media background (behind the labels); symbol rotates with the block (facing)
-                if (eff === 'symbol') { d.append(symbolNode(b.plannerSymbol || b.type, b.w, b.h)); }
+                if (eff === 'symbol') {
+                    if (b.plannerSymbol && b.plannerSymbol.indexOf('custom:') === 0) d.append(el('img', { class: 'gp-symimg', src: '/api/planner-icons/' + b.plannerSymbol.slice(7), alt: '', onerror: (e) => { e.target.remove(); d.insertBefore(symbolNode(b.type), d.firstChild); } }));
+                    else d.append(symbolNode(b.plannerSymbol || b.type));
+                }
                 else if (eff === 'foto') { d.append(el('img', { class: 'gp-photo', src: b.photoUrl, alt: '' }), el('span', { class: 'gp-photoscrim' })); }
                 if (eff !== 'rect') d.append(el('span', { class: 'gp-stbadge' }, st.sym)); // status glyph when the code chip is hidden (a11y; kept small on tiny blocks)
                 if (b.rot) {
@@ -4483,8 +4576,12 @@
                     pcard.append(el('h4', {}, el('span', {}, 'Planer-Darstellung')));
                     pcard.append(el('button', { class: 'btn btn-ghost btn-sm btn-block', style: 'margin:.15rem 0 .45rem' + (b.needsPower ? ';border-color:var(--gpresv);color:#ffd35b' : ''), onclick: () => updateVehPlanner(b, { needs_power: !b.needsPower }) }, b.needsPower ? '⚡ Ladebedarf: an' : '⚡ Ladebedarf: aus'));
                     const symSel = el('select', { class: 'gp-stepin', 'aria-label': 'Planer-Symbol', onchange: (e) => updateVehPlanner(b, { planner_symbol: e.target.value }) });
-                    [['', 'Symbol: Automatisch']].concat(['PKW', 'Motorrad', 'Transporter', 'Wohnmobil', 'Wohnwagen', 'Anhänger', 'Boot / Trailer', 'Traktor', 'Ladewagen', 'Rückewagen', 'Kipper'].map((k) => [k, 'Symbol: ' + k])).forEach(([v, l]) => { const o = el('option', { value: v }, l); if ((b.plannerSymbol || '') === v) o.selected = true; symSel.append(o); });
-                    pcard.append(symSel); el0.append(pcard);
+                    const symOpts = [['', 'Symbol: Automatisch']].concat(['PKW', 'Motorrad', 'Transporter', 'Wohnmobil', 'Wohnwagen', 'Anhänger', 'Boot / Trailer', 'Traktor', 'Ladewagen', 'Rückewagen', 'Kipper'].map((k) => [k, 'Symbol: ' + k]))
+                        .concat((P.plannerIcons || []).map((ic) => ['custom:' + ic.id, 'Eigenes: ' + ic.name]));
+                    symOpts.forEach(([v, l]) => { const o = el('option', { value: v }, l); if ((b.plannerSymbol || '') === v) o.selected = true; symSel.append(o); });
+                    pcard.append(symSel);
+                    if (canManageNow) pcard.append(el('button', { class: 'btn btn-ghost btn-sm btn-block', style: 'margin-top:.35rem', onclick: async () => { await plannerIconsDialog(); try { P.plannerIcons = await api.get('/planner-icons'); } catch (e) { /* keep old */ } draw(); } }, '＋ Eigene Icons verwalten…'));
+                    el0.append(pcard);
                 }
                 el0.append(el('div', { class: 'btn-row', style: 'margin-top:.6rem' },
                     b.vehId ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => dimForm({ id: b.vehId, label: b.label, L: b.L, W: b.W, H: b.H, t: b.t }) }, '✎ Maße') : null,

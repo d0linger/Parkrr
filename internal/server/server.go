@@ -167,6 +167,12 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("PUT /api/vehicles/{id}/dimensions", editor(hf(h.SetVehicleDimensions)))
 	mux.Handle("PUT /api/vehicles/{id}/planner", editor(hf(h.UpdateVehiclePlanner)))
 
+	// Custom Garagenplaner icons ("tags").
+	mux.Handle("GET /api/planner-icons", authed(hf(h.ListPlannerIcons)))
+	mux.Handle("POST /api/planner-icons", editor(hf(h.UploadPlannerIcon)))
+	mux.Handle("GET /api/planner-icons/{id}", authed(hf(h.GetPlannerIcon)))
+	mux.Handle("DELETE /api/planner-icons/{id}", editor(hf(h.DeletePlannerIcon)))
+
 	// --- Service catalog ---
 	mux.Handle("GET /api/services", authed(hf(h.ListServiceTypes)))
 	mux.Handle("POST /api/services", editor(hf(h.CreateServiceType)))

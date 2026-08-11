@@ -1344,7 +1344,15 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-rz-e{right:-6px;top:50%;margin-top:-6px;cursor:ew-resize}
 .gp-rz-w{left:-6px;top:50%;margin-top:-6px;cursor:ew-resize}
 /* Vehicle display: category symbol (rotates with the block = facing) / photo / status badge */
-.gp-sym{position:absolute;top:7%;left:7%;right:7%;bottom:7%;z-index:0;pointer-events:none}
+.gp-sym{position:absolute;top:6%;left:6%;right:6%;bottom:6%;z-index:0;pointer-events:none}
+/* symbol mode: light tile so the two-tone (white/green/dark) icon reads; status via a
+   coloured frame + the ●◑⇄ badge, and the labels flip to dark ink on the light tile */
+.gp-block.veh.gp-symmode{background:#eef1f4}
+.gp-block.veh.gp-symmode.busy{border:2px solid var(--gpbusy)}
+.gp-block.veh.gp-symmode.resv{border:2px solid var(--gpresv)}
+.gp-block.veh.gp-symmode.move{border:2px solid var(--gpmove)}
+.gp-block.gp-symmode .gp-who,.gp-block.gp-symmode .gp-dim,.gp-block.gp-symmode .gp-rl-name,.gp-block.gp-symmode .gp-rl-dim,.gp-block.gp-symmode .gp-rl-code{color:#28323d;text-shadow:none;background:none}
+.gp-symimg{position:absolute;top:6%;left:6%;right:6%;bottom:6%;width:88%;height:88%;object-fit:contain;z-index:0;pointer-events:none}
 .gp-photo{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:0;pointer-events:none}
 .gp-photoscrim{position:absolute;inset:0;z-index:1;pointer-events:none;background:linear-gradient(180deg,rgba(6,12,20,.04) 42%,rgba(6,12,20,.74))}
 .gp-stbadge{position:absolute;top:3px;left:4px;z-index:2;font-size:.62rem;font-weight:800;color:#fff;background:rgba(0,0,0,.42);border-radius:5px;padding:0 4px;line-height:1.35;pointer-events:none}
@@ -1357,6 +1365,17 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-block.gp-focus{animation:gpfocus 1.3s ease-in-out 0s 2}
 @keyframes gpfocus{0%,100%{box-shadow:0 0 0 2px #fff,0 0 0 4px var(--gpteal2),0 12px 24px -8px rgba(0,0,0,.6)}50%{box-shadow:0 0 0 3px #fff,0 0 0 12px rgba(46,230,207,.55),0 12px 24px -8px rgba(0,0,0,.6)}}
 @media(prefers-reduced-motion:reduce){.gp-block.gp-focus{animation:none}}
+/* Custom planner-icon manager dialog */
+.iconmodal{border:1px solid rgba(255,255,255,.16);border-radius:14px;background:#0d1a27;color:#e9eff6;padding:18px 20px;max-width:460px;width:92vw;font-family:inherit}
+.iconmodal::backdrop{background:rgba(4,8,14,.6)}
+.iconmodal h3{margin:0 0 .2rem}
+.iconup{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-bottom:.8rem}
+.iconup .gp-stepin{flex:1;min-width:150px}
+.icongrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(94px,1fr));gap:10px}
+.iconcell{background:#eef1f4;border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:8px 8px 6px;text-align:center;position:relative}
+.iconcell img{width:100%;height:50px;object-fit:contain}
+.iconcell span{display:block;font-size:.72rem;color:#28323d;margin-top:.25rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.iconcell button{position:absolute;top:1px;right:1px;line-height:1;padding:.05rem .3rem;color:#c0392b}
 .gp-block.gp-tiny .gp-sym{top:2%;left:2%;right:2%;bottom:2%}
 /* keep a minimal status glyph on tiny media blocks (a11y: status never colour-only) */
 .gp-block.gp-tiny .gp-stbadge{top:1px;left:1px;font-size:.5rem;padding:0 2px;background:rgba(0,0,0,.55)}
