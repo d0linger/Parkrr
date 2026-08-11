@@ -3852,6 +3852,11 @@
         return 'PKW'; };
     const CATDEF = { PKW: [4.5, 1.9], Motorrad: [2.2, 0.9], Transporter: [5.4, 2.1], Wohnmobil: [7.0, 2.3], Wohnwagen: [6.0, 2.2], 'Anhänger': [4.0, 1.8], 'Boot / Trailer': [6.0, 2.3], Traktor: [4.6, 2.2], Ladewagen: [8.0, 2.5], 'Rückewagen': [7.5, 2.4], Kipper: [6.5, 2.4] };
     const catFoot = (type) => CATDEF[catKey(type)] || [4.5, 2];
+    // Built-in top-view icons: category → static raster asset (drawn VERTICAL, front up).
+    // Rendered inside the same rotate(-90°) group as the drawn fallback so they lie along
+    // the landscape block. A category with no asset falls back to catSymbol (drawn SVG).
+    const CATICON = { PKW: 'pkw', Motorrad: 'motorrad', Transporter: 'transporter', Wohnmobil: 'wohnmobil', Wohnwagen: 'wohnwagen', 'Anhänger': 'anhaenger', 'Boot / Trailer': 'boot', Traktor: 'traktor', Ladewagen: 'ladewagen', 'Rückewagen': 'rueckewagen', Kipper: 'kipper' };
+    const CATICON_BASE = '/img/vehicles/';
 
     // Top-view category icon (detailed, two-tone) as inner SVG markup in a fixed 62 x 100
     // box, drawn VERTICAL (front = top): white body, dark rounded outline, green accents.
@@ -3936,7 +3941,21 @@
     function symbolNode(type) {
         const cat = catKey(type);
         let tpl = symCache[cat];
-        if (!tpl) { tpl = svgEl('svg', { class: 'gp-sym', viewBox: '0 0 100 62', preserveAspectRatio: 'xMidYMid meet' }); tpl.innerHTML = '<g transform="translate(0,62) rotate(-90)">' + catSymbol(cat) + '</g>'; symCache[cat] = tpl; }
+        if (!tpl) {
+            tpl = svgEl('svg', { class: 'gp-sym', viewBox: '0 0 100 62', preserveAspectRatio: 'xMidYMid meet' });
+            const file = CATICON[cat];
+            if (file) {
+                // Raster asset placed in the 62x100 (pre-rotation) space, then rotated into
+                // the 100x62 landscape box just like the drawn symbol it replaces.
+                const g = svgEl('g', { transform: 'translate(0,62) rotate(-90)' });
+                const im = svgEl('image', { x: 0, y: 0, width: 62, height: 100, preserveAspectRatio: 'xMidYMid meet' });
+                im.setAttribute('href', CATICON_BASE + file + '.png');
+                g.append(im); tpl.append(g);
+            } else {
+                tpl.innerHTML = '<g transform="translate(0,62) rotate(-90)">' + catSymbol(cat) + '</g>';
+            }
+            symCache[cat] = tpl;
+        }
         return tpl.cloneNode(true);
     }
 
