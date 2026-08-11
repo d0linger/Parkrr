@@ -1349,7 +1349,8 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-photoscrim{position:absolute;inset:0;z-index:1;pointer-events:none;background:linear-gradient(180deg,rgba(6,12,20,.04) 42%,rgba(6,12,20,.74))}
 .gp-stbadge{position:absolute;top:3px;left:4px;z-index:2;font-size:.62rem;font-weight:800;color:#fff;background:rgba(0,0,0,.42);border-radius:5px;padding:0 4px;line-height:1.35;pointer-events:none}
 .gp-block.gp-tiny .gp-sym{top:2%;left:2%;right:2%;bottom:2%}
-.gp-block.gp-tiny .gp-stbadge{display:none}
+/* keep a minimal status glyph on tiny media blocks (a11y: status never colour-only) */
+.gp-block.gp-tiny .gp-stbadge{top:1px;left:1px;font-size:.5rem;padding:0 2px;background:rgba(0,0,0,.55)}
 
 .gp-preview{position:absolute;z-index:8;border-radius:7px;pointer-events:none;border:2px solid var(--gphall);background:rgba(38,165,107,.22)}
 .gp-preview.bad{border-color:var(--gpbusy);background:rgba(242,107,99,.22)}

@@ -3809,6 +3809,15 @@
         }
         return S + '</g>';
     }
+    // Cached SVG symbol node keyed by (category, rounded aspect); cloned per block so a plan
+    // with 60-100 vehicles parses each shape once, not once per draw. w guarded against 0.
+    const symCache = {};
+    function symbolNode(type, w, h) {
+        const ar = Math.max(0.05, h / Math.max(0.01, w)), cat = catKey(type), key = cat + '|' + ar.toFixed(2);
+        let tpl = symCache[key];
+        if (!tpl) { tpl = svgEl('svg', { class: 'gp-sym', viewBox: '0 0 100 ' + (100 * ar), preserveAspectRatio: 'xMidYMid meet' }); tpl.innerHTML = catSymbol(cat, 100, 100 * ar, 'rgba(9,17,26,.78)'); symCache[key] = tpl; }
+        return tpl.cloneNode(true);
+    }
 
     // ---- garages list ----
     routes.garages = async (page) => {
@@ -4218,9 +4227,9 @@
                 const warnTxt = !inside(b) ? '⚠ außerhalb' : ((!heightOK(b) || !weightOK(b)) ? '⚠ Maß' : null);
                 const codeTxt = st.sym + ' ' + (b.type || 'Gefährt'), nameTxt = b.personName || b.label;
                 // media background (behind the labels); symbol rotates with the block (facing)
-                if (eff === 'symbol') { const ar = Math.max(0.05, b.h / b.w), sv = svgEl('svg', { class: 'gp-sym', viewBox: '0 0 100 ' + (100 * ar), preserveAspectRatio: 'xMidYMid meet' }); sv.innerHTML = catSymbol(catKey(b.type), 100, 100 * ar, 'rgba(9,17,26,.78)'); d.append(sv); }
+                if (eff === 'symbol') { d.append(symbolNode(b.type, b.w, b.h)); }
                 else if (eff === 'foto') { d.append(el('img', { class: 'gp-photo', src: b.photoUrl, alt: '' }), el('span', { class: 'gp-photoscrim' })); }
-                if (eff !== 'rect' && !b.rot) d.append(el('span', { class: 'gp-stbadge' }, st.sym)); // status glyph when the code chip is hidden (a11y)
+                if (eff !== 'rect') d.append(el('span', { class: 'gp-stbadge' }, st.sym)); // status glyph when the code chip is hidden (a11y; kept small on tiny blocks)
                 if (b.rot) {
                     // rotated: one centred, upright label group (see positionBlock)
                     const grp = el('div', { class: 'gp-rlabel' }, el('span', { class: 'gp-rl-code' }, codeTxt), el('span', { class: 'gp-rl-name' }, nameTxt), el('span', { class: 'gp-rl-dim' }, dimText(b)));
