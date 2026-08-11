@@ -1618,12 +1618,12 @@
         if (v.spot_id && v.hall_id) {
             const go = (e) => { e.stopPropagation(); pendingSpotFocus = v.spot_id; navigate('hall/' + v.hall_id); };
             const title = v.hall_name ? 'Im Plan zeigen: Halle „' + v.hall_name + '"' : 'Im Plan zeigen';
-            if (compact) return el('button', { class: 'veh-loc veh-loc-ic', title, 'aria-label': title, onclick: go }, icon('pin'));
+            if (compact) return el('button', { class: 'veh-loc veh-loc-ic', title, 'aria-label': title, onclick: go }, icon('pin', 20));
             return el('button', { class: 'veh-loc', title: 'Im Plan anzeigen', onclick: go },
                 el('span', {}, '📍 ' + (v.hall_name ? 'Halle „' + v.hall_name + '"' : 'im Plan')),
                 el('span', { class: 'veh-loc-go' }, 'Im Plan zeigen →'));
         }
-        if (compact) return el('span', { class: 'veh-loc veh-loc-ic empty', title: 'Nicht platziert', 'aria-label': 'Nicht platziert' }, icon('pin'));
+        if (compact) return el('span', { class: 'veh-loc veh-loc-ic empty', title: 'Nicht platziert', 'aria-label': 'Nicht platziert' }, icon('pin', 20));
         return el('span', { class: 'veh-loc empty' }, '○ Nicht platziert');
     }
     function vehicleCard(v, { linkable = true, chargeInfo = null } = {}) {
