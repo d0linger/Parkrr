@@ -72,13 +72,16 @@ func (h *Handler) autoArchiveIfClosed(r *http.Request, id int64) {
 // including a live photo count. Append WHERE/ORDER as needed.
 const vehicleSelect = `SELECT v.id, v.person_id, v.category_id, v.label, v.license_plate,
 	        v.notes, v.billing_period, v.rate, v.cost_override, v.start_date, v.end_date,
-	        v.status, v.reserved_from, v.reserved_until, v.paid, v.archived, v.created_at, v.updated_at,
+	        v.status, v.reserved_from, v.reserved_until, v.paid, v.archived, v.created_at, v.updated_at, v.needs_power, v.planner_symbol,
 	        c.name, c.default_monthly_cost, c.default_yearly_cost,
 	        p.first_name, p.last_name,
-	        (SELECT count(*) FROM vehicle_photos vp WHERE vp.vehicle_id = v.id)
+	        (SELECT count(*) FROM vehicle_photos vp WHERE vp.vehicle_id = v.id),
+	        v.spot_id, sp.hall_id, hl.name
 	 FROM vehicles v
 	 JOIN categories c ON c.id = v.category_id
-	 JOIN persons p ON p.id = v.person_id`
+	 JOIN persons p ON p.id = v.person_id
+	 LEFT JOIN spots sp ON sp.id = v.spot_id
+	 LEFT JOIN halls hl ON hl.id = sp.hall_id`
 
 // ListVehicles returns vehicles, optionally filtered by ?person_id=.
 func (h *Handler) ListVehicles(w http.ResponseWriter, r *http.Request) {
@@ -155,6 +158,46 @@ type vehicleRequest struct {
 	Status        string   `json:"status"`
 	ReservedFrom  *string  `json:"reserved_from"`
 	ReservedUntil *string  `json:"reserved_until"`
+	NeedsPower    bool     `json:"needs_power"`
+	PlannerSymbol *string  `json:"planner_symbol"`
+}
+
+// plannerSymbols are the valid per-vehicle Garagenplaner symbol overrides; empty/nil
+// means "automatic" (derive from the category). Kept in sync with the frontend library.
+var plannerSymbols = map[string]bool{
+	"PKW": true, "Motorrad": true, "Transporter": true, "Wohnmobil": true, "Wohnwagen": true,
+	"Anhänger": true, "Boot / Trailer": true, "Traktor": true, "Ladewagen": true, "Rückewagen": true, "Kipper": true,
+}
+
+// normPlannerSymbol validates/normalizes a planner_symbol: nil/"" -> nil (auto); one of
+// the built-in keys -> itself; "custom:<id>" -> itself iff that uploaded icon exists.
+// Anything else is rejected so bad values return 400 rather than reaching the DB.
+func (h *Handler) normPlannerSymbol(ctx context.Context, in *string) (*string, error) {
+	if in == nil {
+		return nil, nil
+	}
+	s := trim(*in)
+	if s == "" {
+		return nil, nil
+	}
+	if plannerSymbols[s] {
+		return &s, nil
+	}
+	if len(s) > 7 && s[:7] == "custom:" {
+		id, err := strconv.ParseInt(s[7:], 10, 64)
+		if err != nil || id <= 0 {
+			return nil, errors.New("invalid planner_symbol")
+		}
+		var exists bool
+		if err := h.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM planner_icons WHERE id=$1)`, id).Scan(&exists); err != nil {
+			return nil, errors.New("could not validate planner_symbol")
+		}
+		if !exists {
+			return nil, errors.New("invalid planner_symbol")
+		}
+		return &s, nil
+	}
+	return nil, errors.New("invalid planner_symbol")
 }
 
 type parsedVehicle struct {
@@ -251,6 +294,11 @@ func (h *Handler) parseVehicleRequest(r *http.Request) (*parsedVehicle, error) {
 	} else if err != nil {
 		return nil, errors.New("reserved_until must be YYYY-MM-DD")
 	}
+	sym, err := h.normPlannerSymbol(r.Context(), req.PlannerSymbol)
+	if err != nil {
+		return nil, err
+	}
+	req.PlannerSymbol = sym
 	return &parsedVehicle{
 		req: req, startDate: start, endDate: endPtr,
 		reservedFrom: resFrom, reservedUntil: resUntil,
@@ -316,11 +364,11 @@ func (h *Handler) CreateVehicle(w http.ResponseWriter, r *http.Request) {
 	err = h.Pool.QueryRow(r.Context(),
 		`INSERT INTO vehicles (person_id, category_id, label, license_plate, notes,
 		        billing_period, rate, cost_override, start_date, end_date, status,
-		        reserved_from, reserved_until)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+		        reserved_from, reserved_until, needs_power, planner_symbol)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
 		pv.req.PersonID, pv.req.CategoryID, pv.req.Label, pv.req.LicensePlate,
 		pv.req.Notes, pv.req.BillingPeriod, rate, pv.req.CostOverride,
-		pv.startDate, pv.endDate, pv.req.Status, pv.reservedFrom, pv.reservedUntil,
+		pv.startDate, pv.endDate, pv.req.Status, pv.reservedFrom, pv.reservedUntil, pv.req.NeedsPower, pv.req.PlannerSymbol,
 	).Scan(&id)
 	if err != nil {
 		if isForeignKeyViolation(err) {
@@ -386,11 +434,12 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 	ct, err := h.Pool.Exec(r.Context(),
 		`UPDATE vehicles SET person_id=$1, category_id=$2, label=$3, license_plate=$4,
 		        notes=$5, billing_period=$6, rate=$7, cost_override=$8, start_date=$9,
-		        end_date=$10, status=$11, reserved_from=$12, reserved_until=$13, updated_at=now()
-		 WHERE id=$14`,
+		        end_date=$10, status=$11, reserved_from=$12, reserved_until=$13, needs_power=$14,
+		        planner_symbol=$15, updated_at=now()
+		 WHERE id=$16`,
 		pv.req.PersonID, pv.req.CategoryID, pv.req.Label, pv.req.LicensePlate,
 		pv.req.Notes, pv.req.BillingPeriod, rate, pv.req.CostOverride,
-		pv.startDate, pv.endDate, pv.req.Status, pv.reservedFrom, pv.reservedUntil, id)
+		pv.startDate, pv.endDate, pv.req.Status, pv.reservedFrom, pv.reservedUntil, pv.req.NeedsPower, pv.req.PlannerSymbol, id)
 	if err != nil {
 		if isForeignKeyViolation(err) {
 			writeError(w, http.StatusBadRequest, "person or category does not exist")
@@ -411,6 +460,53 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 	// consistent with the status-slider endpoint.
 	h.autoArchiveIfClosed(r, id)
 	h.writeVehicle(w, r.Context(), id, http.StatusOK)
+}
+
+type vehiclePlannerRequest struct {
+	NeedsPower    bool    `json:"needs_power"`
+	PlannerSymbol *string `json:"planner_symbol"`
+}
+
+// UpdateVehiclePlanner edits ONLY the Garagenplaner display attributes (Ladebedarf +
+// symbol override) so they can be changed straight from the Stellplatzverwaltung without
+// the full vehicle payload. Purely organizational — no rate/period, so no freeze checks.
+// It writes the same columns as UpdateVehicle, so both stay in sync.
+func (h *Handler) UpdateVehiclePlanner(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req vehiclePlannerRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	sym, err := h.normPlannerSymbol(r.Context(), req.PlannerSymbol)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ct, err := h.Pool.Exec(r.Context(),
+		`UPDATE vehicles SET needs_power=$1, planner_symbol=$2, updated_at=now() WHERE id=$3 AND archived=false`,
+		req.NeedsPower, sym, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update vehicle")
+		return
+	}
+	if ct.RowsAffected() == 0 {
+		// No row updated: distinguish a missing vehicle (404) from an archived,
+		// read-only one (409) — same contract as UpdateVehicle.
+		var archived bool
+		scanErr := h.Pool.QueryRow(r.Context(), `SELECT archived FROM vehicles WHERE id=$1`, id).Scan(&archived)
+		if !ensureVehicleWritable(w, archived, scanErr) {
+			return
+		}
+		writeError(w, http.StatusNotFound, "vehicle not found")
+		return
+	}
+	h.audit(r, "update", "vehicle", id, "Planer-Attribute geändert")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // DeleteVehicle removes a vehicle.
@@ -803,17 +899,23 @@ func scanVehicleRow(row rowScanner) (models.Vehicle, models.Category, error) {
 	var v models.Vehicle
 	var cat models.Category
 	var firstName, lastName string
+	var hallName *string
 	err := row.Scan(&v.ID, &v.PersonID, &v.CategoryID, &v.Label, &v.LicensePlate,
 		&v.Notes, &v.BillingPeriod, &v.Rate, &v.CostOverride, &v.StartDate, &v.EndDate,
 		&v.Status, &v.ReservedFrom, &v.ReservedUntil, &v.Paid, &v.Archived, &v.CreatedAt, &v.UpdatedAt,
+		&v.NeedsPower, &v.PlannerSymbol,
 		&cat.Name, &cat.DefaultMonthlyCost, &cat.DefaultYearlyCost,
-		&firstName, &lastName, &v.PhotoCount)
+		&firstName, &lastName, &v.PhotoCount,
+		&v.SpotID, &v.HallID, &hallName)
 	if err != nil {
 		return v, cat, err
 	}
 	cat.ID = v.CategoryID
 	v.CategoryName = cat.Name
 	v.PersonName = trim(firstName + " " + lastName)
+	if hallName != nil {
+		v.HallName = *hallName
+	}
 	return v, cat, nil
 }
 

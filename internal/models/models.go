@@ -464,6 +464,8 @@ type Vehicle struct {
 	ReservedFrom  *time.Time `json:"reserved_from"`
 	ReservedUntil *time.Time `json:"reserved_until"`
 	Paid          bool       `json:"paid"`
+	NeedsPower    bool       `json:"needs_power"`    // Ladebedarf (Strom) — Garagenplaner only, no billing effect
+	PlannerSymbol *string    `json:"planner_symbol"` // override the category top-view symbol; nil = automatic
 	// Archived marks a closed vehicle (cancelled, or collected + paid) that has
 	// been tidied out of the active lists. Archived vehicles are read-only until
 	// reactivated, but still count in all billing and statistics.
@@ -478,6 +480,10 @@ type Vehicle struct {
 	EffectiveRate float64 `json:"effective_rate"`
 	IsActive      bool    `json:"is_active"`
 	PhotoCount    int     `json:"photo_count"`
+	// Garagenplaner location (joined): the hall the Gefährt's spot belongs to (SpotID
+	// itself is the stored field below). Empty when the Gefährt is not placed.
+	HallID   *int64 `json:"hall_id,omitempty"`
+	HallName string `json:"hall_name,omitempty"`
 	// FlatRateCovered is true when at least one flat-rate agreement covers this
 	// vehicle (bound = billed entirely via the Pauschale, never per-vehicle).
 	// FlatRateActive is true only when such an agreement's window includes today.
@@ -493,6 +499,20 @@ type Vehicle struct {
 	// vehicle is settled through a paid invoice (shown as "bezahlt", archivable).
 	Invoiced    bool `json:"invoiced"`
 	InvoiceOpen bool `json:"invoice_open"`
+
+	// SpotID is the (optional) physical Stellplatz this Gefährt stands on — a
+	// purely organizational link (Garagenplaner) with no effect on billing.
+	// SpotLabel/SpotPath are display-only ("Garage · Halle · A1").
+	SpotID    *int64 `json:"spot_id,omitempty"`
+	SpotLabel string `json:"spot_label,omitempty"`
+	SpotPath  string `json:"spot_path,omitempty"`
+
+	// Physical dimensions (meters / tonnes) for the Garagenplaner's fit checks.
+	// Nullable — an unmeasured Gefährt skips the height/weight/footprint warnings.
+	LengthM *float64 `json:"length_m,omitempty"`
+	WidthM  *float64 `json:"width_m,omitempty"`
+	HeightM *float64 `json:"height_m,omitempty"`
+	WeightT *float64 `json:"weight_t,omitempty"`
 }
 
 // ServiceType is a catalog entry for a chargeable extra service.
@@ -615,6 +635,65 @@ type YearStat struct {
 	Cost         float64 `json:"cost"`
 	VehicleCount int     `json:"vehicle_count"`
 	Paid         bool    `json:"paid"` // flat-rate per-year paid status
+}
+
+// --- Stellplatz-/Hallen-Verwaltung (Garagenplaner) ---
+//
+// A purely organizational spatial layer (garage → hall → spot) that records
+// where a Gefährt physically stands. Geometry is opaque JSON the frontend planner
+// owns; the backend stores and returns it verbatim.
+
+// Garage is a physical location/building that groups halls.
+type Garage struct {
+	ID        int64     `json:"id"`
+	Name      string    `json:"name"`
+	SortOrder int       `json:"sort_order"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+
+	// HallCount is a derived count for the garage list (not stored).
+	HallCount int `json:"hall_count,omitempty"`
+}
+
+// Hall is a floor/area within a Garage. Geometry holds the planner's freeform
+// floor boundary, scale calibration, exclusion zones and view transform.
+type Hall struct {
+	ID        int64           `json:"id"`
+	GarageID  int64           `json:"garage_id"`
+	Name      string          `json:"name"`
+	Geometry  json.RawMessage `json:"geometry"`
+	SortOrder int             `json:"sort_order"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
+
+	// SpotCount is a derived count for the hall list (not stored).
+	SpotCount int `json:"spot_count,omitempty"`
+}
+
+// Spot is a single Stellplatz placed on a hall floor. Geometry holds the block's
+// position/size/rotation on that floor.
+type Spot struct {
+	ID        int64           `json:"id"`
+	HallID    int64           `json:"hall_id"`
+	Label     string          `json:"label"`
+	Geometry  json.RawMessage `json:"geometry"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
+
+	// Derived: the Gefährt currently standing on this spot, if any (1:1), with the
+	// physical data the planner needs for its fit checks and the click→Mieter jump.
+	VehicleID     *int64   `json:"vehicle_id,omitempty"`
+	VehicleLabel  string   `json:"vehicle_label,omitempty"`
+	VehicleType   string   `json:"vehicle_type,omitempty"`
+	PersonID      *int64   `json:"person_id,omitempty"`
+	PersonName    string   `json:"person_name,omitempty"`
+	LengthM       *float64 `json:"length_m,omitempty"`
+	WidthM        *float64 `json:"width_m,omitempty"`
+	HeightM       *float64 `json:"height_m,omitempty"`
+	WeightT       *float64 `json:"weight_t,omitempty"`
+	NeedsPower    bool     `json:"needs_power"`              // Ladebedarf of the Gefährt on this spot
+	PlannerSymbol *string  `json:"planner_symbol,omitempty"` // per-vehicle symbol override
+	PhotoID       *int64   `json:"photo_id,omitempty"`       // first photo of the Gefährt (foto mode)
 }
 
 func maxTime(a, b time.Time) time.Time {

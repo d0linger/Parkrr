@@ -70,6 +70,7 @@
         check: '<path d="M20 6 9 17l-5-5"/>',
         plus: '<path d="M12 5v14M5 12h14"/>',
         archive: '<rect x="3.5" y="5" width="17" height="4" rx="1"/><path d="M5 9v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4"/>',
+        pin: '<path d="M12 21s-6-5.3-6-10a6 6 0 0 1 12 0c0 4.7-6 10-6 10Z"/><circle cx="12" cy="11" r="2.3"/>',
     };
     const icon = (name, size = 16) => {
         const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -125,9 +126,9 @@
             if (method !== 'GET') opts.headers['X-CSRF-Token'] = getCookie('parkrr_csrf');
             return handle(await fetch('/api' + path, opts));
         },
-        async upload(path, formData) {
+        async upload(path, formData, method = 'POST') {
             const res = await fetch('/api' + path, {
-                method: 'POST', body: formData, credentials: 'same-origin',
+                method, body: formData, credentials: 'same-origin',
                 headers: { 'X-CSRF-Token': getCookie('parkrr_csrf') },
             });
             return handle(res);
@@ -668,6 +669,9 @@
 
     // ================= ROUTER =================
     const routes = {};
+    // Set before navigate('hall/<id>') to focus a spot on arrival (the hash router
+    // can't carry a ?query, so we pass it out-of-band). The hall planner reads + clears it.
+    let pendingSpotFocus = null;
     function parseHash() {
         const raw = (location.hash || '#/dashboard').replace(/^#\/?/, '');
         const [name, id] = raw.split('/');
@@ -1550,6 +1554,78 @@
         return { covered, active, owed, settled: covered && owed <= 0.005 };
     }
 
+    // Custom planner-icon library: upload PNG/JPEG top-view icons with a name/tag, list
+    // and delete them. Uploaded icons become selectable per vehicle (planner_symbol =
+    // 'custom:<id>'). Returns after the dialog closes so callers can refresh their selects.
+    async function plannerIconsDialog() {
+        const dlg = el('dialog', { class: 'iconmodal' });
+        const body = el('div', {});
+        let editId = null, editName = ''; // when set, the top form renames / replaces that icon
+        const render = async () => {
+            body.innerHTML = '';
+            body.append(el('h3', {}, 'Planer-Icons verwalten'));
+            body.append(el('p', { class: 'muted', style: 'font-size:.8rem;margin:.1rem 0 .6rem' }, editId ? 'Bearbeiten: Name ändern und/oder neue Datei wählen — die ID (und damit alle Zuordnungen) bleibt erhalten.' : 'Eigene Draufsicht-Icons (PNG/JPEG) hochladen und benennen. Danach pro Gefährt unter „Planer-Symbol" wählbar.'));
+            const nameIn = el('input', { class: 'gp-stepin', placeholder: 'Name / Tag, z. B. Pferdeanhänger', value: editId ? editName : '' });
+            const fileIn = el('input', { type: 'file', accept: 'image/png,image/jpeg' });
+            const submit = el('button', {
+                class: 'btn btn-primary btn-sm', onclick: async () => {
+                    const nm = nameIn.value.trim();
+                    if (editId) {
+                        if (!nm && !fileIn.files[0]) { toast('Name oder Datei ändern', 'error'); return; }
+                        const fd = new FormData(); if (nm) fd.append('name', nm); if (fileIn.files[0]) fd.append('file', fileIn.files[0]);
+                        try { await api.upload('/planner-icons/' + editId, fd, 'PUT'); toast('Icon aktualisiert', 'success'); editId = null; await render(); }
+                        catch (err) { toast(err.message || 'Speichern fehlgeschlagen', 'error'); }
+                    } else {
+                        if (!nm || !fileIn.files[0]) { toast('Name und Datei nötig', 'error'); return; }
+                        const fd = new FormData(); fd.append('name', nm); fd.append('file', fileIn.files[0]);
+                        try { await api.upload('/planner-icons', fd); toast('Icon hochgeladen', 'success'); await render(); }
+                        catch (err) { toast(err.message || 'Upload fehlgeschlagen', 'error'); }
+                    }
+                }
+            }, editId ? 'Speichern' : 'Hochladen');
+            const row = el('div', { class: 'iconup' }, nameIn, fileIn, submit);
+            if (editId) row.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => { editId = null; render(); } }, 'Abbrechen'));
+            body.append(row);
+            let icons = []; try { icons = await api.get('/planner-icons'); } catch (e) { /* offline */ }
+            const grid = el('div', { class: 'icongrid' });
+            if (!icons.length) grid.append(el('div', { class: 'muted', style: 'font-size:.82rem' }, 'Noch keine eigenen Icons.'));
+            icons.forEach((ic) => grid.append(el('div', { class: 'iconcell' + (editId === ic.id ? ' editing' : '') },
+                el('img', { src: '/api/planner-icons/' + ic.id + '?t=' + (ic.byte_size || 0), alt: ic.name }),
+                el('span', { title: ic.name }, ic.name),
+                el('button', { class: 'btn btn-ghost btn-sm iconedit', title: 'Umbenennen / Bild ersetzen', onclick: () => { editId = ic.id; editName = ic.name; render(); } }, '✎'),
+                el('button', { class: 'btn btn-ghost btn-sm icondel', title: 'Löschen', onclick: async () => { if (!await confirmDialog('Icon löschen?', `„${ic.name}" wird entfernt. Fahrzeuge, die es nutzen, fallen aufs Kategorie-Symbol zurück.`, 'Löschen')) return; try { await api.del('/planner-icons/' + ic.id); if (editId === ic.id) editId = null; await render(); } catch (e) { toast('Löschen fehlgeschlagen', 'error'); } } }, '✕'))));
+            body.append(grid);
+            // Built-in category icons (read-only): always available per vehicle under
+            // „Planer-Symbol", not stored in the DB and therefore not editable/deletable.
+            body.append(el('h4', { class: 'iconh4' }, 'Eingebaute Icons'));
+            body.append(el('p', { class: 'muted', style: 'font-size:.76rem;margin:0 0 .5rem' }, 'Immer verfügbar, pro Gefährt unter „Planer-Symbol" wählbar. Nicht löschbar.'));
+            const bgrid = el('div', { class: 'icongrid' });
+            Object.entries(CATICON).forEach(([cat, slug]) => bgrid.append(el('div', { class: 'iconcell builtin' },
+                el('img', { src: CATICON_BASE + slug + '.png', alt: cat }),
+                el('span', { title: cat }, cat))));
+            body.append(bgrid);
+            body.append(el('button', { class: 'btn btn-ghost btn-sm', style: 'margin-top:.7rem', onclick: () => dlg.close() }, 'Schließen'));
+        };
+        dlg.append(body); document.body.append(dlg);
+        dlg.addEventListener('close', () => dlg.remove());
+        await render(); dlg.showModal();
+        await new Promise((res) => dlg.addEventListener('close', res, { once: true }));
+    }
+
+    // Standort-Chip: quick link Gefährt → its Stellplatz in the planner (or a muted
+    // "not placed"). Click focuses the spot on the plan (pendingSpotFocus + navigate).
+    function vehLocationChip(v, { compact = false } = {}) {
+        if (v.spot_id && v.hall_id) {
+            const go = (e) => { e.stopPropagation(); pendingSpotFocus = v.spot_id; navigate('hall/' + v.hall_id); };
+            const title = v.hall_name ? 'Im Plan zeigen: Halle „' + v.hall_name + '"' : 'Im Plan zeigen';
+            if (compact) return el('button', { class: 'veh-loc veh-loc-ic', title, 'aria-label': title, onclick: go }, icon('pin', 20));
+            return el('button', { class: 'veh-loc', title: 'Im Plan anzeigen', onclick: go },
+                el('span', {}, '📍 ' + (v.hall_name ? 'Halle „' + v.hall_name + '"' : 'im Plan')),
+                el('span', { class: 'veh-loc-go' }, 'Im Plan zeigen →'));
+        }
+        if (compact) return el('span', { class: 'veh-loc veh-loc-ic empty', title: 'Nicht platziert', 'aria-label': 'Nicht platziert' }, icon('pin', 20));
+        return el('span', { class: 'veh-loc empty' }, '○ Nicht platziert');
+    }
     function vehicleCard(v, { linkable = true, chargeInfo = null } = {}) {
         const title = vehicleTitle(v);
         const rateUnit = v.billing_period === 'yearly' ? '/Jahr' : '/Monat';
@@ -1575,11 +1651,15 @@
             main.append(el('div', { class: 'card-meta', style: 'margin-top:.2rem;color:var(--accent-text);font-weight:600' },
                 'Zusatzkosten: ' + eur(chargeInfo.sum) + (chargeInfo.count > 1 ? ' · ' + chargeInfo.count + ' Pos.' : '')));
         }
-        const actions = el('div', { class: 'card-actions' },
+        const actions = el('div', { class: 'card-actions stack' },
             // Archived vehicles are read-only, so no inline edit; delete stays for
             // genuine mistakes.
-            canManage() && !v.archived && el('button', { class: 'btn btn-ghost btn-sm', title: title + ' bearbeiten', 'aria-label': title + ' bearbeiten', onclick: () => vehicleForm(v) }, icon('edit')),
-            canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: title + ' löschen', 'aria-label': title + ' löschen', onclick: (e) => delVehicle(v, e.currentTarget.closest('.card')) }, icon('trash')));
+            el('div', { class: 'card-actbtns' },
+                canManage() && !v.archived && el('button', { class: 'btn btn-ghost btn-sm', title: title + ' bearbeiten', 'aria-label': title + ' bearbeiten', onclick: () => vehicleForm(v) }, icon('edit')),
+                canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: title + ' löschen', 'aria-label': title + ' löschen', onclick: (e) => delVehicle(v, e.currentTarget.closest('.card')) }, icon('trash'))),
+            // Standort as a compact pin icon under the edit/delete buttons — keeps the card
+            // no taller than necessary; the hall name is in its tooltip/aria-label.
+            vehLocationChip(v, { compact: true }));
         return el('div', { class: 'card' + (v.archived ? ' is-archived' : '') },
             el('div', { class: 'card-row' }, main, actions),
             vehicleControls(v));
@@ -2285,6 +2365,7 @@
         const initCat = existing?.category_id ?? state.categories[0].id;
         const initPeriod = existing?.billing_period || 'monthly';
         const initRate = existing?.rate ?? catDefault(initCat, initPeriod);
+        let customIcons = []; try { customIcons = await api.get('/planner-icons'); } catch (e) { /* optional */ }
         await formModal({
             title: existing ? 'Gefährt bearbeiten' : 'Neues Gefährt',
             fields: [
@@ -2297,6 +2378,8 @@
                 { name: 'billing_period', label: 'Abrechnung', type: 'select', value: initPeriod, options: [{ value: 'monthly', label: 'monatlich' }, { value: 'yearly', label: 'jährlich' }] },
                 { name: 'rate', label: 'Preis (€)', type: 'number', step: '0.01', min: 0, required: true, value: initRate, help: 'Aus dem Tarif übernommen und fest hinterlegt. Eine spätere Tarifänderung ändert diesen Preis nicht.' },
                 { name: 'notes', label: 'Notizen', type: 'textarea', value: existing?.notes },
+                { name: 'needs_power', label: 'Ladebedarf (Strom) — E-Fahrzeug / Kühlung', type: 'checkbox', value: !!existing?.needs_power },
+                { name: 'planner_symbol', label: 'Planer-Symbol', type: 'select', value: existing?.planner_symbol || '', help: 'Standard: automatisch aus dem Tarif/Typ. Optional ein festes Draufsicht-Symbol oder ein eigenes hochgeladenes Icon wählen (im Planer unter „Eigene Icons verwalten").', options: [{ value: '', label: 'Automatisch (aus Typ)' }].concat(['PKW', 'Motorrad', 'Transporter', 'Wohnmobil', 'Wohnwagen', 'Anhänger', 'Boot / Trailer', 'Traktor', 'Ladewagen', 'Rückewagen', 'Kipper'].map((k) => ({ value: k, label: k }))).concat(customIcons.map((ic) => ({ value: 'custom:' + ic.id, label: 'Eigenes: ' + ic.name }))) },
             ],
             onRender: (body) => {
                 segmentedField(body, 'billing_period', [{ v: 'monthly', l: 'monatlich' }, { v: 'yearly', l: 'jährlich' }]);
@@ -2321,6 +2404,8 @@
                     end_date: data.end_date === '' ? null : data.end_date,
                     reserved_from: existing?.reserved_from ? existing.reserved_from.slice(0, 10) : null,
                     reserved_until: existing?.reserved_until ? existing.reserved_until.slice(0, 10) : null,
+                    needs_power: !!data.needs_power,
+                    planner_symbol: data.planner_symbol || null,
                 };
                 if (existing) await api.put('/vehicles/' + existing.id, payload);
                 else await api.post('/vehicles', payload);
@@ -2363,6 +2448,7 @@
             el('div', { class: 'balance' }, el('span', {}, 'Kennzeichen'), el('span', {}, esc(v.license_plate || '–'))),
             el('div', { class: 'balance' }, el('span', {}, 'Preis'), el('span', { class: 'amt' }, eur(v.effective_rate) + (v.billing_period === 'yearly' ? ' /Jahr' : ' /Monat'))),
             el('div', { class: 'balance' }, el('span', {}, 'Zeitraum'), el('span', {}, fmtDate(v.start_date) + (v.end_date ? ' – ' + fmtDate(v.end_date) : ' – offen'))),
+            el('div', { class: 'balance' }, el('span', {}, 'Standort'), el('span', {}, vehLocationChip(v))),
             v.reserved_from ? el('div', { class: 'balance' }, el('span', {}, 'Reservierung'), el('span', {}, fmtDate(v.reserved_from) + ' – ' + fmtDate(v.reserved_until))) : null,
             vc.covered ? el('div', { class: 'balance' }, el('span', {}, 'Pauschale'), el('span', {}, vc.active ? 'aktiv abgedeckt' : 'beendet')) : null,
             vc.settled
@@ -3726,6 +3812,1166 @@
     }
 
     // ================= MENU SHEET =================
+    // ================= STELLPLÄTZE / GARAGENPLANER =================
+    // Faithful port of the Hallen-/Stellplatzverwaltung prototype: two modes in one
+    // hall view — Garagenplaner (floor shape, Maße, Torhöhe, Bodenlast, ausgenommene
+    // Flächen) and Stellplätze (free placement of Gefährte with dimension/collision
+    // checks, drag-&-drop rebooking). Works in METRES; CSP-safe (no inline styles —
+    // classes in style.css + CSSOM). Persistence: hall geometry via Save, placements
+    // (spots) persist immediately on drop/remove.
+    const SVGNS = 'http://www.w3.org/2000/svg';
+    const svgEl = (tag, attrs = {}) => { const n = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(attrs)) if (v != null) n.setAttribute(k, v); return n; };
+    const asObj = (v) => { if (v == null) return {}; if (typeof v === 'object') return v; try { return JSON.parse(v || '{}'); } catch (e) { return {}; } };
+    const num = (v, d) => { const n = Number(v); return Number.isFinite(n) ? n : d; };
+
+    // --- pure geometry (metres) ---
+    const polyArea = (pts) => { let a = 0; for (let i = 0; i < pts.length; i++) { const j = (i + 1) % pts.length; a += pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1]; } return Math.abs(a) / 2; };
+    const polyPerim = (pts) => { let s = 0; for (let i = 0; i < pts.length; i++) { const a = pts[i], b = pts[(i + 1) % pts.length]; s += Math.hypot(b[0] - a[0], b[1] - a[1]); } return s; };
+    const pip = (x, y, pts) => { let inside = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1]; if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) inside = !inside; } return inside; };
+    const ccw = (p, q, r) => (r[1] - p[1]) * (q[0] - p[0]) > (q[1] - p[1]) * (r[0] - p[0]);
+    const segX = (a, b, c, d) => ccw(a, c, d) !== ccw(b, c, d) && ccw(a, b, c) !== ccw(a, b, d);
+    const rectInPoly = (r, pts) => { const cx = r.x + r.w / 2, cy = r.y + r.h / 2, e = 0.02, C = [[r.x, r.y], [r.x + r.w, r.y], [r.x + r.w, r.y + r.h], [r.x, r.y + r.h]]; const Cs = C.map(([x, y]) => [x + (cx > x ? e : -e), y + (cy > y ? e : -e)]); /* shrink toward centre for BOTH tests: a corner/edge flush on a floor border must not read as outside (pip) NOR as a T-junction crossing (segX) */ for (let k = 0; k < 4; k++) { if (!pip(Cs[k][0], Cs[k][1], pts)) return false; } for (let i = 0; i < pts.length; i++) { const p1 = pts[i], p2 = pts[(i + 1) % pts.length]; for (let c = 0; c < 4; c++) { if (segX(p1, p2, Cs[c], Cs[(c + 1) % 4])) return false; } } return true; };
+    const ov = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    const fmtM = (v) => (Math.round(v * 100) / 100).toLocaleString('de-DE') + ' m';
+    // A rotated block is inside the floor only if all corners are in the polygon AND
+    // no block edge crosses a floor edge (catches spanning a concave L/U/step notch).
+    const quadInPoly = (q, pts) => { const cx = (q[0][0] + q[1][0] + q[2][0] + q[3][0]) / 4, cy = (q[0][1] + q[1][1] + q[2][1] + q[3][1]) / 4, e = 0.02; const qs = q.map(([x, y]) => [x + (cx > x ? e : -e), y + (cy > y ? e : -e)]); /* shrink toward centre for BOTH the corner (pip) and edge (segX) tests so a flush corner/edge on a floor border isn't read as outside or as a T-junction crossing */ for (const [x, y] of qs) { if (!pip(x, y, pts)) return false; } for (let i = 0; i < pts.length; i++) { const p1 = pts[i], p2 = pts[(i + 1) % pts.length]; for (let c = 0; c < qs.length; c++) { if (segX(p1, p2, qs[c], qs[(c + 1) % qs.length])) return false; } } return true; };
+    // Rotated-rectangle support: the 4 corners of a block rotated by rot° about its
+    // centre, and a separating-axis overlap test between two convex quads.
+    const quad = (b) => { const cx = b.x + b.w / 2, cy = b.y + b.h / 2, r = (b.rot || 0) * Math.PI / 180, cos = Math.cos(r), sin = Math.sin(r); return [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]].map(([px, py]) => { const dx = px - cx, dy = py - cy; return [cx + dx * cos - dy * sin, cy + dx * sin + dy * cos]; }); };
+    const satOverlap = (A, B) => { const EPS = 0.02; for (const poly of [A, B]) { for (let i = 0; i < poly.length; i++) { const [x1, y1] = poly[i], [x2, y2] = poly[(i + 1) % poly.length]; let ax = -(y2 - y1), ay = x2 - x1; const len = Math.hypot(ax, ay) || 1; ax /= len; ay /= len; let mnA = Infinity, mxA = -Infinity, mnB = Infinity, mxB = -Infinity; for (const [px, py] of A) { const d = px * ax + py * ay; if (d < mnA) mnA = d; if (d > mxA) mxA = d; } for (const [px, py] of B) { const d = px * ax + py * ay; if (d < mnB) mnB = d; if (d > mxB) mxB = d; } if (Math.min(mxA, mxB) - Math.max(mnA, mnB) < EPS) return false; } } return true; }; // touching (≤2cm) counts as separated, so edge-flush snapping is valid
+
+    // Hall floor shape presets (metres), parameterised by Wm×Hm.
+    const gpShape = (n, W, H) => { const r = Math.round;
+        if (n === 'rect') return [[0, 0], [W, 0], [W, H], [0, H]];
+        if (n === 'l') return [[0, 0], [r(W * .62), 0], [r(W * .62), r(H * .5)], [W, r(H * .5)], [W, H], [0, H]];
+        if (n === 'trap') return [[r(W * .16), 0], [r(W * .84), 0], [W, H], [0, H]];
+        if (n === 'step') return [[0, 0], [W, 0], [W, r(H * .42)], [r(W * .6), r(H * .42)], [r(W * .6), H], [0, H]];
+        if (n === 'u') return [[0, 0], [r(W * .3), 0], [r(W * .3), r(H * .6)], [r(W * .7), r(H * .6)], [r(W * .7), 0], [W, 0], [W, H], [0, H]];
+        return [[0, 0], [W, 0], [W, H], [0, H]]; };
+
+    const EXCL = { lane: { label: 'Fahrstraße', w: 6, h: 2 }, maint: { label: 'Wartung', w: 4, h: 3 }, wall: { label: 'Säule/Wand', w: 1, h: 1 }, exit: { label: 'Notausgang', w: 2, h: 1 }, gate: { label: 'Tor', w: 3, h: 0.5 } };
+    // Status carries a SYMBOL + label so it is distinguishable without colour (a11y).
+    const GPSTAT = { busy: { label: 'Belegt', sym: '●' }, resv: { label: 'Reserviert', sym: '◑' }, move: { label: 'Ein/Aus', sym: '⇄' } };
+
+    // Fahrzeug-Darstellung: Kategoriename (v.type) → Top-View-Symbol-Key + Standard-Footprint.
+    const catKey = (type) => { const t = (type || '').toLowerCase();
+        if (/motorr|moped|roller|bike/.test(t)) return 'Motorrad';
+        if (/wohnmobil|reisemobil|camper/.test(t)) return 'Wohnmobil';
+        if (/wohnwagen|caravan/.test(t)) return 'Wohnwagen';
+        if (/boot|jetski|trailer/.test(t)) return 'Boot / Trailer';
+        if (/traktor|schlepper|landmasch/.test(t)) return 'Traktor';
+        if (/ladewagen/.test(t)) return 'Ladewagen';
+        if (/rückewagen|rueckewagen|forst/.test(t)) return 'Rückewagen';
+        if (/kipper|mulde/.test(t)) return 'Kipper';
+        if (/anhäng|anhaeng|häng|haeng/.test(t)) return 'Anhänger';
+        if (/transport|sprinter|kasten|\bvan\b|bus/.test(t)) return 'Transporter';
+        return 'PKW'; };
+    const CATDEF = { PKW: [4.5, 1.9], Motorrad: [2.2, 0.9], Transporter: [5.4, 2.1], Wohnmobil: [7.0, 2.3], Wohnwagen: [6.0, 2.2], 'Anhänger': [4.0, 1.8], 'Boot / Trailer': [6.0, 2.3], Traktor: [4.6, 2.2], Ladewagen: [8.0, 2.5], 'Rückewagen': [7.5, 2.4], Kipper: [6.5, 2.4] };
+    const catFoot = (type) => CATDEF[catKey(type)] || [4.5, 2];
+    // Built-in top-view icons: category → static raster asset (drawn VERTICAL, front up).
+    // Rendered inside the same rotate(-90°) group as the drawn fallback so they lie along
+    // the landscape block. A category with no asset falls back to catSymbol (drawn SVG).
+    const CATICON = { PKW: 'pkw', Motorrad: 'motorrad', Transporter: 'transporter', Wohnmobil: 'wohnmobil', Wohnwagen: 'wohnwagen', 'Anhänger': 'anhaenger', 'Boot / Trailer': 'boot', Traktor: 'traktor', Ladewagen: 'ladewagen', 'Rückewagen': 'rueckewagen', Kipper: 'kipper' };
+    const CATICON_BASE = '/img/vehicles/';
+
+    // Top-view category icon (detailed, two-tone) as inner SVG markup in a fixed 62 x 100
+    // box, drawn VERTICAL (front = top): white body, dark rounded outline, green accents.
+    function catSymbol(cat) {
+        var INK = '#333b45', BODY = '#fbfcfd', GRN = '#9cc188', TIRE = '#4a5563';
+        function rr(x, y, w, h, r, f) { return '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="' + r + '" fill="' + (f || BODY) + '" stroke="' + INK + '" stroke-width="2.2" stroke-linejoin="round"/>'; }
+        function gf(x, y, w, h, r) { return '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="' + (r == null ? 2 : r) + '" fill="' + GRN + '"/>'; }
+        function tire(x, y, w, h) { return '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="' + (Math.min(w, h) / 2.2) + '" fill="' + TIRE + '" stroke="' + INK + '" stroke-width="1.4"/>'; }
+        function gw(x, y, w, h) { return '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="' + (Math.min(w, h) / 2.4) + '" fill="' + GRN + '" stroke="' + INK + '" stroke-width="1.6"/>'; }
+        function ln(a, b, c, d) { return '<line x1="' + a + '" y1="' + b + '" x2="' + c + '" y2="' + d + '" stroke="' + INK + '" stroke-width="1.4" stroke-linecap="round"/>'; }
+        function ci(x, y, r, f) { return '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="' + (f || BODY) + '" stroke="' + INK + '" stroke-width="2"/>'; }
+        function dot(x, y, r, f) { return '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="' + (f || GRN) + '"/>'; }
+        function P(d, f) { return '<path d="' + d + '" fill="' + (f || BODY) + '" stroke="' + INK + '" stroke-width="2.2" stroke-linejoin="round"/>'; }
+        function bar() { return ln(31, 3, 31, 14) + ci(31, 4, 2); }
+        var S = '<g stroke-linecap="round">';
+        switch (cat) {
+            case 'PKW': case 'Auto':
+                S += tire(6, 22, 7, 16) + tire(49, 22, 7, 16) + tire(6, 60, 7, 16) + tire(49, 60, 7, 16)
+                    + rr(11, 6, 40, 88, 10) + gf(9, 25, 4, 6, 2) + gf(49, 25, 4, 6, 2)
+                    + P('M23,15 L39,15 L45,32 L17,32 Z', GRN)                        // windshield (big, narrow at front)
+                    + gf(14, 36, 6, 26, 2) + gf(42, 36, 6, 26, 2)                    // side windows
+                    + P('M24,71 L38,71 Q42,77 39,83 L23,83 Q20,77 24,71 Z', GRN)     // rear window (small, rounded)
+                    + dot(19, 10, 2) + dot(43, 10, 2); break;
+            case 'Motorrad':
+                S += P('M31,12 C21,13 17,24 17,44 C17,64 22,82 31,96 C40,82 45,64 45,44 C45,24 41,13 31,12 Z')
+                    + '<path d="M15,19 Q31,13 47,19" fill="none" stroke="' + INK + '" stroke-width="2.6" stroke-linecap="round"/>'
+                    + dot(14, 19, 2.4) + dot(48, 19, 2.4)
+                    + ci(31, 27, 5.5) + dot(31, 27, 2.2) + gf(24, 44, 14, 32, 7); break;
+            case 'Transporter':
+                S += tire(4, 20, 7, 15) + tire(51, 20, 7, 15) + tire(4, 66, 7, 15) + tire(51, 66, 7, 15)
+                    + rr(11, 6, 40, 88, 8) + P('M15,11 L47,11 L44,23 L18,23 Z', GRN)
+                    + ln(11, 29, 51, 29) + gf(7, 19, 5, 8, 2) + gf(50, 19, 5, 8, 2)
+                    + rr(15, 34, 32, 56, 3) + ln(31, 34, 31, 90); break;
+            case 'Wohnmobil':
+                S += tire(4, 15, 7, 15) + tire(51, 15, 7, 15) + tire(4, 44, 7, 15) + tire(51, 44, 7, 15) + tire(4, 73, 7, 15) + tire(51, 73, 7, 15)
+                    + rr(11, 5, 40, 90, 7) + P('M15,10 L47,10 L44,21 L18,21 Z', GRN) + ln(11, 26, 51, 26)
+                    + gf(8, 14, 4, 8, 2) + gf(50, 14, 4, 8, 2)
+                    + gf(22, 34, 18, 14, 3) + rr(24, 54, 14, 12, 2) + ln(15, 72, 47, 72) + ln(15, 80, 47, 80) + gf(45, 58, 6, 18, 2); break;
+            case 'Wohnwagen':
+                S += bar() + tire(6, 52, 7, 16) + tire(49, 52, 7, 16)
+                    + P('M31,14 C18,14 13,20 13,30 L13,86 C13,92 16,95 22,95 L40,95 C46,95 49,92 49,86 L49,30 C49,20 44,14 31,14 Z')
+                    + gf(15, 40, 8, 44, 3) + gf(39, 40, 8, 44, 3) + rr(22, 22, 18, 11, 3) + gf(24, 24, 14, 7, 2) + rr(27, 58, 8, 8, 2); break;
+            case 'Anhänger':
+                S += bar() + ln(31, 14, 18, 30) + ln(31, 14, 44, 30)
+                    + tire(5, 46, 7, 16) + tire(50, 46, 7, 16)
+                    + rr(12, 30, 38, 52, 3) + gf(12, 30, 5, 52, 2) + gf(45, 30, 5, 52, 2)
+                    + ln(18, 46, 44, 46) + ln(18, 64, 44, 64); break;
+            case 'Boot / Trailer': case 'Boot':
+                S += tire(6, 58, 7, 16) + tire(49, 58, 7, 16)
+                    + P('M31,4 C21,12 16,28 16,52 L16,84 C16,90 20,94 26,94 L36,94 C42,94 46,90 46,84 L46,52 C46,28 41,12 31,4 Z')
+                    + gf(23, 52, 16, 26, 5) + rr(24, 40, 14, 9, 3) + rr(26, 88, 10, 7, 2); break;
+            case 'Traktor': case 'Landmaschine':
+                S += tire(9, 8, 10, 20) + tire(43, 8, 10, 20) + gw(3, 52, 15, 38) + gw(44, 52, 15, 38)
+                    + ln(6, 60, 15, 60) + ln(6, 70, 15, 70) + ln(6, 80, 15, 80) + ln(47, 60, 56, 60) + ln(47, 70, 56, 70) + ln(47, 80, 56, 80)
+                    + rr(22, 8, 18, 26, 4) + rr(18, 34, 26, 34, 4) + gf(21, 38, 20, 26, 3) + rr(28, 2, 6, 8, 1); break;
+            case 'Ladewagen':
+                S += bar() + tire(4, 42, 7, 15) + tire(4, 62, 7, 15) + tire(51, 42, 7, 15) + tire(51, 62, 7, 15)
+                    + rr(11, 22, 40, 70, 3) + gf(11, 22, 8, 70, 2) + gf(43, 22, 8, 70, 2)
+                    + ln(22, 26, 22, 88) + ln(26, 26, 26, 88) + ln(30, 26, 30, 88) + ln(34, 26, 34, 88) + ln(38, 26, 38, 88)
+                    + P('M19,14 L43,14 L47,22 L15,22 Z'); break;
+            case 'Rückewagen':
+                S += tire(4, 48, 7, 15) + tire(4, 68, 7, 15) + tire(51, 48, 7, 15) + tire(51, 68, 7, 15)
+                    + rr(11, 32, 40, 60, 3)
+                    + ln(11, 42, 6, 42) + ln(11, 58, 6, 58) + ln(11, 74, 6, 74) + ln(11, 88, 6, 88)
+                    + ln(51, 42, 56, 42) + ln(51, 58, 56, 58) + ln(51, 74, 56, 74) + ln(51, 88, 56, 88)
+                    + gf(18, 38, 7, 52, 3) + gf(28, 38, 7, 52, 3) + gf(38, 38, 7, 52, 3)     // logs
+                    + gf(23, 20, 16, 11, 3) + ln(31, 20, 31, 7) + ln(31, 7, 46, 12) + ln(46, 12, 46, 23) + P('M43,23 L49,23 L46,29 Z', GRN); break; // crane + hook
+            case 'Kipper':
+                S += bar() + ln(31, 14, 20, 24) + ln(31, 14, 42, 24)
+                    + tire(4, 44, 7, 15) + tire(4, 64, 7, 15) + tire(51, 44, 7, 15) + tire(51, 64, 7, 15)
+                    + rr(12, 24, 38, 66, 3) + rr(17, 29, 28, 50, 2) + gf(12, 80, 38, 10, 3); break;
+            default:
+                S += tire(6, 24, 7, 15) + tire(49, 24, 7, 15) + tire(6, 60, 7, 15) + tire(49, 60, 7, 15)
+                    + rr(13, 6, 36, 88, 16) + gf(19, 16, 24, 14, 4) + gf(19, 70, 24, 14, 4);
+        }
+        return S + '</g>';
+    }
+    // Cached SVG symbol node keyed by category; cloned per block so a plan with 60-100
+    // vehicles parses each shape once, not once per draw. The icon is drawn vertical
+    // (62x100) and rotated -90° into a 100x62 box so it lies along the (landscape) block.
+    const symCache = {};
+    function symbolNode(type) {
+        const cat = catKey(type);
+        let tpl = symCache[cat];
+        if (!tpl) {
+            tpl = svgEl('svg', { class: 'gp-sym', viewBox: '0 0 100 62', preserveAspectRatio: 'xMidYMid meet' });
+            const file = CATICON[cat];
+            if (file) {
+                // Raster asset placed in the 62x100 (pre-rotation) space, then rotated into
+                // the 100x62 landscape box just like the drawn symbol it replaces.
+                const g = svgEl('g', { transform: 'translate(0,62) rotate(-90)' });
+                const im = svgEl('image', { x: 0, y: 0, width: 62, height: 100, preserveAspectRatio: 'xMidYMid meet' });
+                im.setAttribute('href', CATICON_BASE + file + '.png');
+                g.append(im); tpl.append(g);
+            } else {
+                tpl.innerHTML = '<g transform="translate(0,62) rotate(-90)">' + catSymbol(cat) + '</g>';
+            }
+            symCache[cat] = tpl;
+        }
+        return tpl.cloneNode(true);
+    }
+
+    // ---- garages list ----
+    routes.garages = async (page) => {
+        const garages = await api.get('/garages');
+        page.innerHTML = '';
+        const head = el('div', { class: 'page-head' }, el('h2', {}, 'Stellplätze'));
+        if (canManage()) head.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => garageForm() }, '+ Garage'));
+        page.append(head);
+        if (!garages.length) { page.append(emptyState('box', 'Noch keine Garage angelegt.')); return; }
+        const list = el('div', {});
+        garages.forEach((g) => list.append(el('div', { class: 'card' },
+            el('div', { class: 'card-row' },
+                el('div', { style: 'flex:1;cursor:pointer', onclick: () => navigate('garage/' + g.id) },
+                    el('h3', {}, g.name),
+                    el('div', { class: 'card-meta' }, (g.hall_count || 0) + (g.hall_count === 1 ? ' Halle' : ' Hallen'))),
+                el('div', { class: 'card-actions' },
+                    el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': g.name + ' öffnen', onclick: () => navigate('garage/' + g.id) }, '›'),
+                    canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Umbenennen', onclick: () => garageForm(g) }, icon('edit')),
+                    canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: () => delGarage(g) }, icon('trash')))))));
+        page.append(list);
+    };
+    async function garageForm(g) {
+        await formModal({ title: g ? 'Garage umbenennen' : 'Neue Garage', submitLabel: 'Speichern',
+            fields: [{ name: 'name', label: 'Name', required: true, value: g ? g.name : '' }],
+            save: async (d) => { if (g) await api.put('/garages/' + g.id, { name: d.name.trim() }); else await api.post('/garages', { name: d.name.trim() }); } });
+        render();
+    }
+    async function delGarage(g) {
+        if (!await confirmDialog('Garage löschen?', `„${g.name}" samt allen Hallen und Stellplätzen wird entfernt. Zugewiesene Gefährte werden freigegeben (nicht gelöscht).`, 'Löschen')) return;
+        await api.del('/garages/' + g.id); toast('Garage gelöscht'); render();
+    }
+
+    // ---- halls of a garage ----
+    routes.garage = async (page, id) => {
+        const [garages, halls] = await Promise.all([api.get('/garages'), api.get('/garages/' + id + '/halls')]);
+        const g = garages.find((x) => x.id === id) || { name: 'Garage' };
+        page.innerHTML = '';
+        page.append(el('div', { class: 'detail-head' },
+            el('button', { class: 'back-btn', 'aria-label': 'Zurück', onclick: () => navigate('garages') }, '‹'),
+            el('h2', {}, g.name)));
+        const head = el('div', { class: 'page-head' }, el('h3', {}, 'Hallen'));
+        if (canManage()) head.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => hallForm(id) }, '+ Halle'));
+        page.append(head);
+        if (!halls.length) { page.append(emptyState('box', 'Noch keine Halle in dieser Garage.')); return; }
+        const list = el('div', {});
+        halls.forEach((hl) => {
+            const geo = asObj(hl.geometry); const area = (geo.floor && geo.floor.length >= 3) ? polyArea(geo.floor) : 0;
+            list.append(el('div', { class: 'card' },
+                el('div', { class: 'card-row' },
+                    el('div', { style: 'flex:1;cursor:pointer', onclick: () => navigate('hall/' + hl.id) },
+                        el('h3', {}, hl.name),
+                        el('div', { class: 'card-meta' }, (hl.spot_count || 0) + ' Gefährte' + (area ? ' · ' + Math.round(area).toLocaleString('de-DE') + ' m²' : ''))),
+                    el('div', { class: 'card-actions' },
+                        el('button', { class: 'btn btn-ghost btn-sm', onclick: () => navigate('hall/' + hl.id) }, 'Planer ›'),
+                        canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Umbenennen', onclick: () => hallForm(id, hl) }, icon('edit')),
+                        canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: () => delHall(hl) }, icon('trash'))))));
+        });
+        page.append(list);
+    };
+    async function hallForm(garageID, hl) {
+        await formModal({ title: hl ? 'Halle umbenennen' : 'Neue Halle', submitLabel: 'Speichern',
+            fields: [{ name: 'name', label: 'Name', required: true, value: hl ? hl.name : '' }],
+            save: async (d) => {
+                if (hl) await api.put('/halls/' + hl.id, { name: d.name.trim(), geometry: asObj(hl.geometry) });
+                else await api.post('/garages/' + garageID + '/halls', { name: d.name.trim(), geometry: { floor: gpShape('rect', 14, 9), Wm: 14, Hm: 9, tor: 3, load: 5, shape: 'rect', excl: [] } });
+            } });
+        render();
+    }
+    async function delHall(hl) {
+        if (!await confirmDialog('Halle löschen?', `„${hl.name}" samt Stellplätzen wird entfernt. Zugewiesene Gefährte werden freigegeben.`, 'Löschen')) return;
+        await api.del('/halls/' + hl.id); toast('Halle gelöscht'); render();
+    }
+
+    // ---- the planner ----
+    routes.hall = async (page, id) => {
+        const data = await api.get('/halls/' + id + '/plan');
+        const [palette, halls, plannerIcons] = await Promise.all([api.get('/vehicles/unassigned'), api.get('/garages/' + data.hall.garage_id + '/halls'), api.get('/planner-icons').catch(() => [])]);
+        const geo = asObj(data.hall.geometry);
+        const Wm = num(geo.Wm, 14), Hm = num(geo.Hm, 9);
+        let floor = Array.isArray(geo.floor) && geo.floor.length >= 3 ? geo.floor.map((p) => [num(p[0], 0), num(p[1], 0)]) : gpShape(geo.shape || 'rect', Wm, Hm);
+        const P = {
+            hallId: id, garageId: data.hall.garage_id, hallName: data.hall.name, garageName: data.garage_name, halls,
+            floor, Wm, Hm, tor: num(geo.tor, 3), load: num(geo.load, 5), shape: geo.shape || 'rect',
+            excl: (Array.isArray(geo.excl) ? geo.excl : []).map((e, i) => ({ id: 'x' + i, kind: e.kind || 'wall', x: num(e.x, 0), y: num(e.y, 0), w: num(e.w, 1), h: num(e.h, 1), rot: num(e.rot, 0), label: e.label || (EXCL[e.kind] ? EXCL[e.kind].label : 'Fläche') })),
+            spots: (data.spots || []).map((s) => { const g = asObj(s.geometry); return {
+                _id: s.id, kind: 'veh', label: s.vehicle_label || s.label, spotLabel: s.label, type: s.vehicle_type || '', vehId: s.vehicle_id || null,
+                personId: s.person_id || null, personName: s.person_name || '',
+                L: s.length_m, W: s.width_m, H: s.height_m, t: s.weight_t, needsPower: !!s.needs_power,
+                plannerSymbol: s.planner_symbol || null, photoUrl: s.photo_id ? '/api/photos/' + s.photo_id : null,
+                x: num(g.x, 1), y: num(g.y, 1), w: num(g.w, s.length_m || catFoot(s.vehicle_type)[0]), h: num(g.h, s.width_m || catFoot(s.vehicle_type)[1]), rot: num(g.rot, 0), status: g.status || 'busy', _dirty: false }; }),
+            palette, plannerIcons,
+            mode: 'manage', editMode: false, snap: true, gridStep: 0.5, ortho: false, zoom: 1, sel: null, selEdge: null,
+            render: (function () { try { return localStorage.getItem('gp.render') || 'symbol'; } catch (e) { return 'symbol'; } })(),
+            maxed: false, CELL: 30, uid: 1, hist: [], hpos: -1, dirty: false,
+        };
+        buildGP(page, P);
+    };
+
+    function buildGP(page, P) {
+        page.innerHTML = ''; // clear the route skeleton (else it leaves empty cards above)
+        const canManageNow = canManage();
+        // ---- validity helpers bound to this hall ----
+        const inside = (b) => (b.rot ? quadInPoly(quad(b), P.floor) : rectInPoly(b, P.floor));
+        const heightOK = (b) => b.H == null || b.H <= P.tor + 0.001;
+        const weightOK = (b) => b.t == null || b.t <= P.load + 0.001;
+        const warn = (b) => b.kind === 'veh' && (!heightOK(b) || !weightOK(b) || !inside(b));
+        const blocksAll = () => P.spots.concat(P.excl.map((e) => ({ ...e, kind: 'excl' })));
+        const collide = (cand, selfId) => { const cq = quad(cand); for (const o of blocksAll()) { if (o._id === selfId || o.id === selfId) continue; if (!(cand.kind === 'veh' || o.kind === 'veh')) continue; if (satOverlap(cq, quad(o))) return true; } return false; };
+        const validVeh = (cand, selfId) => inside(cand) && !collide(cand, selfId);
+        // A vehicle placement has kind==='veh'; every exclusion has kind in EXCL
+        // (lane/maint/wall/exit). In Garagenplaner the exclusions are editable, in
+        // Stellplätze the vehicles are.
+        const interactive = (b) => (P.mode === 'plan' ? b.kind !== 'veh' : b.kind === 'veh');
+        const dimText = (b) => (b.type ? b.type + ' · ' : '') + (b.L != null && b.W != null ? b.L.toFixed(1).replace('.', ',') + '×' + b.W.toFixed(1).replace('.', ',') + ' m' : 'Maße offen');
+
+        // ---- shell DOM ----
+        const root = el('div', { class: 'gp' }); root.dataset.mode = P.mode;
+        page.append(root);
+        // appbar
+        const modeSwitch = el('div', { class: 'gp-switch' });
+        const mkModeBtn = (m, label) => el('button', { 'data-mode': m, class: P.mode === m ? 'on' : '', onclick: () => setMode(m) }, label);
+        const rebuildSwitch = () => { modeSwitch.innerHTML = ''; modeSwitch.append(mkModeBtn('plan', 'Garagenplaner'), mkModeBtn('manage', 'Stellplätze')); };
+        const occN = el('b', { class: 'num' }, '–'); const occBar = el('i', {});
+        const maxBtn = el('button', { class: 'gp-iconbtn', title: 'Vollbild', 'aria-label': 'Vollbild', onclick: () => toggleMax() }, '⛶');
+        const appbar = el('div', { class: 'gp-appbar' },
+            el('button', { class: 'back-btn', 'aria-label': 'Zurück', onclick: () => navigate(P.garageId ? 'garage/' + P.garageId : 'garages') }, '‹'),
+            el('div', { class: 'gp-brand' }, el('b', {}, P.hallName), el('span', { class: 'muted' }, P.garageName)),
+            modeSwitch, el('span', { class: 'gp-spacer' }),
+            el('div', { class: 'gp-occ' }, el('span', { class: 'eyebrow' }, 'Belegung'), occN, el('span', { class: 'gp-bar' }, occBar)),
+            maxBtn);
+        rebuildSwitch();
+
+        // canvas
+        const ctitle = el('span', { class: 'gp-ctitle' }, 'Digitaler Zwilling');
+        const toolbar = el('div', { class: 'gp-toolbar' });
+        const metrics = el('div', { class: 'gp-metrics' });
+        const svg = svgEl('svg', { class: 'gp-floor', xmlns: SVGNS });
+        const layer = el('div', { class: 'gp-layer' });
+        const planEl = el('div', { class: 'gp-plan' }, svg, layer);
+        const planWrap = el('div', { class: 'gp-planwrap' }, planEl);
+        const canvas = el('div', { class: 'gp-canvas card' },
+            el('div', { class: 'gp-canvas-top' }, ctitle, el('span', { class: 'gp-spacer' }), toolbar), metrics, planWrap);
+
+        // rail
+        const rail = el('div', { class: 'gp-rail' });
+        const stage = el('div', { class: 'gp-stage' }, canvas, rail);
+        root.append(appbar, stage);
+
+        // edge-length editor (Garagenplaner)
+        const lenIn = el('input', { type: 'number', step: '0.01', min: '0.1', class: 'gp-lenin' });
+        const lenBox = el('div', { class: 'gp-lenbox' }, lenIn, el('span', { class: 'muted' }, 'm'));
+        lenBox.style.display = 'none'; planEl.append(lenBox);
+        // Vertex context menu (shown on click, not permanently) — declutters the plan.
+        const vertMenu = el('div', { class: 'gp-vertmenu' }); vertMenu.style.display = 'none'; planEl.append(vertMenu);
+        function hideVertMenu() { vertMenu.style.display = 'none'; }
+        function showVertMenu(vi) {
+            vertMenu.innerHTML = '';
+            vertMenu.append(el('div', { class: 'gp-vm-title' }, 'Ecke ' + (vi + 1)));
+            if (P.floor.length > 3) { const del = el('button', { class: 'gp-vm-btn danger' }, '✕ Punkt löschen'); del.addEventListener('click', () => { P.floor.splice(vi, 1); hideVertMenu(); commitGeom('Punkt entfernt'); }); vertMenu.append(del); }
+            else vertMenu.append(el('div', { class: 'gp-vm-note' }, 'Mindestens 3 Ecken'));
+            let lx = P.floor[vi][0] * P.CELL, ly = P.floor[vi][1] * P.CELL - 12;
+            lx = Math.max(70, Math.min(P.Wm * P.CELL - 70, lx)); ly = Math.max(34, Math.min(P.Hm * P.CELL - 10, ly));
+            vertMenu.style.left = lx + 'px'; vertMenu.style.top = ly + 'px'; vertMenu.style.display = 'flex';
+        }
+        lenIn.addEventListener('pointerdown', (e) => e.stopPropagation());
+        lenIn.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') lenIn.blur(); });
+        lenIn.addEventListener('change', () => { if (P.selEdge == null) return; const L = parseFloat(lenIn.value); if (L > 0.05) { setEdgeLen(P.selEdge, L); } });
+
+        // ---- geometry mutations ----
+        const snapV = (v, step) => (P.snap ? Math.round(v / step) * step : Math.round(v * 100) / 100);
+        const gsnap = (v) => snapV(v, P.gridStep); // snap to the chosen grid step (¼/½/1 m), else free (0.01 m)
+        // Rotation-aware AABB half-extents for a block.
+        const halfAABB = (bl) => { const rad = (bl.rot || 0) * Math.PI / 180, c = Math.abs(Math.cos(rad)), s = Math.abs(Math.sin(rad)); return { hx: (bl.w * c + bl.h * s) / 2, hy: (bl.w * s + bl.h * c) / 2 }; };
+        // Bounding box of the ACTUAL floor polygon (the green outline) — NOT the canvas
+        // 0..Wm/0..Hm. The floor is usually inset (e.g. top at y=1.2, right at x=36.1), so
+        // clamping/snapping to the canvas put blocks OUTSIDE the green line → reset/gap.
+        const floorBB = () => { let a = Infinity, b = Infinity, c = -Infinity, d = -Infinity; for (const [x, y] of P.floor) { if (x < a) a = x; if (x > c) c = x; if (y < b) b = y; if (y > d) d = y; } return { minX: a, minY: b, maxX: c, maxY: d }; };
+        // Clamp a block's top-left so its ROTATION-AWARE bounding box stays inside the floor
+        // bbox (any angle can sit flush against the real border, incl. the inset ones).
+        const clampXY = (bl, nx, ny) => {
+            const { hx, hy } = halfAABB(bl), bb = floorBB();
+            const cx = Math.max(bb.minX + hx, Math.min(bb.maxX - hx, nx + bl.w / 2)), cy = Math.max(bb.minY + hy, Math.min(bb.maxY - hy, ny + bl.h / 2));
+            return { x: cx - bl.w / 2, y: cy - bl.h / 2 };
+        };
+        // clamp + MAGNETIC auto-snap of the rotated bounding box to the floor's OWN edge
+        // coordinates (every unique vertex x / y — outer borders AND the concave step), so a
+        // vehicle "klebt" flush at the green line. Reach = one grid cell (+ε) so "drag toward
+        // a wall" ALWAYS lands flush instead of stopping one raster cell short.
+        const snapPos = (bl, nx, ny) => {
+            const cl = clampXY(bl, nx, ny), { hx, hy } = halfAABB(bl), bb = floorBB();
+            const cx0 = cl.x + bl.w / 2, cy0 = cl.y + bl.h / 2;
+            const SNAP = (P.snap ? (P.gridStep || 0.5) : 0.25) + 0.05;
+            const xs = [...new Set(P.floor.map((p) => p[0]))], ys = [...new Set(P.floor.map((p) => p[1]))];
+            // Snap whichever AABB edge (lo/hi) is closest to a floor coordinate within reach.
+            const snapAxis = (lo, hi, coords) => { let best = 0, bd = SNAP + 1e-9; for (const co of coords) { const dl = Math.abs(lo - co); if (dl < bd) { bd = dl; best = co - lo; } const dh = Math.abs(hi - co); if (dh < bd) { bd = dh; best = co - hi; } } return bd <= SNAP ? best : 0; };
+            const dx = snapAxis(cx0 - hx, cx0 + hx, xs), dy = snapAxis(cy0 - hy, cy0 + hy, ys);
+            const clampC = (cx, cy) => [Math.max(bb.minX + hx, Math.min(bb.maxX - hx, cx)), Math.max(bb.minY + hy, Math.min(bb.maxY - hy, cy))];
+            const ok = (cx, cy) => inside({ x: cx - bl.w / 2, y: cy - bl.h / 2, w: bl.w, h: bl.h, rot: bl.rot });
+            // Take the fullest snap that stays INSIDE the real floor. For diagonal (trap) or
+            // notch (u) shapes a flush-to-bbox snap can land outside — fall back (both→x→y→none)
+            // so the magnet never pushes a block outside the green line (i.e. never resets).
+            for (const [ax, ay] of [[dx, dy], [dx, 0], [0, dy]]) { if (!ax && !ay) continue; const [cx, cy] = clampC(cx0 + ax, cy0 + ay); if (ok(cx, cy)) return { x: cx - bl.w / 2, y: cy - bl.h / 2 }; }
+            return { x: cx0 - bl.w / 2, y: cy0 - bl.h / 2 };
+        };
+        // Resize a block from one of 8 handles with the OPPOSITE side anchored (world-fixed),
+        // computed in the block's LOCAL frame so rotated blocks resize along their own axes.
+        // o = geometry at drag start {x,y,w,h,rot}; dir ∈ nw n ne e se s sw w; px,py = pointer (m).
+        function resizeBlock(o, dir, px, py) {
+            const MIN = 0.5, rad = (o.rot || 0) * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+            const cx = o.x + o.w / 2, cy = o.y + o.h / 2, dx = px - cx, dy = py - cy;
+            const lx = dx * cos + dy * sin + o.w / 2, ly = -dx * sin + dy * cos + o.h / 2; // world → old-local
+            let left = 0, right = o.w, top = 0, bottom = o.h;
+            if (dir.indexOf('w') >= 0) left = Math.min(gsnap(lx), right - MIN);
+            if (dir.indexOf('e') >= 0) right = Math.max(gsnap(lx), left + MIN);
+            if (dir.indexOf('n') >= 0) top = Math.min(gsnap(ly), bottom - MIN);
+            if (dir.indexOf('s') >= 0) bottom = Math.max(gsnap(ly), top + MIN);
+            const nw = right - left, nh = bottom - top, ex = (left + right) / 2 - o.w / 2, ey = (top + bottom) / 2 - o.h / 2;
+            const ncx = cx + ex * cos - ey * sin, ncy = cy + ex * sin + ey * cos;
+            return { x: ncx - nw / 2, y: ncy - nh / 2, w: nw, h: nh };
+        }
+        // 8 resize handles + the rotate knob on the selected, editable block.
+        function addHandles(d, id) {
+            ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].forEach((dir) => { const h = el('div', { class: 'gp-rz gp-rz-' + dir }); h.dataset.rz = id; h.dataset.dir = dir; d.append(h); });
+            const rot = el('div', { class: 'gp-rot', title: 'Drehen (Snap 15°, frei mit Alt)' }); rot.dataset.rotid = id; d.append(rot);
+        }
+        function edgeLen(i) { const n = P.floor.length, a = P.floor[i], b = P.floor[(i + 1) % n]; return Math.hypot(b[0] - a[0], b[1] - a[1]); }
+        function setEdgeLen(i, L) { const n = P.floor.length, a = P.floor[i], b = P.floor[(i + 1) % n], d = Math.hypot(b[0] - a[0], b[1] - a[1]); if (d < 0.01 || !(L > 0)) return; const nb = [a[0] + (b[0] - a[0]) / d * L, a[1] + (b[1] - a[1]) / d * L]; nb[0] = Math.max(-100, Math.min(200, nb[0])); nb[1] = Math.max(-100, Math.min(200, nb[1])); P.floor[(i + 1) % n] = nb; refit(); pushUndo(); markDirty(); layout(); toast('Länge ' + L.toFixed(2) + ' m'); }
+        // After a free floor edit, re-home the polygon into [0,Wm]×[0,Hm]: shift any
+        // negative coords to origin and grow Wm/Hm to fit, so enlarging an edge works.
+        function refit() { let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity; P.floor.forEach(([x, y]) => { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); }); const dx = minX < 0 ? -minX : 0, dy = minY < 0 ? -minY : 0; if (dx || dy) { P.floor = P.floor.map(([x, y]) => [x + dx, y + dy]); P.excl.forEach((e) => { e.x += dx; e.y += dy; }); P.spots.forEach((s) => { s.x += dx; s.y += dy; s._dirty = true; }); maxX += dx; maxY += dy; } P.Wm = Math.max(6, Math.ceil(maxX - 1e-6)); P.Hm = Math.max(5, Math.ceil(maxY - 1e-6)); clampAll(); }
+
+        // ---- undo/redo (index-based history over hall geometry + placement
+        // geometry, not existence). The current state always lives at hist[hpos];
+        // pushUndo() records the state AFTER a mutation, undo/redo step the pointer. ----
+        const snapshot = () => JSON.stringify({ floor: P.floor, Wm: P.Wm, Hm: P.Hm, tor: P.tor, load: P.load, shape: P.shape, excl: P.excl, spots: P.spots.map((s) => ({ _id: s._id, x: s.x, y: s.y, w: s.w, h: s.h, rot: s.rot, status: s.status })) });
+        // restore reverts local state; a spot is flagged _dirty ONLY when a value
+        // actually changed, so undo/redo can re-persist exactly those to the server.
+        function restore(js) {
+            const st = JSON.parse(js); P.floor = st.floor; P.Wm = st.Wm; P.Hm = st.Hm; P.tor = st.tor; P.load = st.load; P.shape = st.shape; P.excl = st.excl;
+            st.spots.forEach((g) => { const s = P.spots.find((x) => x._id === g._id); if (!s) return;
+                if (s.x !== g.x || s.y !== g.y || s.w !== g.w || s.h !== g.h || s.rot !== g.rot || s.status !== g.status) { s.x = g.x; s.y = g.y; s.w = g.w; s.h = g.h; s.rot = g.rot; s.status = g.status; s._dirty = true; } });
+        }
+        function pushUndo() { P.hist = P.hist.slice(0, P.hpos + 1); P.hist.push(snapshot()); if (P.hist.length > 80) P.hist.shift(); P.hpos = P.hist.length - 1; }
+        function commitGeom(msg, kind) { pushUndo(); markDirty(); draw(); if (msg) toast(msg, kind || ''); }
+        let saveTimer = null;
+        // Auto-save: geometry/placement edits are batched (atomic floor+spots, so an
+        // undo across a refit can't desync them) but persisted automatically on a
+        // short debounce, so nothing is lost on navigation. The Save button is a
+        // manual "save now".
+        function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(() => { if (P.dirty) doSaveGeom(true); }, 800); }
+        function markDirty() { P.dirty = true; scheduleSave(); }
+        function doUndo() { if (P.hpos <= 0) return; P.hpos--; restore(P.hist[P.hpos]); markDirty(); P.sel = null; hideLen(); draw(); toast('Rückgängig'); }
+        function doRedo() { if (P.hpos >= P.hist.length - 1) return; P.hpos++; restore(P.hist[P.hpos]); markDirty(); P.sel = null; hideLen(); draw(); toast('Wiederholt'); }
+        let spaceDown = false; // Space held → left-drag pans instead of moving a block
+        const keyHandler = (e) => {
+            if (!root.isConnected) { window.removeEventListener('keydown', keyHandler); return; }
+            const m = e.ctrlKey || e.metaKey, tag = (e.target.tagName || '').toLowerCase(), typing = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable;
+            if (m && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); }
+            else if (m && e.key.toLowerCase() === 'y') { e.preventDefault(); doRedo(); }
+            else if (e.key === 'Escape' && P.maxed) { toggleMax(false); }
+            else if (!typing && !m && e.key.toLowerCase() === 'f') { e.preventDefault(); P.zoom = 1; layout(); toast('Eingepasst'); } // F = Einpassen
+            else if (!typing && !m && e.key === ' ') { e.preventDefault(); if (!spaceDown) { spaceDown = true; planWrap.style.cursor = 'grab'; } } // Space = Pan-Modus
+        };
+        const keyUpHandler = (e) => { if (!root.isConnected) { window.removeEventListener('keyup', keyUpHandler); return; } if (e.key === ' ') { spaceDown = false; if (!midPan) planWrap.style.cursor = ''; } };
+        window.addEventListener('keydown', keyHandler);
+        window.addEventListener('keyup', keyUpHandler);
+
+        function hideLen() { P.selEdge = null; lenBox.style.display = 'none'; }
+
+        // ---- layout / sizing ----
+        function layout() {
+            hideVertMenu(); // a relayout (zoom/resize) would detach the pinned menu from its vertex
+            const M = 40; // scrollable free space around the floor
+            // maxBudget is the tallest the wrapper may get. Fit derives ONLY from availW
+            // and maxBudget (both stable), never from the wrapper's own height → no
+            // scrollbar/height feedback loop.
+            const maxBudget = P.maxed ? Math.max(260, Math.floor(window.innerHeight - planWrap.getBoundingClientRect().top - 14))
+                : Math.min(720, Math.max(320, Math.round(window.innerHeight * 0.72)));
+            const availW = (planWrap.clientWidth || 640) - 2 * M, availH = maxBudget - 2 * M;
+            const fit = Math.max(6, Math.floor(Math.min(availW / P.Wm, availH / P.Hm)));
+            P.CELL = Math.max(6, Math.round(fit * (P.zoom || 1)));
+            const pw = P.Wm * P.CELL, ph = P.Hm * P.CELL;
+            planEl.style.width = pw + 'px'; planEl.style.height = ph + 'px';
+            svg.setAttribute('width', pw); svg.setAttribute('height', ph); svg.setAttribute('viewBox', '0 0 ' + pw + ' ' + ph);
+            // Fullscreen: fill the budget (big canvas). Normal: wrap the plan tightly
+            // (+margins) up to the budget, so a short hall isn't marooned in a tall box.
+            const boxH = P.maxed ? maxBudget : Math.min(maxBudget, ph + 2 * M + 2); // +2 = the wrapper's 1px borders (border-box), else a 2px scrollbar shows
+            planWrap.style.height = boxH + 'px';
+            draw();
+        }
+        const resizeH = () => { if (!root.isConnected) { window.removeEventListener('resize', resizeH); return; } layout(); };
+        window.addEventListener('resize', resizeH);
+        // ResizeObserver catches browser zoom (Ctrl+/-) and container-size changes the
+        // 'resize' event can miss, so the plan always refits (no spurious scrollbar).
+        let roTimer = null, roLast = '';
+        const ro = new ResizeObserver((entries) => {
+            if (!root.isConnected) { ro.disconnect(); return; }
+            // Observe the BORDER box: it doesn't change when a scrollbar toggles, so a
+            // scrollbar appearing can't feed back into a relayout (that was the flicker).
+            const e0 = entries[0], bs = e0 && e0.borderBoxSize && e0.borderBoxSize[0];
+            const key = bs ? Math.round(bs.inlineSize) + 'x' + Math.round(bs.blockSize)
+                : (e0 && e0.contentRect ? Math.round(e0.contentRect.width) + 'x' + Math.round(e0.contentRect.height) : '');
+            if (key === roLast) return; roLast = key;
+            clearTimeout(roTimer); roTimer = setTimeout(layout, 60);
+        });
+        try { ro.observe(planWrap, { box: 'border-box' }); } catch (e) { try { ro.observe(planWrap); } catch (e2) { /* ignore */ } }
+
+        // ---- CAD-standard navigation: Ctrl+wheel = zoom to cursor, middle-drag = pan ----
+        function zoomAt(clientX, clientY, factor) {
+            const nz = Math.max(0.5, Math.min(4, +(P.zoom * factor).toFixed(3)));
+            if (nz === P.zoom) return;
+            const rB = planEl.getBoundingClientRect();
+            const wx = (clientX - rB.left) / P.CELL, wy = (clientY - rB.top) / P.CELL; // world point under cursor
+            P.zoom = nz; layout();
+            const rA = planEl.getBoundingClientRect(); // adjust scroll so that world point stays under the cursor
+            planWrap.scrollLeft += rA.left - (clientX - wx * P.CELL);
+            planWrap.scrollTop += rA.top - (clientY - wy * P.CELL);
+        }
+        planWrap.addEventListener('wheel', (e) => { if (!e.ctrlKey) return; e.preventDefault(); zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.15 : 1 / 1.15); }, { passive: false });
+        let midPan = null;
+        planWrap.addEventListener('mousedown', (e) => { if (e.button === 1) e.preventDefault(); }); // suppress middle-click autoscroll
+        planWrap.addEventListener('pointerdown', (e) => { if (e.button !== 1 && !(e.button === 0 && spaceDown)) return; e.preventDefault(); midPan = { sx: e.clientX, sy: e.clientY, sl: planWrap.scrollLeft, st: planWrap.scrollTop }; try { planWrap.setPointerCapture(e.pointerId); } catch (er) { /* ignore */ } planWrap.style.cursor = 'grabbing'; }); // middle-mouse OR Space+leftclick pans
+        planWrap.addEventListener('pointermove', (e) => { if (!midPan) return; planWrap.scrollLeft = midPan.sl - (e.clientX - midPan.sx); planWrap.scrollTop = midPan.st - (e.clientY - midPan.sy); });
+        const endMidPan = (e) => { if (midPan) { midPan = null; try { planWrap.releasePointerCapture(e.pointerId); } catch (er) { /* ignore */ } planWrap.style.cursor = spaceDown ? 'grab' : ''; } };
+        planWrap.addEventListener('pointerup', endMidPan);
+        planWrap.addEventListener('pointercancel', endMidPan);
+
+        // ---- draw ----
+        function ptsAttr() { return P.floor.map((p) => (p[0] * P.CELL) + ',' + (p[1] * P.CELL)).join(' '); }
+        function draw() {
+            drawFloor(); drawBlocks(); renderMetrics(); renderRail(); renderToolbar();
+            const used = P.spots.length;
+            occN.textContent = used + ' Gefährte';
+            const tot = polyArea(P.floor); let ve = 0; P.spots.forEach((b) => { ve += b.w * b.h; });
+            occBar.style.width = Math.round(Math.min(100, ve / Math.max(1, tot) * 100)) + '%';
+        }
+        function drawFloor() {
+            svg.innerHTML = '';
+            // While editing the floor the SVG must sit ABOVE the block layer so its
+            // vertex/edge/length handles receive pointer events (layer covers the plan).
+            svg.style.zIndex = (P.mode === 'plan' && P.editMode) ? '5' : '0';
+            const CELL = P.CELL, s = ptsAttr();
+            // grid pattern
+            const defs = svgEl('defs');
+            const pat = svgEl('pattern', { id: 'gpgrid', width: CELL, height: CELL, patternUnits: 'userSpaceOnUse' });
+            pat.append(svgEl('path', { d: 'M' + CELL + ' 0H0V' + CELL, fill: 'none', class: 'gp-gridline' }));
+            const clip = svgEl('clipPath', { id: 'gpclip' }); clip.append(svgEl('polygon', { points: s }));
+            defs.append(pat, clip); svg.append(defs);
+            svg.append(svgEl('polygon', { class: 'gp-floorfill', points: s }));
+            if (P.grid !== false) svg.append(svgEl('rect', { width: P.Wm * CELL, height: P.Hm * CELL, fill: 'url(#gpgrid)', 'clip-path': 'url(#gpclip)' }));
+            svg.append(svgEl('polygon', { class: 'gp-floorstroke', points: s }));
+            // edit handles (Garagenplaner + editMode)
+            if (P.mode === 'plan' && P.editMode) {
+                const n = P.floor.length;
+                // Floor centroid (metres) → offset edge labels/handles INWARD so they
+                // aren't clipped when an edge sits on the canvas boundary.
+                let cX = 0, cY = 0, cA = 0; for (let k = 0; k < n; k++) { const [x0, y0] = P.floor[k], [x1, y1] = P.floor[(k + 1) % n]; const cr = x0 * y1 - x1 * y0; cA += cr; cX += (x0 + x1) * cr; cY += (y0 + y1) * cr; } if (Math.abs(cA) > 1e-6) { cX /= (3 * cA); cY /= (3 * cA); } else { cX = 0; cY = 0; P.floor.forEach(([x, y]) => { cX += x; cY += y; }); cX /= n; cY /= n; }
+                for (let i = 0; i < n; i++) {
+                    const a = P.floor[i], b = P.floor[(i + 1) % n];
+                    const hit = svgEl('line', { class: 'gp-edgehit', 'data-edge': i, x1: a[0] * CELL, y1: a[1] * CELL, x2: b[0] * CELL, y2: b[1] * CELL, stroke: 'transparent', 'stroke-width': 14 }); hit.style.cursor = 'move'; svg.append(hit);
+                    const vis = svgEl('line', { 'data-edge': i, x1: a[0] * CELL, y1: a[1] * CELL, x2: b[0] * CELL, y2: b[1] * CELL, class: i === P.selEdge ? 'gp-edge sel' : 'gp-edge' }); vis.style.pointerEvents = 'none'; svg.append(vis);
+                    const emx = (a[0] + b[0]) / 2, emy = (a[1] + b[1]) / 2, mx = emx * CELL, my = emy * CELL;
+                    // Offset the label PERPENDICULAR to the edge (not toward the centroid —
+                    // for concave shapes that pushes it ALONG the line into the "+"), on the
+                    // side that points inward (toward the centroid).
+                    const ex = b[0] - a[0], ey = b[1] - a[1]; let nx = -ey, ny = ex; const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
+                    if ((cX - emx) * nx + (cY - emy) * ny < 0) { nx = -nx; ny = -ny; }
+                    const tl = svgEl('text', { x: mx + nx * 26, y: my + ny * 26 + 3, 'text-anchor': 'middle', class: i === P.selEdge ? 'gp-edgelab sel' : 'gp-edgelab' }); tl.style.pointerEvents = 'none'; tl.textContent = edgeLen(i).toFixed(2) + ' m'; svg.append(tl);
+                    // Clickable "+" near the edge midpoint (offset inward) to insert a point.
+                    const addg = svgEl('g', { class: 'gp-edgeadd', 'data-add': i, transform: 'translate(' + mx + ' ' + my + ')' }); // on the line; label sits inward, so they don't overlap
+                    addg.append(svgEl('circle', { r: 7 }), svgEl('path', { d: 'M-3.5 0H3.5M0 -3.5V3.5' }));
+                    svg.append(addg);
+                }
+                for (let j = 0; j < n; j++) {
+                    svg.append(svgEl('circle', { class: 'gp-vertex', cx: P.floor[j][0] * CELL, cy: P.floor[j][1] * CELL, r: 6, 'data-vi': j }));
+                }
+                posLen();
+            } else { hideLen(); hideVertMenu(); }
+        }
+        function posLen() {
+            if (P.selEdge == null || P.mode !== 'plan' || !P.editMode) { lenBox.style.display = 'none'; return; }
+            const n = P.floor.length, a = P.floor[P.selEdge], b = P.floor[(P.selEdge + 1) % n];
+            const pw = P.Wm * P.CELL, ph = P.Hm * P.CELL;
+            // Clamp inside the plan so the input is never cut off at an edge.
+            let lx = (a[0] + b[0]) / 2 * P.CELL, ly = (a[1] + b[1]) / 2 * P.CELL - 18;
+            lx = Math.max(52, Math.min(pw - 52, lx)); ly = Math.max(20, Math.min(ph - 8, ly));
+            lenBox.style.left = lx + 'px'; lenBox.style.top = ly + 'px'; lenBox.style.display = 'flex';
+            if (document.activeElement !== lenIn) lenIn.value = edgeLen(P.selEdge).toFixed(2);
+        }
+        function positionBlock(d, b) {
+            const bw = b.w * P.CELL, bh = b.h * P.CELL;
+            d.style.left = (b.x * P.CELL) + 'px'; d.style.top = (b.y * P.CELL) + 'px'; d.style.width = bw + 'px'; d.style.height = bh + 'px';
+            // Declutter small blocks so labels don't overflow into neighbours.
+            d.classList.toggle('gp-small', bh < 42 || bw < 62); // toggle (not add) so a live resize
+            d.classList.toggle('gp-tiny', bh < 26 || bw < 42);  // re-shows labels when the block grows
+            // Rotate the block; drawBlocks gives rotated blocks a single upright label
+            // group (.gp-rlabel). Counter-rotate it AND push it to the block's (screen-)
+            // bottom edge instead of the centre, so the info sits under the vehicle rather
+            // than on top of it. The push direction is the block's local axis that maps to
+            // screen-down after the rotation: R(-rot)·(0, dy) = (sin·dy, cos·dy).
+            if (b.rot) {
+                d.style.transform = 'rotate(' + b.rot + 'deg)';
+                const g = d.querySelector('.gp-rlabel');
+                if (g) {
+                    const rad = b.rot * Math.PI / 180;
+                    const shh = (Math.abs(bw * Math.sin(rad)) + Math.abs(bh * Math.cos(rad))) / 2; // screen half-height
+                    const lh = (g.children.length || 3) * 12 + 6; // ~label height (not yet in DOM to measure)
+                    const dy = Math.max(0, shh - lh / 2 - 4); // just inside the bottom edge, not the centre
+                    g.style.left = (bw / 2 + Math.sin(rad) * dy) + 'px';
+                    g.style.top = (bh / 2 + Math.cos(rad) * dy) + 'px';
+                    g.style.transform = 'translate(-50%,-50%) rotate(' + (-b.rot) + 'deg)';
+                }
+            }
+        }
+        function drawBlocks() {
+            layer.innerHTML = '';
+            P.spots.forEach((b) => {
+                const ctx = !interactive(b), st = GPSTAT[b.status] || GPSTAT.busy;
+                let eff = P.render || 'symbol'; if (eff === 'foto' && !b.photoUrl) eff = 'symbol'; // fallback chain: no photo → symbol
+                const d = el('div', { class: 'gp-block veh ' + b.status + (eff !== 'rect' ? ' gp-media' : '') + (eff === 'symbol' ? ' gp-symmode' : '') + (b._id === P.sel ? ' sel' : '') + (warn(b) || b._invalid ? ' invalid' : '') + (ctx ? ' dimctx' : '') });
+                d.dataset.id = b._id;
+                const warnTxt = !inside(b) ? '⚠ außerhalb' : (b._invalid ? '⚠ blockiert' : ((!heightOK(b) || !weightOK(b)) ? '⚠ Maß' : null));
+                const codeTxt = st.sym + ' ' + (b.type || 'Gefährt'), nameTxt = b.personName || b.label;
+                // media background (behind the labels); symbol rotates with the block (facing)
+                if (eff === 'symbol') {
+                    if (b.plannerSymbol && b.plannerSymbol.indexOf('custom:') === 0) d.append(el('img', { class: 'gp-symimg', src: '/api/planner-icons/' + b.plannerSymbol.slice(7), alt: '', onerror: (e) => { e.target.remove(); d.insertBefore(symbolNode(b.type), d.firstChild); } }));
+                    else d.append(symbolNode(b.plannerSymbol || b.type));
+                }
+                else if (eff === 'foto') { d.append(el('img', { class: 'gp-photo', src: b.photoUrl, alt: '' }), el('span', { class: 'gp-photoscrim' })); }
+                if (eff !== 'rect') d.append(el('span', { class: 'gp-stbadge' }, st.sym)); // status glyph when the code chip is hidden (a11y; kept small on tiny blocks)
+                if (b.rot) {
+                    // rotated: one centred, upright label group (see positionBlock)
+                    const grp = el('div', { class: 'gp-rlabel' }, el('span', { class: 'gp-rl-code' }, codeTxt), el('span', { class: 'gp-rl-name' }, nameTxt), el('span', { class: 'gp-rl-dim' }, dimText(b)));
+                    if (warnTxt) grp.append(el('span', { class: 'gp-rl-warn' }, warnTxt));
+                    d.append(grp);
+                } else {
+                    if (eff === 'rect') d.append(el('span', { class: 'gp-code' }, codeTxt));
+                    if (warnTxt) d.append(el('span', { class: 'gp-warnb' }, warnTxt));
+                    d.append(el('span', { class: 'gp-lab' }, el('span', { class: 'gp-who' }, nameTxt), el('span', { class: 'gp-dim' }, dimText(b))));
+                }
+                if (b.needsPower) d.append(el('span', { class: 'gp-power', title: 'Ladebedarf (Strom)' }, '⚡'));
+                if (b._id === P.sel && interactive(b) && canManageNow) addHandles(d, b._id);
+                positionBlock(d, b);
+                layer.append(d);
+            });
+            P.excl.forEach((b) => {
+                const ctx = !interactive(b);
+                const d = el('div', { class: 'gp-block excl ' + b.kind + (b.id === P.sel ? ' sel' : '') + (ctx ? ' dimctx' : '') });
+                d.dataset.id = b.id;
+                if (b.rot) d.append(el('div', { class: 'gp-rlabel' }, el('span', { class: 'gp-rl-name' }, b.label)));
+                else d.append(el('span', { class: 'gp-lab' }, el('span', { class: 'gp-who' }, b.label)));
+                if (b.id === P.sel && interactive(b) && canManageNow) addHandles(d, b.id);
+                positionBlock(d, b); layer.append(d);
+            });
+        }
+        function renderMetrics() {
+            metrics.innerHTML = '';
+            const total = polyArea(P.floor); let ex = 0, ve = 0; P.excl.forEach((b) => ex += b.w * b.h); P.spots.forEach((b) => ve += b.w * b.h);
+            // Hall dimensions = the ACTUAL floor polygon's bounding box (same source as the
+            // Breite/Tiefe readout), not the P.Wm×P.Hm canvas grid — after „Form bearbeiten"
+            // shrinks the polygon inside the grid the two diverge, and the bbox is the real one.
+            const bb = floorBB(), fw = bb.maxX - bb.minX, fh = bb.maxY - bb.minY;
+            const m = (val, label, cls) => el('div', { class: 'gp-metric' }, el('div', { class: 'gp-mv ' + (cls || '') }, val), el('div', { class: 'gp-ml' }, label));
+            metrics.append(
+                m(Math.round(Math.max(0, total - ex - ve)) + ' m²', 'Frei', 'ok'),
+                m(Math.round(ve) + ' m²', 'Belegt · ' + P.spots.length, 'busy'),
+                m(Math.round(ex) + ' m²', 'Ausgenommen', 'excl'),
+                m(fw.toFixed(1).replace('.', ',') + '×' + fh.toFixed(1).replace('.', ',') + ' m', 'Halle · ' + Math.round(total) + ' m²'),
+                m(polyPerim(P.floor).toFixed(1) + ' m', 'Umfang'));
+        }
+
+        // ---- toolbar ----
+        function renderToolbar() {
+            toolbar.innerHTML = '';
+            const tb = (label, title, fn, on, cls) => { const b = el('button', { class: 'gp-tbtn ' + (cls || '') + (on ? ' on' : ''), title: title || label, onclick: fn }, label); return b; };
+            const undoB = tb('↶', 'Rückgängig (Strg+Z)', doUndo); undoB.disabled = P.hpos <= 0;
+            const redoB = tb('↷', 'Wiederholen (Strg+Umschalt+Z)', doRedo); redoB.disabled = P.hpos >= P.hist.length - 1;
+            toolbar.append(undoB, redoB);
+            if (canManageNow && P.mode === 'plan') toolbar.append(tb('⊾ 90°', 'Rechtwinklig einrasten', () => { P.ortho = !P.ortho; renderToolbar(); toast(P.ortho ? 'Rechtwinklig an' : 'Rechtwinklig aus'); }, P.ortho));
+            // Snap selector: free, or snap every ¼ / ½ / 1 m (applies to floor edits
+            // and block moves alike).
+            const seg = el('div', { class: 'gp-seg', title: 'Snap-Verhalten' });
+            seg.append(el('button', { class: !P.snap ? 'on' : '', onclick: () => { P.snap = false; renderToolbar(); } }, 'Frei'));
+            [['¼ m', 0.25], ['½ m', 0.5], ['1 m', 1]].forEach(([lab, step]) => seg.append(el('button', { class: (P.snap && P.gridStep === step) ? 'on' : '', onclick: () => { P.snap = true; P.gridStep = step; renderToolbar(); } }, lab)));
+            toolbar.append(seg);
+            // Vehicle display mode (client-side preference, remembered): symbol / photo / rectangle.
+            if (P.mode === 'manage') { const dseg = el('div', { class: 'gp-seg', title: 'Fahrzeug-Darstellung' });
+                [['◈', 'symbol', 'Symbol'], ['▣', 'foto', 'Foto'], ['▭', 'rect', 'Rechteck']].forEach(([ic, key, t]) => dseg.append(el('button', { class: P.render === key ? 'on' : '', title: t, onclick: () => { P.render = key; try { localStorage.setItem('gp.render', key); } catch (e) { /* private mode */ } renderToolbar(); draw(); } }, ic)));
+                toolbar.append(dseg); }
+            // Manage custom planner icons (upload / rename / replace / delete) — placed on
+            // the toolbar so it's reachable without first selecting a vehicle.
+            if (canManageNow && P.mode === 'manage') toolbar.append(tb('🖼 Icons', 'Eigene Planer-Icons verwalten', async () => { await plannerIconsDialog(); try { P.plannerIcons = await api.get('/planner-icons'); } catch (e) { /* keep old */ } draw(); if (P.sel) renderRail(); }));
+            if (canManageNow && P.mode === 'manage') { const rb = tb('⟳ Drehen', 'Auswahl drehen', rotateSel); rb.disabled = !(P.sel && P.spots.find((s) => s._id === P.sel)); toolbar.append(rb); }
+            if (canManageNow && P.mode === 'plan') toolbar.append(tb('◇ Form bearbeiten', 'Ecken/Kanten bearbeiten', () => { P.editMode = !P.editMode; P.sel = null; if (!P.editMode) { hideLen(); hideVertMenu(); } else toast('Ecke ziehen · Linie klicken = Länge · Doppelklick = Punkt'); draw(); }, P.editMode));
+            toolbar.append(tb('−', 'Verkleinern', () => { P.zoom = Math.max(0.5, +(P.zoom - 0.15).toFixed(2)); layout(); }));
+            toolbar.append(el('span', { class: 'gp-zoomlbl' }, Math.round((P.zoom || 1) * 100) + '%'));
+            toolbar.append(tb('+', 'Vergrößern', () => { P.zoom = Math.min(4, +(P.zoom + 0.15).toFixed(2)); layout(); }));
+            toolbar.append(tb('⤢ Passen', 'Einpassen', () => { P.zoom = 1; layout(); }));
+            if (canManageNow && P.dirty) { const sv = tb('● Speichern', 'Jetzt speichern (Auto-Save aktiv)', () => doSaveGeom(), false, 'btn-primary'); toolbar.append(sv); }
+        }
+        function rotateSel() {
+            const b = P.spots.find((s) => s._id === P.sel); if (!b) return;
+            const old = b.rot || 0; b.rot = (old + 90) % 360;
+            if (!validVeh(b, b._id)) { b.rot = old; toast('Drehen nicht möglich', 'error'); return; }
+            b._dirty = true; markDirty(); pushUndo(); draw(); toast('Gedreht');
+        }
+
+        // ---- persistence ----
+        const round2 = (v) => Math.round(v * 100) / 100;
+        function persistSpot(b) {
+            // Payload is snapshotted NOW; writes for the same spot are chained on
+            // b._wq so rapid undo/redo can't land PUTs out of order (last call wins).
+            // Persist the SPOT's own unique label (hall-unique, uq_spots_hall_label), NOT the
+            // vehicle display label — two like-named vehicles must not collide on save.
+            const label = b.spotLabel || b.label, geometry = { x: round2(b.x), y: round2(b.y), w: round2(b.w), h: round2(b.h), rot: Math.round(b.rot || 0), status: b.status };
+            b._wq = (b._wq || Promise.resolve())
+                .then(() => api.put('/spots/' + b._id, { label, geometry }))
+                .then(() => { b._dirty = false; }, (err) => { b._dirty = true; P.dirty = true; renderToolbar(); toast(err.message || 'Speichern fehlgeschlagen', 'error'); });
+            return b._wq;
+        }
+        // Persist a resized vehicle's footprint as its real Länge×Breite via the existing
+        // dimensions endpoint (chained on b._dq so rapid resizes can't land out of order).
+        function persistDims(b) {
+            if (!b.vehId) return Promise.resolve();
+            const body = { length_m: round2(b.w), width_m: round2(b.h), height_m: b.H == null ? null : b.H, weight_t: b.t == null ? null : b.t };
+            const pl = P.palette.find((x) => x.id === b.vehId); if (pl) { pl.length_m = body.length_m; pl.width_m = body.width_m; }
+            b._dq = (b._dq || Promise.resolve())
+                .then(() => api.put('/vehicles/' + b.vehId + '/dimensions', body))
+                .then(() => {}, (err) => { toast(err.message || 'Maße speichern fehlgeschlagen', 'error'); });
+            return b._dq;
+        }
+        function currentGeometry() { return { floor: P.floor, Wm: P.Wm, Hm: P.Hm, tor: P.tor, load: P.load, shape: P.shape, excl: P.excl.map((e) => ({ kind: e.kind, x: round2(e.x), y: round2(e.y), w: round2(e.w), h: round2(e.h), rot: Math.round(e.rot || 0), label: e.label })) }; }
+        async function doSaveGeom(silent) {
+            P.dirty = false; renderToolbar(); // optimistic; a change during the save re-flags it
+            try {
+                await api.put('/halls/' + P.hallId, { name: P.hallName, geometry: currentGeometry() });
+                // Free placement: an invalid spot (outside / gate / lane / collision) is kept
+                // locally and stays _dirty, but is NOT persisted until it is valid again.
+                let heldInvalid = 0;
+                for (const b of P.spots) {
+                    if (!b._dirty) continue;
+                    if (!validVeh(b, b._id)) { b._invalid = true; heldInvalid++; continue; }
+                    b._invalid = false;
+                    await persistSpot(b);
+                }
+                // A failed spot write re-flags P.dirty (persistSpot); reschedule instead of
+                // falsely reporting success.
+                if (P.dirty) scheduleSave();
+                else if (heldInvalid && !silent) toast(heldInvalid + (heldInvalid === 1 ? ' Fahrzeug ungültig platziert — nicht gespeichert' : ' Fahrzeuge ungültig platziert — nicht gespeichert'), 'warn');
+                else if (!silent) toast('Grundriss gespeichert', 'ok');
+            } catch (err) { if (!silent) toast(err.message || 'Speichern fehlgeschlagen', 'error'); P.dirty = true; renderToolbar(); scheduleSave(); }
+        }
+        async function dupHall() {
+            try { const hl = await api.post('/garages/' + P.garageId + '/halls', { name: P.hallName + ' (Kopie)', geometry: currentGeometry() }); toast('Halle dupliziert', 'ok'); navigate('hall/' + hl.id); }
+            catch (err) { toast(err.message || 'Duplizieren fehlgeschlagen', 'error'); }
+        }
+        async function delHallHere() {
+            if (!await confirmDialog('Halle löschen?', `„${P.hallName}" samt Stellplätzen wird entfernt. Zugewiesene Gefährte werden freigegeben.`, 'Löschen')) return;
+            try { await api.del('/halls/' + P.hallId); toast('Halle gelöscht'); navigate('garage/' + P.garageId); }
+            catch (err) { toast(err.message || 'Löschen fehlgeschlagen', 'error'); }
+        }
+        // Edit a Gefährt's physical measurements (fixes the "Maße offen" dead-end).
+        async function dimForm(veh) {
+            const vf = [['length_m', 'Länge (m)', 'L'], ['width_m', 'Breite (m)', 'W'], ['height_m', 'Höhe (m)', 'H'], ['weight_t', 'Gewicht (t)', 't']];
+            await formModal({ title: 'Maße · ' + (veh.label || 'Gefährt'), submitLabel: 'Speichern',
+                fields: vf.map(([n, lab, key]) => ({ name: n, label: lab, type: 'number', step: '0.1', value: veh[key] != null ? veh[key] : '' })),
+                save: async (f) => {
+                    const body = {}; vf.forEach(([n]) => { const v = f[n]; body[n] = (v === '' || v == null) ? null : Number(v); });
+                    await api.put('/vehicles/' + veh.id + '/dimensions', body);
+                    const sp = P.spots.find((s) => s.vehId === veh.id);
+                    if (sp) {
+                        sp.L = body.length_m; sp.W = body.width_m; sp.H = body.height_m; sp.t = body.weight_t;
+                        // Scale the placed footprint to the real Länge×Breite (maßstabsgetreu).
+                        // Safe now: the .gp-rot class collision that caused the oval/no-click is
+                        // gone, and blocks are crisp rectangles (border-radius:3).
+                        if (body.length_m != null && body.width_m != null) { sp.w = body.length_m; sp.h = body.width_m; sp._dirty = true; markDirty(); }
+                    }
+                    const pl = P.palette.find((x) => x.id === veh.id); if (pl) { pl.length_m = body.length_m; pl.width_m = body.width_m; pl.height_m = body.height_m; pl.weight_t = body.weight_t; }
+                } });
+            draw();
+        }
+
+        // ---- rail ----
+        function renderRail() { rail.innerHTML = ''; if (P.mode === 'manage') renderManageRail(); else renderPlanRail(); }
+        // Hall switcher (available in BOTH modes); withCrud adds the management buttons.
+        function hallSwitchCard(withCrud) {
+            const card = el('div', { class: 'gp-rcard card' }, el('h3', {}, 'Halle', el('span', { class: 'eyebrow' }, P.garageName)));
+            const sel = el('select', { class: 'gp-select', 'aria-label': 'Halle wählen', onchange: async (e) => {
+                const v = Number(e.target.value); if (!v || v === P.hallId) return;
+                if (P.dirty && !(await confirmDialog('Halle wechseln?', 'Ungespeicherte Grundriss-Änderungen gehen verloren.', 'Wechseln'))) { e.target.value = String(P.hallId); return; }
+                navigate('hall/' + v);
+            } });
+            (P.halls || []).forEach((hl) => { const o = el('option', { value: hl.id }, hl.name); if (hl.id === P.hallId) o.selected = true; sel.append(o); });
+            card.append(el('div', { class: 'gp-hallrow' }, sel));
+            if (withCrud && canManageNow) card.append(el('div', { class: 'gp-addrow', style: 'margin-top:.5rem' },
+                el('button', { class: 'btn btn-sm', onclick: () => hallForm(P.garageId) }, '+ Neue Halle'),
+                el('button', { class: 'btn btn-sm', onclick: () => hallForm(P.garageId, { id: P.hallId, name: P.hallName, geometry: currentGeometry() }) }, 'Umbenennen'),
+                el('button', { class: 'btn btn-sm', onclick: dupHall }, 'Duplizieren'),
+                el('button', { class: 'btn btn-sm btn-danger', onclick: delHallHere }, 'Löschen')));
+            return card;
+        }
+        function vehCard(p) {
+            const c = el('div', { class: 'gp-vehc', title: 'Auf die Fläche ziehen' }); c.dataset.pid = p.id;
+            const hasDims = (p.length_m != null && p.width_m != null && p.height_m != null);
+            let dimNode;
+            if (hasDims) dimNode = el('div', { class: 'gp-vdm num' }, p.length_m.toFixed(1) + ' × ' + p.width_m.toFixed(1) + ' × ' + p.height_m.toFixed(1) + ' m' + (p.weight_t != null ? ' · ' + p.weight_t.toFixed(2).replace('.', ',') + ' t' : ''));
+            else if (canManageNow) { dimNode = el('button', { class: 'gp-dimopen' }, 'Maße festlegen →'); dimNode.addEventListener('pointerdown', (e) => e.stopPropagation()); dimNode.addEventListener('click', (e) => { e.stopPropagation(); dimForm({ id: p.id, label: p.label, L: p.length_m, W: p.width_m, H: p.height_m, t: p.weight_t }); }); }
+            else dimNode = el('div', { class: 'gp-vdm num' }, 'Maße offen');
+            c.append(el('span', { class: 'gp-vic' }, '🚗'),
+                el('div', { style: 'min-width:0' }, el('div', { class: 'gp-vnm' }, p.label, p.type ? el('span', { class: 'gp-chip' }, p.type) : null), dimNode));
+            if (canManageNow) {
+                const ed = el('button', { class: 'gp-vedit', title: 'Maße bearbeiten' }, '✎');
+                ed.addEventListener('pointerdown', (e) => e.stopPropagation());
+                ed.addEventListener('click', (e) => { e.stopPropagation(); dimForm({ id: p.id, label: p.label, L: p.length_m, W: p.width_m, H: p.height_m, t: p.weight_t }); });
+                c.append(ed);
+            } else { c.append(el('span', { class: 'gp-vst' }, '⠿')); }
+            return c;
+        }
+        function renderManageRail() {
+            rail.append(hallSwitchCard(false));
+            const palCard = el('div', { class: 'gp-rcard card' }, el('h3', {}, 'Nicht platziert', el('span', { class: 'eyebrow' }, P.palette.length + ' · ziehen →')));
+            const search = el('input', { class: 'gp-palsearch', type: 'search', placeholder: 'Gefährt suchen…', value: P.palQuery || '' });
+            const pal = el('div', { class: 'gp-pal' });
+            const fillPal = () => {
+                pal.innerHTML = '';
+                const q = (P.palQuery || '').toLowerCase();
+                const list = P.palette.filter((p) => !q || ((p.label || '') + ' ' + (p.type || '') + ' ' + (p.person_name || '')).toLowerCase().includes(q));
+                if (!list.length) { pal.append(el('div', { class: 'muted', style: 'font-size:.8rem;padding:.3rem' }, P.palette.length ? 'Kein Treffer.' : 'Alle Gefährte sind platziert.')); return; }
+                list.forEach((p) => pal.append(vehCard(p)));
+            };
+            search.addEventListener('input', () => { P.palQuery = search.value; fillPal(); });
+            palCard.append(search, pal); rail.append(palCard);
+            fillPal();
+            rail.append(renderVehDetail());
+        }
+        // Partial update of the Garagenplaner display attributes straight from the detail
+        // panel; writes the same vehicle columns as the vehicle form, so both stay in sync.
+        async function updateVehPlanner(b, patch) {
+            if (!b.vehId) return;
+            const body = {
+                needs_power: ('needs_power' in patch) ? !!patch.needs_power : !!b.needsPower,
+                planner_symbol: ('planner_symbol' in patch) ? (patch.planner_symbol || null) : (b.plannerSymbol || null),
+            };
+            try {
+                await api.put('/vehicles/' + b.vehId + '/planner', body);
+                b.needsPower = body.needs_power; b.plannerSymbol = body.planner_symbol;
+                const pl = P.palette.find((x) => x.id === b.vehId); if (pl) { pl.needs_power = b.needsPower; pl.planner_symbol = b.plannerSymbol; }
+                draw();
+            } catch (err) { toast(err.message || 'Speichern fehlgeschlagen', 'error'); }
+        }
+        function renderVehDetail() {
+            const el0 = el('div', { class: 'gp-rcard card' });
+            const b = P.spots.find((x) => x._id === P.sel);
+            if (!b) { el0.append(el('h3', {}, 'Auswahl'), el('div', { class: 'muted', style: 'font-size:.8rem' }, 'Klick auf ein Gefährt im Plan, oder ein Fahrzeug aus der Liste auf die Fläche ziehen.')); return el0; }
+            el0.append(el('h3', {}, (b.type || 'Gefährt') + ' · ' + (b.personName || '')));
+            const row = (k, v) => el('div', { class: 'gp-row' }, el('span', { class: 'gp-k' }, k), el('span', { class: 'gp-v num' }, v));
+            el0.append(row('Fahrzeug', b.label));
+            el0.append(row('Maße', b.L != null && b.W != null && b.H != null ? b.L.toFixed(1) + ' × ' + b.W.toFixed(1) + ' × ' + b.H.toFixed(1) + ' m' : 'offen'));
+            el0.append(row('Position', b.x.toFixed(1) + ' / ' + b.y.toFixed(1) + ' m' + (b.rot ? ' · ' + Math.round(b.rot) + '°' : '')));
+            if (b.vehId) el0.append(el('button', { class: 'btn btn-ghost btn-sm btn-block', style: 'margin:.4rem 0 .2rem', onclick: () => navigate('vehicles/' + b.vehId) }, '🚗 Fahrzeug-Akte öffnen →'));
+            if (b.personId) el0.append(el('button', { class: 'btn btn-ghost btn-sm btn-block', style: 'margin:.2rem 0 .4rem', onclick: () => navigate('persons/' + b.personId) }, '👤 Mieterdaten öffnen →'));
+            if (canManageNow) {
+                const seg = el('div', { class: 'gp-segd' });
+                Object.keys(GPSTAT).forEach((k) => seg.append(el('button', { class: b.status === k ? 'on' : '', onclick: () => { b.status = k; b._dirty = true; markDirty(); pushUndo(); draw(); } }, GPSTAT[k].sym + ' ' + GPSTAT[k].label)));
+                el0.append(seg);
+                const fit = el('div', { class: 'gp-fit' });
+                fit.append(el('h4', {}, el('span', {}, 'Prüfung'), el('span', { class: warn(b) ? 'bad' : 'ok' }, warn(b) ? '⚠ Warnung' : '✓ ok')));
+                const line = (t, ok) => el('div', { class: 'gp-line' }, el('span', {}, t), el('span', { class: ok ? 'ok' : 'bad' }, ok ? 'ok' : '!'));
+                fit.append(line('Innerhalb der Fläche', inside(b)));
+                fit.append(line('Höhe ' + (b.H != null ? b.H.toFixed(1) : '?') + ' m · Tor ' + P.tor.toFixed(1) + ' m', heightOK(b)));
+                fit.append(line('Gewicht ' + (b.t != null ? b.t.toFixed(2).replace('.', ',') : '?') + ' ≤ ' + P.load.toFixed(1) + ' t', weightOK(b)));
+                el0.append(fit);
+                // Planer-Darstellung: Ladebedarf + Symbol pro Fahrzeug — direkt hier (im Sync
+                // mit dem Fahrzeug-Formular, da dieselben Fahrzeug-Spalten geschrieben werden).
+                if (b.vehId) {
+                    const pcard = el('div', { class: 'gp-fit' });
+                    pcard.append(el('h4', {}, el('span', {}, 'Planer-Darstellung')));
+                    pcard.append(el('button', { class: 'btn btn-ghost btn-sm btn-block', style: 'margin:.15rem 0 .45rem' + (b.needsPower ? ';border-color:var(--gpresv);color:#ffd35b' : ''), onclick: () => updateVehPlanner(b, { needs_power: !b.needsPower }) }, b.needsPower ? '⚡ Ladebedarf: an' : '⚡ Ladebedarf: aus'));
+                    const symSel = el('select', { class: 'gp-stepin', 'aria-label': 'Planer-Symbol', onchange: (e) => updateVehPlanner(b, { planner_symbol: e.target.value }) });
+                    const symOpts = [['', 'Symbol: Automatisch']].concat(['PKW', 'Motorrad', 'Transporter', 'Wohnmobil', 'Wohnwagen', 'Anhänger', 'Boot / Trailer', 'Traktor', 'Ladewagen', 'Rückewagen', 'Kipper'].map((k) => [k, 'Symbol: ' + k]))
+                        .concat((P.plannerIcons || []).map((ic) => ['custom:' + ic.id, 'Eigenes: ' + ic.name]));
+                    symOpts.forEach(([v, l]) => { const o = el('option', { value: v }, l); if ((b.plannerSymbol || '') === v) o.selected = true; symSel.append(o); });
+                    pcard.append(symSel);
+                    // Managing custom icons lives on the toolbar (🖼 Icons) so it's reachable
+                    // without selecting a vehicle; here we only pick per-vehicle.
+                    el0.append(pcard);
+                }
+                el0.append(el('div', { class: 'btn-row', style: 'margin-top:.6rem' },
+                    b.vehId ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => dimForm({ id: b.vehId, label: b.label, L: b.L, W: b.W, H: b.H, t: b.t }) }, '✎ Maße') : null,
+                    el('button', { class: 'btn btn-ghost btn-sm', onclick: rotateSel }, '⟳ Drehen'),
+                    el('button', { class: 'btn btn-ghost btn-sm btn-danger', onclick: () => removeSpot(b) }, 'Entfernen')));
+            }
+            return el0;
+        }
+        const SHAPE_ICON = { rect: 'M2 2h36v20H2z', l: 'M2 2h22v10h14v10H2z', u: 'M2 2h9v13h18V2h9v20H2z', trap: 'M8 2h24l6 20H2z', step: 'M2 2h36v9H22v11H2z' };
+        function shapeIcon(k) { const s = svgEl('svg', { viewBox: '0 0 40 24', class: 'gp-shapeic' }); s.append(svgEl('path', { d: SHAPE_ICON[k] })); return s; }
+        function renderPlanRail() {
+            rail.append(hallSwitchCard(true));
+            // shape + dims
+            const shapeCard = el('div', { class: 'gp-rcard card' }, el('h3', {}, 'Hallenform & Maße'));
+            const shapeGrid = el('div', { class: 'gp-shapegrid' });
+            [['rect', 'Rechteck'], ['l', 'L-Form'], ['u', 'U-Form'], ['trap', 'Schräg'], ['step', 'Stufe']].forEach(([k, lab]) => {
+                shapeGrid.append(el('button', { class: P.shape === k ? 'on' : '', onclick: () => setShape(k) }, shapeIcon(k), el('span', {}, lab)));
+            });
+            shapeCard.append(shapeGrid);
+            shapeCard.append(el('div', { class: 'muted', style: 'font-size:.7rem;margin-bottom:.5rem' }, 'Größe & Form über „Form bearbeiten": Ecke/Kante ziehen, Kante anklicken = Länge eintippen, „+" auf Kante = Punkt einfügen, Ecke anklicken = löschen. Breite/Tiefe unten ergeben sich daraus.'));
+            const grid2 = el('div', { class: 'gp-grid2' });
+            // Direct numeric input (type a value) plus −/+ steppers.
+            const dstep = (label, which, val, step) => el('div', { class: 'gp-field' }, el('label', {}, label),
+                el('div', { class: 'gp-stepper' }, el('button', { onclick: () => setDim(which, -1) }, '−'),
+                    el('input', { class: 'gp-stepin num', type: 'number', step, value: val, onchange: (e) => setDimTo(which, e.target.value) }),
+                    el('button', { onclick: () => setDim(which, 1) }, '+')));
+            // Breite/Tiefe are now a live INFO readout of the actual floor polygon's bounding
+            // box — the exact size is set via „Form bearbeiten" (drag edges / edge-length field),
+            // so the numbers can no longer silently regenerate (reset) a hand-drawn shape.
+            const bb = floorBB(), fw = (bb.maxX - bb.minX), fh = (bb.maxY - bb.minY);
+            const info = (label, val) => el('div', { class: 'gp-field' }, el('label', {}, label), el('div', { class: 'gp-inforo num', title: 'Ergibt sich aus der Form — ändern über „Form bearbeiten"' }, val + ' m'));
+            grid2.append(
+                info('Breite (m)', fw.toFixed(2).replace('.', ',')),
+                info('Tiefe (m)', fh.toFixed(2).replace('.', ',')),
+                dstep('Torhöhe (m)', 'tor', P.tor.toFixed(1), '0.5'),
+                dstep('Bodenlast (t)', 'load', P.load.toFixed(1), '0.5'));
+            shapeCard.append(grid2); rail.append(shapeCard);
+            // exclusions
+            const exCard = el('div', { class: 'gp-rcard card' }, el('h3', {}, 'Ausgenommene Flächen & Tore'));
+            const addrow = el('div', { class: 'gp-addrow' });
+            [['lane', '+ Fahrstraße'], ['maint', '+ Wartung'], ['wall', '+ Säule/Wand'], ['exit', '+ Notausgang'], ['gate', '+ Tor']].forEach(([k, lab]) => addrow.append(el('button', { class: 'btn btn-sm', onclick: () => addExcl(k) }, lab)));
+            exCard.append(addrow);
+            const exList = el('div', { class: 'gp-exlist' });
+            if (!P.excl.length) exList.append(el('div', { class: 'muted', style: 'font-size:.76rem;margin-top:.4rem' }, 'Noch keine ausgenommenen Flächen.'));
+            P.excl.forEach((b) => {
+                const it = el('div', { class: 'gp-exitem' + (b.id === P.sel ? ' on' : '') });
+                const sw = el('span', { class: 'gp-sw' }); sw.dataset.kind = b.kind;
+                it.append(sw, el('span', { style: 'flex:1' }, b.label, ' ', el('span', { class: 'muted num', style: 'font-size:.72rem' }, b.w + '×' + b.h + ' m')),
+                    el('button', { class: 'gp-rm', title: 'Entfernen', onclick: (e) => { e.stopPropagation(); removeExcl(b); } }, '×'));
+                it.addEventListener('click', () => { P.sel = b.id; draw(); });
+                exList.append(it);
+            });
+            exCard.append(exList);
+            const b = P.excl.find((x) => x.id === P.sel);
+            if (b) {
+                const segd = el('div', { class: 'gp-segd', style: 'margin-top:.6rem' });
+                [['lane', 'Fahrstr.'], ['maint', 'Wartung'], ['wall', 'Wand'], ['exit', 'Notausg.'], ['gate', 'Tor']].forEach(([k, lab]) => segd.append(el('button', { class: b.kind === k ? 'on' : '', onclick: () => { b.kind = k; b.label = EXCL[k].label; commitGeom(); } }, lab)));
+                exCard.append(segd);
+                // Direct size entry (Breite × Tiefe) for the selected zone.
+                const sizeRow = el('div', { class: 'gp-grid2', style: 'margin-top:.5rem' },
+                    el('div', { class: 'gp-field' }, el('label', {}, 'Breite (m)'), el('input', { class: 'gp-stepin num', type: 'number', step: '0.1', value: b.w, onchange: (e) => setExclSize(b, 'w', e.target.value) })),
+                    el('div', { class: 'gp-field' }, el('label', {}, 'Tiefe (m)'), el('input', { class: 'gp-stepin num', type: 'number', step: '0.1', value: b.h, onchange: (e) => setExclSize(b, 'h', e.target.value) })));
+                exCard.append(sizeRow, el('div', { class: 'muted', style: 'font-size:.72rem;margin-top:.35rem' }, 'Ecke ziehen = Größe · Ziehen = verschieben.'));
+            }
+            rail.append(exCard);
+        }
+        function setDimTo(which, value) {
+            const v = Number(value); if (!Number.isFinite(v) || value === '' || v <= 0) return;
+            if (which === 'w') { P.Wm = Math.round(Math.max(6, Math.min(40, v))); P.floor = gpShape(P.shape, P.Wm, P.Hm); clampAll(); }
+            else if (which === 'h') { P.Hm = Math.round(Math.max(5, Math.min(30, v))); P.floor = gpShape(P.shape, P.Wm, P.Hm); clampAll(); }
+            else if (which === 'tor') P.tor = Math.max(1.5, Math.min(8, Math.round(v * 10) / 10));
+            else if (which === 'load') P.load = Math.max(0.5, Math.min(60, Math.round(v * 10) / 10));
+            hideLen(); pushUndo(); markDirty(); layout();
+        }
+        function setExclSize(b, dim, value) {
+            const v = Number(value); if (!Number.isFinite(v) || v <= 0) return;
+            const nv = Math.max(0.2, Math.min(dim === 'w' ? P.Wm : P.Hm, Math.round(v * 100) / 100));
+            const cand = { kind: 'excl', x: b.x, y: b.y, w: dim === 'w' ? nv : b.w, h: dim === 'h' ? nv : b.h };
+            if (b.x + cand.w > P.Wm || b.y + cand.h > P.Hm || collide(cand, b.id)) { toast('Passt nicht (Rand/Kollision)', 'error'); draw(); return; }
+            b[dim] = nv; commitGeom();
+        }
+        function setShape(k) { P.shape = k; P.floor = gpShape(k, P.Wm, P.Hm); hideLen(); const out = P.spots.filter((s) => !inside(s)).length; commitGeom('Form: ' + k + (out ? ' · ' + out + ' außerhalb' : ''), out ? 'warn' : ''); }
+        function setDim(which, d) {
+            if (which === 'w') { P.Wm = Math.max(6, Math.min(40, P.Wm + d)); P.floor = gpShape(P.shape, P.Wm, P.Hm); clampAll(); }
+            else if (which === 'h') { P.Hm = Math.max(5, Math.min(30, P.Hm + d)); P.floor = gpShape(P.shape, P.Wm, P.Hm); clampAll(); }
+            else if (which === 'tor') P.tor = Math.max(1.5, Math.min(8, +(P.tor + d * 0.5).toFixed(1)));
+            else if (which === 'load') P.load = Math.max(0.5, Math.min(60, +(P.load + d * 0.5).toFixed(1)));
+            hideLen(); pushUndo(); markDirty(); layout();
+        }
+        function clampAll() { blocksAll().forEach((b) => { const t = b.kind === 'excl' ? P.excl.find((e) => e.id === b.id) : P.spots.find((s) => s._id === b._id); if (t) { const cl = clampXY(t, t.x, t.y); t.x = cl.x; t.y = cl.y; if (t._id) t._dirty = true; } }); }
+        function addExcl(k) {
+            const s = EXCL[k]; const b = { id: 'e' + (P.uid++), kind: k, x: 1, y: 1, w: s.w, h: s.h, label: s.label };
+            outer: for (let gy = 0; gy < P.Hm - s.h + 1; gy++) { for (let gx = 0; gx < P.Wm - s.w + 1; gx++) { b.x = gx; b.y = gy; if (!collide(b, null)) break outer; } }
+            P.excl.push(b); P.sel = b.id; commitGeom(s.label + ' hinzugefügt');
+        }
+        function removeExcl(b) { P.excl = P.excl.filter((x) => x !== b); if (P.sel === b.id) P.sel = null; commitGeom('Fläche entfernt'); }
+
+        async function removeSpot(b) {
+            try { await api.del('/spots/' + b._id); P.spots = P.spots.filter((x) => x !== b);
+                const pv = { id: b.vehId, label: b.label, type: b.type, person_id: b.personId, person_name: b.personName, length_m: b.L, width_m: b.W, height_m: b.H, weight_t: b.t };
+                if (b.vehId) P.palette.push(pv);
+                if (P.sel === b._id) P.sel = null; draw(); toast('Gefährt entfernt'); }
+            catch (err) { toast(err.message || 'Entfernen fehlgeschlagen', 'error'); }
+        }
+
+        // ---- mode / maximize ----
+        function setMode(m) { P.mode = m; root.dataset.mode = m; P.sel = null; P.editMode = false; hideLen(); hideVertMenu(); ctitle.textContent = m === 'plan' ? 'Garagenplaner' : 'Digitaler Zwilling'; rebuildSwitch(); draw(); }
+        function toggleMax(force) { P.maxed = force == null ? !P.maxed : force; root.classList.toggle('maxed', P.maxed); maxBtn.textContent = P.maxed ? '⤢' : '⛶'; if (!P.maxed) { rail.style.left = ''; rail.style.top = ''; rail.style.right = ''; } setTimeout(layout, 20); }
+        // In fullscreen the rail floats over the canvas and can be dragged by any
+        // card header ("dynamisch drüberliegend und verschiebbar").
+        let railDrag = null;
+        rail.addEventListener('pointerdown', (e) => { if (!P.maxed) return; const h = e.target.closest('.gp-rcard h3'); if (!h) return; const r = rail.getBoundingClientRect(); railDrag = { dx: e.clientX - r.left, dy: e.clientY - r.top }; try { rail.setPointerCapture(e.pointerId); } catch (er) { /* ignore */ } e.preventDefault(); });
+        rail.addEventListener('pointermove', (e) => { if (!railDrag) return; rail.style.left = Math.max(4, e.clientX - railDrag.dx) + 'px'; rail.style.top = Math.max(4, e.clientY - railDrag.dy) + 'px'; rail.style.right = 'auto'; });
+        rail.addEventListener('pointerup', (e) => { if (railDrag) { railDrag = null; try { rail.releasePointerCapture(e.pointerId); } catch (er) { /* ignore */ } } });
+
+        // ---- floor editing (vertices/edges) ----
+        let vdrag = null, edrag = null;
+        svg.addEventListener('pointerdown', (e) => {
+            if (spaceDown) return; // Space held → let planWrap pan
+            if (e.button !== 0 || P.mode !== 'plan' || !P.editMode || !canManageNow) return;
+            hideVertMenu(); // any canvas interaction closes an open vertex menu
+            const ad = e.target.closest('.gp-edgeadd');
+            if (ad) { const i = +ad.dataset.add, n = P.floor.length, a = P.floor[i], b = P.floor[(i + 1) % n]; P.floor.splice(i + 1, 0, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]); P.selEdge = null; hideLen(); commitGeom('Punkt eingefügt'); e.preventDefault(); return; }
+            const vh = e.target.closest('.gp-vertex');
+            if (vh) { const vi = +vh.dataset.vi; vdrag = { vi, o: P.floor[vi].slice(), sx: e.clientX, sy: e.clientY, moved: false }; P.selEdge = null; svg.setPointerCapture(e.pointerId); e.preventDefault(); draw(); return; }
+            const eg = e.target.closest('.gp-edgehit');
+            if (eg) { const i = +eg.dataset.edge; edrag = { i, sx: e.clientX, sy: e.clientY, moved: false, o0: P.floor[i].slice(), o1: P.floor[(i + 1) % P.floor.length].slice() }; svg.setPointerCapture(e.pointerId); e.preventDefault(); }
+        });
+        svg.addEventListener('pointermove', (e) => {
+            const r = planEl.getBoundingClientRect();
+            if (vdrag) {
+                if (!vdrag.moved && Math.abs(e.clientX - vdrag.sx) + Math.abs(e.clientY - vdrag.sy) < 4) return; // click, not drag
+                vdrag.moved = true;
+                let x = Math.max(0, Math.min(P.Wm, snapV((e.clientX - r.left) / P.CELL, P.gridStep))), y = Math.max(0, Math.min(P.Hm, snapV((e.clientY - r.top) / P.CELL, P.gridStep)));
+                const nn = P.floor.length, pv = P.floor[(vdrag.vi - 1 + nn) % nn], nv = P.floor[(vdrag.vi + 1) % nn];
+                if (P.ortho || e.shiftKey) { if (Math.abs(x - pv[0]) < Math.abs(y - pv[1])) x = pv[0]; else y = pv[1]; }
+                else {
+                    // Magnetic H/V snap: align x to a neighbour's x (vertical edge) or y to a
+                    // neighbour's y (horizontal edge) when within ~10px — makes clean shapes easy.
+                    const th = 10 / P.CELL, dxp = Math.abs(x - pv[0]), dxn = Math.abs(x - nv[0]), dyp = Math.abs(y - pv[1]), dyn = Math.abs(y - nv[1]);
+                    if (dxp <= th && dxp <= dxn) x = pv[0]; else if (dxn <= th) x = nv[0];
+                    if (dyp <= th && dyp <= dyn) y = pv[1]; else if (dyn <= th) y = nv[1];
+                }
+                P.floor[vdrag.vi] = [x, y]; drawFloor(); renderMetrics(); return;
+            }
+            if (edrag) { if (!edrag.moved && Math.abs(e.clientX - edrag.sx) + Math.abs(e.clientY - edrag.sy) < 4) return; edrag.moved = true;
+                let dx = snapV((e.clientX - edrag.sx) / P.CELL, P.gridStep), dy = snapV((e.clientY - edrag.sy) / P.CELL, P.gridStep);
+                dx = Math.max(-Math.min(edrag.o0[0], edrag.o1[0]), Math.min(P.Wm - Math.max(edrag.o0[0], edrag.o1[0]), dx));
+                dy = Math.max(-Math.min(edrag.o0[1], edrag.o1[1]), Math.min(P.Hm - Math.max(edrag.o0[1], edrag.o1[1]), dy));
+                const n = P.floor.length; P.floor[edrag.i] = [edrag.o0[0] + dx, edrag.o0[1] + dy]; P.floor[(edrag.i + 1) % n] = [edrag.o1[0] + dx, edrag.o1[1] + dy]; P.selEdge = edrag.i; drawFloor(); renderMetrics(); }
+        });
+        svg.addEventListener('pointerup', (e) => {
+            try { svg.releasePointerCapture(e.pointerId); } catch (er) { /* ignore */ }
+            if (vdrag) { const vi = vdrag.vi, moved = vdrag.moved; vdrag = null; if (moved) commitGeom(); else showVertMenu(vi); return; }
+            if (edrag) { P.selEdge = edrag.i; if (edrag.moved) { commitGeom('Linie verschoben'); } else { draw(); lenIn.focus(); lenIn.select(); } edrag = null; }
+        });
+        svg.addEventListener('dblclick', (e) => {
+            if (e.button !== 0 || P.mode !== 'plan' || !P.editMode || !canManageNow) return;
+            hideVertMenu();
+            // Vertex delete now lives in the click menu; keep only the edge dbl-click
+            // shortcut to insert a point (alongside the "+" handle).
+            const eg = e.target.closest('.gp-edgehit'); if (eg) { const i = +eg.dataset.edge, r = planEl.getBoundingClientRect();
+                P.floor.splice(i + 1, 0, [Math.max(0, Math.min(P.Wm, snapV((e.clientX - r.left) / P.CELL, P.gridStep))), Math.max(0, Math.min(P.Hm, snapV((e.clientY - r.top) / P.CELL, P.gridStep)))]); hideLen(); commitGeom('Punkt eingefügt'); }
+        });
+
+        // ---- block move / resize / select ----
+        let act = null;
+        layer.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0 || spaceDown) return; // Space held → let planWrap pan
+            const rt = e.target.closest('.gp-rot');
+            if (rt && canManageNow) { const bb = P.spots.find((x) => x._id == rt.dataset.rotid) || P.excl.find((x) => x.id === rt.dataset.rotid); if (bb) { act = { mode: 'rotate', b: bb, elm: e.target.closest('.gp-block'), cx: bb.x + bb.w / 2, cy: bb.y + bb.h / 2, orot: bb.rot || 0 }; e.target.setPointerCapture(e.pointerId); } return; }
+            const rz = e.target.closest('.gp-rz');
+            if (rz && canManageNow) { const id = rz.dataset.rz; const bb = P.spots.find((x) => x._id == id) || P.excl.find((x) => x.id === id); if (bb) { act = { mode: 'resize', b: bb, elm: e.target.closest('.gp-block'), dir: rz.dataset.dir, o0: { x: bb.x, y: bb.y, w: bb.w, h: bb.h, rot: bb.rot || 0 } }; e.target.setPointerCapture(e.pointerId); } return; }
+            const elm = e.target.closest('.gp-block'); if (!elm) return;
+            const id = elm.dataset.id; const b = P.spots.find((x) => x._id == id) || P.excl.find((x) => x.id === id); if (!b) return;
+            if (!interactive(b) || !canManageNow) { P.sel = b._id || b.id; draw(); return; }
+            const r = planEl.getBoundingClientRect();
+            act = { mode: 'move', b, elm, sx: e.clientX, sy: e.clientY, gx: e.clientX - r.left - b.x * P.CELL, gy: e.clientY - r.top - b.y * P.CELL, moved: false, ox: b.x, oy: b.y };
+            elm.setPointerCapture(e.pointerId);
+        });
+        layer.addEventListener('pointermove', (e) => {
+            if (!act) return; const r = planEl.getBoundingClientRect(), b = act.b;
+            if (act.mode === 'rotate') {
+                const wx = (e.clientX - r.left) / P.CELL, wy = (e.clientY - r.top) / P.CELL;
+                let ang = Math.atan2(wy - act.cy, wx - act.cx) * 180 / Math.PI + 90; // handle sits above centre
+                if (P.snap && !e.altKey) ang = Math.round(ang / 15) * 15; // 15° snap unless Alt = free
+                ang = ((ang % 360) + 360) % 360; b.rot = ang;
+                act.elm.style.transform = 'rotate(' + ang + 'deg)';
+                act.elm.querySelectorAll('.gp-code,.gp-lab,.gp-warnb').forEach((t) => { t.style.transform = 'rotate(' + (-ang) + 'deg)'; }); // keep labels upright while dragging
+                act.elm.classList.toggle('invalid', b._id ? !validVeh(b, b._id) : collide(b, b.id)); return;
+            }
+            if (act.mode === 'resize') {
+                const px = (e.clientX - r.left) / P.CELL, py = (e.clientY - r.top) / P.CELL;
+                const nr = resizeBlock(act.o0, act.dir, px, py); b.x = nr.x; b.y = nr.y; b.w = nr.w; b.h = nr.h;
+                positionBlock(act.elm, b); // left/top/width/height (+ rotation transform)
+                const isVeh = !!b._id && b.kind !== 'excl';
+                if (isVeh) { b.L = b.w; b.W = b.h; act.elm.querySelectorAll('.gp-dim,.gp-rl-dim').forEach((t) => { t.textContent = dimText(b); }); } // live L×B
+                const bad = isVeh ? !validVeh({ kind: 'veh', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b._id) : collide({ kind: 'excl', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b.id);
+                act.elm.classList.toggle('invalid', bad); renderMetrics(); return; }
+            if (!act.moved && Math.abs(e.clientX - act.sx) + Math.abs(e.clientY - act.sy) < 4) return; act.moved = true; act.elm.classList.add('moving');
+            let nx = (e.clientX - r.left - act.gx) / P.CELL, ny = (e.clientY - r.top - act.gy) / P.CELL; nx = gsnap(nx); ny = gsnap(ny);
+            const cl = snapPos(b, nx, ny); nx = cl.x; ny = cl.y; b.x = nx; b.y = ny; act.elm.style.left = (nx * P.CELL) + 'px'; act.elm.style.top = (ny * P.CELL) + 'px';
+            const isVeh = !!b._id && b.kind !== 'excl'; const bad = isVeh ? !validVeh({ kind: 'veh', x: nx, y: ny, w: b.w, h: b.h, rot: b.rot }, b._id) : collide({ kind: 'excl', x: nx, y: ny, w: b.w, h: b.h }, b.id); act.elm.classList.toggle('invalid', bad);
+        });
+        layer.addEventListener('pointerup', (e) => {
+            if (!act) return; const b = act.b, d = act; act = null;
+            try { d.elm.releasePointerCapture(e.pointerId); } catch (er) { /* ignore */ }
+            const isVeh = !!b._id && b.kind !== 'excl';
+            if (d.mode === 'rotate') {
+                const bad = isVeh ? !validVeh(b, b._id) : collide(b, b.id);
+                if (bad && !isVeh) { b.rot = d.orot; draw(); toast('Drehen: Kollision/außerhalb — zurück', 'error'); return; } // exclusions still snap back
+                P.sel = b._id || b.id;
+                if (isVeh) { b._invalid = bad; b._dirty = true; markDirty(); pushUndo(); draw(); toast(bad ? 'Gedreht — ungültige Lage, Speichern erst wenn frei' : 'Gedreht', bad ? 'warn' : ''); }
+                else { commitGeom(); toast('Gedreht'); } // commitGeom already redraws
+                return;
+            }
+            if (d.mode === 'resize') {
+                const bad = isVeh ? !validVeh({ kind: 'veh', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b._id) : collide({ kind: 'excl', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b.id);
+                if (bad) { b.x = d.o0.x; b.y = d.o0.y; b.w = d.o0.w; b.h = d.o0.h; if (isVeh) { b.L = d.o0.w; b.W = d.o0.h; } P.sel = b._id || b.id; draw(); toast('Passt nicht (Rand/Kollision) — zurück', 'error'); return; }
+                P.sel = b._id || b.id;
+                if (isVeh) { b.L = b.w; b.W = b.h; persistDims(b); b._dirty = true; markDirty(); pushUndo(); } else commitGeom();
+                draw(); toast('Größe geändert' + (isVeh ? ' · ' + dimText(b).replace(/^.*· /, '') : '')); return;
+            }
+            if (!d.moved) { P.sel = b._id || b.id; draw(); return; }
+            d.elm.classList.remove('moving');
+            const bad = isVeh ? !validVeh({ kind: 'veh', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b._id) : collide({ kind: 'excl', x: b.x, y: b.y, w: b.w, h: b.h }, b.id);
+            P.sel = b._id || b.id;
+            if (!isVeh) { // exclusions still snap back to their last valid spot
+                if (bad) { b.x = d.ox; b.y = d.oy; toast('Kollision/außerhalb — zurück', 'error'); draw(); }
+                else { commitGeom(); toast('Verschoben' + (P.snap ? ' (gerastet)' : ' (frei)')); }
+                return;
+            }
+            // vehicle: keep the position even when invalid; persist only once it is valid again
+            b._invalid = bad; b._dirty = true; markDirty(); pushUndo(); draw();
+            toast(bad ? 'Außerhalb/blockiert — Position bleibt, Speichern erst wenn gültig' : ('Verschoben' + (P.snap ? ' (gerastet)' : ' (frei)')), bad ? 'warn' : '');
+        });
+
+        // ---- palette drag → place ----
+        let drag = null, prev = null;
+        rail.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0 || P.mode !== 'manage' || !canManageNow) return;
+            const c = e.target.closest('.gp-vehc'); if (!c) return;
+            const p = P.palette.find((x) => x.id == c.dataset.pid); if (!p) return; e.preventDefault();
+            const g = el('div', { class: 'gp-ghost' }, '🚗 ' + p.label); document.body.append(g);
+            prev = el('div', { class: 'gp-preview' }, el('span', { class: 'gp-pl' })); layer.append(prev);
+            drag = { p, g }; moveDrag(e); c.setPointerCapture(e.pointerId);
+        });
+        rail.addEventListener('pointermove', (e) => { if (drag) moveDrag(e); });
+        rail.addEventListener('pointerup', (e) => { if (drag) dropDrag(e); });
+        // pointercancel (touch interruption etc.): drop any in-flight drag/edit state
+        // so it can't get stuck and block further interaction.
+        const cancelGesture = () => {
+            // Revert an in-flight floor edit to its pre-drag geometry (no history entry).
+            if (vdrag) { P.floor[vdrag.vi] = vdrag.o; vdrag = null; drawFloor(); renderMetrics(); }
+            if (edrag) { const n = P.floor.length; P.floor[edrag.i] = edrag.o0; P.floor[(edrag.i + 1) % n] = edrag.o1; edrag = null; drawFloor(); renderMetrics(); }
+            if (act) { const b = act.b; if (act.mode === 'move') { b.x = act.ox; b.y = act.oy; } else if (act.mode === 'resize') { b.w = act.ow; b.h = act.oh; } else if (act.mode === 'rotate') { b.rot = act.orot; } if (act.elm) act.elm.classList.remove('moving'); act = null; draw(); }
+            railDrag = null; // don't leave a fullscreen rail-drag following the cursor
+            if (drag) { if (drag.g) drag.g.remove(); drag = null; }
+            if (prev) { prev.remove(); prev = null; }
+        };
+        svg.addEventListener('pointercancel', cancelGesture);
+        layer.addEventListener('pointercancel', cancelGesture);
+        rail.addEventListener('pointercancel', cancelGesture);
+        function calcPlace(e) { const r = planEl.getBoundingClientRect(), v = drag.p, def = catFoot(v.type); const w = num(v.length_m, def[0]), h = num(v.width_m, def[1]); let x = (e.clientX - r.left) / P.CELL - w / 2, y = (e.clientY - r.top) / P.CELL - h / 2; x = gsnap(x); y = gsnap(y); const p = snapPos({ rot: 0, w, h }, x, y); return { x: p.x, y: p.y, w, h }; }
+        function moveDrag(e) {
+            drag.g.style.left = (e.clientX + 14) + 'px'; drag.g.style.top = (e.clientY + 14) + 'px';
+            const pc = calcPlace(e), ins = rectInPoly(pc, P.floor), col = collide({ kind: 'veh', x: pc.x, y: pc.y, w: pc.w, h: pc.h }, null), bad = !ins || col;
+            prev.className = 'gp-preview' + (bad ? ' bad' : ''); prev.style.left = (pc.x * P.CELL) + 'px'; prev.style.top = (pc.y * P.CELL) + 'px'; prev.style.width = (pc.w * P.CELL) + 'px'; prev.style.height = (pc.h * P.CELL) + 'px';
+            prev.querySelector('.gp-pl').textContent = !ins ? 'außerhalb der Fläche' : col ? 'belegt/ausgenommen' : (pc.w.toFixed(1) + '×' + pc.h.toFixed(1) + ' m');
+        }
+        async function dropDrag(e) {
+            const pc = calcPlace(e), rr = planEl.getBoundingClientRect(), over = e.clientX >= rr.left && e.clientX <= rr.right && e.clientY >= rr.top && e.clientY <= rr.bottom;
+            drag.g.remove(); if (prev) { prev.remove(); prev = null; } const p = drag.p; drag = null;
+            if (!over) { toast('Auf die Fläche ziehen', 'warn'); return; }
+            if (!rectInPoly(pc, P.floor)) { toast('Außerhalb der Hallenfläche', 'error'); return; }
+            if (collide({ kind: 'veh', x: pc.x, y: pc.y, w: pc.w, h: pc.h }, null)) { toast('Kein Platz frei — belegt/ausgenommen', 'error'); return; }
+            try {
+                const geom = { x: round2(pc.x), y: round2(pc.y), w: round2(pc.w), h: round2(pc.h), rot: 0, status: 'busy' };
+                // Hall-unique persisted spot label (uq_spots_hall_label) — suffix the vehicle id
+                // so two like-named Gefährte don't collide; p.label stays the display label.
+                const spotLabel = (p.label + ' #' + p.id).slice(0, 90);
+                const spot = await api.post('/halls/' + P.hallId + '/spots', { label: spotLabel, geometry: geom });
+                // Two-step: the placement footprint then its 1:1 vehicle link. If the
+                // link fails, roll the just-created spot back so no orphan lingers.
+                try { await api.put('/spots/' + spot.id + '/vehicle', { vehicle_id: p.id }); }
+                catch (linkErr) { try { await api.del('/spots/' + spot.id); } catch (e2) { /* best effort */ } throw linkErr; }
+                P.spots.push({ _id: spot.id, kind: 'veh', label: p.label, spotLabel: spot.label || spotLabel, type: p.type || '', vehId: p.id, personId: p.person_id || null, personName: p.person_name || '', L: p.length_m, W: p.width_m, H: p.height_m, t: p.weight_t, x: pc.x, y: pc.y, w: pc.w, h: pc.h, rot: 0, status: 'busy', _dirty: false });
+                P.palette = P.palette.filter((x) => x.id !== p.id); P.sel = spot.id;
+                const nb = P.spots[P.spots.length - 1];
+                if ((nb.H != null && nb.H > P.tor) || (nb.t != null && nb.t > P.load)) toast('⚠ ' + p.label + ' platziert · Höhe/Gewicht', 'warn'); else toast('✓ ' + p.label + ' platziert', 'ok');
+                draw();
+            } catch (err) { toast(err.message || 'Platzieren fehlgeschlagen', 'error'); }
+        }
+
+        // Arrive-from-vehicle focus: select the target spot, then scroll it into view
+        // and pulse it once so it's easy to spot. Consumed once.
+        function focusSpot(id) {
+            const elm = layer.querySelector('.gp-block[data-id="' + id + '"]'); if (!elm) return;
+            try { elm.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' }); } catch (e) { elm.scrollIntoView(); }
+            elm.classList.add('gp-focus'); setTimeout(() => elm.classList.remove('gp-focus'), 2600);
+        }
+        const focusTarget = (pendingSpotFocus != null && P.spots.some((s) => s._id === pendingSpotFocus)) ? pendingSpotFocus : null;
+        pendingSpotFocus = null;
+        if (focusTarget != null) P.sel = focusTarget;
+
+        // initial paint
+        setMode(P.mode);
+        pushUndo();
+        requestAnimationFrame(() => { layout(); if (focusTarget != null) requestAnimationFrame(() => focusSpot(focusTarget)); });
+    }
+
     function openMenu() {
         const dlg = $('#menu');
         const body = $('#menu-body');
@@ -3738,6 +4984,7 @@
             b.addEventListener('click', () => { dlg.close(); fn(); });
             return b;
         };
+        body.append(item('box', 'Stellplätze', () => navigate('garages')));
         body.append(item('settings', 'Einstellungen', () => navigate('settings')));
         if (isAdmin()) body.append(item('users', 'Benutzer', () => navigate('users')));
         if (isAdmin()) body.append(item('log', 'Audit-Log', () => navigate('audit')));

@@ -30,6 +30,10 @@ const (
 	maxDateLen      = 20
 	maxCronLen      = 100
 	maxBackupKeyLen = 100
+	// maxGeometryLen caps the opaque planner geometry JSON stored per hall/spot.
+	// The request body is already bounded to 1 MiB by decodeJSON; this keeps a
+	// single geometry blob well under that and bounds stored row size.
+	maxGeometryLen = 256 * 1024
 )
 
 // validDateLength reports whether s is within the date length cap (checked before
