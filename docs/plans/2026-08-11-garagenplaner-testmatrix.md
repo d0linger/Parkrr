@@ -46,7 +46,7 @@ Vorbedingung „Basis": Angemeldet als Editor, ≥1 Garage → ≥1 Halle angele
 | DD-07 | Drehen (90°) | Selektiertes Gefährt | „⟳ Drehen" | Breite/Höhe getauscht, sofern Platz frei; sonst „Drehen nicht möglich" | EC |
 | DD-08 | Größe ändern (Ausgenommene) | Ausgewählte Fahrstraße | Eck-Handle ziehen | Größe ändert sich; überlappt sie ein Gefährt → Rücksprung, Toast | EC |
 | DD-09 | Entfernen gibt frei | Platziertes Gefährt | Detailpanel „Entfernen" | Block weg; Gefährt erscheint wieder in „Nicht platziert"; im Backend spot_id=NULL | HP |
-| DD-10 | Raster vs. Frei | — | Umschalter Raster/Frei, dann verschieben | Raster: ganzzahlige m-Schritte; Frei: stufenlos (0,01 m) | EC |
+| DD-10 | Raster vs. Frei | — | Snap-Umschalter Frei / ¼ m / ½ m / 1 m, dann verschieben | Frei: stufenlos (0,01 m); ¼/½/1 m: Rasterschritte in der gewählten Weite | EC |
 
 ## 4 · Garagenplaner (Form, Maße, Kanten, Ausgenommene)
 
@@ -56,7 +56,7 @@ Vorbedingung „Basis": Angemeldet als Editor, ≥1 Garage → ≥1 Halle angele
 | GP-02 | Maße ändern | — | Breite/Tiefe ±; Torhöhe/Bodenlast ± | Werte ändern sich, Grundriss skaliert, Blöcke werden geklemmt | HP |
 | GP-03 | Ecke ziehen | „◇ Form bearbeiten" aktiv | Ecke ziehen | Polygon folgt; Ortho-Snap bei 90°/Shift; Fläche/Umfang aktualisiert | HP |
 | GP-04 | Kantenlänge editieren | Form bearbeiten | Linie klicken → Längenfeld erscheint → Wert (Dezimal) eintragen | Kante nimmt exakte Länge an (2 Dezimalstellen) | HP |
-| GP-05 | Punkt einfügen/löschen | Form bearbeiten | Doppelklick auf Kante (einfügen), Doppelklick Ecke (löschen) | Ecke wird ein-/ausgefügt; Minimum 3 Ecken erzwungen | EC |
+| GP-05 | Punkt einfügen/löschen | Form bearbeiten | „+" auf einer Kante (einfügen); Ecke anklicken → „✕ Punkt löschen" | Ecke wird ein-/ausgefügt; Minimum 3 Ecken erzwungen (sonst Hinweis „Mindestens 3 Ecken") | EC |
 | GP-06 | Ganze Linie verschieben | Form bearbeiten | Kante greifen und ziehen | Beide Endpunkte bewegen sich, in der Fläche geklemmt | HP |
 | GP-07 | Ausgenommene hinzufügen | — | „+ Fahrstraße/Wartung/Säule/Notausgang" | Fläche erscheint an erster freier Position; in Liste; auswählbar | HP |
 | GP-08 | Ausgenommene löschen | ≥1 Fläche | „×" in der Liste | Fläche entfernt, Metriken aktualisiert | HP |

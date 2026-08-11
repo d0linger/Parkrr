@@ -3852,7 +3852,7 @@
             floor, Wm, Hm, tor: num(geo.tor, 3), load: num(geo.load, 5), shape: geo.shape || 'rect',
             excl: (Array.isArray(geo.excl) ? geo.excl : []).map((e, i) => ({ id: 'x' + i, kind: e.kind || 'wall', x: num(e.x, 0), y: num(e.y, 0), w: num(e.w, 1), h: num(e.h, 1), rot: num(e.rot, 0), label: e.label || (EXCL[e.kind] ? EXCL[e.kind].label : 'Fläche') })),
             spots: (data.spots || []).map((s) => { const g = asObj(s.geometry); return {
-                _id: s.id, kind: 'veh', label: s.vehicle_label || s.label, type: s.vehicle_type || '', vehId: s.vehicle_id || null,
+                _id: s.id, kind: 'veh', label: s.vehicle_label || s.label, spotLabel: s.label, type: s.vehicle_type || '', vehId: s.vehicle_id || null,
                 personId: s.person_id || null, personName: s.person_name || '',
                 L: s.length_m, W: s.width_m, H: s.height_m, t: s.weight_t,
                 x: num(g.x, 1), y: num(g.y, 1), w: num(g.w, s.length_m || 4.5), h: num(g.h, s.width_m || 2), rot: num(g.rot, 0), status: g.status || 'busy', _dirty: false }; }),
@@ -4228,10 +4228,12 @@
         function persistSpot(b) {
             // Payload is snapshotted NOW; writes for the same spot are chained on
             // b._wq so rapid undo/redo can't land PUTs out of order (last call wins).
-            const label = b.label, geometry = { x: round2(b.x), y: round2(b.y), w: round2(b.w), h: round2(b.h), rot: Math.round(b.rot || 0), status: b.status };
+            // Persist the SPOT's own unique label (hall-unique, uq_spots_hall_label), NOT the
+            // vehicle display label — two like-named vehicles must not collide on save.
+            const label = b.spotLabel || b.label, geometry = { x: round2(b.x), y: round2(b.y), w: round2(b.w), h: round2(b.h), rot: Math.round(b.rot || 0), status: b.status };
             b._wq = (b._wq || Promise.resolve())
                 .then(() => api.put('/spots/' + b._id, { label, geometry }))
-                .then(() => { b._dirty = false; }, (err) => { toast(err.message || 'Speichern fehlgeschlagen', 'error'); });
+                .then(() => { b._dirty = false; }, (err) => { b._dirty = true; P.dirty = true; renderToolbar(); toast(err.message || 'Speichern fehlgeschlagen', 'error'); });
             return b._wq;
         }
         function currentGeometry() { return { floor: P.floor, Wm: P.Wm, Hm: P.Hm, tor: P.tor, load: P.load, shape: P.shape, excl: P.excl.map((e) => ({ kind: e.kind, x: round2(e.x), y: round2(e.y), w: round2(e.w), h: round2(e.h), rot: Math.round(e.rot || 0), label: e.label })) }; }
@@ -4240,7 +4242,10 @@
             try {
                 await api.put('/halls/' + P.hallId, { name: P.hallName, geometry: currentGeometry() });
                 for (const b of P.spots) if (b._dirty) await persistSpot(b);
-                if (!silent) toast('Grundriss gespeichert', 'ok');
+                // A failed spot write re-flags P.dirty (persistSpot); reschedule instead of
+                // falsely reporting success.
+                if (P.dirty) scheduleSave();
+                else if (!silent) toast('Grundriss gespeichert', 'ok');
             } catch (err) { if (!silent) toast(err.message || 'Speichern fehlgeschlagen', 'error'); P.dirty = true; renderToolbar(); scheduleSave(); }
         }
         async function dupHall() {
@@ -4605,12 +4610,15 @@
             if (collide({ kind: 'veh', x: pc.x, y: pc.y, w: pc.w, h: pc.h }, null)) { toast('Kein Platz frei — belegt/ausgenommen', 'error'); return; }
             try {
                 const geom = { x: round2(pc.x), y: round2(pc.y), w: round2(pc.w), h: round2(pc.h), rot: 0, status: 'busy' };
-                const spot = await api.post('/halls/' + P.hallId + '/spots', { label: p.label, geometry: geom });
+                // Hall-unique persisted spot label (uq_spots_hall_label) — suffix the vehicle id
+                // so two like-named Gefährte don't collide; p.label stays the display label.
+                const spotLabel = (p.label + ' #' + p.id).slice(0, 90);
+                const spot = await api.post('/halls/' + P.hallId + '/spots', { label: spotLabel, geometry: geom });
                 // Two-step: the placement footprint then its 1:1 vehicle link. If the
                 // link fails, roll the just-created spot back so no orphan lingers.
                 try { await api.put('/spots/' + spot.id + '/vehicle', { vehicle_id: p.id }); }
                 catch (linkErr) { try { await api.del('/spots/' + spot.id); } catch (e2) { /* best effort */ } throw linkErr; }
-                P.spots.push({ _id: spot.id, kind: 'veh', label: p.label, type: p.type || '', vehId: p.id, personId: p.person_id || null, personName: p.person_name || '', L: p.length_m, W: p.width_m, H: p.height_m, t: p.weight_t, x: pc.x, y: pc.y, w: pc.w, h: pc.h, rot: 0, status: 'busy', _dirty: false });
+                P.spots.push({ _id: spot.id, kind: 'veh', label: p.label, spotLabel: spot.label || spotLabel, type: p.type || '', vehId: p.id, personId: p.person_id || null, personName: p.person_name || '', L: p.length_m, W: p.width_m, H: p.height_m, t: p.weight_t, x: pc.x, y: pc.y, w: pc.w, h: pc.h, rot: 0, status: 'busy', _dirty: false });
                 P.palette = P.palette.filter((x) => x.id !== p.id); P.sel = spot.id;
                 const nb = P.spots[P.spots.length - 1];
                 if ((nb.H != null && nb.H > P.tor) || (nb.t != null && nb.t > P.load)) toast('⚠ ' + p.label + ' platziert · Höhe/Gewicht', 'warn'); else toast('✓ ' + p.label + ' platziert', 'ok');

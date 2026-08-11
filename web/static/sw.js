@@ -1,5 +1,5 @@
 /* Parkrr service worker – offline shell with fresh-first assets. */
-const CACHE = 'parkrr-v116';
+const CACHE = 'parkrr-v117';
 const SHELL = [
     '/',
     '/css/style.css',
@@ -42,9 +42,16 @@ self.addEventListener('fetch', (event) => {
         fetch(request).then((res) => {
             if (res && res.ok && url.origin === self.location.origin) {
                 const copy = res.clone();
-                caches.open(CACHE).then((c) => c.put(request, copy)).catch(() => {});
+                // Keep the worker alive until the cache write finishes.
+                event.waitUntil(caches.open(CACHE).then((c) => c.put(request, copy)).catch(() => {}));
             }
             return res;
-        }).catch(() => caches.match(request).then((cached) => cached || caches.match('/')))
+        }).catch(() => caches.match(request).then((cached) => {
+            if (cached) return cached;
+            // Only fall back to the app shell for navigations; a failed sub-resource
+            // (image/script/API) must not receive the HTML shell.
+            if (request.mode === 'navigate') return caches.match('/');
+            return Response.error();
+        }))
     );
 });

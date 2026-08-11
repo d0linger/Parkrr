@@ -495,13 +495,13 @@ type Vehicle struct {
 	InvoiceOpen bool `json:"invoice_open"`
 
 	// SpotID is the (optional) physical Stellplatz this Gefährt stands on — a
-	// purely organisational link (Garagenplaner) with no effect on billing.
+	// purely organizational link (Garagenplaner) with no effect on billing.
 	// SpotLabel/SpotPath are display-only ("Garage · Halle · A1").
 	SpotID    *int64 `json:"spot_id,omitempty"`
 	SpotLabel string `json:"spot_label,omitempty"`
 	SpotPath  string `json:"spot_path,omitempty"`
 
-	// Physical dimensions (metres / tonnes) for the Garagenplaner's fit checks.
+	// Physical dimensions (meters / tonnes) for the Garagenplaner's fit checks.
 	// Nullable — an unmeasured Gefährt skips the height/weight/footprint warnings.
 	LengthM *float64 `json:"length_m,omitempty"`
 	WidthM  *float64 `json:"width_m,omitempty"`
@@ -633,7 +633,7 @@ type YearStat struct {
 
 // --- Stellplatz-/Hallen-Verwaltung (Garagenplaner) ---
 //
-// A purely organisational spatial layer (garage → hall → spot) that records
+// A purely organizational spatial layer (garage → hall → spot) that records
 // where a Gefährt physically stands. Geometry is opaque JSON the frontend planner
 // owns; the backend stores and returns it verbatim.
 

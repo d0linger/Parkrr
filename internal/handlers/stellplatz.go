@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
@@ -11,7 +12,7 @@ import (
 	"github.com/preining/parkrr/internal/models"
 )
 
-// Stellplatz-/Hallen-Verwaltung (Garagenplaner) — a purely organisational spatial
+// Stellplatz-/Hallen-Verwaltung (Garagenplaner) — a purely organizational spatial
 // layer (garage → hall → spot) recording WHERE a Gefährt stands. It never touches
 // pricing or invoicing. Geometry is opaque JSON the frontend planner owns; the
 // backend validates only that it is well-formed and size-capped, then stores and
@@ -644,8 +645,18 @@ type vehicleDimsRequest struct {
 	WeightT *float64 `json:"weight_t"`
 }
 
-func dimInRange(v *float64, min, max float64) bool {
-	return v == nil || (*v > min-1e-9 && *v <= max)
+// dimPos validates an optional length/width/height (meters): nil is ok (unknown,
+// skips fit checks); otherwise it must be > 0 AFTER NUMERIC(6,2) rounding and <= max.
+// This mirrors chk_vehicle_dims's "> 0" so zero or sub-centimeter values return a
+// clean 400 instead of tripping the DB CHECK constraint (500).
+func dimPos(v *float64, max float64) bool {
+	return v == nil || (math.Round(*v*100)/100 > 0 && *v <= max)
+}
+
+// dimInRange validates the optional weight (tonnes): nil ok, else 0 ≤ v ≤ max
+// (inclusive lower bound, matching chk_vehicle_dims's "weight_t >= 0").
+func dimInRange(v *float64, max float64) bool {
+	return v == nil || (*v >= 0 && *v <= max)
 }
 
 // SetVehicleDimensions updates a Gefährt's length/width/height/weight (editor).
@@ -660,8 +671,8 @@ func (h *Handler) SetVehicleDimensions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if !dimInRange(req.LengthM, 0, 60) || !dimInRange(req.WidthM, 0, 15) ||
-		!dimInRange(req.HeightM, 0, 15) || !dimInRange(req.WeightT, -0.0001, 200) {
+	if !dimPos(req.LengthM, 60) || !dimPos(req.WidthM, 15) ||
+		!dimPos(req.HeightM, 15) || !dimInRange(req.WeightT, 200) {
 		writeError(w, http.StatusBadRequest, "dimension out of range")
 		return
 	}
