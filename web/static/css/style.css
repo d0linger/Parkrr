@@ -1390,7 +1390,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .veh-loc:hover{text-decoration:underline}
 .veh-loc.empty{color:var(--muted);cursor:default}
 /* compact pin-icon variant (used under the card action buttons): bigger, centred, accented */
-.veh-loc-ic{width:36px;height:36px;padding:0;align-items:center;justify-content:center;border:1px solid color-mix(in srgb,var(--accent-text) 45%,transparent);border-radius:10px;color:var(--accent-text);background:color-mix(in srgb,var(--accent-text) 13%,transparent)}
+.veh-loc-ic{display:inline-grid;place-items:center;width:36px;height:36px;padding:0;border:1px solid color-mix(in srgb,var(--accent-text) 45%,transparent);border-radius:10px;color:var(--accent-text);background:color-mix(in srgb,var(--accent-text) 13%,transparent)}
 .veh-loc-ic svg{width:20px;height:20px;display:block}
 .veh-loc-ic:hover{background:color-mix(in srgb,var(--accent-text) 24%,transparent);text-decoration:none}
 .veh-loc-ic.empty{color:var(--muted);opacity:.55;border:1px dashed var(--card-border);background:none}
