@@ -1594,6 +1594,15 @@
                 el('button', { class: 'btn btn-ghost btn-sm iconedit', title: 'Umbenennen / Bild ersetzen', onclick: () => { editId = ic.id; editName = ic.name; render(); } }, '✎'),
                 el('button', { class: 'btn btn-ghost btn-sm icondel', title: 'Löschen', onclick: async () => { if (!await confirmDialog('Icon löschen?', `„${ic.name}" wird entfernt. Fahrzeuge, die es nutzen, fallen aufs Kategorie-Symbol zurück.`, 'Löschen')) return; try { await api.del('/planner-icons/' + ic.id); if (editId === ic.id) editId = null; await render(); } catch (e) { toast('Löschen fehlgeschlagen', 'error'); } } }, '✕'))));
             body.append(grid);
+            // Built-in category icons (read-only): always available per vehicle under
+            // „Planer-Symbol", not stored in the DB and therefore not editable/deletable.
+            body.append(el('h4', { class: 'iconh4' }, 'Eingebaute Icons'));
+            body.append(el('p', { class: 'muted', style: 'font-size:.76rem;margin:0 0 .5rem' }, 'Immer verfügbar, pro Gefährt unter „Planer-Symbol" wählbar. Nicht löschbar.'));
+            const bgrid = el('div', { class: 'icongrid' });
+            Object.entries(CATICON).forEach(([cat, slug]) => bgrid.append(el('div', { class: 'iconcell builtin' },
+                el('img', { src: CATICON_BASE + slug + '.png', alt: cat }),
+                el('span', { title: cat }, cat))));
+            body.append(bgrid);
             body.append(el('button', { class: 'btn btn-ghost btn-sm', style: 'margin-top:.7rem', onclick: () => dlg.close() }, 'Schließen'));
         };
         dlg.append(body); document.body.append(dlg);

@@ -1382,6 +1382,8 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .iconcell .iconedit{left:1px;color:#1c6fb4}
 .iconcell .icondel{right:1px;color:#c0392b}
 .iconcell.editing{outline:2px solid #1c6fb4;outline-offset:1px}
+.iconh4{margin:.9rem 0 .3rem;font-size:.9rem;color:#e9eff6}
+.iconcell.builtin{background:#cdd5dd}
 .gp-block.gp-tiny .gp-sym{top:2%;left:2%;width:96%;height:96%}
 /* keep a minimal status glyph on tiny media blocks (a11y: status never colour-only) */
 .gp-block.gp-tiny .gp-stbadge{top:1px;left:1px;font-size:.5rem;padding:0 2px;background:rgba(0,0,0,.55)}
