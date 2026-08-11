@@ -4362,10 +4362,24 @@
             // Declutter small blocks so labels don't overflow into neighbours.
             d.classList.toggle('gp-small', bh < 42 || bw < 62); // toggle (not add) so a live resize
             d.classList.toggle('gp-tiny', bh < 26 || bw < 42);  // re-shows labels when the block grows
-            // Rotate the block; drawBlocks gives rotated blocks a single centred label
-            // group (.gp-rlabel) — counter-rotate it about the block centre so it reads
-            // horizontally in the middle instead of scattering to the rotated corners.
-            if (b.rot) { d.style.transform = 'rotate(' + b.rot + 'deg)'; const g = d.querySelector('.gp-rlabel'); if (g) g.style.transform = 'translate(-50%,-50%) rotate(' + (-b.rot) + 'deg)'; }
+            // Rotate the block; drawBlocks gives rotated blocks a single upright label
+            // group (.gp-rlabel). Counter-rotate it AND push it to the block's (screen-)
+            // bottom edge instead of the centre, so the info sits under the vehicle rather
+            // than on top of it. The push direction is the block's local axis that maps to
+            // screen-down after the rotation: R(-rot)·(0, dy) = (sin·dy, cos·dy).
+            if (b.rot) {
+                d.style.transform = 'rotate(' + b.rot + 'deg)';
+                const g = d.querySelector('.gp-rlabel');
+                if (g) {
+                    const rad = b.rot * Math.PI / 180;
+                    const shh = (Math.abs(bw * Math.sin(rad)) + Math.abs(bh * Math.cos(rad))) / 2; // screen half-height
+                    const lh = (g.children.length || 3) * 12 + 6; // ~label height (not yet in DOM to measure)
+                    const dy = Math.max(0, shh - lh / 2 - 4); // just inside the bottom edge, not the centre
+                    g.style.left = (bw / 2 + Math.sin(rad) * dy) + 'px';
+                    g.style.top = (bh / 2 + Math.cos(rad) * dy) + 'px';
+                    g.style.transform = 'translate(-50%,-50%) rotate(' + (-b.rot) + 'deg)';
+                }
+            }
         }
         function drawBlocks() {
             layer.innerHTML = '';
