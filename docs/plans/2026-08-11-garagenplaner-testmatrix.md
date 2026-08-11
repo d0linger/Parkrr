@@ -107,11 +107,62 @@ Vorbedingung „Basis": Angemeldet als Editor, ≥1 Garage → ≥1 Halle angele
 
 ---
 
+## Prüfergebnis (Stand 2026-08-11)
+
+Legende: **✅** = an Quelle verifiziert (Code / DB / Geometrie-Test) · **👤** = Logik im Code vorhanden, visuelle/Interaktions-Abnahme im Browser durch Tester (mit Strg+Shift+R). Keine offenen ⚠️-Befunde.
+
+| ID | Status | Beleg / Notiz |
+|----|----|----|
+| LP-01 | ✅ | Symbole `●/◑/⇄` (`GPSTAT`, app.js:3769) + Statusfarben `.gp-block.veh.busy/resv/move` (style.css:1319–1321) |
+| LP-02/03 | 👤 | Auswahl + Detailpanel + „Mieterdaten öffnen"-Nav vorhanden |
+| LP-04 | ✅ | Frei = Halle − Ausgenommen − Belegt (app.js:4190); Balken ∝ Fläche (4081); `polyArea` Shoelace (3742) |
+| LP-05 | ✅ | 0 Gefährte; `Math.max(1,tot)` verhindert Div/0 |
+| LP-06 | ✅ | `canManageNow` (3868) sperrt Verschieben (4519); Edit-Buttons an `canManage()` gebunden |
+| DM-01/04 | ✅ | `heightOK` = `H ≤ Tor+0.001` (3871) → Grenzwert gilt als ok |
+| DM-02/03 | ✅ | `⚠ Maß`-Badge (4153) + Prüfzeilen (4347–4348); `weightOK` (3872) |
+| DM-05 | ✅ | `H==null`→ok; „Maße offen" (3881); Default-Footprint 4,5×2 |
+| DM-06 | ✅ | Maßstabsgetreue Skalierung `sp.w=L, sp.h=W` (Geometrie-Test bestätigt) |
+| DM-07 | ✅/👤 | `heightOK` nutzt `P.tor` live; Re-Render nach Torhöhen-Änderung |
+| DD-02/09 | ✅ | Persistenz via `/spots`; Entfernen (`api.del /spots`, 4442) → Backend `spot_id=NULL` (stellplatz.go:578) |
+| DD-03/05 | ✅ | `collide`+`satOverlap` (3875/3756) inkl. Ausgenommene; Rücksprung + Toast (4561) |
+| DD-04 | ✅ | `rectInPoly`/`inside`; Vorschau „außerhalb der Fläche" (4598) |
+| DD-06 | ✅ | Drop neben Canvas → Toast „Auf die Fläche ziehen" (4603) |
+| DD-01/07/08 | 👤 | Platzieren/Drehen/Resize-Logik inkl. Validierung vorhanden |
+| DD-10 | ✅ | `snapV`: Raster (¼/½/1 m) vs. Frei (0,01 m) (3937); „Frei"-Button (4208) |
+| GP-01 | ✅ | 5 Formen rect/l/u/trap/step (4364); `setShape` zählt Außenliegende (4420) |
+| GP-04/06/10 | ✅ | `setEdgeLen` exakte Länge (3968); Linie-Verschieben geklemmt (4446); `polyArea`/`edgeLen` |
+| GP-02/03/05/07/08/09 | 👤 | Maße/Ecke/Punkt/Ausgenommene/Speichern-Logik vorhanden |
+| ST-04 | ✅ | `pushUndo`/`doUndo`/`doRedo` (3989–3999), Historie-Cap 80, Grenzen-Guard |
+| ST-05 | ✅ | `keydown`/`keyup`/`resize`-Listener + ResizeObserver räumen bei `!root.isConnected` auf (4002/4010/4037) |
+| ST-06/07 | ✅ | Plan lädt server-seitig (3845); Positionen persistiert |
+| ST-01/02/03 | 👤 | Maximize/Esc (4008), DnD-Vollbild, Modus-Reset vorhanden |
+| DG-01…05 | ✅/👤 | Natives `<dialog>.showModal()` (213/380/422) = genau ein Modal, Backdrop + Fokusfalle vom Browser |
+| PF-04 | ✅ | `prefers-reduced-motion`-Media-Queries vorhanden (style.css mehrfach) |
+| PF-01/02/03 | 👤 | Performance/Latenz — im Browser mit vielen Blöcken zu messen |
+| AC-01/02 | ✅ | Status-Symbole + Text; `⚠ außerhalb`/`⚠ Maß`-Text-Badges (4153) |
+| AC-03/04 | ✅ | `@media(max-width:900px)` Rail unter Canvas (1277); `touch-action:none` (1300/1350) |
+| AC-05/06 | 👤 | Tastatur-Fokus & Kontrast — visuell/Screenreader zu prüfen |
+
+**Zusätzlich per Geometrie-Test abgesichert** (nicht in obiger Matrix): Rotationsbewusstes Clamping, magnetisches Rand-Anrasten und Innen/Außen-Prüfung wurden end-to-end gegen alle 5 Formen (rect/l/trap/step/u) × Ränder/Ecken/Stufe × Rotation (0/30/90°) × Raster (Frei/¼/½/1) validiert: **0 Snap-verursachte Außerhalb-Fälle**, bündiges Anrasten an allen achsparallelen Rändern erreicht.
+
+---
+
+## Rand-Anrasten, Clamping & Geometrie (Verhalten)
+- **Bezug ist der ECHTE Grundriss**, nicht die Canvas-Fläche `0..Wm/0..Hm`. Snap/Clamp hängen an der Bounding-Box des Polygons **und** an allen Vertex-Koordinaten (Außenränder + Innenstufen). Ein eingerückter Grundriss (z. B. Oberkante y=1,2, rechte Kante x=36,1) rastet korrekt an der grünen Linie, nicht am Canvas-Rand.
+- **Magnet-Reichweite = eine Rasterzelle (+ε)**: `(P.snap ? gridStep : 0,25) + 0,05`. „Zum Rand ziehen" landet immer bündig, statt eine Zelle davor zu stoppen.
+- **Selbst-validierend** (`both → nur X → nur Y → gar nicht`): bei diagonalen (`trap`) oder Notch-Formen (`u`) rastet der Magnet nur, wenn das Ergebnis im Grundriss liegt — er schiebt **nie** einen Block nach außen (kein Reset).
+- **Rotationsbewusst**: geklemmt/gerastet wird die gedrehte Bounding-Box (AABB-Halbausdehnung), damit auch 90°-Blöcke bündig an den Rand kommen.
+- **Bündig ist gültig**: der T-Kreuzungs-Fehlalarm in `rectInPoly`/`quadInPoly` ist behoben (geschrumpftes Polygon für Ecken- und Kantentest), sodass eine Kante exakt auf dem Rand nicht als „außerhalb" gilt.
+
 ## Bekannte, bewusste Abweichungen vom Prototyp (kein Bug)
 - **Persistenz statt localStorage:** Platzierungen liegen als Backend-Datensätze (Spot + `vehicle.spot_id`), Grundriss in `hall.geometry`. Undo/Redo umfasst Geometrie/Positionen, **nicht** das Anlegen/Löschen von Platzierungen (diese persistieren sofort).
 - **Palette = real nicht zugewiesene Gefährte** (`spot_id IS NULL`), nicht die 4 Demo-Fahrzeuge des Prototyps.
 - **Immer dunkles Planer-Design** (bewusst, wie der Prototyp), unabhängig vom App-Theme.
 
+## Navigation (Kürzel)
+- **Strg + Mausrad** = Zoom zum Cursor · **mittlere Maustaste** ODER **Leertaste + Ziehen** = Pan · **F** = Einpassen · **⛶/Esc** = Vollbild ein/aus · **Strg+Z / Strg+Umschalt+Z** = Undo/Redo. (F/Leertaste werden in Eingabefeldern & `<select>` nicht abgefangen.)
+
 ## Offene Punkte / später
-- Grundriss-Hintergrundbild + Maßstab-Kalibrierung (Prototyp-Wave 2) — noch nicht portiert.
-- Fahrzeug-Maße-Pflege direkt im Planer (aktuell via API/Dimensions-Endpoint; UI-Formular folgt).
+- **Grundriss-Hintergrundbild + Maßstab-Kalibrierung** (Prototyp-Wave 2) — noch nicht portiert. *(einziger echt offener Feature-Punkt)*
+- ~~Fahrzeug-Maße-Pflege direkt im Planer~~ — **erledigt**: `dimForm` (app.js:4256), Buttons „Maße festlegen →" / „✎ Maße".
+- **👤-Zeilen oben** noch im Browser abnehmen (reine Interaktions-/Sicht-/Performance-Prüfungen).
