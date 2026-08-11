@@ -4448,16 +4448,21 @@
                 shapeGrid.append(el('button', { class: P.shape === k ? 'on' : '', onclick: () => setShape(k) }, shapeIcon(k), el('span', {}, lab)));
             });
             shapeCard.append(shapeGrid);
-            shapeCard.append(el('div', { class: 'muted', style: 'font-size:.7rem;margin-bottom:.5rem' }, 'Eigene Form: „Form bearbeiten" → Ecke ziehen, Doppelklick auf Kante = Punkt einfügen, Doppelklick auf Ecke = löschen.'));
+            shapeCard.append(el('div', { class: 'muted', style: 'font-size:.7rem;margin-bottom:.5rem' }, 'Größe & Form über „Form bearbeiten": Ecke/Kante ziehen, Kante anklicken = Länge eintippen, „+" auf Kante = Punkt einfügen, Ecke anklicken = löschen. Breite/Tiefe unten ergeben sich daraus.'));
             const grid2 = el('div', { class: 'gp-grid2' });
             // Direct numeric input (type a value) plus −/+ steppers.
             const dstep = (label, which, val, step) => el('div', { class: 'gp-field' }, el('label', {}, label),
                 el('div', { class: 'gp-stepper' }, el('button', { onclick: () => setDim(which, -1) }, '−'),
                     el('input', { class: 'gp-stepin num', type: 'number', step, value: val, onchange: (e) => setDimTo(which, e.target.value) }),
                     el('button', { onclick: () => setDim(which, 1) }, '+')));
+            // Breite/Tiefe are now a live INFO readout of the actual floor polygon's bounding
+            // box — the exact size is set via „Form bearbeiten" (drag edges / edge-length field),
+            // so the numbers can no longer silently regenerate (reset) a hand-drawn shape.
+            const bb = floorBB(), fw = (bb.maxX - bb.minX), fh = (bb.maxY - bb.minY);
+            const info = (label, val) => el('div', { class: 'gp-field' }, el('label', {}, label), el('div', { class: 'gp-inforo num', title: 'Ergibt sich aus der Form — ändern über „Form bearbeiten"' }, val + ' m'));
             grid2.append(
-                dstep('Breite (m)', 'w', P.Wm, '1'),
-                dstep('Tiefe (m)', 'h', P.Hm, '1'),
+                info('Breite (m)', fw.toFixed(2).replace('.', ',')),
+                info('Tiefe (m)', fh.toFixed(2).replace('.', ',')),
                 dstep('Torhöhe (m)', 'tor', P.tor.toFixed(1), '0.5'),
                 dstep('Bodenlast (t)', 'load', P.load.toFixed(1), '0.5'));
             shapeCard.append(grid2); rail.append(shapeCard);

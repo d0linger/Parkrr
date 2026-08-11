@@ -1424,6 +1424,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-rot{position:absolute;left:50%;top:-22px;transform:translateX(-50%);width:13px;height:13px;border-radius:50%;background:var(--gpteal);border:1.5px solid #0a141e;cursor:grab;z-index:8}
 /* direct numeric inputs in the dim steppers + Tor zone styling */
 .gp-stepin{width:100%;min-width:0;background:#0a141e;border:1px solid var(--gpline2);color:var(--gpink);border-radius:8px;padding:.28rem .3rem;font:inherit;font-size:.82rem;text-align:center}
+.gp-inforo{width:100%;background:var(--gpglass);border:1px dashed var(--gpline2);color:var(--gpink);border-radius:8px;padding:.34rem .3rem;font-size:.82rem;font-weight:650;text-align:center;cursor:default}
 .gp-stepper .gp-stepin{flex:1}
 .gp-block.excl.gate{background:#0f2a3a;background-image:repeating-linear-gradient(90deg,rgba(78,168,245,.35) 0 6px,transparent 6px 12px);border:1px solid var(--gpmove)}
 .gp-block.excl.gate .gp-who{color:#bcdcff}
