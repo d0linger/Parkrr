@@ -4425,12 +4425,16 @@
         function renderMetrics() {
             metrics.innerHTML = '';
             const total = polyArea(P.floor); let ex = 0, ve = 0; P.excl.forEach((b) => ex += b.w * b.h); P.spots.forEach((b) => ve += b.w * b.h);
+            // Hall dimensions = the ACTUAL floor polygon's bounding box (same source as the
+            // Breite/Tiefe readout), not the P.Wm×P.Hm canvas grid — after „Form bearbeiten"
+            // shrinks the polygon inside the grid the two diverge, and the bbox is the real one.
+            const bb = floorBB(), fw = bb.maxX - bb.minX, fh = bb.maxY - bb.minY;
             const m = (val, label, cls) => el('div', { class: 'gp-metric' }, el('div', { class: 'gp-mv ' + (cls || '') }, val), el('div', { class: 'gp-ml' }, label));
             metrics.append(
                 m(Math.round(Math.max(0, total - ex - ve)) + ' m²', 'Frei', 'ok'),
                 m(Math.round(ve) + ' m²', 'Belegt · ' + P.spots.length, 'busy'),
                 m(Math.round(ex) + ' m²', 'Ausgenommen', 'excl'),
-                m(P.Wm + '×' + P.Hm + ' m', 'Halle · ' + Math.round(total) + ' m²'),
+                m(fw.toFixed(1).replace('.', ',') + '×' + fh.toFixed(1).replace('.', ',') + ' m', 'Halle · ' + Math.round(total) + ' m²'),
                 m(polyPerim(P.floor).toFixed(1) + ' m', 'Umfang'));
         }
 
