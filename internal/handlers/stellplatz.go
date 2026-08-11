@@ -329,7 +329,9 @@ func (h *Handler) spotsOfHall(r *http.Request, hallID int64) ([]models.Spot, err
 		        COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), cat.name, 'Gefährt'),
 		        COALESCE(cat.name, ''),
 		        v.person_id, trim(p.first_name || ' ' || p.last_name),
-		        v.length_m, v.width_m, v.height_m, v.weight_t, COALESCE(v.needs_power, false)
+		        v.length_m, v.width_m, v.height_m, v.weight_t, COALESCE(v.needs_power, false),
+		        v.planner_symbol,
+		        (SELECT vp.id FROM vehicle_photos vp WHERE vp.vehicle_id = v.id ORDER BY vp.created_at, vp.id LIMIT 1)
 		   FROM spots s
 		   LEFT JOIN vehicles   v   ON v.spot_id = s.id
 		   LEFT JOIN categories cat ON cat.id = v.category_id
@@ -347,7 +349,7 @@ func (h *Handler) spotsOfHall(r *http.Request, hallID int64) ([]models.Spot, err
 		var vehLabel, vehType, personName *string
 		if err := rows.Scan(&s.ID, &s.HallID, &s.Label, &s.Geometry, &s.CreatedAt, &s.UpdatedAt,
 			&vehID, &vehLabel, &vehType, &personID, &personName,
-			&s.LengthM, &s.WidthM, &s.HeightM, &s.WeightT, &s.NeedsPower); err != nil {
+			&s.LengthM, &s.WidthM, &s.HeightM, &s.WeightT, &s.NeedsPower, &s.PlannerSymbol, &s.PhotoID); err != nil {
 			return nil, err
 		}
 		if vehID != nil {

@@ -464,7 +464,8 @@ type Vehicle struct {
 	ReservedFrom  *time.Time `json:"reserved_from"`
 	ReservedUntil *time.Time `json:"reserved_until"`
 	Paid          bool       `json:"paid"`
-	NeedsPower    bool       `json:"needs_power"` // Ladebedarf (Strom) — Garagenplaner only, no billing effect
+	NeedsPower    bool       `json:"needs_power"`    // Ladebedarf (Strom) — Garagenplaner only, no billing effect
+	PlannerSymbol *string    `json:"planner_symbol"` // override the category top-view symbol; nil = automatic
 	// Archived marks a closed vehicle (cancelled, or collected + paid) that has
 	// been tidied out of the active lists. Archived vehicles are read-only until
 	// reactivated, but still count in all billing and statistics.
@@ -677,16 +678,18 @@ type Spot struct {
 
 	// Derived: the Gefährt currently standing on this spot, if any (1:1), with the
 	// physical data the planner needs for its fit checks and the click→Mieter jump.
-	VehicleID    *int64   `json:"vehicle_id,omitempty"`
-	VehicleLabel string   `json:"vehicle_label,omitempty"`
-	VehicleType  string   `json:"vehicle_type,omitempty"`
-	PersonID     *int64   `json:"person_id,omitempty"`
-	PersonName   string   `json:"person_name,omitempty"`
-	LengthM      *float64 `json:"length_m,omitempty"`
-	WidthM       *float64 `json:"width_m,omitempty"`
-	HeightM      *float64 `json:"height_m,omitempty"`
-	WeightT      *float64 `json:"weight_t,omitempty"`
-	NeedsPower   bool     `json:"needs_power"` // Ladebedarf of the Gefährt on this spot
+	VehicleID     *int64   `json:"vehicle_id,omitempty"`
+	VehicleLabel  string   `json:"vehicle_label,omitempty"`
+	VehicleType   string   `json:"vehicle_type,omitempty"`
+	PersonID      *int64   `json:"person_id,omitempty"`
+	PersonName    string   `json:"person_name,omitempty"`
+	LengthM       *float64 `json:"length_m,omitempty"`
+	WidthM        *float64 `json:"width_m,omitempty"`
+	HeightM       *float64 `json:"height_m,omitempty"`
+	WeightT       *float64 `json:"weight_t,omitempty"`
+	NeedsPower    bool     `json:"needs_power"`              // Ladebedarf of the Gefährt on this spot
+	PlannerSymbol *string  `json:"planner_symbol,omitempty"` // per-vehicle symbol override
+	PhotoID       *int64   `json:"photo_id,omitempty"`       // first photo of the Gefährt (foto mode)
 }
 
 func maxTime(a, b time.Time) time.Time {

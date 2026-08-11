@@ -2298,6 +2298,7 @@
                 { name: 'rate', label: 'Preis (€)', type: 'number', step: '0.01', min: 0, required: true, value: initRate, help: 'Aus dem Tarif übernommen und fest hinterlegt. Eine spätere Tarifänderung ändert diesen Preis nicht.' },
                 { name: 'notes', label: 'Notizen', type: 'textarea', value: existing?.notes },
                 { name: 'needs_power', label: 'Ladebedarf (Strom) — E-Fahrzeug / Kühlung', type: 'checkbox', value: !!existing?.needs_power },
+                { name: 'planner_symbol', label: 'Planer-Symbol', type: 'select', value: existing?.planner_symbol || '', help: 'Standard: automatisch aus dem Tarif/Typ. Hier optional ein festes Draufsicht-Symbol wählen.', options: [{ value: '', label: 'Automatisch (aus Typ)' }].concat(['PKW', 'Motorrad', 'Transporter', 'Wohnmobil', 'Wohnwagen', 'Anhänger', 'Boot / Trailer', 'Traktor', 'Ladewagen', 'Rückewagen', 'Kipper'].map((k) => ({ value: k, label: k }))) },
             ],
             onRender: (body) => {
                 segmentedField(body, 'billing_period', [{ v: 'monthly', l: 'monatlich' }, { v: 'yearly', l: 'jährlich' }]);
@@ -2323,6 +2324,7 @@
                     reserved_from: existing?.reserved_from ? existing.reserved_from.slice(0, 10) : null,
                     reserved_until: existing?.reserved_until ? existing.reserved_until.slice(0, 10) : null,
                     needs_power: !!data.needs_power,
+                    planner_symbol: data.planner_symbol || null,
                 };
                 if (existing) await api.put('/vehicles/' + existing.id, payload);
                 else await api.post('/vehicles', payload);
@@ -3908,6 +3910,7 @@
                 _id: s.id, kind: 'veh', label: s.vehicle_label || s.label, spotLabel: s.label, type: s.vehicle_type || '', vehId: s.vehicle_id || null,
                 personId: s.person_id || null, personName: s.person_name || '',
                 L: s.length_m, W: s.width_m, H: s.height_m, t: s.weight_t, needsPower: !!s.needs_power,
+                plannerSymbol: s.planner_symbol || null, photoUrl: s.photo_id ? '/api/photos/' + s.photo_id : null,
                 x: num(g.x, 1), y: num(g.y, 1), w: num(g.w, s.length_m || catFoot(s.vehicle_type)[0]), h: num(g.h, s.width_m || catFoot(s.vehicle_type)[1]), rot: num(g.rot, 0), status: g.status || 'busy', _dirty: false }; }),
             palette,
             mode: 'manage', editMode: false, snap: true, gridStep: 0.5, ortho: false, zoom: 1, sel: null, selEdge: null,
@@ -4229,7 +4232,7 @@
                 const warnTxt = !inside(b) ? '⚠ außerhalb' : ((!heightOK(b) || !weightOK(b)) ? '⚠ Maß' : null);
                 const codeTxt = st.sym + ' ' + (b.type || 'Gefährt'), nameTxt = b.personName || b.label;
                 // media background (behind the labels); symbol rotates with the block (facing)
-                if (eff === 'symbol') { d.append(symbolNode(b.type, b.w, b.h)); }
+                if (eff === 'symbol') { d.append(symbolNode(b.plannerSymbol || b.type, b.w, b.h)); }
                 else if (eff === 'foto') { d.append(el('img', { class: 'gp-photo', src: b.photoUrl, alt: '' }), el('span', { class: 'gp-photoscrim' })); }
                 if (eff !== 'rect') d.append(el('span', { class: 'gp-stbadge' }, st.sym)); // status glyph when the code chip is hidden (a11y; kept small on tiny blocks)
                 if (b.rot) {
