@@ -4372,9 +4372,9 @@
             P.spots.forEach((b) => {
                 const ctx = !interactive(b), st = GPSTAT[b.status] || GPSTAT.busy;
                 let eff = P.render || 'symbol'; if (eff === 'foto' && !b.photoUrl) eff = 'symbol'; // fallback chain: no photo → symbol
-                const d = el('div', { class: 'gp-block veh ' + b.status + (eff !== 'rect' ? ' gp-media' : '') + (eff === 'symbol' ? ' gp-symmode' : '') + (b._id === P.sel ? ' sel' : '') + (warn(b) ? ' invalid' : '') + (ctx ? ' dimctx' : '') });
+                const d = el('div', { class: 'gp-block veh ' + b.status + (eff !== 'rect' ? ' gp-media' : '') + (eff === 'symbol' ? ' gp-symmode' : '') + (b._id === P.sel ? ' sel' : '') + (warn(b) || b._invalid ? ' invalid' : '') + (ctx ? ' dimctx' : '') });
                 d.dataset.id = b._id;
-                const warnTxt = !inside(b) ? '⚠ außerhalb' : ((!heightOK(b) || !weightOK(b)) ? '⚠ Maß' : null);
+                const warnTxt = !inside(b) ? '⚠ außerhalb' : (b._invalid ? '⚠ blockiert' : ((!heightOK(b) || !weightOK(b)) ? '⚠ Maß' : null));
                 const codeTxt = st.sym + ' ' + (b.type || 'Gefährt'), nameTxt = b.personName || b.label;
                 // media background (behind the labels); symbol rotates with the block (facing)
                 if (eff === 'symbol') {
@@ -4485,10 +4485,19 @@
             P.dirty = false; renderToolbar(); // optimistic; a change during the save re-flags it
             try {
                 await api.put('/halls/' + P.hallId, { name: P.hallName, geometry: currentGeometry() });
-                for (const b of P.spots) if (b._dirty) await persistSpot(b);
+                // Free placement: an invalid spot (outside / gate / lane / collision) is kept
+                // locally and stays _dirty, but is NOT persisted until it is valid again.
+                let heldInvalid = 0;
+                for (const b of P.spots) {
+                    if (!b._dirty) continue;
+                    if (!validVeh(b, b._id)) { b._invalid = true; heldInvalid++; continue; }
+                    b._invalid = false;
+                    await persistSpot(b);
+                }
                 // A failed spot write re-flags P.dirty (persistSpot); reschedule instead of
                 // falsely reporting success.
                 if (P.dirty) scheduleSave();
+                else if (heldInvalid && !silent) toast(heldInvalid + (heldInvalid === 1 ? ' Fahrzeug ungültig platziert — nicht gespeichert' : ' Fahrzeuge ungültig platziert — nicht gespeichert'), 'warn');
                 else if (!silent) toast('Grundriss gespeichert', 'ok');
             } catch (err) { if (!silent) toast(err.message || 'Speichern fehlgeschlagen', 'error'); P.dirty = true; renderToolbar(); scheduleSave(); }
         }
@@ -4836,10 +4845,11 @@
             const isVeh = !!b._id && b.kind !== 'excl';
             if (d.mode === 'rotate') {
                 const bad = isVeh ? !validVeh(b, b._id) : collide(b, b.id);
-                if (bad) { b.rot = d.orot; draw(); toast('Drehen: Kollision/außerhalb — zurück', 'error'); return; }
+                if (bad && !isVeh) { b.rot = d.orot; draw(); toast('Drehen: Kollision/außerhalb — zurück', 'error'); return; } // exclusions still snap back
                 P.sel = b._id || b.id;
-                if (isVeh) { b._dirty = true; markDirty(); pushUndo(); draw(); } else commitGeom(); // commitGeom already redraws
-                toast('Gedreht'); return;
+                if (isVeh) { b._invalid = bad; b._dirty = true; markDirty(); pushUndo(); draw(); toast(bad ? 'Gedreht — ungültige Lage, Speichern erst wenn frei' : 'Gedreht', bad ? 'warn' : ''); }
+                else { commitGeom(); toast('Gedreht'); } // commitGeom already redraws
+                return;
             }
             if (d.mode === 'resize') {
                 const bad = isVeh ? !validVeh({ kind: 'veh', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b._id) : collide({ kind: 'excl', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b.id);
@@ -4851,10 +4861,15 @@
             if (!d.moved) { P.sel = b._id || b.id; draw(); return; }
             d.elm.classList.remove('moving');
             const bad = isVeh ? !validVeh({ kind: 'veh', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b._id) : collide({ kind: 'excl', x: b.x, y: b.y, w: b.w, h: b.h }, b.id);
-            if (bad) { b.x = d.ox; b.y = d.oy; toast('Kollision/außerhalb — zurück', 'error'); }
-            else toast('Verschoben' + (P.snap ? ' (gerastet)' : ' (frei)'));
             P.sel = b._id || b.id;
-            if (!bad) { if (isVeh) { b._dirty = true; markDirty(); pushUndo(); } else commitGeom(); } else draw();
+            if (!isVeh) { // exclusions still snap back to their last valid spot
+                if (bad) { b.x = d.ox; b.y = d.oy; toast('Kollision/außerhalb — zurück', 'error'); draw(); }
+                else { commitGeom(); toast('Verschoben' + (P.snap ? ' (gerastet)' : ' (frei)')); }
+                return;
+            }
+            // vehicle: keep the position even when invalid; persist only once it is valid again
+            b._invalid = bad; b._dirty = true; markDirty(); pushUndo(); draw();
+            toast(bad ? 'Außerhalb/blockiert — Position bleibt, Speichern erst wenn gültig' : ('Verschoben' + (P.snap ? ' (gerastet)' : ' (frei)')), bad ? 'warn' : '');
         });
 
         // ---- palette drag → place ----

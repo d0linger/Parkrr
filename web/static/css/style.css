@@ -1361,6 +1361,10 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-block.veh.gp-symmode:not(.sel){box-shadow:0 0 0 1.5px var(--sc),0 0 10px 0 var(--scg)}
 .gp-block.veh.gp-symmode .gp-sym,.gp-block.veh.gp-symmode .gp-symimg{filter:drop-shadow(0 0 2.5px rgba(242,247,251,.92)) drop-shadow(0 0 1px rgba(242,247,251,.7))}
 .gp-block.veh.gp-symmode .gp-stbadge{color:var(--sc);background:rgba(6,12,10,.6)}
+/* no card => labels can fall on the white icon body; give them a dark pill so white text
+   stays legible (hugs the text, doesn't span the whole block) */
+.gp-block.gp-symmode .gp-lab{right:auto;max-width:calc(100% - 12px);background:rgba(8,14,11,.66);border-radius:6px;padding:2px 6px;backdrop-filter:blur(1px)}
+.gp-block.gp-symmode .gp-rlabel{background:rgba(8,14,11,.62);border-radius:7px;padding:3px 8px;backdrop-filter:blur(1px)}
 .gp-symimg{position:absolute;top:6%;left:6%;right:6%;bottom:6%;width:88%;height:88%;object-fit:contain;z-index:0;pointer-events:none}
 .gp-photo{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:0;pointer-events:none}
 .gp-photoscrim{position:absolute;inset:0;z-index:1;pointer-events:none;background:linear-gradient(180deg,rgba(6,12,20,.04) 42%,rgba(6,12,20,.74))}
