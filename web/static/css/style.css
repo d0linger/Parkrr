@@ -1343,6 +1343,13 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-rz-s{left:50%;bottom:-6px;margin-left:-6px;cursor:ns-resize}
 .gp-rz-e{right:-6px;top:50%;margin-top:-6px;cursor:ew-resize}
 .gp-rz-w{left:-6px;top:50%;margin-top:-6px;cursor:ew-resize}
+/* Vehicle display: category symbol (rotates with the block = facing) / photo / status badge */
+.gp-sym{position:absolute;top:7%;left:7%;right:7%;bottom:7%;z-index:0;pointer-events:none}
+.gp-photo{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:0;pointer-events:none}
+.gp-photoscrim{position:absolute;inset:0;z-index:1;pointer-events:none;background:linear-gradient(180deg,rgba(6,12,20,.04) 42%,rgba(6,12,20,.74))}
+.gp-stbadge{position:absolute;top:3px;left:4px;z-index:2;font-size:.62rem;font-weight:800;color:#fff;background:rgba(0,0,0,.42);border-radius:5px;padding:0 4px;line-height:1.35;pointer-events:none}
+.gp-block.gp-tiny .gp-sym{top:2%;left:2%;right:2%;bottom:2%}
+.gp-block.gp-tiny .gp-stbadge{display:none}
 
 .gp-preview{position:absolute;z-index:8;border-radius:7px;pointer-events:none;border:2px solid var(--gphall);background:rgba(38,165,107,.22)}
 .gp-preview.bad{border-color:var(--gpbusy);background:rgba(242,107,99,.22)}

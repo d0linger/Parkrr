@@ -3768,6 +3768,48 @@
     // Status carries a SYMBOL + label so it is distinguishable without colour (a11y).
     const GPSTAT = { busy: { label: 'Belegt', sym: '●' }, resv: { label: 'Reserviert', sym: '◑' }, move: { label: 'Ein/Aus', sym: '⇄' } };
 
+    // Fahrzeug-Darstellung: Kategoriename (v.type) → Top-View-Symbol-Key + Standard-Footprint.
+    const catKey = (type) => { const t = (type || '').toLowerCase();
+        if (/motorr|moped|roller|bike/.test(t)) return 'Motorrad';
+        if (/wohnmobil|reisemobil|camper/.test(t)) return 'Wohnmobil';
+        if (/wohnwagen|caravan/.test(t)) return 'Wohnwagen';
+        if (/boot|jetski|trailer/.test(t)) return 'Boot / Trailer';
+        if (/traktor|schlepper|landmasch/.test(t)) return 'Traktor';
+        if (/ladewagen/.test(t)) return 'Ladewagen';
+        if (/rückewagen|rueckewagen|forst/.test(t)) return 'Rückewagen';
+        if (/kipper|mulde/.test(t)) return 'Kipper';
+        if (/anhäng|anhaeng|häng|haeng/.test(t)) return 'Anhänger';
+        if (/transport|sprinter|kasten|\bvan\b|bus/.test(t)) return 'Transporter';
+        return 'PKW'; };
+    const CATDEF = { PKW: [4.5, 1.9], Motorrad: [2.2, 0.9], Transporter: [5.4, 2.1], Wohnmobil: [7.0, 2.3], Wohnwagen: [6.0, 2.2], 'Anhänger': [4.0, 1.8], 'Boot / Trailer': [6.0, 2.3], Traktor: [4.6, 2.2], Ladewagen: [8.0, 2.5], 'Rückewagen': [7.5, 2.4], Kipper: [6.5, 2.4] };
+    const catFoot = (type) => CATDEF[catKey(type)] || [4.5, 2];
+
+    // Top-view category symbol as inner SVG markup in a normalized w x h box (length horizontal).
+    function catSymbol(cat, w, h, c) {
+        var S = '<g fill="' + c + '" fill-opacity="0.18" stroke="' + c + '" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round">';
+        var mx = w * 0.05, my = h * 0.14, bw = w - 2 * mx, bh = h - 2 * my;
+        var wh = Math.max(3, h * 0.15), ww = Math.max(4, w * 0.075), wt = my - wh * 0.5, wb = h - my - wh * 0.5;
+        function wheel(cx, cy) { return '<rect x="' + (cx - ww / 2) + '" y="' + cy + '" width="' + ww + '" height="' + wh + '" rx="2" fill="' + c + '" fill-opacity="0.55" stroke="none"/>'; }
+        function big(cx, cy) { return '<rect x="' + (cx - ww * 0.85) + '" y="' + cy + '" width="' + (ww * 1.7) + '" height="' + (wh * 1.8) + '" rx="3" fill="' + c + '" fill-opacity="0.55" stroke="none"/>'; }
+        function axpair(x1, x2) { return wheel(x1, wt) + wheel(x1, wb) + wheel(x2, wt) + wheel(x2, wb); }
+        function b_() { return '<path d="M' + (w * 0.88) + ' ' + (h * 0.42) + ' L' + (w * 0.99) + ' ' + (h * 0.5) + ' L' + (w * 0.88) + ' ' + (h * 0.58) + ' Z" fill-opacity="0.32"/>'; }
+        var body = '<rect x="' + mx + '" y="' + my + '" width="' + bw + '" height="' + bh + '" rx="' + (h * 0.16) + '"/>';
+        switch (cat) {
+            case 'Motorrad': S += '<rect x="' + (w * 0.28) + '" y="' + (h * 0.35) + '" width="' + (w * 0.44) + '" height="' + (h * 0.3) + '" rx="' + (h * 0.15) + '"/><circle cx="' + (w * 0.2) + '" cy="' + (h * 0.5) + '" r="' + (h * 0.15) + '" fill="' + c + '" fill-opacity="0.55" stroke="none"/><circle cx="' + (w * 0.8) + '" cy="' + (h * 0.5) + '" r="' + (h * 0.17) + '" fill="' + c + '" fill-opacity="0.55" stroke="none"/><line x1="' + (w * 0.26) + '" y1="' + (h * 0.32) + '" x2="' + (w * 0.26) + '" y2="' + (h * 0.68) + '"/>'; break;
+            case 'Transporter': S += '<rect x="' + mx + '" y="' + my + '" width="' + (bw * 0.68) + '" height="' + bh + '" rx="3" fill-opacity="0.12"/><rect x="' + (mx + bw * 0.68) + '" y="' + (my + bh * 0.1) + '" width="' + (bw * 0.32) + '" height="' + (bh * 0.8) + '" rx="' + (h * 0.12) + '"/>' + axpair(w * 0.28, w * 0.8); break;
+            case 'Wohnmobil': S += body + '<rect x="' + (w * 0.7) + '" y="' + (my + bh * 0.16) + '" width="' + (w * 0.22) + '" height="' + (bh * 0.68) + '" rx="3" fill-opacity="0.10"/><rect x="' + (w * 0.18) + '" y="' + (h * 0.36) + '" width="' + (w * 0.34) + '" height="' + (h * 0.28) + '" rx="3" fill-opacity="0.10"/>' + axpair(w * 0.24, w * 0.66); break;
+            case 'Wohnwagen': S += body + '<rect x="' + (w * 0.16) + '" y="' + (h * 0.34) + '" width="' + (w * 0.3) + '" height="' + (h * 0.32) + '" rx="3" fill-opacity="0.10"/>' + b_() + wheel(w * 0.48, wt) + wheel(w * 0.48, wb); break;
+            case 'Anhänger': S += '<rect x="' + mx + '" y="' + my + '" width="' + (bw * 0.84) + '" height="' + bh + '" rx="4" fill-opacity="0.06"/><line x1="' + (w * 0.3) + '" y1="' + my + '" x2="' + (w * 0.3) + '" y2="' + (my + bh) + '" stroke-opacity="0.5"/><line x1="' + (w * 0.52) + '" y1="' + my + '" x2="' + (w * 0.52) + '" y2="' + (my + bh) + '" stroke-opacity="0.5"/>' + b_() + wheel(w * 0.44, wt) + wheel(w * 0.44, wb); break;
+            case 'Boot / Trailer': S += '<rect x="' + mx + '" y="' + my + '" width="' + bw + '" height="' + bh + '" rx="4" fill-opacity="0.08"/><path d="M' + (w * 0.12) + ' ' + (h * 0.5) + ' L' + (w * 0.5) + ' ' + (h * 0.22) + ' L' + (w * 0.88) + ' ' + (h * 0.35) + ' Q' + (w * 0.95) + ' ' + (h * 0.5) + ' ' + (w * 0.88) + ' ' + (h * 0.65) + ' L' + (w * 0.5) + ' ' + (h * 0.78) + ' Z"/>' + wheel(w * 0.4, wb) + wheel(w * 0.6, wb); break;
+            case 'Traktor': S += '<rect x="' + (w * 0.12) + '" y="' + (h * 0.24) + '" width="' + (w * 0.6) + '" height="' + (h * 0.52) + '" rx="' + (h * 0.1) + '"/><rect x="' + (w * 0.3) + '" y="' + (h * 0.3) + '" width="' + (w * 0.26) + '" height="' + (h * 0.4) + '" rx="3" fill-opacity="0.10"/>' + big(w * 0.26, my - wh * 0.9) + big(w * 0.26, h - my - wh * 0.9) + wheel(w * 0.64, wt) + wheel(w * 0.64, wb); break;
+            case 'Ladewagen': S += '<rect x="' + mx + '" y="' + (my * 0.5) + '" width="' + (bw * 0.84) + '" height="' + (h - my) + '" rx="3"/><line x1="' + (w * 0.2) + '" y1="' + (my * 0.5) + '" x2="' + (w * 0.2) + '" y2="' + (h - my * 0.5) + '" stroke-opacity="0.35"/><line x1="' + (w * 0.5) + '" y1="' + (my * 0.5) + '" x2="' + (w * 0.5) + '" y2="' + (h - my * 0.5) + '" stroke-opacity="0.35"/>' + b_() + axpair(w * 0.32, w * 0.54); break;
+            case 'Rückewagen': S += '<rect x="' + mx + '" y="' + my + '" width="' + (bw * 0.82) + '" height="' + bh + '" rx="3" fill-opacity="0.05"/><g stroke-opacity="0.6"><line x1="' + (w * 0.2) + '" y1="' + (my - 4) + '" x2="' + (w * 0.2) + '" y2="' + (my + bh + 4) + '"/><line x1="' + (w * 0.34) + '" y1="' + (my - 4) + '" x2="' + (w * 0.34) + '" y2="' + (my + bh + 4) + '"/><line x1="' + (w * 0.48) + '" y1="' + (my - 4) + '" x2="' + (w * 0.48) + '" y2="' + (my + bh + 4) + '"/></g><circle cx="' + (w * 0.72) + '" cy="' + (h * 0.5) + '" r="' + (h * 0.13) + '"/><line x1="' + (w * 0.72) + '" y1="' + (h * 0.5) + '" x2="' + (w * 0.84) + '" y2="' + (h * 0.5) + '"/>' + b_() + axpair(w * 0.3, w * 0.5); break;
+            case 'Kipper': S += '<rect x="' + mx + '" y="' + my + '" width="' + (bw * 0.84) + '" height="' + bh + '" rx="3"/><line x1="' + mx + '" y1="' + my + '" x2="' + mx + '" y2="' + (my + bh) + '" stroke-width="3.2"/><line x1="' + mx + '" y1="' + my + '" x2="' + (w * 0.34) + '" y2="' + (my + bh) + '" stroke-opacity="0.35"/>' + b_() + axpair(w * 0.34, w * 0.54); break;
+            default: S += body + '<rect x="' + (w * 0.32) + '" y="' + (my + bh * 0.16) + '" width="' + (w * 0.4) + '" height="' + (bh * 0.68) + '" rx="' + (h * 0.16) + '" fill-opacity="0.10"/>' + axpair(w * 0.26, w * 0.74);
+        }
+        return S + '</g>';
+    }
+
     // ---- garages list ----
     routes.garages = async (page) => {
         const garages = await api.get('/garages');
@@ -3855,9 +3897,10 @@
                 _id: s.id, kind: 'veh', label: s.vehicle_label || s.label, spotLabel: s.label, type: s.vehicle_type || '', vehId: s.vehicle_id || null,
                 personId: s.person_id || null, personName: s.person_name || '',
                 L: s.length_m, W: s.width_m, H: s.height_m, t: s.weight_t,
-                x: num(g.x, 1), y: num(g.y, 1), w: num(g.w, s.length_m || 4.5), h: num(g.h, s.width_m || 2), rot: num(g.rot, 0), status: g.status || 'busy', _dirty: false }; }),
+                x: num(g.x, 1), y: num(g.y, 1), w: num(g.w, s.length_m || catFoot(s.vehicle_type)[0]), h: num(g.h, s.width_m || catFoot(s.vehicle_type)[1]), rot: num(g.rot, 0), status: g.status || 'busy', _dirty: false }; }),
             palette,
             mode: 'manage', editMode: false, snap: true, gridStep: 0.5, ortho: false, zoom: 1, sel: null, selEdge: null,
+            render: (function () { try { return localStorage.getItem('gp.render') || 'symbol'; } catch (e) { return 'symbol'; } })(),
             maxed: false, CELL: 30, uid: 1, hist: [], hpos: -1, dirty: false,
         };
         buildGP(page, P);
@@ -4169,17 +4212,22 @@
             layer.innerHTML = '';
             P.spots.forEach((b) => {
                 const ctx = !interactive(b), st = GPSTAT[b.status] || GPSTAT.busy;
-                const d = el('div', { class: 'gp-block veh ' + b.status + (b._id === P.sel ? ' sel' : '') + (warn(b) ? ' invalid' : '') + (ctx ? ' dimctx' : '') });
+                let eff = P.render || 'symbol'; if (eff === 'foto' && !b.photoUrl) eff = 'symbol'; // fallback chain: no photo → symbol
+                const d = el('div', { class: 'gp-block veh ' + b.status + (eff !== 'rect' ? ' gp-media' : '') + (b._id === P.sel ? ' sel' : '') + (warn(b) ? ' invalid' : '') + (ctx ? ' dimctx' : '') });
                 d.dataset.id = b._id;
                 const warnTxt = !inside(b) ? '⚠ außerhalb' : ((!heightOK(b) || !weightOK(b)) ? '⚠ Maß' : null);
                 const codeTxt = st.sym + ' ' + (b.type || 'Gefährt'), nameTxt = b.personName || b.label;
+                // media background (behind the labels); symbol rotates with the block (facing)
+                if (eff === 'symbol') { const ar = Math.max(0.05, b.h / b.w), sv = svgEl('svg', { class: 'gp-sym', viewBox: '0 0 100 ' + (100 * ar), preserveAspectRatio: 'xMidYMid meet' }); sv.innerHTML = catSymbol(catKey(b.type), 100, 100 * ar, 'rgba(9,17,26,.78)'); d.append(sv); }
+                else if (eff === 'foto') { d.append(el('img', { class: 'gp-photo', src: b.photoUrl, alt: '' }), el('span', { class: 'gp-photoscrim' })); }
+                if (eff !== 'rect' && !b.rot) d.append(el('span', { class: 'gp-stbadge' }, st.sym)); // status glyph when the code chip is hidden (a11y)
                 if (b.rot) {
                     // rotated: one centred, upright label group (see positionBlock)
                     const grp = el('div', { class: 'gp-rlabel' }, el('span', { class: 'gp-rl-code' }, codeTxt), el('span', { class: 'gp-rl-name' }, nameTxt), el('span', { class: 'gp-rl-dim' }, dimText(b)));
                     if (warnTxt) grp.append(el('span', { class: 'gp-rl-warn' }, warnTxt));
                     d.append(grp);
                 } else {
-                    d.append(el('span', { class: 'gp-code' }, codeTxt));
+                    if (eff === 'rect') d.append(el('span', { class: 'gp-code' }, codeTxt));
                     if (warnTxt) d.append(el('span', { class: 'gp-warnb' }, warnTxt));
                     d.append(el('span', { class: 'gp-lab' }, el('span', { class: 'gp-who' }, nameTxt), el('span', { class: 'gp-dim' }, dimText(b))));
                 }
@@ -4223,6 +4271,10 @@
             seg.append(el('button', { class: !P.snap ? 'on' : '', onclick: () => { P.snap = false; renderToolbar(); } }, 'Frei'));
             [['¼ m', 0.25], ['½ m', 0.5], ['1 m', 1]].forEach(([lab, step]) => seg.append(el('button', { class: (P.snap && P.gridStep === step) ? 'on' : '', onclick: () => { P.snap = true; P.gridStep = step; renderToolbar(); } }, lab)));
             toolbar.append(seg);
+            // Vehicle display mode (client-side preference, remembered): symbol / photo / rectangle.
+            if (P.mode === 'manage') { const dseg = el('div', { class: 'gp-seg', title: 'Fahrzeug-Darstellung' });
+                [['◈', 'symbol', 'Symbol'], ['▣', 'foto', 'Foto'], ['▭', 'rect', 'Rechteck']].forEach(([ic, key, t]) => dseg.append(el('button', { class: P.render === key ? 'on' : '', title: t, onclick: () => { P.render = key; try { localStorage.setItem('gp.render', key); } catch (e) { /* private mode */ } renderToolbar(); draw(); } }, ic)));
+                toolbar.append(dseg); }
             if (canManageNow && P.mode === 'manage') { const rb = tb('⟳ Drehen', 'Auswahl drehen', rotateSel); rb.disabled = !(P.sel && P.spots.find((s) => s._id === P.sel)); toolbar.append(rb); }
             if (canManageNow && P.mode === 'plan') toolbar.append(tb('◇ Form bearbeiten', 'Ecken/Kanten bearbeiten', () => { P.editMode = !P.editMode; P.sel = null; if (!P.editMode) { hideLen(); hideVertMenu(); } else toast('Ecke ziehen · Linie klicken = Länge · Doppelklick = Punkt'); draw(); }, P.editMode));
             toolbar.append(tb('−', 'Verkleinern', () => { P.zoom = Math.max(0.5, +(P.zoom - 0.15).toFixed(2)); layout(); }));
@@ -4629,7 +4681,7 @@
         svg.addEventListener('pointercancel', cancelGesture);
         layer.addEventListener('pointercancel', cancelGesture);
         rail.addEventListener('pointercancel', cancelGesture);
-        function calcPlace(e) { const r = planEl.getBoundingClientRect(), v = drag.p; const w = num(v.length_m, 4.5), h = num(v.width_m, 2); let x = (e.clientX - r.left) / P.CELL - w / 2, y = (e.clientY - r.top) / P.CELL - h / 2; x = gsnap(x); y = gsnap(y); const p = snapPos({ rot: 0, w, h }, x, y); return { x: p.x, y: p.y, w, h }; }
+        function calcPlace(e) { const r = planEl.getBoundingClientRect(), v = drag.p, def = catFoot(v.type); const w = num(v.length_m, def[0]), h = num(v.width_m, def[1]); let x = (e.clientX - r.left) / P.CELL - w / 2, y = (e.clientY - r.top) / P.CELL - h / 2; x = gsnap(x); y = gsnap(y); const p = snapPos({ rot: 0, w, h }, x, y); return { x: p.x, y: p.y, w, h }; }
         function moveDrag(e) {
             drag.g.style.left = (e.clientX + 14) + 'px'; drag.g.style.top = (e.clientY + 14) + 'px';
             const pc = calcPlace(e), ins = rectInPoly(pc, P.floor), col = collide({ kind: 'veh', x: pc.x, y: pc.y, w: pc.w, h: pc.h }, null), bad = !ins || col;
