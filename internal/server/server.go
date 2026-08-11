@@ -171,6 +171,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/planner-icons", authed(hf(h.ListPlannerIcons)))
 	mux.Handle("POST /api/planner-icons", editor(hf(h.UploadPlannerIcon)))
 	mux.Handle("GET /api/planner-icons/{id}", authed(hf(h.GetPlannerIcon)))
+	mux.Handle("PUT /api/planner-icons/{id}", editor(hf(h.UpdatePlannerIcon)))
 	mux.Handle("DELETE /api/planner-icons/{id}", editor(hf(h.DeletePlannerIcon)))
 
 	// --- Service catalog ---

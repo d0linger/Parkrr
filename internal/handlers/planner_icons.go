@@ -130,6 +130,76 @@ func (h *Handler) UploadPlannerIcon(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// UpdatePlannerIcon renames a custom icon and/or replaces its image, KEEPING the same
+// id so existing vehicle overrides (planner_symbol='custom:<id>') stay valid. Multipart:
+// optional "name", optional "file" (at least one must be present).
+func (h *Handler) UpdatePlannerIcon(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxPhotoBytes+1024)
+	// #nosec G120 -- the request body is capped by MaxBytesReader above.
+	if err := r.ParseMultipartForm(maxPhotoBytes + 1024); err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, "file too large")
+		return
+	}
+	name := trim(r.FormValue("name"))
+	if name != "" && !validNameLength(name) {
+		writeError(w, http.StatusBadRequest, "name is too long")
+		return
+	}
+	var data []byte
+	var contentType string
+	if file, _, ferr := r.FormFile("file"); ferr == nil {
+		defer file.Close()
+		raw, rerr := io.ReadAll(io.LimitReader(file, maxPhotoBytes+1))
+		if rerr != nil || len(raw) > maxPhotoBytes {
+			writeError(w, http.StatusRequestEntityTooLarge, "file too large")
+			return
+		}
+		d, ct, serr := sanitizeImage(raw)
+		if serr != nil {
+			writeError(w, http.StatusUnsupportedMediaType, serr.Error())
+			return
+		}
+		data, contentType = d, ct
+	}
+	if name == "" && data == nil {
+		writeError(w, http.StatusBadRequest, "nothing to update")
+		return
+	}
+	var query string
+	var args []any
+	switch {
+	case name != "" && data != nil:
+		query = `UPDATE planner_icons SET name=$1, content_type=$2, byte_size=$3, data=$4 WHERE id=$5`
+		args = []any{name, contentType, len(data), data, id}
+	case name != "":
+		query = `UPDATE planner_icons SET name=$1 WHERE id=$2`
+		args = []any{name, id}
+	default:
+		query = `UPDATE planner_icons SET content_type=$1, byte_size=$2, data=$3 WHERE id=$4`
+		args = []any{contentType, len(data), data, id}
+	}
+	ct, err := h.Pool.Exec(r.Context(), query, args...)
+	if err != nil {
+		if isUniqueViolation(err) {
+			writeError(w, http.StatusConflict, "an icon with that name already exists")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "could not update icon")
+		return
+	}
+	if ct.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "icon not found")
+		return
+	}
+	h.audit(r, "update", "planner_icon", id, "updated planner icon")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
 // GetPlannerIcon streams the raw image bytes for an icon.
 func (h *Handler) GetPlannerIcon(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)

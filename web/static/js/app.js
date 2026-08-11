@@ -125,9 +125,9 @@
             if (method !== 'GET') opts.headers['X-CSRF-Token'] = getCookie('parkrr_csrf');
             return handle(await fetch('/api' + path, opts));
         },
-        async upload(path, formData) {
+        async upload(path, formData, method = 'POST') {
             const res = await fetch('/api' + path, {
-                method: 'POST', body: formData, credentials: 'same-origin',
+                method, body: formData, credentials: 'same-origin',
                 headers: { 'X-CSRF-Token': getCookie('parkrr_csrf') },
             });
             return handle(res);
@@ -1559,28 +1559,40 @@
     async function plannerIconsDialog() {
         const dlg = el('dialog', { class: 'iconmodal' });
         const body = el('div', {});
+        let editId = null, editName = ''; // when set, the top form renames / replaces that icon
         const render = async () => {
             body.innerHTML = '';
             body.append(el('h3', {}, 'Planer-Icons verwalten'));
-            body.append(el('p', { class: 'muted', style: 'font-size:.8rem;margin:.1rem 0 .6rem' }, 'Eigene Draufsicht-Icons (PNG/JPEG) hochladen und benennen. Danach pro Gefährt unter „Planer-Symbol" wählbar.'));
-            const nameIn = el('input', { class: 'gp-stepin', placeholder: 'Name / Tag, z. B. Pferdeanhänger' });
+            body.append(el('p', { class: 'muted', style: 'font-size:.8rem;margin:.1rem 0 .6rem' }, editId ? 'Bearbeiten: Name ändern und/oder neue Datei wählen — die ID (und damit alle Zuordnungen) bleibt erhalten.' : 'Eigene Draufsicht-Icons (PNG/JPEG) hochladen und benennen. Danach pro Gefährt unter „Planer-Symbol" wählbar.'));
+            const nameIn = el('input', { class: 'gp-stepin', placeholder: 'Name / Tag, z. B. Pferdeanhänger', value: editId ? editName : '' });
             const fileIn = el('input', { type: 'file', accept: 'image/png,image/jpeg' });
-            const up = el('button', {
+            const submit = el('button', {
                 class: 'btn btn-primary btn-sm', onclick: async () => {
-                    if (!nameIn.value.trim() || !fileIn.files[0]) { toast('Name und Datei nötig', 'error'); return; }
-                    const fd = new FormData(); fd.append('name', nameIn.value.trim()); fd.append('file', fileIn.files[0]);
-                    try { await api.upload('/planner-icons', fd); toast('Icon hochgeladen', 'success'); await render(); }
-                    catch (err) { toast(err.message || 'Upload fehlgeschlagen', 'error'); }
+                    const nm = nameIn.value.trim();
+                    if (editId) {
+                        if (!nm && !fileIn.files[0]) { toast('Name oder Datei ändern', 'error'); return; }
+                        const fd = new FormData(); if (nm) fd.append('name', nm); if (fileIn.files[0]) fd.append('file', fileIn.files[0]);
+                        try { await api.upload('/planner-icons/' + editId, fd, 'PUT'); toast('Icon aktualisiert', 'success'); editId = null; await render(); }
+                        catch (err) { toast(err.message || 'Speichern fehlgeschlagen', 'error'); }
+                    } else {
+                        if (!nm || !fileIn.files[0]) { toast('Name und Datei nötig', 'error'); return; }
+                        const fd = new FormData(); fd.append('name', nm); fd.append('file', fileIn.files[0]);
+                        try { await api.upload('/planner-icons', fd); toast('Icon hochgeladen', 'success'); await render(); }
+                        catch (err) { toast(err.message || 'Upload fehlgeschlagen', 'error'); }
+                    }
                 }
-            }, 'Hochladen');
-            body.append(el('div', { class: 'iconup' }, nameIn, fileIn, up));
+            }, editId ? 'Speichern' : 'Hochladen');
+            const row = el('div', { class: 'iconup' }, nameIn, fileIn, submit);
+            if (editId) row.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => { editId = null; render(); } }, 'Abbrechen'));
+            body.append(row);
             let icons = []; try { icons = await api.get('/planner-icons'); } catch (e) { /* offline */ }
             const grid = el('div', { class: 'icongrid' });
             if (!icons.length) grid.append(el('div', { class: 'muted', style: 'font-size:.82rem' }, 'Noch keine eigenen Icons.'));
-            icons.forEach((ic) => grid.append(el('div', { class: 'iconcell' },
-                el('img', { src: '/api/planner-icons/' + ic.id, alt: ic.name }),
+            icons.forEach((ic) => grid.append(el('div', { class: 'iconcell' + (editId === ic.id ? ' editing' : '') },
+                el('img', { src: '/api/planner-icons/' + ic.id + '?t=' + (ic.byte_size || 0), alt: ic.name }),
                 el('span', { title: ic.name }, ic.name),
-                el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: async () => { try { await api.del('/planner-icons/' + ic.id); await render(); } catch (e) { toast('Löschen fehlgeschlagen', 'error'); } } }, '✕'))));
+                el('button', { class: 'btn btn-ghost btn-sm iconedit', title: 'Umbenennen / Bild ersetzen', onclick: () => { editId = ic.id; editName = ic.name; render(); } }, '✎'),
+                el('button', { class: 'btn btn-ghost btn-sm icondel', title: 'Löschen', onclick: async () => { if (!await confirmDialog('Icon löschen?', `„${ic.name}" wird entfernt. Fahrzeuge, die es nutzen, fallen aufs Kategorie-Symbol zurück.`, 'Löschen')) return; try { await api.del('/planner-icons/' + ic.id); if (editId === ic.id) editId = null; await render(); } catch (e) { toast('Löschen fehlgeschlagen', 'error'); } } }, '✕'))));
             body.append(grid);
             body.append(el('button', { class: 'btn btn-ghost btn-sm', style: 'margin-top:.7rem', onclick: () => dlg.close() }, 'Schließen'));
         };
@@ -4398,6 +4410,9 @@
             if (P.mode === 'manage') { const dseg = el('div', { class: 'gp-seg', title: 'Fahrzeug-Darstellung' });
                 [['◈', 'symbol', 'Symbol'], ['▣', 'foto', 'Foto'], ['▭', 'rect', 'Rechteck']].forEach(([ic, key, t]) => dseg.append(el('button', { class: P.render === key ? 'on' : '', title: t, onclick: () => { P.render = key; try { localStorage.setItem('gp.render', key); } catch (e) { /* private mode */ } renderToolbar(); draw(); } }, ic)));
                 toolbar.append(dseg); }
+            // Manage custom planner icons (upload / rename / replace / delete) — placed on
+            // the toolbar so it's reachable without first selecting a vehicle.
+            if (canManageNow && P.mode === 'manage') toolbar.append(tb('🖼 Icons', 'Eigene Planer-Icons verwalten', async () => { await plannerIconsDialog(); try { P.plannerIcons = await api.get('/planner-icons'); } catch (e) { /* keep old */ } draw(); if (P.sel) renderRail(); }));
             if (canManageNow && P.mode === 'manage') { const rb = tb('⟳ Drehen', 'Auswahl drehen', rotateSel); rb.disabled = !(P.sel && P.spots.find((s) => s._id === P.sel)); toolbar.append(rb); }
             if (canManageNow && P.mode === 'plan') toolbar.append(tb('◇ Form bearbeiten', 'Ecken/Kanten bearbeiten', () => { P.editMode = !P.editMode; P.sel = null; if (!P.editMode) { hideLen(); hideVertMenu(); } else toast('Ecke ziehen · Linie klicken = Länge · Doppelklick = Punkt'); draw(); }, P.editMode));
             toolbar.append(tb('−', 'Verkleinern', () => { P.zoom = Math.max(0.5, +(P.zoom - 0.15).toFixed(2)); layout(); }));
@@ -4580,7 +4595,8 @@
                         .concat((P.plannerIcons || []).map((ic) => ['custom:' + ic.id, 'Eigenes: ' + ic.name]));
                     symOpts.forEach(([v, l]) => { const o = el('option', { value: v }, l); if ((b.plannerSymbol || '') === v) o.selected = true; symSel.append(o); });
                     pcard.append(symSel);
-                    if (canManageNow) pcard.append(el('button', { class: 'btn btn-ghost btn-sm btn-block', style: 'margin-top:.35rem', onclick: async () => { await plannerIconsDialog(); try { P.plannerIcons = await api.get('/planner-icons'); } catch (e) { /* keep old */ } draw(); } }, '＋ Eigene Icons verwalten…'));
+                    // Managing custom icons lives on the toolbar (🖼 Icons) so it's reachable
+                    // without selecting a vehicle; here we only pick per-vehicle.
                     el0.append(pcard);
                 }
                 el0.append(el('div', { class: 'btn-row', style: 'margin-top:.6rem' },
