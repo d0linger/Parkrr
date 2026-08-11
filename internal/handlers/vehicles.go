@@ -75,10 +75,13 @@ const vehicleSelect = `SELECT v.id, v.person_id, v.category_id, v.label, v.licen
 	        v.status, v.reserved_from, v.reserved_until, v.paid, v.archived, v.created_at, v.updated_at, v.needs_power, v.planner_symbol,
 	        c.name, c.default_monthly_cost, c.default_yearly_cost,
 	        p.first_name, p.last_name,
-	        (SELECT count(*) FROM vehicle_photos vp WHERE vp.vehicle_id = v.id)
+	        (SELECT count(*) FROM vehicle_photos vp WHERE vp.vehicle_id = v.id),
+	        v.spot_id, sp.hall_id, hl.name
 	 FROM vehicles v
 	 JOIN categories c ON c.id = v.category_id
-	 JOIN persons p ON p.id = v.person_id`
+	 JOIN persons p ON p.id = v.person_id
+	 LEFT JOIN spots sp ON sp.id = v.spot_id
+	 LEFT JOIN halls hl ON hl.id = sp.hall_id`
 
 // ListVehicles returns vehicles, optionally filtered by ?person_id=.
 func (h *Handler) ListVehicles(w http.ResponseWriter, r *http.Request) {
@@ -868,18 +871,23 @@ func scanVehicleRow(row rowScanner) (models.Vehicle, models.Category, error) {
 	var v models.Vehicle
 	var cat models.Category
 	var firstName, lastName string
+	var hallName *string
 	err := row.Scan(&v.ID, &v.PersonID, &v.CategoryID, &v.Label, &v.LicensePlate,
 		&v.Notes, &v.BillingPeriod, &v.Rate, &v.CostOverride, &v.StartDate, &v.EndDate,
 		&v.Status, &v.ReservedFrom, &v.ReservedUntil, &v.Paid, &v.Archived, &v.CreatedAt, &v.UpdatedAt,
 		&v.NeedsPower, &v.PlannerSymbol,
 		&cat.Name, &cat.DefaultMonthlyCost, &cat.DefaultYearlyCost,
-		&firstName, &lastName, &v.PhotoCount)
+		&firstName, &lastName, &v.PhotoCount,
+		&v.SpotID, &v.HallID, &hallName)
 	if err != nil {
 		return v, cat, err
 	}
 	cat.ID = v.CategoryID
 	v.CategoryName = cat.Name
 	v.PersonName = trim(firstName + " " + lastName)
+	if hallName != nil {
+		v.HallName = *hallName
+	}
 	return v, cat, nil
 }
 

@@ -668,6 +668,9 @@
 
     // ================= ROUTER =================
     const routes = {};
+    // Set before navigate('hall/<id>') to focus a spot on arrival (the hash router
+    // can't carry a ?query, so we pass it out-of-band). The hall planner reads + clears it.
+    let pendingSpotFocus = null;
     function parseHash() {
         const raw = (location.hash || '#/dashboard').replace(/^#\/?/, '');
         const [name, id] = raw.split('/');
@@ -1550,6 +1553,16 @@
         return { covered, active, owed, settled: covered && owed <= 0.005 };
     }
 
+    // Standort-Chip: quick link Gefährt → its Stellplatz in the planner (or a muted
+    // "not placed"). Click focuses the spot on the plan (pendingSpotFocus + navigate).
+    function vehLocationChip(v) {
+        if (v.spot_id && v.hall_id) {
+            return el('button', { class: 'veh-loc', title: 'Im Plan anzeigen', onclick: (e) => { e.stopPropagation(); pendingSpotFocus = v.spot_id; navigate('hall/' + v.hall_id); } },
+                el('span', {}, '📍 ' + (v.hall_name ? 'Halle „' + v.hall_name + '"' : 'im Plan')),
+                el('span', { class: 'veh-loc-go' }, 'Im Plan zeigen →'));
+        }
+        return el('span', { class: 'veh-loc empty' }, '○ Nicht platziert');
+    }
     function vehicleCard(v, { linkable = true, chargeInfo = null } = {}) {
         const title = vehicleTitle(v);
         const rateUnit = v.billing_period === 'yearly' ? '/Jahr' : '/Monat';
@@ -1568,7 +1581,8 @@
             el('div', { class: 'card-meta' }, el('span', { class: 'badge badge-cat' }, esc(v.category_name)), ' ', esc(v.person_name),
                 v.photo_count ? el('span', { class: 'muted' }, '  ', icon('camera', 13), ' ' + v.photo_count) : null),
             el('div', { class: 'card-meta' }, rateLine),
-            accruedLine);
+            accruedLine,
+            el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, vehLocationChip(v)));
         // Bound extra costs attributed to this Gefährt (also shown when nested under
         // a Pauschale), so the total picture is visible without opening the detail.
         if (chargeInfo && chargeInfo.sum > 0.005) {
@@ -2367,6 +2381,7 @@
             el('div', { class: 'balance' }, el('span', {}, 'Kennzeichen'), el('span', {}, esc(v.license_plate || '–'))),
             el('div', { class: 'balance' }, el('span', {}, 'Preis'), el('span', { class: 'amt' }, eur(v.effective_rate) + (v.billing_period === 'yearly' ? ' /Jahr' : ' /Monat'))),
             el('div', { class: 'balance' }, el('span', {}, 'Zeitraum'), el('span', {}, fmtDate(v.start_date) + (v.end_date ? ' – ' + fmtDate(v.end_date) : ' – offen'))),
+            el('div', { class: 'balance' }, el('span', {}, 'Standort'), el('span', {}, vehLocationChip(v))),
             v.reserved_from ? el('div', { class: 'balance' }, el('span', {}, 'Reservierung'), el('span', {}, fmtDate(v.reserved_from) + ' – ' + fmtDate(v.reserved_until))) : null,
             vc.covered ? el('div', { class: 'balance' }, el('span', {}, 'Pauschale'), el('span', {}, vc.active ? 'aktiv abgedeckt' : 'beendet')) : null,
             vc.settled
@@ -4448,7 +4463,8 @@
             el0.append(row('Fahrzeug', b.label));
             el0.append(row('Maße', b.L != null && b.W != null && b.H != null ? b.L.toFixed(1) + ' × ' + b.W.toFixed(1) + ' × ' + b.H.toFixed(1) + ' m' : 'offen'));
             el0.append(row('Position', b.x.toFixed(1) + ' / ' + b.y.toFixed(1) + ' m' + (b.rot ? ' · ' + Math.round(b.rot) + '°' : '')));
-            if (b.personId) el0.append(el('button', { class: 'btn btn-ghost btn-sm btn-block', style: 'margin:.4rem 0', onclick: () => navigate('persons/' + b.personId) }, 'Mieterdaten öffnen →'));
+            if (b.vehId) el0.append(el('button', { class: 'btn btn-ghost btn-sm btn-block', style: 'margin:.4rem 0 .2rem', onclick: () => navigate('vehicles/' + b.vehId) }, '🚗 Fahrzeug-Akte öffnen →'));
+            if (b.personId) el0.append(el('button', { class: 'btn btn-ghost btn-sm btn-block', style: 'margin:.2rem 0 .4rem', onclick: () => navigate('persons/' + b.personId) }, '👤 Mieterdaten öffnen →'));
             if (canManageNow) {
                 const seg = el('div', { class: 'gp-segd' });
                 Object.keys(GPSTAT).forEach((k) => seg.append(el('button', { class: b.status === k ? 'on' : '', onclick: () => { b.status = k; b._dirty = true; markDirty(); pushUndo(); draw(); } }, GPSTAT[k].sym + ' ' + GPSTAT[k].label)));
@@ -4757,10 +4773,21 @@
             } catch (err) { toast(err.message || 'Platzieren fehlgeschlagen', 'error'); }
         }
 
+        // Arrive-from-vehicle focus: select the target spot, then scroll it into view
+        // and pulse it once so it's easy to spot. Consumed once.
+        function focusSpot(id) {
+            const elm = layer.querySelector('.gp-block[data-id="' + id + '"]'); if (!elm) return;
+            try { elm.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' }); } catch (e) { elm.scrollIntoView(); }
+            elm.classList.add('gp-focus'); setTimeout(() => elm.classList.remove('gp-focus'), 2600);
+        }
+        const focusTarget = (pendingSpotFocus != null && P.spots.some((s) => s._id === pendingSpotFocus)) ? pendingSpotFocus : null;
+        pendingSpotFocus = null;
+        if (focusTarget != null) P.sel = focusTarget;
+
         // initial paint
         setMode(P.mode);
         pushUndo();
-        requestAnimationFrame(layout);
+        requestAnimationFrame(() => { layout(); if (focusTarget != null) requestAnimationFrame(() => focusSpot(focusTarget)); });
     }
 
     function openMenu() {

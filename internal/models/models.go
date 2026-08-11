@@ -480,6 +480,10 @@ type Vehicle struct {
 	EffectiveRate float64 `json:"effective_rate"`
 	IsActive      bool    `json:"is_active"`
 	PhotoCount    int     `json:"photo_count"`
+	// Garagenplaner location (joined): the hall the Gefährt's spot belongs to (SpotID
+	// itself is the stored field below). Empty when the Gefährt is not placed.
+	HallID   *int64 `json:"hall_id,omitempty"`
+	HallName string `json:"hall_name,omitempty"`
 	// FlatRateCovered is true when at least one flat-rate agreement covers this
 	// vehicle (bound = billed entirely via the Pauschale, never per-vehicle).
 	// FlatRateActive is true only when such an agreement's window includes today.
