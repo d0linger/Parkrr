@@ -1345,7 +1345,9 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-rz-e{right:-6px;top:50%;margin-top:-6px;cursor:ew-resize}
 .gp-rz-w{left:-6px;top:50%;margin-top:-6px;cursor:ew-resize}
 /* Vehicle display: category symbol (rotates with the block = facing) / photo / status badge */
-.gp-sym{position:absolute;top:6%;left:6%;right:6%;bottom:6%;z-index:0;pointer-events:none}
+/* explicit width/height (not just offsets): an <svg> is a replaced element, so top+bottom
+   alone leave it at intrinsic size and it overflows short blocks instead of scaling */
+.gp-sym{position:absolute;top:6%;left:6%;width:88%;height:88%;z-index:0;pointer-events:none}
 /* symbol mode: light tile so the two-tone (white/green/dark) icon reads; status via a
    coloured frame + the ●◑⇄ badge, and the labels flip to dark ink on the light tile */
 .gp-block.veh.gp-symmode{background:#cdd5dd}
@@ -1380,7 +1382,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .iconcell .iconedit{left:1px;color:#1c6fb4}
 .iconcell .icondel{right:1px;color:#c0392b}
 .iconcell.editing{outline:2px solid #1c6fb4;outline-offset:1px}
-.gp-block.gp-tiny .gp-sym{top:2%;left:2%;right:2%;bottom:2%}
+.gp-block.gp-tiny .gp-sym{top:2%;left:2%;width:96%;height:96%}
 /* keep a minimal status glyph on tiny media blocks (a11y: status never colour-only) */
 .gp-block.gp-tiny .gp-stbadge{top:1px;left:1px;font-size:.5rem;padding:0 2px;background:rgba(0,0,0,.55)}
 
