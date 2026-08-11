@@ -1348,7 +1348,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-sym{position:absolute;top:6%;left:6%;right:6%;bottom:6%;z-index:0;pointer-events:none}
 /* symbol mode: light tile so the two-tone (white/green/dark) icon reads; status via a
    coloured frame + the ●◑⇄ badge, and the labels flip to dark ink on the light tile */
-.gp-block.veh.gp-symmode{background:#eef1f4}
+.gp-block.veh.gp-symmode{background:#cdd5dd}
 .gp-block.veh.gp-symmode.busy{border:2px solid var(--gpbusy)}
 .gp-block.veh.gp-symmode.resv{border:2px solid var(--gpresv)}
 .gp-block.veh.gp-symmode.move{border:2px solid var(--gpmove)}
