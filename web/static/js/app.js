@@ -70,6 +70,7 @@
         check: '<path d="M20 6 9 17l-5-5"/>',
         plus: '<path d="M12 5v14M5 12h14"/>',
         archive: '<rect x="3.5" y="5" width="17" height="4" rx="1"/><path d="M5 9v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4"/>',
+        pin: '<path d="M12 21s-6-5.3-6-10a6 6 0 0 1 12 0c0 4.7-6 10-6 10Z"/><circle cx="12" cy="11" r="2.3"/>',
     };
     const icon = (name, size = 16) => {
         const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -1613,12 +1614,16 @@
 
     // Standort-Chip: quick link Gefährt → its Stellplatz in the planner (or a muted
     // "not placed"). Click focuses the spot on the plan (pendingSpotFocus + navigate).
-    function vehLocationChip(v) {
+    function vehLocationChip(v, { compact = false } = {}) {
         if (v.spot_id && v.hall_id) {
-            return el('button', { class: 'veh-loc', title: 'Im Plan anzeigen', onclick: (e) => { e.stopPropagation(); pendingSpotFocus = v.spot_id; navigate('hall/' + v.hall_id); } },
+            const go = (e) => { e.stopPropagation(); pendingSpotFocus = v.spot_id; navigate('hall/' + v.hall_id); };
+            const title = v.hall_name ? 'Im Plan zeigen: Halle „' + v.hall_name + '"' : 'Im Plan zeigen';
+            if (compact) return el('button', { class: 'veh-loc veh-loc-ic', title, 'aria-label': title, onclick: go }, icon('pin'));
+            return el('button', { class: 'veh-loc', title: 'Im Plan anzeigen', onclick: go },
                 el('span', {}, '📍 ' + (v.hall_name ? 'Halle „' + v.hall_name + '"' : 'im Plan')),
                 el('span', { class: 'veh-loc-go' }, 'Im Plan zeigen →'));
         }
+        if (compact) return el('span', { class: 'veh-loc veh-loc-ic empty', title: 'Nicht platziert', 'aria-label': 'Nicht platziert' }, icon('pin'));
         return el('span', { class: 'veh-loc empty' }, '○ Nicht platziert');
     }
     function vehicleCard(v, { linkable = true, chargeInfo = null } = {}) {
@@ -1652,9 +1657,9 @@
             el('div', { class: 'card-actbtns' },
                 canManage() && !v.archived && el('button', { class: 'btn btn-ghost btn-sm', title: title + ' bearbeiten', 'aria-label': title + ' bearbeiten', onclick: () => vehicleForm(v) }, icon('edit')),
                 canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: title + ' löschen', 'aria-label': title + ' löschen', onclick: (e) => delVehicle(v, e.currentTarget.closest('.card')) }, icon('trash'))),
-            // Standort-Chip sits under the edit/delete buttons so it doesn't add a full row
-            // below the card body (keeps the card no taller than necessary).
-            vehLocationChip(v));
+            // Standort as a compact pin icon under the edit/delete buttons — keeps the card
+            // no taller than necessary; the hall name is in its tooltip/aria-label.
+            vehLocationChip(v, { compact: true }));
         return el('div', { class: 'card' + (v.archived ? ' is-archived' : '') },
             el('div', { class: 'card-row' }, main, actions),
             vehicleControls(v));
