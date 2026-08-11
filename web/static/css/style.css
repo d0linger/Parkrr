@@ -1348,16 +1348,18 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 /* explicit width/height (not just offsets): an <svg> is a replaced element, so top+bottom
    alone leave it at intrinsic size and it overflows short blocks instead of scaling */
 .gp-sym{position:absolute;top:6%;left:6%;width:88%;height:88%;z-index:0;pointer-events:none}
-/* symbol mode "V3": no card — a soft light vignette behind the icon so the white body
-   reads on the dark plan, and status shown as a coloured glow-ring (box-shadow) + the
-   ●◑⇄ badge in the status colour. Labels keep the base white-on-dark styling. */
-.gp-block.veh.gp-symmode{background:radial-gradient(ellipse at 50% 45%,rgba(232,238,244,.30),rgba(232,238,244,.05) 66%,transparent)}
+/* symbol mode "V3 / R1 — Icon-Aura": no card at all. A tight light halo hugs the icon
+   silhouette (drop-shadow) so the white body AND the thin dark lines read on the dark
+   plan without any bright backdrop. Status = a slim coloured glow-ring + the ●◑⇄ badge
+   in the status colour. Labels keep the base white-on-dark styling. */
+.gp-block.veh.gp-symmode{background:transparent}
 .gp-block.veh.gp-symmode::after{background:none}
-.gp-block.veh.gp-symmode.busy{--sc:var(--gpbusy);--scg:rgba(242,107,99,.48)}
-.gp-block.veh.gp-symmode.resv{--sc:var(--gpresv);--scg:rgba(234,180,82,.48)}
-.gp-block.veh.gp-symmode.move{--sc:var(--gpmove);--scg:rgba(78,168,245,.48)}
+.gp-block.veh.gp-symmode.busy{--sc:var(--gpbusy);--scg:rgba(242,107,99,.40)}
+.gp-block.veh.gp-symmode.resv{--sc:var(--gpresv);--scg:rgba(234,180,82,.40)}
+.gp-block.veh.gp-symmode.move{--sc:var(--gpmove);--scg:rgba(78,168,245,.40)}
 /* :not(.sel) so the white/teal selection ring (also a box-shadow) still wins when selected */
-.gp-block.veh.gp-symmode:not(.sel){box-shadow:0 0 0 2px var(--sc),0 0 13px 1px var(--scg),0 3px 10px -4px rgba(0,0,0,.5)}
+.gp-block.veh.gp-symmode:not(.sel){box-shadow:0 0 0 1.5px var(--sc),0 0 10px 0 var(--scg)}
+.gp-block.veh.gp-symmode .gp-sym,.gp-block.veh.gp-symmode .gp-symimg{filter:drop-shadow(0 0 2.5px rgba(242,247,251,.92)) drop-shadow(0 0 1px rgba(242,247,251,.7))}
 .gp-block.veh.gp-symmode .gp-stbadge{color:var(--sc);background:rgba(6,12,10,.6)}
 .gp-symimg{position:absolute;top:6%;left:6%;right:6%;bottom:6%;width:88%;height:88%;object-fit:contain;z-index:0;pointer-events:none}
 .gp-photo{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:0;pointer-events:none}
