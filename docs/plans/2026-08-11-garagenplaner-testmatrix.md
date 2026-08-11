@@ -56,7 +56,7 @@ Vorbedingung „Basis": Angemeldet als Editor, ≥1 Garage → ≥1 Halle angele
 | GP-02 | Maße ändern | — | Torhöhe/Bodenlast ±; Größe/Form über „Form bearbeiten" | Torhöhe/Bodenlast ändern sich; Breite/Tiefe sind read-only (bbox des Grundrisses), Größe wird via Kante ziehen/Länge-Feld gesetzt; Blöcke werden geklemmt | HP |
 | GP-03 | Ecke ziehen | „◇ Form bearbeiten" aktiv | Ecke ziehen | Polygon folgt; Ortho-Snap bei 90°/Shift; Fläche/Umfang aktualisiert | HP |
 | GP-04 | Kantenlänge editieren | Form bearbeiten | Linie klicken → Längenfeld erscheint → Wert (Dezimal) eintragen | Kante nimmt exakte Länge an (2 Dezimalstellen) | HP |
-| GP-05 | Punkt einfügen/löschen | Form bearbeiten | „+" auf einer Kante (einfügen); Ecke anklicken → „✕ Punkt löschen" | Ecke wird ein-/ausgefügt; Minimum 3 Ecken erzwungen (sonst Hinweis „Mindestens 3 Ecken") | EC |
+| GP-05 | Punkt einfügen/löschen | Form bearbeiten | „+" auf einer Kante (einfügen); Ecke anklicken → „✕ Punkt löschen" | Ecke wird eingefügt/gelöscht; Minimum 3 Ecken erzwungen (sonst Hinweis „Mindestens 3 Ecken") | EC |
 | GP-06 | Ganze Linie verschieben | Form bearbeiten | Kante greifen und ziehen | Beide Endpunkte bewegen sich, in der Fläche geklemmt | HP |
 | GP-07 | Ausgenommene hinzufügen | — | „+ Fahrstraße/Wartung/Säule/Notausgang" | Fläche erscheint an erster freier Position; in Liste; auswählbar | HP |
 | GP-08 | Ausgenommene löschen | ≥1 Fläche | „×" in der Liste | Fläche entfernt, Metriken aktualisiert | HP |
@@ -142,7 +142,7 @@ Legende: **✅** = an Quelle verifiziert (Code / DB / Geometrie-Test) · **👤*
 | PF-04 | ✅ | `prefers-reduced-motion`-Media-Queries vorhanden (style.css mehrfach) |
 | PF-01/02/03 | 👤 | Performance/Latenz — im Browser mit vielen Blöcken zu messen |
 | AC-01/02 | ✅ | Status-Symbole + Text; `⚠ außerhalb`/`⚠ Maß`-Text-Badges (4153) |
-| AC-03/04 | ✅ | `@media(max-width:900px)` Rail unter Canvas (1277); `touch-action:none` (1300/1350) |
+| AC-03/04 | 👤 | CSS vorhanden (`@media(max-width:900px)` Rail unter Canvas 1277; `touch-action:none` 1300/1350), aber Touch-Drag & kein Clipping sind im Browser zu verifizieren |
 | AC-05/06 | 👤 | Tastatur-Fokus & Kontrast — visuell/Screenreader zu prüfen |
 
 **Zusätzlich per Geometrie-Test abgesichert** (nicht in obiger Matrix): Rotationsbewusstes Clamping, magnetisches Rand-Anrasten und Innen/Außen-Prüfung wurden end-to-end gegen alle 5 Formen (rect/l/trap/step/u) × Ränder/Ecken/Stufe × Rotation (0/30/90°) × Raster (Frei/¼/½/1) validiert: **0 Snap-verursachte Außerhalb-Fälle**, bündiges Anrasten an allen achsparallelen Rändern erreicht.

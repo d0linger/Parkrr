@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -60,6 +61,7 @@ func (h *Handler) UploadPlannerIcon(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusRequestEntityTooLarge, "file too large")
 		return
 	}
+	defer func() { _ = r.MultipartForm.RemoveAll() }() // drop any spilled temp files
 	name := trim(r.FormValue("name"))
 	if name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
@@ -109,10 +111,11 @@ func (h *Handler) UploadPlannerIcon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var iconID int64
+	var createdAt time.Time
 	if err := tx.QueryRow(r.Context(),
 		`INSERT INTO planner_icons (name, content_type, byte_size, data)
-		 VALUES ($1,$2,$3,$4) RETURNING id`,
-		name, contentType, len(data), data).Scan(&iconID); err != nil {
+		 VALUES ($1,$2,$3,$4) RETURNING id, created_at`,
+		name, contentType, len(data), data).Scan(&iconID, &createdAt); err != nil {
 		if isUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "an icon with that name already exists")
 			return
@@ -126,7 +129,7 @@ func (h *Handler) UploadPlannerIcon(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit(r, "create", "planner_icon", iconID, "uploaded planner icon "+name)
 	writeJSON(w, http.StatusCreated, plannerIconMeta{
-		ID: iconID, Name: name, ContentType: contentType, ByteSize: len(data), CreatedAt: time.Now(),
+		ID: iconID, Name: name, ContentType: contentType, ByteSize: len(data), CreatedAt: createdAt,
 	})
 }
 
@@ -145,6 +148,7 @@ func (h *Handler) UpdatePlannerIcon(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusRequestEntityTooLarge, "file too large")
 		return
 	}
+	defer func() { _ = r.MultipartForm.RemoveAll() }() // drop any spilled temp files
 	name := trim(r.FormValue("name"))
 	if name != "" && !validNameLength(name) {
 		writeError(w, http.StatusBadRequest, "name is too long")
@@ -152,7 +156,14 @@ func (h *Handler) UpdatePlannerIcon(w http.ResponseWriter, r *http.Request) {
 	}
 	var data []byte
 	var contentType string
-	if file, _, ferr := r.FormFile("file"); ferr == nil {
+	// A missing "file" field is fine (rename-only); any other FormFile error is a real
+	// client error and must not be silently treated as "no image".
+	file, _, ferr := r.FormFile("file")
+	if ferr != nil && !errors.Is(ferr, http.ErrMissingFile) {
+		writeError(w, http.StatusBadRequest, "invalid 'file' field")
+		return
+	}
+	if ferr == nil {
 		defer file.Close()
 		raw, rerr := io.ReadAll(io.LimitReader(file, maxPhotoBytes+1))
 		if rerr != nil || len(raw) > maxPhotoBytes {
