@@ -488,13 +488,20 @@ func (h *Handler) UpdateVehiclePlanner(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE vehicles SET needs_power=$1, planner_symbol=$2, updated_at=now() WHERE id=$3`,
+		`UPDATE vehicles SET needs_power=$1, planner_symbol=$2, updated_at=now() WHERE id=$3 AND archived=false`,
 		req.NeedsPower, sym, id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update vehicle")
 		return
 	}
 	if ct.RowsAffected() == 0 {
+		// No row updated: distinguish a missing vehicle (404) from an archived,
+		// read-only one (409) — same contract as UpdateVehicle.
+		var archived bool
+		scanErr := h.Pool.QueryRow(r.Context(), `SELECT archived FROM vehicles WHERE id=$1`, id).Scan(&archived)
+		if !ensureVehicleWritable(w, archived, scanErr) {
+			return
+		}
 		writeError(w, http.StatusNotFound, "vehicle not found")
 		return
 	}

@@ -38,8 +38,10 @@ Seite/Ecke bleibt verankert**; nur die gezogene Kante/Ecke bewegt sich.
   (`localStorage: gp.render`). Kein Backend für den Umschalter.
 - **Foto-Modus:** vorhandenes Fahrzeug-Foto als Blockbild (dunkler Scrim + Label lesbar, Status-Ring).
   Benötigt Foto-Referenz im Plan-Query (Backend, Phase 3).
-- **Pro-Fahrzeug-Override:** `planner_symbol` (Symbol-Key) / `planner_image` (Bild-Ref), nullable
-  (Backend, Phase 4). Überschreibt die Ansichts-Einstellung nur für dieses Fahrzeug.
+- **Pro-Fahrzeug-Override:** `vehicles.planner_symbol` (nullable) hält entweder einen
+  Built-in-Symbol-Key **oder** `custom:<id>` für ein hochgeladenes Icon (Tabelle
+  `planner_icons`, Migration 042). Kein separates `planner_image`-Feld — Bilder laufen
+  ebenfalls über `planner_symbol=custom:<id>`. Überschreibt die Ansicht nur für dieses Fahrzeug.
 - **Declutter:** sehr kleiner Block → Symbol vereinfacht / nur Farbe (analog Label-Declutter heute).
 
 ## Punkt 1 — Breite/Tiefe = Info

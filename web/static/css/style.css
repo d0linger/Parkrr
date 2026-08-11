@@ -502,7 +502,7 @@ textarea { resize: vertical; min-height: 72px; }
 /* Inline spinner for busy buttons (e.g. formModal's "Speichern…" state). */
 .spin {
     display: inline-block; width: 0.85em; height: 0.85em; vertical-align: -0.1em;
-    border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%;
+    border: 2px solid currentcolor; border-top-color: transparent; border-radius: 50%;
     animation: spin 0.6s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -1251,6 +1251,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
   --gpglass:rgba(255,255,255,.04); --gpglass2:rgba(255,255,255,.06);
   --gpbusy:#f26b63; --gpresv:#eab452; --gpmove:#4ea8f5; --gphall:#26a56b; --gpexcl:#6b829a;
   --gpbg:#070d14; --gpbg2:#0a141e; --gpr:16px;
+
   display:flex; flex-direction:column; gap:.8rem; color:var(--gpink);
   font-variant-numeric:tabular-nums;
 }
@@ -1382,7 +1383,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 
 .gp-preview{position:absolute;z-index:8;border-radius:7px;pointer-events:none;border:2px solid var(--gphall);background:rgba(38,165,107,.22)}
 .gp-preview.bad{border-color:var(--gpbusy);background:rgba(242,107,99,.22)}
-.gp-pl{position:absolute;left:50%;top:-10px;transform:translateX(-50%);font-size:.57rem;font-weight:700;white-space:nowrap;background:#0a141e;padding:0 5px;border-radius:5px;border:1px solid currentColor}
+.gp-pl{position:absolute;left:50%;top:-10px;transform:translateX(-50%);font-size:.57rem;font-weight:700;white-space:nowrap;background:#0a141e;padding:0 5px;border-radius:5px;border:1px solid currentcolor}
 .gp-ghost{position:fixed;z-index:9000;pointer-events:none;background:#12202d;border:1px solid var(--gpteal2);border-radius:10px;padding:.32rem .55rem;box-shadow:0 20px 40px -14px #000;font-size:.72rem;font-weight:700;color:var(--gpink)}
 
 .gp-lenbox{position:absolute;z-index:14;display:none;transform:translate(-50%,-50%);background:#0c1a26;border:1px solid var(--gpteal2);border-radius:9px;padding:.2rem .3rem;align-items:center;gap:3px}
@@ -1444,7 +1445,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp .back-btn{background:var(--gpglass);border:1px solid var(--gpline);color:var(--gpink)}
 /* planner: shape icons, palette dim-edit, hall switcher */
 .gp-shapegrid button{display:flex;flex-direction:column;align-items:center;gap:.3rem}
-.gp-shapeic{width:34px;height:22px;stroke:currentColor;fill:rgba(46,230,207,.08);stroke-width:1.5}
+.gp-shapeic{width:34px;height:22px;stroke:currentcolor;fill:rgba(46,230,207,.08);stroke-width:1.5}
 .gp-vedit{margin-left:auto;width:26px;height:26px;border-radius:7px;border:1px solid var(--gpline);background:var(--gpglass);color:var(--gpmuted);cursor:pointer;font-size:.82rem;flex:none;font-family:inherit}
 .gp-vedit:hover{border-color:var(--gpteal2);color:var(--gpink)}
 .gp-select{width:100%;background:#0a141e;border:1px solid var(--gpline2);color:var(--gpink);border-radius:9px;padding:.4rem .45rem;font:inherit;font-size:.83rem}

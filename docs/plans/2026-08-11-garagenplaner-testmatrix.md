@@ -53,7 +53,7 @@ Vorbedingung „Basis": Angemeldet als Editor, ≥1 Garage → ≥1 Halle angele
 | ID | Test-Szenario | Vorbedingung | Testschritte | Erwartetes Ergebnis | Kat. |
 |----|----|----|----|----|----|
 | GP-01 | Form wechseln | Modus Garagenplaner | Rechteck/L-Form/Schräg/Stufe wählen | Grundriss ändert sich; außenliegende Gefährte werden gezählt/gewarnt | HP |
-| GP-02 | Maße ändern | — | Breite/Tiefe ±; Torhöhe/Bodenlast ± | Werte ändern sich, Grundriss skaliert, Blöcke werden geklemmt | HP |
+| GP-02 | Maße ändern | — | Torhöhe/Bodenlast ±; Größe/Form über „Form bearbeiten" | Torhöhe/Bodenlast ändern sich; Breite/Tiefe sind read-only (bbox des Grundrisses), Größe wird via Kante ziehen/Länge-Feld gesetzt; Blöcke werden geklemmt | HP |
 | GP-03 | Ecke ziehen | „◇ Form bearbeiten" aktiv | Ecke ziehen | Polygon folgt; Ortho-Snap bei 90°/Shift; Fläche/Umfang aktualisiert | HP |
 | GP-04 | Kantenlänge editieren | Form bearbeiten | Linie klicken → Längenfeld erscheint → Wert (Dezimal) eintragen | Kante nimmt exakte Länge an (2 Dezimalstellen) | HP |
 | GP-05 | Punkt einfügen/löschen | Form bearbeiten | „+" auf einer Kante (einfügen); Ecke anklicken → „✕ Punkt löschen" | Ecke wird ein-/ausgefügt; Minimum 3 Ecken erzwungen (sonst Hinweis „Mindestens 3 Ecken") | EC |
@@ -110,6 +110,8 @@ Vorbedingung „Basis": Angemeldet als Editor, ≥1 Garage → ≥1 Halle angele
 ## Prüfergebnis (Stand 2026-08-11)
 
 Legende: **✅** = an Quelle verifiziert (Code / DB / Geometrie-Test) · **👤** = Logik im Code vorhanden, visuelle/Interaktions-Abnahme im Browser durch Tester (mit Strg+Shift+R). Keine offenen ⚠️-Befunde.
+
+> Hinweis: Datei-Zeilennummern unten sind **indikativ** (der Planer wird laufend erweitert). Maßgeblich sind die genannten **Funktions-/Symbolnamen** (z. B. `canManageNow`, `snapPos`, `catSymbol`), nicht die konkrete Zeile.
 
 | ID | Status | Beleg / Notiz |
 |----|----|----|

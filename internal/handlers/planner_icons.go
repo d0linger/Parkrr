@@ -3,6 +3,7 @@ package handlers
 import (
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -11,6 +12,10 @@ import (
 // vehicle. Uploads reuse sanitizeImage (decode + re-encode PNG/JPEG, strip metadata),
 // so stored bytes are always a genuine, script-free raster image.
 const maxPlannerIcons = 60
+
+// plannerIconLock serializes the upload quota check + insert via a transaction-scoped
+// advisory lock, so concurrent uploads cannot both pass the count and exceed the cap.
+const plannerIconLock int64 = 0x504C4E52 // "PLNR"
 
 type plannerIconMeta struct {
 	ID          int64     `json:"id"`
@@ -49,16 +54,6 @@ func (h *Handler) ListPlannerIcons(w http.ResponseWriter, r *http.Request) {
 // UploadPlannerIcon accepts a multipart image ("file") plus a "name" tag. The image is
 // decoded and re-encoded to strip metadata and reject non-JPEG/PNG uploads.
 func (h *Handler) UploadPlannerIcon(w http.ResponseWriter, r *http.Request) {
-	var count int
-	if err := h.Pool.QueryRow(r.Context(), `SELECT count(*) FROM planner_icons`).Scan(&count); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	if count >= maxPlannerIcons {
-		writeError(w, http.StatusConflict, "icon limit reached")
-		return
-	}
-
 	r.Body = http.MaxBytesReader(w, r.Body, maxPhotoBytes+1024)
 	// #nosec G120 -- the request body is capped by MaxBytesReader above.
 	if err := r.ParseMultipartForm(maxPhotoBytes + 1024); err != nil {
@@ -92,8 +87,29 @@ func (h *Handler) UploadPlannerIcon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Serialize the quota check + insert with a transaction-scoped advisory lock so
+	// concurrent uploads cannot both observe a count below the cap and then exceed it.
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not store icon")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if _, err := tx.Exec(r.Context(), `SELECT pg_advisory_xact_lock($1)`, plannerIconLock); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not store icon")
+		return
+	}
+	var count int
+	if err := tx.QueryRow(r.Context(), `SELECT count(*) FROM planner_icons`).Scan(&count); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if count >= maxPlannerIcons {
+		writeError(w, http.StatusConflict, "icon limit reached")
+		return
+	}
 	var iconID int64
-	if err := h.Pool.QueryRow(r.Context(),
+	if err := tx.QueryRow(r.Context(),
 		`INSERT INTO planner_icons (name, content_type, byte_size, data)
 		 VALUES ($1,$2,$3,$4) RETURNING id`,
 		name, contentType, len(data), data).Scan(&iconID); err != nil {
@@ -101,6 +117,10 @@ func (h *Handler) UploadPlannerIcon(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "an icon with that name already exists")
 			return
 		}
+		writeError(w, http.StatusInternalServerError, "could not store icon")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not store icon")
 		return
 	}
@@ -143,13 +163,32 @@ func (h *Handler) DeletePlannerIcon(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM planner_icons WHERE id=$1`, id)
+	// Clear any vehicle overrides pointing at this icon in the SAME transaction, so a
+	// deleted icon never leaves a dangling 'custom:<id>' that a later full vehicle
+	// update would reject (400 from normPlannerSymbol).
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete icon")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if _, err := tx.Exec(r.Context(),
+		`UPDATE vehicles SET planner_symbol=NULL, updated_at=now() WHERE planner_symbol=$1`,
+		"custom:"+strconv.FormatInt(id, 10)); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete icon")
+		return
+	}
+	ct, err := tx.Exec(r.Context(), `DELETE FROM planner_icons WHERE id=$1`, id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete icon")
 		return
 	}
 	if ct.RowsAffected() == 0 {
 		writeError(w, http.StatusNotFound, "icon not found")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete icon")
 		return
 	}
 	h.audit(r, "delete", "planner_icon", id, "deleted planner icon")
