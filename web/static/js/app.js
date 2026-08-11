@@ -4424,6 +4424,21 @@
             fillPal();
             rail.append(renderVehDetail());
         }
+        // Partial update of the Garagenplaner display attributes straight from the detail
+        // panel; writes the same vehicle columns as the vehicle form, so both stay in sync.
+        async function updateVehPlanner(b, patch) {
+            if (!b.vehId) return;
+            const body = {
+                needs_power: ('needs_power' in patch) ? !!patch.needs_power : !!b.needsPower,
+                planner_symbol: ('planner_symbol' in patch) ? (patch.planner_symbol || null) : (b.plannerSymbol || null),
+            };
+            try {
+                await api.put('/vehicles/' + b.vehId + '/planner', body);
+                b.needsPower = body.needs_power; b.plannerSymbol = body.planner_symbol;
+                const pl = P.palette.find((x) => x.id === b.vehId); if (pl) { pl.needs_power = b.needsPower; pl.planner_symbol = b.plannerSymbol; }
+                draw();
+            } catch (err) { toast(err.message || 'Speichern fehlgeschlagen', 'error'); }
+        }
         function renderVehDetail() {
             const el0 = el('div', { class: 'gp-rcard card' });
             const b = P.spots.find((x) => x._id === P.sel);
@@ -4445,6 +4460,16 @@
                 fit.append(line('Höhe ' + (b.H != null ? b.H.toFixed(1) : '?') + ' m · Tor ' + P.tor.toFixed(1) + ' m', heightOK(b)));
                 fit.append(line('Gewicht ' + (b.t != null ? b.t.toFixed(2).replace('.', ',') : '?') + ' ≤ ' + P.load.toFixed(1) + ' t', weightOK(b)));
                 el0.append(fit);
+                // Planer-Darstellung: Ladebedarf + Symbol pro Fahrzeug — direkt hier (im Sync
+                // mit dem Fahrzeug-Formular, da dieselben Fahrzeug-Spalten geschrieben werden).
+                if (b.vehId) {
+                    const pcard = el('div', { class: 'gp-fit' });
+                    pcard.append(el('h4', {}, el('span', {}, 'Planer-Darstellung')));
+                    pcard.append(el('button', { class: 'btn btn-ghost btn-sm btn-block', style: 'margin:.15rem 0 .45rem' + (b.needsPower ? ';border-color:var(--gpresv);color:#ffd35b' : ''), onclick: () => updateVehPlanner(b, { needs_power: !b.needsPower }) }, b.needsPower ? '⚡ Ladebedarf: an' : '⚡ Ladebedarf: aus'));
+                    const symSel = el('select', { class: 'gp-stepin', 'aria-label': 'Planer-Symbol', onchange: (e) => updateVehPlanner(b, { planner_symbol: e.target.value }) });
+                    [['', 'Symbol: Automatisch']].concat(['PKW', 'Motorrad', 'Transporter', 'Wohnmobil', 'Wohnwagen', 'Anhänger', 'Boot / Trailer', 'Traktor', 'Ladewagen', 'Rückewagen', 'Kipper'].map((k) => [k, 'Symbol: ' + k])).forEach(([v, l]) => { const o = el('option', { value: v }, l); if ((b.plannerSymbol || '') === v) o.selected = true; symSel.append(o); });
+                    pcard.append(symSel); el0.append(pcard);
+                }
                 el0.append(el('div', { class: 'btn-row', style: 'margin-top:.6rem' },
                     b.vehId ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => dimForm({ id: b.vehId, label: b.label, L: b.L, W: b.W, H: b.H, t: b.t }) }, '✎ Maße') : null,
                     el('button', { class: 'btn btn-ghost btn-sm', onclick: rotateSel }, '⟳ Drehen'),

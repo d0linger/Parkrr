@@ -165,6 +165,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("PUT /api/spots/{id}/vehicle", editor(hf(h.AssignSpotVehicle)))
 	mux.Handle("DELETE /api/spots/{id}/vehicle", editor(hf(h.UnassignSpotVehicle)))
 	mux.Handle("PUT /api/vehicles/{id}/dimensions", editor(hf(h.SetVehicleDimensions)))
+	mux.Handle("PUT /api/vehicles/{id}/planner", editor(hf(h.UpdateVehiclePlanner)))
 
 	// --- Service catalog ---
 	mux.Handle("GET /api/services", authed(hf(h.ListServiceTypes)))

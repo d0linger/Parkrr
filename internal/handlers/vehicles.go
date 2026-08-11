@@ -432,6 +432,52 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 	h.writeVehicle(w, r.Context(), id, http.StatusOK)
 }
 
+type vehiclePlannerRequest struct {
+	NeedsPower    bool    `json:"needs_power"`
+	PlannerSymbol *string `json:"planner_symbol"`
+}
+
+// UpdateVehiclePlanner edits ONLY the Garagenplaner display attributes (Ladebedarf +
+// symbol override) so they can be changed straight from the Stellplatzverwaltung without
+// the full vehicle payload. Purely organizational — no rate/period, so no freeze checks.
+// It writes the same columns as UpdateVehicle, so both stay in sync.
+func (h *Handler) UpdateVehiclePlanner(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req vehiclePlannerRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	var sym *string
+	if req.PlannerSymbol != nil {
+		if s := trim(*req.PlannerSymbol); s == "" {
+			sym = nil
+		} else if !plannerSymbols[s] {
+			writeError(w, http.StatusBadRequest, "invalid planner_symbol")
+			return
+		} else {
+			sym = &s
+		}
+	}
+	ct, err := h.Pool.Exec(r.Context(),
+		`UPDATE vehicles SET needs_power=$1, planner_symbol=$2, updated_at=now() WHERE id=$3`,
+		req.NeedsPower, sym, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update vehicle")
+		return
+	}
+	if ct.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "vehicle not found")
+		return
+	}
+	h.audit(r, "update", "vehicle", id, "Planer-Attribute geändert")
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // DeleteVehicle removes a vehicle.
 func (h *Handler) DeleteVehicle(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
