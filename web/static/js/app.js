@@ -2297,6 +2297,7 @@
                 { name: 'billing_period', label: 'Abrechnung', type: 'select', value: initPeriod, options: [{ value: 'monthly', label: 'monatlich' }, { value: 'yearly', label: 'jährlich' }] },
                 { name: 'rate', label: 'Preis (€)', type: 'number', step: '0.01', min: 0, required: true, value: initRate, help: 'Aus dem Tarif übernommen und fest hinterlegt. Eine spätere Tarifänderung ändert diesen Preis nicht.' },
                 { name: 'notes', label: 'Notizen', type: 'textarea', value: existing?.notes },
+                { name: 'needs_power', label: 'Ladebedarf (Strom) — E-Fahrzeug / Kühlung', type: 'checkbox', value: !!existing?.needs_power },
             ],
             onRender: (body) => {
                 segmentedField(body, 'billing_period', [{ v: 'monthly', l: 'monatlich' }, { v: 'yearly', l: 'jährlich' }]);
@@ -2321,6 +2322,7 @@
                     end_date: data.end_date === '' ? null : data.end_date,
                     reserved_from: existing?.reserved_from ? existing.reserved_from.slice(0, 10) : null,
                     reserved_until: existing?.reserved_until ? existing.reserved_until.slice(0, 10) : null,
+                    needs_power: !!data.needs_power,
                 };
                 if (existing) await api.put('/vehicles/' + existing.id, payload);
                 else await api.post('/vehicles', payload);
@@ -3905,7 +3907,7 @@
             spots: (data.spots || []).map((s) => { const g = asObj(s.geometry); return {
                 _id: s.id, kind: 'veh', label: s.vehicle_label || s.label, spotLabel: s.label, type: s.vehicle_type || '', vehId: s.vehicle_id || null,
                 personId: s.person_id || null, personName: s.person_name || '',
-                L: s.length_m, W: s.width_m, H: s.height_m, t: s.weight_t,
+                L: s.length_m, W: s.width_m, H: s.height_m, t: s.weight_t, needsPower: !!s.needs_power,
                 x: num(g.x, 1), y: num(g.y, 1), w: num(g.w, s.length_m || catFoot(s.vehicle_type)[0]), h: num(g.h, s.width_m || catFoot(s.vehicle_type)[1]), rot: num(g.rot, 0), status: g.status || 'busy', _dirty: false }; }),
             palette,
             mode: 'manage', editMode: false, snap: true, gridStep: 0.5, ortho: false, zoom: 1, sel: null, selEdge: null,
@@ -4240,6 +4242,7 @@
                     if (warnTxt) d.append(el('span', { class: 'gp-warnb' }, warnTxt));
                     d.append(el('span', { class: 'gp-lab' }, el('span', { class: 'gp-who' }, nameTxt), el('span', { class: 'gp-dim' }, dimText(b))));
                 }
+                if (b.needsPower) d.append(el('span', { class: 'gp-power', title: 'Ladebedarf (Strom)' }, '⚡'));
                 if (b._id === P.sel && interactive(b) && canManageNow) addHandles(d, b._id);
                 positionBlock(d, b);
                 layer.append(d);

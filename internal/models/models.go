@@ -464,6 +464,7 @@ type Vehicle struct {
 	ReservedFrom  *time.Time `json:"reserved_from"`
 	ReservedUntil *time.Time `json:"reserved_until"`
 	Paid          bool       `json:"paid"`
+	NeedsPower    bool       `json:"needs_power"` // Ladebedarf (Strom) — Garagenplaner only, no billing effect
 	// Archived marks a closed vehicle (cancelled, or collected + paid) that has
 	// been tidied out of the active lists. Archived vehicles are read-only until
 	// reactivated, but still count in all billing and statistics.
@@ -685,6 +686,7 @@ type Spot struct {
 	WidthM       *float64 `json:"width_m,omitempty"`
 	HeightM      *float64 `json:"height_m,omitempty"`
 	WeightT      *float64 `json:"weight_t,omitempty"`
+	NeedsPower   bool     `json:"needs_power"` // Ladebedarf of the Gefährt on this spot
 }
 
 func maxTime(a, b time.Time) time.Time {

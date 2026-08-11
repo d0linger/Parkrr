@@ -72,7 +72,7 @@ func (h *Handler) autoArchiveIfClosed(r *http.Request, id int64) {
 // including a live photo count. Append WHERE/ORDER as needed.
 const vehicleSelect = `SELECT v.id, v.person_id, v.category_id, v.label, v.license_plate,
 	        v.notes, v.billing_period, v.rate, v.cost_override, v.start_date, v.end_date,
-	        v.status, v.reserved_from, v.reserved_until, v.paid, v.archived, v.created_at, v.updated_at,
+	        v.status, v.reserved_from, v.reserved_until, v.paid, v.archived, v.created_at, v.updated_at, v.needs_power,
 	        c.name, c.default_monthly_cost, c.default_yearly_cost,
 	        p.first_name, p.last_name,
 	        (SELECT count(*) FROM vehicle_photos vp WHERE vp.vehicle_id = v.id)
@@ -155,6 +155,7 @@ type vehicleRequest struct {
 	Status        string   `json:"status"`
 	ReservedFrom  *string  `json:"reserved_from"`
 	ReservedUntil *string  `json:"reserved_until"`
+	NeedsPower    bool     `json:"needs_power"`
 }
 
 type parsedVehicle struct {
@@ -316,11 +317,11 @@ func (h *Handler) CreateVehicle(w http.ResponseWriter, r *http.Request) {
 	err = h.Pool.QueryRow(r.Context(),
 		`INSERT INTO vehicles (person_id, category_id, label, license_plate, notes,
 		        billing_period, rate, cost_override, start_date, end_date, status,
-		        reserved_from, reserved_until)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+		        reserved_from, reserved_until, needs_power)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
 		pv.req.PersonID, pv.req.CategoryID, pv.req.Label, pv.req.LicensePlate,
 		pv.req.Notes, pv.req.BillingPeriod, rate, pv.req.CostOverride,
-		pv.startDate, pv.endDate, pv.req.Status, pv.reservedFrom, pv.reservedUntil,
+		pv.startDate, pv.endDate, pv.req.Status, pv.reservedFrom, pv.reservedUntil, pv.req.NeedsPower,
 	).Scan(&id)
 	if err != nil {
 		if isForeignKeyViolation(err) {
@@ -386,11 +387,11 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 	ct, err := h.Pool.Exec(r.Context(),
 		`UPDATE vehicles SET person_id=$1, category_id=$2, label=$3, license_plate=$4,
 		        notes=$5, billing_period=$6, rate=$7, cost_override=$8, start_date=$9,
-		        end_date=$10, status=$11, reserved_from=$12, reserved_until=$13, updated_at=now()
-		 WHERE id=$14`,
+		        end_date=$10, status=$11, reserved_from=$12, reserved_until=$13, needs_power=$14, updated_at=now()
+		 WHERE id=$15`,
 		pv.req.PersonID, pv.req.CategoryID, pv.req.Label, pv.req.LicensePlate,
 		pv.req.Notes, pv.req.BillingPeriod, rate, pv.req.CostOverride,
-		pv.startDate, pv.endDate, pv.req.Status, pv.reservedFrom, pv.reservedUntil, id)
+		pv.startDate, pv.endDate, pv.req.Status, pv.reservedFrom, pv.reservedUntil, pv.req.NeedsPower, id)
 	if err != nil {
 		if isForeignKeyViolation(err) {
 			writeError(w, http.StatusBadRequest, "person or category does not exist")
@@ -806,6 +807,7 @@ func scanVehicleRow(row rowScanner) (models.Vehicle, models.Category, error) {
 	err := row.Scan(&v.ID, &v.PersonID, &v.CategoryID, &v.Label, &v.LicensePlate,
 		&v.Notes, &v.BillingPeriod, &v.Rate, &v.CostOverride, &v.StartDate, &v.EndDate,
 		&v.Status, &v.ReservedFrom, &v.ReservedUntil, &v.Paid, &v.Archived, &v.CreatedAt, &v.UpdatedAt,
+		&v.NeedsPower,
 		&cat.Name, &cat.DefaultMonthlyCost, &cat.DefaultYearlyCost,
 		&firstName, &lastName, &v.PhotoCount)
 	if err != nil {
