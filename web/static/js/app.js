@@ -1639,19 +1639,22 @@
             el('div', { class: 'card-meta' }, el('span', { class: 'badge badge-cat' }, esc(v.category_name)), ' ', esc(v.person_name),
                 v.photo_count ? el('span', { class: 'muted' }, '  ', icon('camera', 13), ' ' + v.photo_count) : null),
             el('div', { class: 'card-meta' }, rateLine),
-            accruedLine,
-            el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, vehLocationChip(v)));
+            accruedLine);
         // Bound extra costs attributed to this Gefährt (also shown when nested under
         // a Pauschale), so the total picture is visible without opening the detail.
         if (chargeInfo && chargeInfo.sum > 0.005) {
             main.append(el('div', { class: 'card-meta', style: 'margin-top:.2rem;color:var(--accent-text);font-weight:600' },
                 'Zusatzkosten: ' + eur(chargeInfo.sum) + (chargeInfo.count > 1 ? ' · ' + chargeInfo.count + ' Pos.' : '')));
         }
-        const actions = el('div', { class: 'card-actions' },
+        const actions = el('div', { class: 'card-actions stack' },
             // Archived vehicles are read-only, so no inline edit; delete stays for
             // genuine mistakes.
-            canManage() && !v.archived && el('button', { class: 'btn btn-ghost btn-sm', title: title + ' bearbeiten', 'aria-label': title + ' bearbeiten', onclick: () => vehicleForm(v) }, icon('edit')),
-            canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: title + ' löschen', 'aria-label': title + ' löschen', onclick: (e) => delVehicle(v, e.currentTarget.closest('.card')) }, icon('trash')));
+            el('div', { class: 'card-actbtns' },
+                canManage() && !v.archived && el('button', { class: 'btn btn-ghost btn-sm', title: title + ' bearbeiten', 'aria-label': title + ' bearbeiten', onclick: () => vehicleForm(v) }, icon('edit')),
+                canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: title + ' löschen', 'aria-label': title + ' löschen', onclick: (e) => delVehicle(v, e.currentTarget.closest('.card')) }, icon('trash'))),
+            // Standort-Chip sits under the edit/delete buttons so it doesn't add a full row
+            // below the card body (keeps the card no taller than necessary).
+            vehLocationChip(v));
         return el('div', { class: 'card' + (v.archived ? ' is-archived' : '') },
             el('div', { class: 'card-row' }, main, actions),
             vehicleControls(v));
