@@ -1310,7 +1310,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-layer{position:absolute;inset:0;z-index:1;overflow:visible}
 
 .gp-block{position:absolute;border-radius:3px;overflow:hidden;cursor:grab;user-select:none;box-shadow:inset 0 0 0 1px rgba(255,255,255,.1),0 3px 10px -4px rgba(0,0,0,.5)}
-.gp-block .gp-code{position:absolute;top:4px;left:5px;z-index:2;font-size:.6rem;font-weight:800;color:#fff;background:rgba(0,0,0,.36);padding:0 5px;border-radius:5px;letter-spacing:.02em}
+.gp-block .gp-code{position:absolute;top:4px;left:5px;z-index:2;max-width:calc(100% - 10px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;pointer-events:none;font-size:.6rem;font-weight:800;color:#fff;background:rgba(0,0,0,.36);padding:0 5px;border-radius:5px;letter-spacing:.02em}
 .gp-block .gp-lab{position:absolute;left:6px;right:6px;bottom:4px;z-index:2;color:#fff;display:flex;flex-direction:column}
 .gp-block .gp-who{font-size:.68rem;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 2px rgba(0,0,0,.6)}
 .gp-block .gp-dim{font-size:.57rem;color:rgba(255,255,255,.8)}
@@ -1329,10 +1329,20 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-block.excl.maint .gp-who{color:#f0d194}
 .gp-block.excl.wall{background:#0c141d;border:1px solid #2a3b4d}
 .gp-block.dimctx{opacity:.5;cursor:default}
-.gp-block.sel{box-shadow:0 0 0 2px #fff,0 0 0 4px var(--gpteal2),0 12px 24px -8px rgba(0,0,0,.6);z-index:6}
+.gp-block.sel{box-shadow:0 0 0 2px #fff,0 0 0 4px var(--gpteal2),0 12px 24px -8px rgba(0,0,0,.6);z-index:6;overflow:visible}
 .gp-block.moving{opacity:.94;z-index:9;cursor:grabbing}
 .gp-block.invalid{outline:2px solid var(--gpbusy);outline-offset:-1px}
-.gp-rz{position:absolute;right:-5px;bottom:-5px;width:14px;height:14px;border-radius:4px;background:#eaf6ff;border:1px solid #0a141e;cursor:nwse-resize;z-index:7}
+/* 8 resize handles (4 corners + 4 edges); opposite side stays anchored. Shown on the
+   selected block (which is overflow:visible), rotate with the block when it is turned. */
+.gp-rz{position:absolute;width:12px;height:12px;border-radius:3px;background:#eaf6ff;border:1px solid #0a141e;z-index:7}
+.gp-rz-nw{left:-6px;top:-6px;cursor:nwse-resize}
+.gp-rz-ne{right:-6px;top:-6px;cursor:nesw-resize}
+.gp-rz-se{right:-6px;bottom:-6px;cursor:nwse-resize}
+.gp-rz-sw{left:-6px;bottom:-6px;cursor:nesw-resize}
+.gp-rz-n{left:50%;top:-6px;margin-left:-6px;cursor:ns-resize}
+.gp-rz-s{left:50%;bottom:-6px;margin-left:-6px;cursor:ns-resize}
+.gp-rz-e{right:-6px;top:50%;margin-top:-6px;cursor:ew-resize}
+.gp-rz-w{left:-6px;top:50%;margin-top:-6px;cursor:ew-resize}
 
 .gp-preview{position:absolute;z-index:8;border-radius:7px;pointer-events:none;border:2px solid var(--gphall);background:rgba(38,165,107,.22)}
 .gp-preview.bad{border-color:var(--gpbusy);background:rgba(242,107,99,.22)}
@@ -1404,7 +1414,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-select{width:100%;background:#0a141e;border:1px solid var(--gpline2);color:var(--gpink);border-radius:9px;padding:.4rem .45rem;font:inherit;font-size:.83rem}
 .gp-hallrow{display:flex;gap:.45rem;align-items:center}
 /* rotate handle (free rotation, top-centre inside the block so overflow:hidden won't clip it) */
-.gp-rot{position:absolute;left:50%;top:3px;transform:translateX(-50%);width:13px;height:13px;border-radius:50%;background:var(--gpteal);border:1.5px solid #0a141e;cursor:grab;z-index:8}
+.gp-rot{position:absolute;left:50%;top:-22px;transform:translateX(-50%);width:13px;height:13px;border-radius:50%;background:var(--gpteal);border:1.5px solid #0a141e;cursor:grab;z-index:8}
 /* direct numeric inputs in the dim steppers + Tor zone styling */
 .gp-stepin{width:100%;min-width:0;background:#0a141e;border:1px solid var(--gpline2);color:var(--gpink);border-radius:8px;padding:.28rem .3rem;font:inherit;font-size:.82rem;text-align:center}
 .gp-stepper .gp-stepin{flex:1}

@@ -3969,6 +3969,27 @@
             for (const [ax, ay] of [[dx, dy], [dx, 0], [0, dy]]) { if (!ax && !ay) continue; const [cx, cy] = clampC(cx0 + ax, cy0 + ay); if (ok(cx, cy)) return { x: cx - bl.w / 2, y: cy - bl.h / 2 }; }
             return { x: cx0 - bl.w / 2, y: cy0 - bl.h / 2 };
         };
+        // Resize a block from one of 8 handles with the OPPOSITE side anchored (world-fixed),
+        // computed in the block's LOCAL frame so rotated blocks resize along their own axes.
+        // o = geometry at drag start {x,y,w,h,rot}; dir ∈ nw n ne e se s sw w; px,py = pointer (m).
+        function resizeBlock(o, dir, px, py) {
+            const MIN = 0.5, rad = (o.rot || 0) * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+            const cx = o.x + o.w / 2, cy = o.y + o.h / 2, dx = px - cx, dy = py - cy;
+            const lx = dx * cos + dy * sin + o.w / 2, ly = -dx * sin + dy * cos + o.h / 2; // world → old-local
+            let left = 0, right = o.w, top = 0, bottom = o.h;
+            if (dir.indexOf('w') >= 0) left = Math.min(gsnap(lx), right - MIN);
+            if (dir.indexOf('e') >= 0) right = Math.max(gsnap(lx), left + MIN);
+            if (dir.indexOf('n') >= 0) top = Math.min(gsnap(ly), bottom - MIN);
+            if (dir.indexOf('s') >= 0) bottom = Math.max(gsnap(ly), top + MIN);
+            const nw = right - left, nh = bottom - top, ex = (left + right) / 2 - o.w / 2, ey = (top + bottom) / 2 - o.h / 2;
+            const ncx = cx + ex * cos - ey * sin, ncy = cy + ex * sin + ey * cos;
+            return { x: ncx - nw / 2, y: ncy - nh / 2, w: nw, h: nh };
+        }
+        // 8 resize handles + the rotate knob on the selected, editable block.
+        function addHandles(d, id) {
+            ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].forEach((dir) => { const h = el('div', { class: 'gp-rz gp-rz-' + dir }); h.dataset.rz = id; h.dataset.dir = dir; d.append(h); });
+            const rot = el('div', { class: 'gp-rot', title: 'Drehen (Snap 15°, frei mit Alt)' }); rot.dataset.rotid = id; d.append(rot);
+        }
         function edgeLen(i) { const n = P.floor.length, a = P.floor[i], b = P.floor[(i + 1) % n]; return Math.hypot(b[0] - a[0], b[1] - a[1]); }
         function setEdgeLen(i, L) { const n = P.floor.length, a = P.floor[i], b = P.floor[(i + 1) % n], d = Math.hypot(b[0] - a[0], b[1] - a[1]); if (d < 0.01 || !(L > 0)) return; const nb = [a[0] + (b[0] - a[0]) / d * L, a[1] + (b[1] - a[1]) / d * L]; nb[0] = Math.max(-100, Math.min(200, nb[0])); nb[1] = Math.max(-100, Math.min(200, nb[1])); P.floor[(i + 1) % n] = nb; refit(); pushUndo(); markDirty(); layout(); toast('Länge ' + L.toFixed(2) + ' m'); }
         // After a free floor edit, re-home the polygon into [0,Wm]×[0,Hm]: shift any
@@ -4137,8 +4158,8 @@
             const bw = b.w * P.CELL, bh = b.h * P.CELL;
             d.style.left = (b.x * P.CELL) + 'px'; d.style.top = (b.y * P.CELL) + 'px'; d.style.width = bw + 'px'; d.style.height = bh + 'px';
             // Declutter small blocks so labels don't overflow into neighbours.
-            if (bh < 42 || bw < 62) d.classList.add('gp-small');
-            if (bh < 26 || bw < 42) d.classList.add('gp-tiny');
+            d.classList.toggle('gp-small', bh < 42 || bw < 62); // toggle (not add) so a live resize
+            d.classList.toggle('gp-tiny', bh < 26 || bw < 42);  // re-shows labels when the block grows
             // Rotate the block; drawBlocks gives rotated blocks a single centred label
             // group (.gp-rlabel) — counter-rotate it about the block centre so it reads
             // horizontally in the middle instead of scattering to the rotated corners.
@@ -4162,10 +4183,7 @@
                     if (warnTxt) d.append(el('span', { class: 'gp-warnb' }, warnTxt));
                     d.append(el('span', { class: 'gp-lab' }, el('span', { class: 'gp-who' }, nameTxt), el('span', { class: 'gp-dim' }, dimText(b))));
                 }
-                if (b._id === P.sel && interactive(b) && canManageNow) {
-                    if (!b.rot) { const h = el('div', { class: 'gp-rz' }); h.dataset.rz = b._id; d.append(h); } // resize only when axis-aligned
-                    const rot = el('div', { class: 'gp-rot', title: 'Drehen (Snap 15°, frei mit Alt)' }); rot.dataset.rotid = b._id; d.append(rot);
-                }
+                if (b._id === P.sel && interactive(b) && canManageNow) addHandles(d, b._id);
                 positionBlock(d, b);
                 layer.append(d);
             });
@@ -4175,10 +4193,7 @@
                 d.dataset.id = b.id;
                 if (b.rot) d.append(el('div', { class: 'gp-rlabel' }, el('span', { class: 'gp-rl-name' }, b.label)));
                 else d.append(el('span', { class: 'gp-lab' }, el('span', { class: 'gp-who' }, b.label)));
-                if (b.id === P.sel && interactive(b) && canManageNow) {
-                    if (!b.rot) { const h = el('div', { class: 'gp-rz' }); h.dataset.rz = b.id; d.append(h); }
-                    const rot = el('div', { class: 'gp-rot', title: 'Drehen (Snap 15°, frei mit Alt)' }); rot.dataset.rotid = b.id; d.append(rot);
-                }
+                if (b.id === P.sel && interactive(b) && canManageNow) addHandles(d, b.id);
                 positionBlock(d, b); layer.append(d);
             });
         }
@@ -4235,6 +4250,17 @@
                 .then(() => api.put('/spots/' + b._id, { label, geometry }))
                 .then(() => { b._dirty = false; }, (err) => { b._dirty = true; P.dirty = true; renderToolbar(); toast(err.message || 'Speichern fehlgeschlagen', 'error'); });
             return b._wq;
+        }
+        // Persist a resized vehicle's footprint as its real Länge×Breite via the existing
+        // dimensions endpoint (chained on b._dq so rapid resizes can't land out of order).
+        function persistDims(b) {
+            if (!b.vehId) return Promise.resolve();
+            const body = { length_m: round2(b.w), width_m: round2(b.h), height_m: b.H == null ? null : b.H, weight_t: b.t == null ? null : b.t };
+            const pl = P.palette.find((x) => x.id === b.vehId); if (pl) { pl.length_m = body.length_m; pl.width_m = body.width_m; }
+            b._dq = (b._dq || Promise.resolve())
+                .then(() => api.put('/vehicles/' + b.vehId + '/dimensions', body))
+                .then(() => {}, (err) => { toast(err.message || 'Maße speichern fehlgeschlagen', 'error'); });
+            return b._dq;
         }
         function currentGeometry() { return { floor: P.floor, Wm: P.Wm, Hm: P.Hm, tor: P.tor, load: P.load, shape: P.shape, excl: P.excl.map((e) => ({ kind: e.kind, x: round2(e.x), y: round2(e.y), w: round2(e.w), h: round2(e.h), rot: Math.round(e.rot || 0), label: e.label })) }; }
         async function doSaveGeom(silent) {
@@ -4518,7 +4544,7 @@
             const rt = e.target.closest('.gp-rot');
             if (rt && canManageNow) { const bb = P.spots.find((x) => x._id == rt.dataset.rotid) || P.excl.find((x) => x.id === rt.dataset.rotid); if (bb) { act = { mode: 'rotate', b: bb, elm: e.target.closest('.gp-block'), cx: bb.x + bb.w / 2, cy: bb.y + bb.h / 2, orot: bb.rot || 0 }; e.target.setPointerCapture(e.pointerId); } return; }
             const rz = e.target.closest('.gp-rz');
-            if (rz && canManageNow) { const id = rz.dataset.rz; const bb = P.spots.find((x) => x._id == id) || P.excl.find((x) => x.id === id); if (bb) { act = { mode: 'resize', b: bb, elm: e.target.closest('.gp-block'), ow: bb.w, oh: bb.h }; e.target.setPointerCapture(e.pointerId); } return; }
+            if (rz && canManageNow) { const id = rz.dataset.rz; const bb = P.spots.find((x) => x._id == id) || P.excl.find((x) => x.id === id); if (bb) { act = { mode: 'resize', b: bb, elm: e.target.closest('.gp-block'), dir: rz.dataset.dir, o0: { x: bb.x, y: bb.y, w: bb.w, h: bb.h, rot: bb.rot || 0 } }; e.target.setPointerCapture(e.pointerId); } return; }
             const elm = e.target.closest('.gp-block'); if (!elm) return;
             const id = elm.dataset.id; const b = P.spots.find((x) => x._id == id) || P.excl.find((x) => x.id === id); if (!b) return;
             if (!interactive(b) || !canManageNow) { P.sel = b._id || b.id; draw(); return; }
@@ -4537,9 +4563,14 @@
                 act.elm.querySelectorAll('.gp-code,.gp-lab,.gp-warnb').forEach((t) => { t.style.transform = 'rotate(' + (-ang) + 'deg)'; }); // keep labels upright while dragging
                 act.elm.classList.toggle('invalid', b._id ? !validVeh(b, b._id) : collide(b, b.id)); return;
             }
-            if (act.mode === 'resize') { let nw = (e.clientX - r.left) / P.CELL - b.x, nh = (e.clientY - r.top) / P.CELL - b.y; nw = gsnap(nw); nh = gsnap(nh);
-                nw = Math.max(1, Math.min(P.Wm - b.x, nw)); nh = Math.max(1, Math.min(P.Hm - b.y, nh)); b.w = nw; b.h = nh; act.elm.style.width = (nw * P.CELL) + 'px'; act.elm.style.height = (nh * P.CELL) + 'px';
-                act.elm.classList.toggle('invalid', collide({ kind: b.kind || 'excl', x: b.x, y: b.y, w: nw, h: nh, rot: b.rot }, b._id || b.id)); renderMetrics(); return; }
+            if (act.mode === 'resize') {
+                const px = (e.clientX - r.left) / P.CELL, py = (e.clientY - r.top) / P.CELL;
+                const nr = resizeBlock(act.o0, act.dir, px, py); b.x = nr.x; b.y = nr.y; b.w = nr.w; b.h = nr.h;
+                positionBlock(act.elm, b); // left/top/width/height (+ rotation transform)
+                const isVeh = !!b._id && b.kind !== 'excl';
+                if (isVeh) { b.L = b.w; b.W = b.h; act.elm.querySelectorAll('.gp-dim,.gp-rl-dim').forEach((t) => { t.textContent = dimText(b); }); } // live L×B
+                const bad = isVeh ? !validVeh({ kind: 'veh', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b._id) : collide({ kind: 'excl', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b.id);
+                act.elm.classList.toggle('invalid', bad); renderMetrics(); return; }
             if (!act.moved && Math.abs(e.clientX - act.sx) + Math.abs(e.clientY - act.sy) < 4) return; act.moved = true; act.elm.classList.add('moving');
             let nx = (e.clientX - r.left - act.gx) / P.CELL, ny = (e.clientY - r.top - act.gy) / P.CELL; nx = gsnap(nx); ny = gsnap(ny);
             const cl = snapPos(b, nx, ny); nx = cl.x; ny = cl.y; b.x = nx; b.y = ny; act.elm.style.left = (nx * P.CELL) + 'px'; act.elm.style.top = (ny * P.CELL) + 'px';
@@ -4557,8 +4588,11 @@
                 toast('Gedreht'); return;
             }
             if (d.mode === 'resize') {
-                if (collide({ kind: b.kind || 'excl', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b._id || b.id)) { b.w = d.ow; b.h = d.oh; toast('Überlappt — zurück', 'error'); }
-                P.sel = b._id || b.id; if (isVeh) { b._dirty = true; markDirty(); pushUndo(); } else commitGeom(); draw(); return;
+                const bad = isVeh ? !validVeh({ kind: 'veh', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b._id) : collide({ kind: 'excl', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b.id);
+                if (bad) { b.x = d.o0.x; b.y = d.o0.y; b.w = d.o0.w; b.h = d.o0.h; if (isVeh) { b.L = d.o0.w; b.W = d.o0.h; } P.sel = b._id || b.id; draw(); toast('Passt nicht (Rand/Kollision) — zurück', 'error'); return; }
+                P.sel = b._id || b.id;
+                if (isVeh) { b.L = b.w; b.W = b.h; persistDims(b); b._dirty = true; markDirty(); pushUndo(); } else commitGeom();
+                draw(); toast('Größe geändert' + (isVeh ? ' · ' + dimText(b).replace(/^.*· /, '') : '')); return;
             }
             if (!d.moved) { P.sel = b._id || b.id; draw(); return; }
             d.elm.classList.remove('moving');
