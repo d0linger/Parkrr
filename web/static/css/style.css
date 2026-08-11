@@ -459,7 +459,7 @@ textarea { resize: vertical; min-height: 72px; }
 /* stacked variant: action buttons in a row, with the location chip beneath them */
 .card-actions.stack { flex-direction: column; align-items: flex-end; gap: 0.45rem; }
 .card-actbtns { display: flex; gap: 0.4rem; }
-.card-actions.stack .veh-loc { justify-content: flex-end; text-align: right; max-width: 220px; }
+.card-actions.stack .veh-loc:not(.veh-loc-ic) { justify-content: flex-end; text-align: right; max-width: 220px; }
 .card-meta { font-size: 0.85rem; color: var(--text-muted); margin-top: 0.3rem; }
 
 .stat-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.75rem; margin-bottom: 1rem; }
@@ -1390,7 +1390,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .veh-loc:hover{text-decoration:underline}
 .veh-loc.empty{color:var(--muted);cursor:default}
 /* compact pin-icon variant (used under the card action buttons): bigger, centred, accented */
-.veh-loc-ic{display:inline-grid;place-items:center;width:36px;height:36px;padding:0;border:1px solid color-mix(in srgb,var(--accent-text) 45%,transparent);border-radius:10px;color:var(--accent-text);background:color-mix(in srgb,var(--accent-text) 13%,transparent)}
+.veh-loc-ic{display:inline-grid;place-items:center;place-content:center;width:36px;height:36px;padding:0;border:1px solid color-mix(in srgb,var(--accent-text) 45%,transparent);border-radius:10px;color:var(--accent-text);background:color-mix(in srgb,var(--accent-text) 13%,transparent)}
 .veh-loc-ic svg{width:20px;height:20px;display:block}
 .veh-loc-ic:hover{background:color-mix(in srgb,var(--accent-text) 24%,transparent);text-decoration:none}
 .veh-loc-ic.empty{color:var(--muted);opacity:.55;border:1px dashed var(--card-border);background:none}
