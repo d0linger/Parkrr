@@ -94,7 +94,7 @@ func (h *Handler) UploadPlannerIcon(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not store icon")
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 	if _, err := tx.Exec(r.Context(), `SELECT pg_advisory_xact_lock($1)`, plannerIconLock); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not store icon")
 		return
@@ -171,7 +171,7 @@ func (h *Handler) DeletePlannerIcon(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not delete icon")
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 	if _, err := tx.Exec(r.Context(),
 		`UPDATE vehicles SET planner_symbol=NULL, updated_at=now() WHERE planner_symbol=$1`,
 		"custom:"+strconv.FormatInt(id, 10)); err != nil {
