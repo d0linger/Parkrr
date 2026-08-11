@@ -1,5 +1,5 @@
-/* Parkrr service worker – offline shell caching. */
-const CACHE = 'parkrr-v115';
+/* Parkrr service worker – offline shell with fresh-first assets. */
+const CACHE = 'parkrr-v116';
 const SHELL = [
     '/',
     '/css/style.css',
@@ -34,22 +34,17 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
-    // Network-first for the app shell / navigations, falling back to cache.
-    if (request.mode === 'navigate') {
-        event.respondWith(
-            fetch(request).catch(() => caches.match('/'))
-        );
-        return;
-    }
-
-    // Cache-first for static assets.
+    // Network-first for navigations and same-origin assets (JS/CSS/fonts/icons):
+    // an online client always gets the latest deploy; the cache is only the offline
+    // fallback. This avoids the classic PWA trap where a cache-first shell pins stale
+    // JS/CSS until the cache name changes.
     event.respondWith(
-        caches.match(request).then((cached) =>
-            cached || fetch(request).then((res) => {
+        fetch(request).then((res) => {
+            if (res && res.ok && url.origin === self.location.origin) {
                 const copy = res.clone();
                 caches.open(CACHE).then((c) => c.put(request, copy)).catch(() => {});
-                return res;
-            })
-        )
+            }
+            return res;
+        }).catch(() => caches.match(request).then((cached) => cached || caches.match('/')))
     );
 });

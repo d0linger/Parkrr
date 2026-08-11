@@ -1240,3 +1240,215 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .inv-badge.ok{ background:rgba(34,197,94,.16); color:var(--success-text, #22c55e); }
 .inv-badge.warn{ background:rgba(245,158,11,.16); color:var(--accent-text, #f59e0b); }
 .inv-badge.muted{ background:var(--bg-elev-2); color:var(--text-muted); }
+
+/* ---------- Stellplatz / Garagenplaner (Hallen-Digital-Twin) ---------- */
+/* Committed dark glass/teal design (matches the approved prototype), scoped to .gp
+   so it is independent of the app's light/dark theme. */
+.gp{
+  --gpteal:#2ee6cf; --gpteal2:#16b7a3; --gpteal-ink:#05201d;
+  --gpink:#eef4fb; --gpmuted:#8ba0b6; --gpfaint:#5f7488;
+  --gpline:rgba(255,255,255,.08); --gpline2:rgba(255,255,255,.14);
+  --gpglass:rgba(255,255,255,.04); --gpglass2:rgba(255,255,255,.06);
+  --gpbusy:#f26b63; --gpresv:#eab452; --gpmove:#4ea8f5; --gphall:#26a56b; --gpexcl:#6b829a;
+  --gpbg:#070d14; --gpbg2:#0a141e; --gpr:16px;
+  display:flex; flex-direction:column; gap:.8rem; color:var(--gpink);
+  font-variant-numeric:tabular-nums;
+}
+.gp .num{font-variant-numeric:tabular-nums}
+.gp .eyebrow{font-size:.62rem;letter-spacing:.14em;text-transform:uppercase;color:var(--gpmuted);font-weight:600}
+.gp .muted{color:var(--gpmuted)}
+
+.gp-appbar{display:flex;align-items:center;gap:.7rem;flex-wrap:wrap;background:var(--gpglass);border:1px solid var(--gpline);border-radius:14px;padding:.5rem .7rem}
+.gp-brand{display:flex;flex-direction:column;line-height:1.1}
+.gp-brand b{font-weight:750;letter-spacing:-.01em}
+.gp-brand .muted{font-size:.72rem}
+.gp-spacer{flex:1}
+.gp-switch{display:flex;background:rgba(0,0,0,.28);border:1px solid var(--gpline);border-radius:12px;padding:3px}
+.gp-switch button{border:0;background:transparent;color:var(--gpmuted);font-size:.83rem;font-weight:650;padding:.4rem .85rem;border-radius:9px;cursor:pointer;font-family:inherit}
+.gp-switch button.on{background:linear-gradient(180deg,var(--gpglass2),transparent);color:var(--gpink);box-shadow:inset 0 0 0 1px var(--gpline2)}
+.gp-occ{display:flex;align-items:center;gap:.5rem;font-size:.8rem;color:var(--gpmuted)}
+.gp-occ b{color:var(--gpink);font-size:.92rem}
+.gp-bar{width:92px;height:7px;border-radius:99px;background:rgba(255,255,255,.08);overflow:hidden;display:block}
+.gp-bar i{display:block;height:100%;background:linear-gradient(90deg,var(--gphall),var(--gpresv) 70%,var(--gpbusy))}
+.gp-iconbtn{width:36px;height:36px;border-radius:10px;border:1px solid var(--gpline);background:var(--gpglass);color:var(--gpink);cursor:pointer;font-size:1rem}
+.gp-iconbtn:hover{border-color:var(--gpline2);background:var(--gpglass2)}
+
+.gp-stage{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:.8rem;align-items:start}
+@media(max-width:900px){.gp-stage{grid-template-columns:1fr}}
+
+.gp .card,.gp-canvas,.gp-rcard{background:var(--gpglass);border:1px solid var(--gpline);border-radius:var(--gpr)}
+.gp-canvas{padding:.8rem .85rem .9rem;display:flex;flex-direction:column;gap:.6rem}
+.gp-canvas-top{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+.gp-ctitle{font-size:.92rem;font-weight:650}
+.gp-toolbar{display:flex;align-items:center;gap:.35rem;flex-wrap:wrap}
+.gp-tbtn{border:1px solid var(--gpline);background:var(--gpglass);color:var(--gpink);font-size:.77rem;font-weight:600;padding:.38rem .6rem;border-radius:9px;cursor:pointer;font-family:inherit}
+.gp-tbtn:hover{border-color:var(--gpline2)}
+.gp-tbtn.on{border-color:var(--gpteal);color:var(--gpteal)}
+.gp-tbtn.btn-primary{background:var(--gpteal);color:var(--gpteal-ink);border-color:var(--gpteal)}
+.gp-tbtn:disabled{opacity:.4;cursor:not-allowed}
+.gp-seg{display:flex;align-items:center;gap:.3rem;background:rgba(0,0,0,.22);border:1px solid var(--gpline);border-radius:10px;padding:3px}
+.gp-seg button{border:0;background:transparent;color:var(--gpmuted);font-size:.76rem;font-weight:600;padding:.3rem .55rem;border-radius:8px;cursor:pointer;font-family:inherit}
+.gp-seg button.on{background:var(--gpteal);color:var(--gpteal-ink)}
+
+.gp-metrics{display:flex;gap:.45rem;flex-wrap:wrap}
+.gp-metric{flex:1;min-width:82px;background:rgba(0,0,0,.2);border:1px solid var(--gpline);border-radius:11px;padding:.42rem .55rem}
+.gp-mv{font-size:1.02rem;font-weight:750}
+.gp-mv.ok{color:#6fe0a6}.gp-mv.busy{color:#f4948e}.gp-mv.excl{color:#a8b8c8}
+.gp-ml{font-size:.6rem;letter-spacing:.05em;text-transform:uppercase;color:var(--gpmuted)}
+
+.gp-planwrap{overflow:auto;scrollbar-gutter:stable;padding:40px;display:flex;justify-content:safe center;align-items:safe center;border-radius:12px;background:#060b11;border:1px solid var(--gpline);box-shadow:inset 0 0 60px -20px #000}
+.gp-plan{position:relative;margin:0;flex:none;touch-action:none}
+.gp-floor{position:absolute;inset:0;z-index:0;overflow:visible}
+.gp-gridline{stroke:rgba(255,255,255,.06);stroke-width:1}
+.gp-floorfill{fill:#0c1a14}
+.gp-floorstroke{fill:none;stroke:rgba(46,230,207,.4);stroke-width:2}
+.gp-vertex{fill:#eaf6ff;stroke:#0a141e;stroke-width:1.5;cursor:grab}
+.gp-edge{stroke:rgba(46,230,207,.55);stroke-width:2}
+.gp-edge.sel{stroke:#2ee6cf;stroke-width:3.5}
+.gp-edgelab{fill:rgba(255,255,255,.5);font-size:10px}
+.gp-edgelab.sel{fill:#bff3ec}
+.gp-layer{position:absolute;inset:0;z-index:1;overflow:visible}
+
+.gp-block{position:absolute;border-radius:3px;overflow:hidden;cursor:grab;user-select:none;box-shadow:inset 0 0 0 1px rgba(255,255,255,.1),0 3px 10px -4px rgba(0,0,0,.5)}
+.gp-block .gp-code{position:absolute;top:4px;left:5px;z-index:2;font-size:.6rem;font-weight:800;color:#fff;background:rgba(0,0,0,.36);padding:0 5px;border-radius:5px;letter-spacing:.02em}
+.gp-block .gp-lab{position:absolute;left:6px;right:6px;bottom:4px;z-index:2;color:#fff;display:flex;flex-direction:column}
+.gp-block .gp-who{font-size:.68rem;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 2px rgba(0,0,0,.6)}
+.gp-block .gp-dim{font-size:.57rem;color:rgba(255,255,255,.8)}
+.gp-block .gp-warnb{position:absolute;top:3px;right:4px;z-index:2;font-size:.57rem;background:#2a1211;color:#ffb4ad;border:1px solid var(--gpbusy);border-radius:5px;padding:0 4px;font-weight:700}
+.gp-block::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(255,255,255,.06),rgba(0,0,0,.05) 30%,rgba(0,0,0,.55));pointer-events:none}
+.gp-block.veh.busy{background:var(--gpbusy)}
+.gp-block.veh.resv{background:var(--gpresv)}
+.gp-block.veh.move{background:var(--gpmove)}
+.gp-block.excl{cursor:grab}
+.gp-block.excl::after{background:linear-gradient(180deg,rgba(255,255,255,.04),transparent)}
+.gp-block.excl .gp-who{color:#eaf1f8;text-shadow:none;font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.gp-block.excl.lane{background:#16222f;background-image:repeating-linear-gradient(45deg,#243547 0 12px,#151f2b 12px 24px)}
+.gp-block.excl.exit{background:#0f3a20;border:1px solid var(--gphall)}
+.gp-block.excl.exit .gp-who{color:#8fe6b0}
+.gp-block.excl.maint{background:#392c12;background-image:repeating-linear-gradient(45deg,rgba(234,180,82,.25) 0 8px,transparent 8px 16px)}
+.gp-block.excl.maint .gp-who{color:#f0d194}
+.gp-block.excl.wall{background:#0c141d;border:1px solid #2a3b4d}
+.gp-block.dimctx{opacity:.5;cursor:default}
+.gp-block.sel{box-shadow:0 0 0 2px #fff,0 0 0 4px var(--gpteal2),0 12px 24px -8px rgba(0,0,0,.6);z-index:6}
+.gp-block.moving{opacity:.94;z-index:9;cursor:grabbing}
+.gp-block.invalid{outline:2px solid var(--gpbusy);outline-offset:-1px}
+.gp-rz{position:absolute;right:-5px;bottom:-5px;width:14px;height:14px;border-radius:4px;background:#eaf6ff;border:1px solid #0a141e;cursor:nwse-resize;z-index:7}
+
+.gp-preview{position:absolute;z-index:8;border-radius:7px;pointer-events:none;border:2px solid var(--gphall);background:rgba(38,165,107,.22)}
+.gp-preview.bad{border-color:var(--gpbusy);background:rgba(242,107,99,.22)}
+.gp-pl{position:absolute;left:50%;top:-10px;transform:translateX(-50%);font-size:.57rem;font-weight:700;white-space:nowrap;background:#0a141e;padding:0 5px;border-radius:5px;border:1px solid currentColor}
+.gp-ghost{position:fixed;z-index:9000;pointer-events:none;background:#12202d;border:1px solid var(--gpteal2);border-radius:10px;padding:.32rem .55rem;box-shadow:0 20px 40px -14px #000;font-size:.72rem;font-weight:700;color:var(--gpink)}
+
+.gp-lenbox{position:absolute;z-index:14;display:none;transform:translate(-50%,-50%);background:#0c1a26;border:1px solid var(--gpteal2);border-radius:9px;padding:.2rem .3rem;align-items:center;gap:3px}
+.gp-lenin{width:64px;background:#0a141e;border:1px solid var(--gpline2);color:var(--gpink);border-radius:6px;padding:.18rem .3rem;font:inherit;font-size:.8rem;text-align:right}
+.gp-lenbox .muted{font-size:.72rem}
+
+.gp-rail{display:flex;flex-direction:column;gap:.8rem}
+.gp-rcard{padding:.8rem .85rem;display:flex;flex-direction:column}
+.gp-rcard h3{margin:0 0 .55rem;font-size:.74rem;letter-spacing:.12em;text-transform:uppercase;color:var(--gpmuted);font-weight:600;display:flex;justify-content:space-between;align-items:center}
+.gp-pal{display:flex;flex-direction:column;gap:.4rem}
+.gp-vehc{display:flex;align-items:center;gap:.5rem;background:rgba(0,0,0,.2);border:1px solid var(--gpline);border-radius:11px;padding:.4rem .5rem;cursor:grab;touch-action:none;user-select:none}
+.gp-vehc:hover{border-color:var(--gpteal2)}
+.gp-vic{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;font-size:.95rem;background:linear-gradient(160deg,#1c2b3a,#12202d);flex:none}
+.gp-vnm{font-size:.82rem;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gp-vdm{font-size:.65rem;color:var(--gpmuted)}
+.gp-vst{margin-left:auto;font-size:.6rem;color:var(--gpfaint)}
+.gp-chip{display:inline-block;font-size:.57rem;color:#bff3ec;background:rgba(46,230,207,.1);border:1px solid rgba(46,230,207,.3);border-radius:99px;padding:0 .45rem;margin-left:.2rem}
+.gp-row{display:flex;justify-content:space-between;gap:.6rem;font-size:.8rem;padding:.28rem 0;border-bottom:1px solid var(--gpline)}
+.gp-k{color:var(--gpmuted)}.gp-v{text-align:right;font-weight:650}
+.gp-segd{display:flex;background:rgba(0,0,0,.24);border:1px solid var(--gpline);border-radius:10px;padding:2px;margin:.5rem 0;gap:2px}
+.gp-segd button{flex:1;border:0;background:transparent;color:var(--gpmuted);font-size:.66rem;font-weight:650;padding:.34rem 0;border-radius:8px;cursor:pointer;font-family:inherit}
+.gp-segd button.on{background:var(--gpteal);color:var(--gpteal-ink)}
+.gp-fit{background:rgba(0,0,0,.2);border:1px solid var(--gpline);border-radius:10px;padding:.5rem .6rem;margin-top:.5rem}
+.gp-fit h4{margin:0 0 .35rem;font-size:.6rem;letter-spacing:.1em;text-transform:uppercase;color:var(--gpmuted);display:flex;justify-content:space-between}
+.gp-line{display:flex;justify-content:space-between;font-size:.72rem;padding:.11rem 0}
+.gp .ok{color:#6fe0a6}.gp .bad{color:var(--gpbusy);font-weight:700}
+.gp-shapegrid{display:grid;grid-template-columns:1fr 1fr;gap:.45rem;margin-bottom:.55rem}
+.gp-shapegrid button{border:1px solid var(--gpline);background:rgba(0,0,0,.2);color:var(--gpink);border-radius:10px;padding:.5rem;cursor:pointer;font-size:.75rem;font-weight:600;font-family:inherit}
+.gp-shapegrid button.on{border-color:var(--gpteal);color:var(--gpteal)}
+.gp-grid2{display:grid;grid-template-columns:1fr 1fr;gap:.5rem .65rem}
+.gp-field{display:flex;flex-direction:column;gap:.22rem}
+.gp-field label{font-size:.64rem;color:var(--gpmuted)}
+.gp-stepper{display:flex;align-items:center;gap:.4rem}
+.gp-stepper button{width:26px;height:26px;border-radius:8px;border:1px solid var(--gpline);background:var(--gpglass);color:var(--gpink);font-size:1rem;cursor:pointer;line-height:1;font-family:inherit}
+.gp-val{min-width:46px;text-align:center;font-weight:700}
+.gp-addrow{display:grid;grid-template-columns:1fr 1fr;gap:.42rem}
+.gp-addrow .btn{font-size:.76rem}
+.gp-exlist{display:flex;flex-direction:column}
+.gp-exitem{display:flex;align-items:center;gap:.5rem;padding:.36rem .5rem;border:1px solid var(--gpline);border-radius:10px;background:rgba(0,0,0,.18);cursor:pointer;font-size:.78rem;margin-top:.4rem}
+.gp-exitem.on{border-color:var(--gpteal2)}
+.gp-sw{width:12px;height:12px;border-radius:4px;flex:none;background:#2a3b4d}
+.gp-sw[data-kind="lane"]{background:#243547}
+.gp-sw[data-kind="maint"]{background:#8a6b2a}
+.gp-sw[data-kind="wall"]{background:#2a3b4d}
+.gp-sw[data-kind="exit"]{background:#26a56b}
+.gp-rm{margin-left:auto;color:var(--gpfaint);font-size:1.1rem;line-height:1;background:none;border:0;cursor:pointer}
+
+/* maximize: fill the viewport, canvas + rail side by side (no overlay overlap) */
+.gp.maxed{position:fixed;inset:0;z-index:9500;margin:0;padding:.7rem;gap:.6rem;background:linear-gradient(180deg,var(--gpbg2),var(--gpbg));overflow:hidden;display:flex;flex-direction:column}
+.gp.maxed .gp-stage{grid-template-columns:minmax(0,1fr) 340px;flex:1;min-height:0}
+.gp.maxed .gp-rail{max-height:calc(100vh - 108px);overflow:auto;padding-right:2px}
+@media(max-width:900px){.gp.maxed .gp-stage{grid-template-columns:1fr}}
+/* app shared controls, restyled to sit on the dark planner panels */
+.gp .btn{background:var(--gpglass);border:1px solid var(--gpline);color:var(--gpink)}
+.gp .btn:hover{border-color:var(--gpline2)}
+.gp .btn-ghost{background:transparent}
+.gp .btn-primary{background:var(--gpteal);color:var(--gpteal-ink);border-color:var(--gpteal)}
+.gp .btn-danger{color:#ffb4ad;border-color:rgba(242,107,99,.4);background:transparent}
+.gp .back-btn{background:var(--gpglass);border:1px solid var(--gpline);color:var(--gpink)}
+/* planner: shape icons, palette dim-edit, hall switcher */
+.gp-shapegrid button{display:flex;flex-direction:column;align-items:center;gap:.3rem}
+.gp-shapeic{width:34px;height:22px;stroke:currentColor;fill:rgba(46,230,207,.08);stroke-width:1.5}
+.gp-vedit{margin-left:auto;width:26px;height:26px;border-radius:7px;border:1px solid var(--gpline);background:var(--gpglass);color:var(--gpmuted);cursor:pointer;font-size:.82rem;flex:none;font-family:inherit}
+.gp-vedit:hover{border-color:var(--gpteal2);color:var(--gpink)}
+.gp-select{width:100%;background:#0a141e;border:1px solid var(--gpline2);color:var(--gpink);border-radius:9px;padding:.4rem .45rem;font:inherit;font-size:.83rem}
+.gp-hallrow{display:flex;gap:.45rem;align-items:center}
+/* rotate handle (free rotation, top-centre inside the block so overflow:hidden won't clip it) */
+.gp-rot{position:absolute;left:50%;top:3px;transform:translateX(-50%);width:13px;height:13px;border-radius:50%;background:var(--gpteal);border:1.5px solid #0a141e;cursor:grab;z-index:8}
+/* direct numeric inputs in the dim steppers + Tor zone styling */
+.gp-stepin{width:100%;min-width:0;background:#0a141e;border:1px solid var(--gpline2);color:var(--gpink);border-radius:8px;padding:.28rem .3rem;font:inherit;font-size:.82rem;text-align:center}
+.gp-stepper .gp-stepin{flex:1}
+.gp-block.excl.gate{background:#0f2a3a;background-image:repeating-linear-gradient(90deg,rgba(78,168,245,.35) 0 6px,transparent 6px 12px);border:1px solid var(--gpmove)}
+.gp-block.excl.gate .gp-who{color:#bcdcff}
+.gp-sw[data-kind="gate"]{background:#4ea8f5}
+/* (fullscreen rail is a normal side column now — see the .gp.maxed block above) */
+/* small/large-hall readability + clickable "Maße festlegen" in the palette */
+.gp-block.gp-small .gp-dim{display:none}
+.gp-block.gp-small .gp-who{font-size:.58rem}
+.gp-block.gp-small .gp-code{font-size:.52rem;padding:0 3px}
+.gp-block.gp-tiny .gp-lab{display:none}
+.gp-block.gp-tiny .gp-warnb{display:none}
+.gp-block.gp-tiny .gp-code{left:2px;top:2px;font-size:.5rem}
+.gp-dimopen{background:none;border:0;color:var(--gpteal);cursor:pointer;font:inherit;font-size:.66rem;font-weight:600;padding:0;text-align:left}
+.gp-dimopen:hover{color:#8ff3e7;text-decoration:underline}
+/* palette: search + bounded scroll + compact cards; edge "+" insert handle */
+.gp-pal{max-height:min(44vh,320px);overflow:auto;padding-right:3px}
+.gp-palsearch{width:100%;background:#0a141e;border:1px solid var(--gpline2);color:var(--gpink);border-radius:9px;padding:.36rem .5rem;font:inherit;font-size:.82rem;margin-bottom:.5rem}
+.gp-vehc{padding:.34rem .45rem;gap:.45rem}
+.gp-vic{width:28px;height:28px;font-size:.85rem}
+.gp.maxed .gp-pal{max-height:min(38vh,300px)}
+.gp-edgeadd{cursor:copy}
+.gp-edgeadd circle{fill:var(--gpteal2);stroke:#0a141e;stroke-width:1.2}
+.gp-edgeadd path{stroke:#fff;stroke-width:1.6;pointer-events:none}
+.gp-edgeadd:hover circle{fill:var(--gpteal)}
+/* zoom label */
+.gp-zoomlbl{font-size:.72rem;color:var(--gpmuted);min-width:40px;text-align:center;font-variant-numeric:tabular-nums}
+/* fullscreen: let the plan scroll inside its wrapper when zoomed in (no bottom clip) */
+.gp.maxed .gp-canvas{min-height:0}
+.gp.maxed .gp-planwrap{min-height:0}
+/* vertex context menu (shown on click) */
+.gp-vertmenu{position:absolute;z-index:15;transform:translate(-50%,-100%);background:#0c1a26;border:1px solid var(--gpline2);border-radius:9px;padding:.3rem;display:flex;flex-direction:column;gap:.25rem;box-shadow:0 12px 26px -12px #000}
+.gp-vm-title{font-size:.6rem;color:var(--gpmuted);text-transform:uppercase;letter-spacing:.08em;padding:0 .2rem}
+.gp-vm-btn{background:var(--gpglass);border:1px solid var(--gpline);color:var(--gpink);border-radius:7px;padding:.3rem .5rem;font:inherit;font-size:.76rem;cursor:pointer;white-space:nowrap}
+.gp-vm-btn.danger{color:#ffb4ad;border-color:rgba(242,107,99,.4)}
+.gp-vm-btn:hover{border-color:var(--gpline2)}
+.gp-vm-note{font-size:.72rem;color:var(--gpmuted);padding:0 .3rem;white-space:nowrap}
+/* rotated block: one centred, upright label group (positioned at block centre, counter-rotated in JS) */
+.gp-rlabel{position:absolute;left:50%;top:50%;z-index:2;display:flex;flex-direction:column;align-items:center;gap:1px;color:#fff;text-align:center;pointer-events:none}
+.gp-rl-code{font-size:.56rem;font-weight:800;background:rgba(0,0,0,.36);padding:0 5px;border-radius:5px;white-space:nowrap;letter-spacing:.02em}
+.gp-rl-name{font-size:.68rem;font-weight:650;text-shadow:0 1px 2px rgba(0,0,0,.6);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}
+.gp-rl-dim{font-size:.56rem;color:rgba(255,255,255,.8);white-space:nowrap}
+.gp-rl-warn{font-size:.55rem;background:#2a1211;color:#ffb4ad;border:1px solid var(--gpbusy);border-radius:5px;padding:0 4px;font-weight:700;white-space:nowrap}
+.gp-block.excl .gp-rl-name{text-transform:uppercase;letter-spacing:.05em;font-size:.62rem;text-shadow:none}
+.gp-block.gp-small .gp-rl-code,.gp-block.gp-small .gp-rl-dim{display:none}
+.gp-block.gp-tiny .gp-rlabel{display:none}

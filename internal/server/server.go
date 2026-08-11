@@ -133,6 +133,8 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/vehicles/{id}/reactivate", editor(hf(h.ReactivateVehicle)))
 	mux.Handle("POST /api/vehicles/{id}/duplicate", editor(hf(h.DuplicateVehicle)))
 	mux.Handle("GET /api/vehicles/{id}/history", authed(hf(h.VehicleHistory)))
+	// Literal segment beats the {id} pattern in Go's ServeMux, so this is safe.
+	mux.Handle("GET /api/vehicles/unassigned", authed(hf(h.ListUnassignedVehicles)))
 
 	// --- Vehicle photos ---
 	mux.Handle("GET /api/vehicles/{id}/photos", authed(hf(h.ListPhotos)))
@@ -146,6 +148,23 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("PUT /api/categories/{id}", editor(hf(h.UpdateCategory)))
 	mux.Handle("POST /api/categories/{id}/archived", editor(hf(h.SetCategoryArchived)))
 	mux.Handle("DELETE /api/categories/{id}", editor(hf(h.DeleteCategory)))
+
+	// --- Stellplatz / Garagenplaner (read: any; write: editor) ---
+	mux.Handle("GET /api/garages", authed(hf(h.ListGarages)))
+	mux.Handle("POST /api/garages", editor(hf(h.CreateGarage)))
+	mux.Handle("PUT /api/garages/{id}", editor(hf(h.UpdateGarage)))
+	mux.Handle("DELETE /api/garages/{id}", editor(hf(h.DeleteGarage)))
+	mux.Handle("GET /api/garages/{id}/halls", authed(hf(h.ListHalls)))
+	mux.Handle("POST /api/garages/{id}/halls", editor(hf(h.CreateHall)))
+	mux.Handle("PUT /api/halls/{id}", editor(hf(h.UpdateHall)))
+	mux.Handle("DELETE /api/halls/{id}", editor(hf(h.DeleteHall)))
+	mux.Handle("GET /api/halls/{id}/plan", authed(hf(h.GetHallPlan)))
+	mux.Handle("POST /api/halls/{id}/spots", editor(hf(h.CreateSpot)))
+	mux.Handle("PUT /api/spots/{id}", editor(hf(h.UpdateSpot)))
+	mux.Handle("DELETE /api/spots/{id}", editor(hf(h.DeleteSpot)))
+	mux.Handle("PUT /api/spots/{id}/vehicle", editor(hf(h.AssignSpotVehicle)))
+	mux.Handle("DELETE /api/spots/{id}/vehicle", editor(hf(h.UnassignSpotVehicle)))
+	mux.Handle("PUT /api/vehicles/{id}/dimensions", editor(hf(h.SetVehicleDimensions)))
 
 	// --- Service catalog ---
 	mux.Handle("GET /api/services", authed(hf(h.ListServiceTypes)))
