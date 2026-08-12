@@ -140,6 +140,41 @@ func (h *AuthHandler) resetReauth(key, ip string) {
 	h.UserLimiter.Reset(userKeyOf(key, ip))
 }
 
+// stepUpWindow is how long after a primary-factor login (password or passkey) a
+// sensitive account change — adding a second factor — is allowed without
+// re-authenticating (finding SH-02).
+const stepUpWindow = 10 * time.Minute
+
+// requireStepUp gates a sensitive change. It passes when the session
+// authenticated within stepUpWindow; otherwise it requires the account password.
+// A missing password yields 403 "reauth_required" so the client can prompt and
+// retry with the password; a wrong password is throttled like a login failure.
+// Returns false (and writes the response) when the caller must stop.
+func (h *AuthHandler) requireStepUp(w http.ResponseWriter, r *http.Request, username, password string) bool {
+	if t, ok := h.Auth.SessionCreatedAt(r.Context(), r); ok && time.Since(t) < stepUpWindow {
+		return true
+	}
+	if password == "" {
+		writeError(w, http.StatusForbidden, "reauth_required")
+		return false
+	}
+	if len(password) > maxPasswordLen {
+		writeError(w, http.StatusForbidden, "password is incorrect")
+		return false
+	}
+	key, ip, ok := h.checkRateLimit(w, r, username)
+	if !ok {
+		return false
+	}
+	if _, err := h.Auth.Authenticate(r.Context(), username, password); err != nil {
+		h.recordReauthFailure(key, ip)
+		writeError(w, http.StatusForbidden, "password is incorrect")
+		return false
+	}
+	h.resetReauth(key, ip)
+	return true
+}
+
 // Login authenticates a user (with optional TOTP) and starts a session.
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest

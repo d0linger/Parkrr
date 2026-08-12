@@ -218,6 +218,25 @@ func randomToken(n int) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
+// SessionCreatedAt returns when the request's session was created — i.e. when the
+// user last authenticated with a primary factor (password or passkey login).
+// Sliding renewals extend expiry but never rewrite created_at, so it is a stable
+// "last strong auth" marker. Used for step-up: a sensitive account change is
+// allowed without re-authentication only within a short window of this time
+// (finding SH-02). ok is false when there is no valid session.
+func (m *Manager) SessionCreatedAt(ctx context.Context, r *http.Request) (time.Time, bool) {
+	c, err := r.Cookie(SessionCookie)
+	if err != nil || c.Value == "" {
+		return time.Time{}, false
+	}
+	var createdAt time.Time
+	if err := m.pool.QueryRow(ctx,
+		`SELECT created_at FROM sessions WHERE token=$1`, hashToken(c.Value)).Scan(&createdAt); err != nil {
+		return time.Time{}, false
+	}
+	return createdAt, true
+}
+
 // Authenticate validates credentials and returns the matching user.
 func (m *Manager) Authenticate(ctx context.Context, username, password string) (*models.User, error) {
 	u, err := m.userByUsername(ctx, username)

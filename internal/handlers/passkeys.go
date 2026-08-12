@@ -137,12 +137,21 @@ func (h *AuthHandler) PasskeyRegisterBegin(w http.ResponseWriter, r *http.Reques
 	u, _ := auth.UserFrom(r.Context())
 	var body struct {
 		Name string `json:"name"`
+		// Password re-authenticates when the login is no longer recent (step-up,
+		// finding SH-02). Checked BEFORE the ceremony so the client can prompt for
+		// it without wasting an authenticator touch.
+		Password string `json:"password"`
 	}
 	_ = decodeJSON(r, &body) // name is optional
 
 	body.Name = trim(body.Name)
 	if !validNameLength(body.Name) {
 		writeError(w, http.StatusBadRequest, "name is too long")
+		return
+	}
+	// Step-up: registering a durable new factor requires a recent primary-factor
+	// login, or the account password if that window has closed (finding SH-02).
+	if !h.requireStepUp(w, r, u.Username, body.Password) {
 		return
 	}
 

@@ -45,6 +45,9 @@ func (h *AuthHandler) TOTPSetup(w http.ResponseWriter, r *http.Request) {
 
 type totpVerifyRequest struct {
 	Code string `json:"code"`
+	// Password re-authenticates when the login is no longer recent (step-up,
+	// finding SH-02). Ignored while the recent-auth window is still open.
+	Password string `json:"password"`
 }
 
 // TOTPEnable verifies a code against the pending secret and enables 2FA.
@@ -63,6 +66,11 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validTOTPCodeLength(trim(req.Code)) {
 		writeError(w, http.StatusBadRequest, "invalid code")
+		return
+	}
+	// Step-up: enabling a second factor requires a recent primary-factor login,
+	// or the account password if that window has closed (finding SH-02).
+	if !h.requireStepUp(w, r, u.Username, req.Password) {
 		return
 	}
 	// Throttle: a 6-digit code is otherwise brute-forceable during enrolment.
