@@ -45,8 +45,12 @@ type Manager struct {
 	absoluteMaxAge time.Duration // hard cap on total session lifetime (sliding mode)
 	secureCookies  bool
 	trustProxy     bool
-	aead           cipher.AEAD
-	csrfKey        []byte // HMAC key binding the CSRF token to the session
+	// trustedProxyNets, when non-empty, restricts which direct peers may set
+	// forwarded headers: XFF/XFP is honored only if RemoteAddr is inside one of
+	// these networks (finding SH-05). Empty = trust unconditionally (legacy).
+	trustedProxyNets []*net.IPNet
+	aead             cipher.AEAD
+	csrfKey          []byte // HMAC key binding the CSRF token to the session
 }
 
 // SessionConfig groups the session-lifetime settings for NewManager.
@@ -93,10 +97,55 @@ func hashToken(raw string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// SetTrustedProxyCIDRs parses and stores the CIDRs whose members are allowed to
+// set forwarded headers. Only consulted when trustProxy is enabled. An invalid
+// CIDR is a configuration error and aborts startup (fail-closed).
+func (m *Manager) SetTrustedProxyCIDRs(cidrs []string) error {
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			return errors.New("invalid trusted-proxy CIDR " + c + ": " + err.Error())
+		}
+		nets = append(nets, n)
+	}
+	m.trustedProxyNets = nets
+	return nil
+}
+
+// peerIsTrustedProxy reports whether the request's DIRECT peer (RemoteAddr) may
+// have its forwarded headers honored. With no CIDR allowlist configured this
+// keeps the legacy behavior (any peer), so a direct-to-backend client can still
+// spoof headers unless the operator also configures TrustedProxyCIDRs.
+func (m *Manager) peerIsTrustedProxy(r *http.Request) bool {
+	if len(m.trustedProxyNets) == 0 {
+		return true
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(strings.TrimSpace(host))
+	if ip == nil {
+		return false
+	}
+	for _, n := range m.trustedProxyNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // ClientIP returns the best-effort client IP. Forwarded headers are only
-// trusted when the app is configured to run behind a trusted reverse proxy.
+// trusted when the app is configured to run behind a trusted reverse proxy AND
+// the direct peer is within the configured proxy CIDRs (if any).
 func (m *Manager) ClientIP(r *http.Request) string {
-	if m.trustProxy {
+	if m.trustProxy && m.peerIsTrustedProxy(r) {
 		// Join ALL X-Forwarded-For header lines: a client may send its own
 		// XFF and the proxy may append its hop as a separate header field, so
 		// Header.Get (first line only) would miss the proxy-added value.
@@ -125,7 +174,7 @@ func (m *Manager) RequestIsHTTPS(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
 	}
-	if m.trustProxy && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+	if m.trustProxy && m.peerIsTrustedProxy(r) && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
 		return true
 	}
 	return false

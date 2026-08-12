@@ -46,3 +46,32 @@ func TestClientIP_MultipleForwardedForFields(t *testing.T) {
 		t.Errorf("multi-field XFF: got %q, want rightmost hop 203.0.113.7", got)
 	}
 }
+
+// With a trusted-proxy CIDR allowlist configured, forwarded headers are honored
+// only when the DIRECT peer (RemoteAddr) is inside the allowlist. A client that
+// reaches the backend directly (outside the allowlist) cannot spoof its IP via
+// X-Forwarded-For (finding SH-05).
+func TestClientIP_ForwardedForRequiresTrustedPeerCIDR(t *testing.T) {
+	newReq := func(remote string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
+		r.RemoteAddr = remote
+		r.Header.Set("X-Forwarded-For", "203.0.113.7")
+		return r
+	}
+	m := &Manager{trustProxy: true}
+	if err := m.SetTrustedProxyCIDRs([]string{"10.0.0.0/8"}); err != nil {
+		t.Fatalf("SetTrustedProxyCIDRs: %v", err)
+	}
+	// Peer inside the allowlist -> XFF honored.
+	if got := m.ClientIP(newReq("10.0.0.1:5555")); got != "203.0.113.7" {
+		t.Errorf("trusted peer: got %q, want forwarded 203.0.113.7", got)
+	}
+	// Peer outside the allowlist -> XFF ignored, socket peer wins.
+	if got := m.ClientIP(newReq("198.51.100.9:5555")); got != "198.51.100.9" {
+		t.Errorf("untrusted peer: got %q, want socket peer 198.51.100.9 (XFF ignored)", got)
+	}
+	// An invalid CIDR is a configuration error (fail-closed at startup).
+	if err := m.SetTrustedProxyCIDRs([]string{"not-a-cidr"}); err == nil {
+		t.Error("expected an error for an invalid CIDR")
+	}
+}
