@@ -38,10 +38,10 @@ jobs:
       COVERAGE_MIN: "40"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: "1.26.5"
           cache: true
@@ -71,7 +71,7 @@ jobs:
     name: Docker build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # Minify embedded static JS before the image build (same as docker-publish),
       # so the validation build exercises the shipped, minified assets.
       - name: Minify static JavaScript
