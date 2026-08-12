@@ -120,3 +120,42 @@ func TestSuccessfulLoginDoesNotResetIPThrottle(t *testing.T) {
 		t.Error("resetting the per-account limiter must not unlock the per-IP throttle")
 	}
 }
+
+// Finding P-02: the authenticated re-auth endpoints (2FA enable/disable,
+// backup-code regeneration) must record a failed attempt against the per-account
+// limiter too, not only username|ip — otherwise a distributed brute force that
+// rotates its source IP keeps every username|ip key at one failure and never
+// trips the per-account lockout that checkRateLimit already enforces.
+// recordReauthFailure (used by those handlers) feeds both counters.
+func TestReauthFailureTripsPerAccountAcrossIPs(t *testing.T) {
+	ah := &AuthHandler{
+		Handler: &Handler{},
+		Auth:    &auth.Manager{}, // trustProxy=false -> ClientIP uses RemoteAddr
+		// username|ip and per-IP effectively unlimited, so only the per-account
+		// (IP-independent) counter can accumulate across rotating IPs.
+		Limiter:     auth.NewLoginLimiter(1000, time.Minute, time.Minute),
+		IPLimiter:   auth.NewLoginLimiter(1000, time.Minute, time.Minute),
+		UserLimiter: auth.NewStickyLoginLimiter(3, time.Minute, time.Minute),
+	}
+	reqFrom := func(ip string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/api/auth/2fa/disable", nil)
+		r.RemoteAddr = ip + ":1234"
+		return r
+	}
+	// Three failed re-auths for the same account, each from a DIFFERENT IP.
+	for i, ip := range []string{"1.1.1.1", "2.2.2.2", "3.3.3.3"} {
+		key, cip, ok := ah.checkRateLimit(httptest.NewRecorder(), reqFrom(ip), "victim")
+		if !ok {
+			t.Fatalf("attempt %d from %s should be allowed", i, ip)
+		}
+		ah.recordReauthFailure(key, cip)
+	}
+	// A fourth attempt from yet another fresh IP must now be blocked per-account.
+	rec := httptest.NewRecorder()
+	if _, _, ok := ah.checkRateLimit(rec, reqFrom("4.4.4.4"), "victim"); ok {
+		t.Fatal("P-02: per-account lockout should trip after failures across rotating IPs")
+	}
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 from the per-account throttle, got %d", rec.Code)
+	}
+}

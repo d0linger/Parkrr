@@ -66,16 +66,16 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Throttle: a 6-digit code is otherwise brute-forceable during enrolment.
-	key, _, ok := h.checkRateLimit(w, r, u.Username)
+	key, ip, ok := h.checkRateLimit(w, r, u.Username)
 	if !ok {
 		return
 	}
 	if !h.Auth.ValidateEncryptedTOTP(encSecret, trim(req.Code)) {
-		h.Limiter.RecordFailure(key)
+		h.recordReauthFailure(key, ip)
 		writeError(w, http.StatusBadRequest, "invalid code")
 		return
 	}
-	h.Limiter.Reset(key)
+	h.resetReauth(key, ip)
 	if _, err := h.Pool.Exec(r.Context(),
 		`UPDATE users SET totp_enabled=TRUE, updated_at=now() WHERE id=$1`, u.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not enable two-factor")
@@ -111,17 +111,17 @@ func (h *AuthHandler) TOTPDisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, _, ok := h.checkRateLimit(w, r, u.Username)
+	key, ip, ok := h.checkRateLimit(w, r, u.Username)
 	if !ok {
 		return
 	}
 
 	if _, err := h.Auth.Authenticate(r.Context(), u.Username, req.Password); err != nil {
-		h.Limiter.RecordFailure(key)
+		h.recordReauthFailure(key, ip)
 		writeError(w, http.StatusForbidden, "password is incorrect")
 		return
 	}
-	h.Limiter.Reset(key)
+	h.resetReauth(key, ip)
 
 	if _, err := h.Pool.Exec(r.Context(),
 		`UPDATE users SET totp_enabled=FALSE, totp_secret='', updated_at=now() WHERE id=$1`,
@@ -166,17 +166,17 @@ func (h *AuthHandler) TOTPRegenerateBackup(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	key, _, ok := h.checkRateLimit(w, r, u.Username)
+	key, ip, ok := h.checkRateLimit(w, r, u.Username)
 	if !ok {
 		return
 	}
 
 	if _, err := h.Auth.Authenticate(r.Context(), u.Username, req.Password); err != nil {
-		h.Limiter.RecordFailure(key)
+		h.recordReauthFailure(key, ip)
 		writeError(w, http.StatusForbidden, "password is incorrect")
 		return
 	}
-	h.Limiter.Reset(key)
+	h.resetReauth(key, ip)
 
 	codes, err := h.Auth.GenerateBackupCodes(r.Context(), u.ID)
 	if err != nil {

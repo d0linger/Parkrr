@@ -167,6 +167,15 @@ func (s *WebAuthnService) FinishLogin(ctx context.Context, sd webauthn.SessionDa
 		}
 		return 0, err
 	}
+	// go-webauthn sets CloneWarning when the presented sign counter did not advance
+	// past the stored value — a strong signal the authenticator was cloned. The
+	// assertion itself verified, so login proceeds, but we surface it as a security
+	// event (finding P-06) rather than silently accepting it.
+	// TODO: [P-06] escalate to an audit-log entry + a step-up / temporary-suspension
+	// policy once the product decides the response (security audit finding P-06).
+	if cred.Authenticator.CloneWarning {
+		slog.Warn("passkey clone warning: authenticator sign counter did not advance", "user_id", uid)
+	}
 	// The login already succeeded; a failed counter write must not fail it, but
 	// log it since a stale counter degrades cloned-authenticator detection.
 	if err := s.updateSignCount(ctx, cred.ID, cred.Authenticator.SignCount); err != nil {

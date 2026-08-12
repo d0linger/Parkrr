@@ -123,6 +123,23 @@ func (h *AuthHandler) recordLoginFailure(key, ip string) {
 	h.UserLimiter.RecordFailure(userKeyOf(key, ip))
 }
 
+// recordReauthFailure counts a failed re-authentication on an authenticated
+// account-management endpoint (2FA enable/disable, backup-code regeneration)
+// against BOTH the username|ip limiter and the per-account (IP-independent)
+// limiter. checkRateLimit already CHECKS both, so recording only the username|ip
+// counter let a distributed brute force rotate IPs and never trip the per-account
+// lockout (finding P-02). The per-IP spray limiter is login-only and not touched.
+func (h *AuthHandler) recordReauthFailure(key, ip string) {
+	h.Limiter.RecordFailure(key)
+	h.UserLimiter.RecordFailure(userKeyOf(key, ip))
+}
+
+// resetReauth clears both counters after a successful re-authentication.
+func (h *AuthHandler) resetReauth(key, ip string) {
+	h.Limiter.Reset(key)
+	h.UserLimiter.Reset(userKeyOf(key, ip))
+}
+
 // Login authenticates a user (with optional TOTP) and starts a session.
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
