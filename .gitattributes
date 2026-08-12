@@ -1,1 +1,4 @@
 graphify-out/graph.json merge=graphify
+
+# Go sources are LF (gofmt canonical form) regardless of checkout platform
+*.go text eol=lf
