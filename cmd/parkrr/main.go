@@ -138,6 +138,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	webAuthn.SetSuspendOnClone(cfg.WebAuthnSuspendOnClone)
 	if webAuthn.Enabled() {
 		slog.Info("passkeys enabled", "rp_id", cfg.WebAuthnRPID, "origins", cfg.WebAuthnOrigins)
 	}

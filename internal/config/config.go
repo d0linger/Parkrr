@@ -38,9 +38,10 @@ type Config struct {
 	RateLimitPerMin   int // general per-IP request budget (0 = disabled)
 
 	// WebAuthn / passkeys (feature-flagged: enabled only when RPID is set)
-	WebAuthnRPID          string   // Relying Party ID = the site's registrable domain
-	WebAuthnRPDisplayName string   // human-readable name shown by the authenticator
-	WebAuthnOrigins       []string // allowed origins, e.g. https://parkrr.example.com
+	WebAuthnRPID           string   // Relying Party ID = the site's registrable domain
+	WebAuthnRPDisplayName  string   // human-readable name shown by the authenticator
+	WebAuthnOrigins        []string // allowed origins, e.g. https://parkrr.example.com
+	WebAuthnSuspendOnClone bool     // on a WebAuthn clone warning, delete the offending credential (force re-enroll); default off = audit only
 
 	// Observability & data lifecycle
 	MetricsToken       string // Bearer token required to scrape /metrics ("" = open)
@@ -85,9 +86,10 @@ func Load() (*Config, error) {
 		TrustedProxyCIDRs:     splitList(os.Getenv("PARKRR_TRUSTED_PROXY_CIDRS")),
 		RateLimitPerMin:       getenvInt("PARKRR_RATE_LIMIT_PER_MIN", 600),
 
-		WebAuthnRPID:          getenv("PARKRR_WEBAUTHN_RP_ID", ""),
-		WebAuthnRPDisplayName: getenv("PARKRR_WEBAUTHN_RP_NAME", "Parkrr"),
-		WebAuthnOrigins:       splitList(os.Getenv("PARKRR_WEBAUTHN_ORIGINS")),
+		WebAuthnRPID:           getenv("PARKRR_WEBAUTHN_RP_ID", ""),
+		WebAuthnRPDisplayName:  getenv("PARKRR_WEBAUTHN_RP_NAME", "Parkrr"),
+		WebAuthnOrigins:        splitList(os.Getenv("PARKRR_WEBAUTHN_ORIGINS")),
+		WebAuthnSuspendOnClone: getenvBool("PARKRR_WEBAUTHN_SUSPEND_ON_CLONE", false),
 
 		MetricsToken:       getenv("PARKRR_METRICS_TOKEN", ""),
 		MetricsRequireAuth: getenvBool("PARKRR_METRICS_REQUIRE_AUTH", false),

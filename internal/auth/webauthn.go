@@ -34,8 +34,18 @@ func internalErr(err error) error {
 // WebAuthnService implements passkey (WebAuthn) registration and login. It is
 // nil/disabled unless a Relying Party ID is configured.
 type WebAuthnService struct {
-	wa   *webauthn.WebAuthn
-	pool *pgxpool.Pool
+	wa             *webauthn.WebAuthn
+	pool           *pgxpool.Pool
+	suspendOnClone bool // finding P-06: on a clone warning, delete the credential
+}
+
+// SetSuspendOnClone toggles whether a WebAuthn clone warning (sign counter did
+// not advance) deletes the offending credential, forcing re-enrollment. Default
+// off: the warning is audited but the credential stays usable (finding P-06).
+func (s *WebAuthnService) SetSuspendOnClone(v bool) {
+	if s != nil {
+		s.suspendOnClone = v
+	}
 }
 
 // NewWebAuthnService builds the service. It returns (nil, nil) when rpID is
@@ -139,22 +149,21 @@ func (s *WebAuthnService) BeginLogin() (*protocol.CredentialAssertion, *webauthn
 
 // FinishLogin verifies the assertion and returns the id of the user it belongs
 // to. The sign counter is advanced to detect cloned authenticators.
-func (s *WebAuthnService) FinishLogin(ctx context.Context, sd webauthn.SessionData, r *http.Request) (int64, error) {
-	var uid int64
+func (s *WebAuthnService) FinishLogin(ctx context.Context, sd webauthn.SessionData, r *http.Request) (uid int64, cloneWarning bool, err error) {
 	// handlerErr captures backend failures from the user-lookup callback so they
 	// can be distinguished from a genuine assertion-verification failure below.
 	var handlerErr error
 	handler := func(_, rawUserHandle []byte) (webauthn.User, error) {
 		uid = handleToID(rawUserHandle)
-		u, err := s.userByID(ctx, uid)
-		if err != nil {
-			handlerErr = err
-			return nil, err
+		u, uerr := s.userByID(ctx, uid)
+		if uerr != nil {
+			handlerErr = uerr
+			return nil, uerr
 		}
-		creds, err := s.loadCredentials(ctx, uid)
-		if err != nil {
-			handlerErr = err
-			return nil, err
+		creds, cerr := s.loadCredentials(ctx, uid)
+		if cerr != nil {
+			handlerErr = cerr
+			return nil, cerr
 		}
 		return &webAuthnUser{id: uid, name: u.Username, creds: creds}, nil
 	}
@@ -163,25 +172,35 @@ func (s *WebAuthnService) FinishLogin(ctx context.Context, sd webauthn.SessionDa
 		if handlerErr != nil {
 			// A backend/lookup failure (or stale credential), not a forged
 			// assertion — don't let it count against the rate limit.
-			return 0, internalErr(handlerErr)
+			return 0, false, internalErr(handlerErr)
 		}
-		return 0, err
+		return 0, false, err
 	}
 	// go-webauthn sets CloneWarning when the presented sign counter did not advance
 	// past the stored value — a strong signal the authenticator was cloned. The
-	// assertion itself verified, so login proceeds, but we surface it as a security
-	// event (finding P-06) rather than silently accepting it.
-	// TODO: [P-06] escalate to an audit-log entry + a step-up / temporary-suspension
-	// policy once the product decides the response (security audit finding P-06).
-	if cred.Authenticator.CloneWarning {
+	// assertion itself verified, so login proceeds, but we surface it (finding P-06):
+	// always as a security event, and — when configured — by deleting the credential
+	// so it must be re-enrolled. The caller writes the audit entry (it has the actor).
+	cloneWarning = cred.Authenticator.CloneWarning
+	if cloneWarning {
 		slog.Warn("passkey clone warning: authenticator sign counter did not advance", "user_id", uid)
+		if s.suspendOnClone {
+			if _, derr := s.pool.Exec(ctx,
+				`DELETE FROM webauthn_credentials WHERE credential_id=$1`, cred.ID); derr != nil {
+				slog.Error("failed to suspend cloned passkey credential", "user_id", uid, "err", derr)
+			} else {
+				slog.Warn("suspended passkey credential after clone warning; re-enrollment required", "user_id", uid)
+			}
+			// The credential is gone; skip the counter write.
+			return uid, true, nil
+		}
 	}
 	// The login already succeeded; a failed counter write must not fail it, but
 	// log it since a stale counter degrades cloned-authenticator detection.
 	if err := s.updateSignCount(ctx, cred.ID, cred.Authenticator.SignCount); err != nil {
 		slog.Warn("failed to update passkey sign count", "user_id", uid, "err", err)
 	}
-	return uid, nil
+	return uid, cloneWarning, nil
 }
 
 // --- credential store ---

@@ -243,7 +243,7 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 	}
 	h.clearCeremony(w)
 
-	uid, err := h.WebAuthn.FinishLogin(r.Context(), cer.Session, r)
+	uid, cloneWarning, err := h.WebAuthn.FinishLogin(r.Context(), cer.Session, r)
 	if err != nil {
 		// A backend error is not a brute-force signal; don't spend the throttle
 		// budget on it and surface it as a server error.
@@ -274,6 +274,12 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 	slog.Info("login", "user", u.Username, "user_id", uid, "ip", h.Auth.ClientIP(r),
 		"role", u.Role, "method", "passkey")
 	h.auditAs(r, uid, u.Username, "login", "user", uid, u.Username+" signed in (passkey)")
+	// Finding P-06: a clone warning means the authenticator's sign counter did not
+	// advance (possible cloned key). Record it as a security audit event; the
+	// credential is deleted too when PARKRR_WEBAUTHN_SUSPEND_ON_CLONE is set.
+	if cloneWarning {
+		h.auditAs(r, uid, u.Username, "security", "passkey", uid, u.Username+": passkey clone warning (sign counter did not advance)")
+	}
 	writeJSON(w, http.StatusOK, u)
 }
 
