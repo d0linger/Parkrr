@@ -230,9 +230,9 @@ func writeInvoicePDF(w http.ResponseWriter, iv invoice) {
 		pdf.Ln(2)
 	}
 
-	// Payment details.
+	// Payment details — omitted on canceled/storno documents (nothing to pay).
 	iban, bic := snapStr(seller, "iban"), snapStr(seller, "bic")
-	if iban != "" {
+	if iban != "" && !iv.Canceled && iv.CancelsID == nil {
 		pay := "Zahlbar auf IBAN " + iban
 		if bic != "" {
 			pay += "  ·  BIC " + bic

@@ -241,6 +241,11 @@ func (h *Handler) PortalSummary(w http.ResponseWriter, r *http.Request) {
 		}
 		pi.Open = round2(pi.Total - paid)
 		pi.Status = invoiceStatus(pi.Total, paid, canceled, cancelsID)
+		// A canceled/storno document is not payable — keep it visible but with a
+		// zero open amount so it neither inflates the total nor renders a pay-QR.
+		if canceled || cancelsID != nil {
+			pi.Open = 0
+		}
 		if pi.Open > 0.005 {
 			out.OpenTotal += pi.Open
 		}

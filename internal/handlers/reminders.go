@@ -30,6 +30,10 @@ func (h *Handler) RemindInvoice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "invoice not found")
 		return
 	}
+	if iv.Canceled || iv.CancelsID != nil {
+		writeError(w, http.StatusConflict, "Rechnung ist storniert")
+		return
+	}
 	if iv.OpenAmount <= 0.005 {
 		writeError(w, http.StatusConflict, "Rechnung ist bereits bezahlt")
 		return

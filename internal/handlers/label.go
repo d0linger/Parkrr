@@ -8,7 +8,6 @@ import (
 	"image/png"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/boombuler/barcode"
 	"github.com/boombuler/barcode/qr"
@@ -63,7 +62,7 @@ func (h *Handler) VehicleLabel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	scheme := "http"
-	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+	if h.Auth != nil && h.Auth.RequestIsHTTPS(r) {
 		scheme = "https"
 	}
 	target := scheme + "://" + r.Host + "/#/vehicles/" + strconv.FormatInt(id, 10)

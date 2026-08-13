@@ -42,6 +42,19 @@ var personHeaderAliases = map[string]string{
 	"notiz": "notes", "notizen": "notes", "notes": "notes", "note": "notes", "bemerkung": "notes",
 }
 
+// csvUnguard reverses csvSafe: an apostrophe that guards a leading formula
+// trigger (written by our own CSV export) is stripped, so an exported file
+// re-imports to the original value. A normal leading apostrophe is left intact.
+func csvUnguard(s string) string {
+	if len(s) >= 2 && s[0] == '\'' {
+		switch s[1] {
+		case '=', '+', '-', '@', '\t', '\r':
+			return s[1:]
+		}
+	}
+	return s
+}
+
 // ImportPersons bulk-creates persons from an uploaded CSV (multipart "file").
 // The delimiter (';' or ',') and a leading UTF-8 BOM are auto-detected; columns
 // are mapped by header name (German export headers or English aliases). Invalid
@@ -119,7 +132,7 @@ func (h *Handler) ImportPersons(w http.ResponseWriter, r *http.Request) {
 	}
 	get := func(rec []string, field string) string {
 		if idx, ok := col[field]; ok && idx < len(rec) {
-			return trim(rec[idx])
+			return csvUnguard(trim(rec[idx]))
 		}
 		return ""
 	}

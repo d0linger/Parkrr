@@ -107,7 +107,7 @@ compose network). Schema migrations run automatically at startup.
 | `PARKRR_ADMIN_USERNAME` | admin username | `admin` |
 | `PARKRR_ADMIN_EMAIL` | admin email | `admin@example.com` |
 | `PARKRR_ADMIN_PASSWORD` | **required** — admin password | – |
-| `PARKRR_SESSION_SECRET` | **required** — session secret (min. 16 chars) | – |
+| `PARKRR_SESSION_SECRET` | **required** — session secret (min. 32 chars) | – |
 | `PARKRR_SESSION_MAX_AGE` | session lifetime / inactivity window (sec.) | `604800` (7 days) |
 | `PARKRR_SESSION_SLIDING` | extend the session on activity (re-login only after inactivity) | `false` |
 | `PARKRR_SESSION_ABSOLUTE_MAX_AGE` | hard cap on session lifetime (sec., when sliding) | `7776000` (90 days) |
@@ -425,7 +425,7 @@ Portainer's stack env vars are used for `${VAR}` **substitution** in the compose
    pulls `ghcr.io/d0linger/parkrr`, no build needed).
 3. Below the editor → **Environment variables → Advanced mode** → paste your
    whole **`.env`** (based on `.env.example`; every line is a clean `KEY=value`).
-   At minimum set `PARKRR_ADMIN_PASSWORD`, `PARKRR_SESSION_SECRET` (≥16 chars)
+   At minimum set `PARKRR_ADMIN_PASSWORD`, `PARKRR_SESSION_SECRET` (≥32 chars)
    and `PARKRR_DB_PASSWORD` — deployment fails fast if the first two are missing.
 4. **Deploy the stack**, then open `http://<host>:${PARKRR_HTTP_PORT}` (default 8080).
 

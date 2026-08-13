@@ -45,6 +45,10 @@ type Handler struct {
 	// PublicBaseURL is the externally reachable base (e.g. https://parkrr.example.com),
 	// used to build links in outgoing e-mail. Empty falls back to a relative hint.
 	PublicBaseURL string
+	// Auth is the session manager, used here only for RequestIsHTTPS so scheme
+	// detection (e.g. in the QR label) honors the trusted-proxy CIDR gate. May be
+	// nil in tests that construct a bare Handler.
+	Auth *auth.Manager
 }
 
 // New constructs a Handler.

@@ -73,6 +73,10 @@ func epcPayload(name, iban, bic string, amount float64, reference string) (paylo
 
 // serveInvoicePayQR renders the SEPA pay QR for an open invoice as a PNG.
 func (h *Handler) serveInvoicePayQR(w http.ResponseWriter, iv invoice) {
+	if iv.Canceled || iv.CancelsID != nil {
+		writeError(w, http.StatusConflict, "Rechnung ist storniert")
+		return
+	}
 	if iv.OpenAmount <= 0.005 {
 		writeError(w, http.StatusConflict, "Rechnung ist bereits bezahlt")
 		return

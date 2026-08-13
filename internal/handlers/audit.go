@@ -30,16 +30,17 @@ func (h *Handler) ListAudit(w http.ResponseWriter, r *http.Request) {
 		args = append(args, e)
 		where = append(where, fmt.Sprintf("entity = $%d", len(args)))
 	}
-	// Optional date range (YYYY-MM-DD). Parsed to time.Time so a malformed value is
-	// simply ignored (no filter) rather than reaching the query as bad input.
+	// Optional date range (YYYY-MM-DD). Parsed in the server's local zone (not UTC)
+	// so a picked day matches the operator's calendar day at its boundaries; a
+	// malformed value is simply ignored (no filter) rather than reaching the query.
 	if f := trim(r.URL.Query().Get("from")); f != "" {
-		if d, perr := time.Parse("2006-01-02", f); perr == nil {
+		if d, perr := time.ParseInLocation("2006-01-02", f, time.Local); perr == nil {
 			args = append(args, d)
 			where = append(where, fmt.Sprintf("created_at >= $%d", len(args)))
 		}
 	}
 	if to := trim(r.URL.Query().Get("to")); to != "" {
-		if d, perr := time.Parse("2006-01-02", to); perr == nil {
+		if d, perr := time.ParseInLocation("2006-01-02", to, time.Local); perr == nil {
 			args = append(args, d.AddDate(0, 0, 1)) // inclusive of the whole "to" day
 			where = append(where, fmt.Sprintf("created_at < $%d", len(args)))
 		}

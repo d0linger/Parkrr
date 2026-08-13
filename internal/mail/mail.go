@@ -107,10 +107,14 @@ func (s *smtpSender) Send(ctx context.Context, to []string, subject, body string
 	defer c.Close()
 
 	if strings.EqualFold(s.cfg.TLS, "starttls") {
-		if ok, _ := c.Extension("STARTTLS"); ok {
-			if err := c.StartTLS(&tls.Config{ServerName: s.cfg.Host, MinVersion: tls.VersionTLS12}); err != nil {
-				return fmt.Errorf("mail: starttls: %w", err)
-			}
+		// Fail closed: if the operator chose starttls we never fall back to
+		// cleartext (that is what TLS=none is for). This blocks a STARTTLS-stripping
+		// downgrade that would otherwise leak the message body over plaintext.
+		if ok, _ := c.Extension("STARTTLS"); !ok {
+			return fmt.Errorf("mail: server does not advertise STARTTLS (set PARKRR_SMTP_TLS=none to allow cleartext)")
+		}
+		if err := c.StartTLS(&tls.Config{ServerName: s.cfg.Host, MinVersion: tls.VersionTLS12}); err != nil {
+			return fmt.Errorf("mail: starttls: %w", err)
 		}
 	}
 	if s.cfg.Username != "" {

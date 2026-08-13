@@ -28,6 +28,7 @@ import (
 // until stop is closed.
 func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, metricsRequireAuth, checkBreachedPasswords, failClosedOnBreach bool, backupKey, dbURL, backupDir string, s3 backup.S3Config, mailer mail.Sender, publicBaseURL string, stop <-chan struct{}) (http.Handler, error) {
 	h := handlers.New(pool)
+	h.Auth = authMgr
 	h.CheckBreachedPasswords = checkBreachedPasswords
 	h.FailClosedOnBreach = failClosedOnBreach
 	h.BackupKey = backupKey

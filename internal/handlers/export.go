@@ -26,6 +26,22 @@ func csvDateP(t *time.Time) string {
 	return t.Format("2006-01-02")
 }
 
+// csvSafe neutralizes spreadsheet formula injection (CWE-1236): a cell whose
+// first byte is a formula trigger (= + - @) or a control char (TAB/CR) is
+// prefixed with a single apostrophe, which Excel/LibreOffice render as a text
+// literal. Parkrr's own CSV import strips this guard again (see csvUnguard) so
+// an exported file re-imports losslessly.
+func csvSafe(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	}
+	return s
+}
+
 // ExportCSV streams one dataset as CSV. The entity is a path value:
 // outstanding | payments | persons | vehicles. Read-only (any authenticated
 // user), since it only re-serves data the caller can already see in the UI.
@@ -174,6 +190,12 @@ func (h *Handler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF}) // UTF-8 BOM for Excel
 	cw := csv.NewWriter(w)
 	cw.Comma = ';'
+	// Guard every data cell against formula injection (header is developer-controlled).
+	for i := range rows {
+		for j := range rows[i] {
+			rows[i][j] = csvSafe(rows[i][j])
+		}
+	}
 	_ = cw.Write(header)
 	_ = cw.WriteAll(rows)
 	cw.Flush()
