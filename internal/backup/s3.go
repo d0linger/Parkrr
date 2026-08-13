@@ -82,10 +82,13 @@ const (
 	// backup buckets hold at most a handful; anything past this is treated as an
 	// error rather than read into memory.
 	maxS3ListObjects = 10000
-	// maxS3DownloadBytes caps a single restored object. Backups are produced and
-	// restored fully in memory, so this is a sanity ceiling against an oversized
-	// object planted in the bucket (checked via StatObject and enforced on read).
-	maxS3DownloadBytes = 2 << 30 // 2 GiB
+	// maxS3DownloadBytes caps a single restored object. A restore reads the object
+	// fully into memory (io.ReadAll) and the verify/restore steps buffer more on
+	// top, so keep this well under the container's memory budget rather than at a
+	// theoretical maximum — a planted object above it is rejected up front by
+	// StatObject. 256 MiB comfortably covers a real dump while bounding the worst
+	// case (finding: reduce maxS3DownloadBytes).
+	maxS3DownloadBytes = 256 << 20 // 256 MiB
 )
 
 // ListS3 returns the backup objects in the bucket, newest first.

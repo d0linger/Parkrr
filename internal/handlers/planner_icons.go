@@ -85,6 +85,10 @@ func (h *Handler) UploadPlannerIcon(w http.ResponseWriter, r *http.Request) {
 	}
 	data, contentType, err := sanitizeImage(raw)
 	if err != nil {
+		if errors.Is(err, errDecodeBusy) {
+			writeError(w, http.StatusServiceUnavailable, "server busy, please retry shortly")
+			return
+		}
 		writeError(w, http.StatusUnsupportedMediaType, err.Error())
 		return
 	}
@@ -172,6 +176,10 @@ func (h *Handler) UpdatePlannerIcon(w http.ResponseWriter, r *http.Request) {
 		}
 		d, ct, serr := sanitizeImage(raw)
 		if serr != nil {
+			if errors.Is(serr, errDecodeBusy) {
+				writeError(w, http.StatusServiceUnavailable, "server busy, please retry shortly")
+				return
+			}
 			writeError(w, http.StatusUnsupportedMediaType, serr.Error())
 			return
 		}

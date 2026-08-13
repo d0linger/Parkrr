@@ -187,10 +187,12 @@ func (s *WebAuthnService) FinishLogin(ctx context.Context, sd webauthn.SessionDa
 		if s.suspendOnClone {
 			if _, derr := s.pool.Exec(ctx,
 				`DELETE FROM webauthn_credentials WHERE credential_id=$1`, cred.ID); derr != nil {
+				// Fail closed: the operator asked to suspend a cloned credential, so
+				// if we cannot, deny this login rather than leave the credential usable.
 				slog.Error("failed to suspend cloned passkey credential", "user_id", uid, "err", derr)
-			} else {
-				slog.Warn("suspended passkey credential after clone warning; re-enrollment required", "user_id", uid)
+				return 0, true, internalErr(derr)
 			}
+			slog.Warn("suspended passkey credential after clone warning; re-enrollment required", "user_id", uid)
 			// The credential is gone; skip the counter write.
 			return uid, true, nil
 		}

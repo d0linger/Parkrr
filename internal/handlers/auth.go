@@ -171,7 +171,10 @@ func (h *AuthHandler) requireStepUp(w http.ResponseWriter, r *http.Request, user
 		writeError(w, http.StatusForbidden, "password is incorrect")
 		return false
 	}
-	h.resetReauth(key, ip)
+	// Do NOT reset the limiter here: TOTPEnable shares this key with its TOTP-code
+	// throttle, and clearing it on a successful step-up password would wipe the
+	// code-attempt budget before the code itself succeeds. The caller resets only
+	// after the whole operation succeeds (finding: twofactor step-up reset).
 	return true
 }
 
