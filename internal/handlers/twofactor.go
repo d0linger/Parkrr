@@ -83,7 +83,6 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid code")
 		return
 	}
-	h.resetReauth(key, ip)
 	if _, err := h.Pool.Exec(r.Context(),
 		`UPDATE users SET totp_enabled=TRUE, updated_at=now() WHERE id=$1`, u.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not enable two-factor")
@@ -95,6 +94,10 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not generate backup codes")
 		return
 	}
+	// Reset the throttle only after the enable has FULLY succeeded (code valid,
+	// row updated, backup codes issued), so a failure at any step keeps the
+	// accumulated attempts counted.
+	h.resetReauth(key, ip)
 	h.audit(r, "update", "user", u.ID, "enabled two-factor authentication")
 	writeJSON(w, http.StatusOK, map[string]any{"status": "enabled", "backup_codes": codes})
 }
