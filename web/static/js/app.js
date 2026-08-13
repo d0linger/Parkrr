@@ -945,6 +945,18 @@
         }
         scCard.append(bars);
         page.append(scCard);
+
+        // CSV export for accounting — a plain download link carries the session
+        // cookie; the server sends it as a ;-separated, BOM-prefixed attachment.
+        const expLink = (entity, label) => el('a', { class: 'btn btn-ghost btn-sm', href: '/api/export/' + entity, download: '' }, '⭳ ' + label);
+        page.append(el('div', { class: 'chart-card' },
+            el('h3', {}, 'Export (CSV)'),
+            el('div', { class: 'muted', style: 'font-size:.82rem;margin:-.35rem 0 .7rem' }, 'Für Buchhaltung/Steuerberater — öffnet direkt in Excel/LibreOffice.'),
+            el('div', { class: 'btn-row', style: 'flex-wrap:wrap;gap:.5rem' },
+                expLink('outstanding', 'Offene Posten'),
+                expLink('payments', 'Zahlungen'),
+                expLink('persons', 'Personen'),
+                expLink('vehicles', 'Gefährte'))));
     };
 
     // ================= PERSONS =================
