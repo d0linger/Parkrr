@@ -41,6 +41,9 @@ updates:
       actions:
         patterns:
           - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   # Docker base image (Dockerfile)
   - package-ecosystem: "docker"
@@ -73,3 +76,6 @@ updates:
       a11y-tooling:
         patterns:
           - "*"
+        update-types:
+          - "minor"
+          - "patch"
