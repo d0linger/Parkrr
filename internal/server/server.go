@@ -98,6 +98,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/persons/outstanding", authed(hf(h.OutstandingByPerson)))
 	mux.Handle("POST /api/persons", editor(hf(h.CreatePerson)))
 	mux.Handle("POST /api/import/persons", editor(hf(h.ImportPersons)))
+	mux.Handle("GET /api/import/persons/template", editor(hf(h.ImportTemplate)))
 	mux.Handle("POST /api/persons/{id}/portal-link", editor(hf(h.CreatePortalLink)))
 	mux.Handle("POST /api/persons/{id}/portal-link/revoke", editor(hf(h.RevokePortalLinks)))
 	mux.Handle("PUT /api/persons/{id}", editor(hf(h.UpdatePerson)))

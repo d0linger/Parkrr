@@ -55,6 +55,31 @@ func csvUnguard(s string) string {
 	return s
 }
 
+// ImportTemplate serves a small example CSV for the persons import: the exact
+// headers ImportPersons accepts plus two sample rows, so a user can fill it in
+// and upload it back. Written German-Excel style (';' + BOM) and formula-guarded
+// like the export, so it opens cleanly and re-imports losslessly.
+func (h *Handler) ImportTemplate(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Disposition", `attachment; filename="parkrr-personen-vorlage.csv"`)
+	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF}) // UTF-8 BOM for Excel
+	cw := csv.NewWriter(w)
+	cw.Comma = ';'
+	_ = cw.Write([]string{"vorname", "nachname", "email", "telefon", "adresse"})
+	rows := [][]string{
+		{"Max", "Mustermann", "max@example.com", "+43 660 1234567", "Hauptstraße 1, 1010 Wien"},
+		{"Erika", "Musterfrau", "erika@example.com", "", "Bahnhofstraße 5, 8010 Graz"},
+	}
+	for _, row := range rows {
+		for j := range row {
+			row[j] = csvSafe(row[j])
+		}
+		_ = cw.Write(row)
+	}
+	cw.Flush()
+}
+
 // ImportPersons bulk-creates persons from an uploaded CSV (multipart "file").
 // The delimiter (';' or ',') and a leading UTF-8 BOM are auto-detected; columns
 // are mapped by header name (German export headers or English aliases). Invalid

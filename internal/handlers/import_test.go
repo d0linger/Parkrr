@@ -85,6 +85,33 @@ func TestImportPersonsCommaEnglish(t *testing.T) {
 	}
 }
 
+// The example-file endpoint serves a BOM'd, semicolon CSV with the accepted
+// headers and sample rows. Needs no database.
+func TestImportTemplate(t *testing.T) {
+	h := &Handler{}
+	w := httptest.NewRecorder()
+	h.ImportTemplate(w, httptest.NewRequest(http.MethodGet, "/api/import/persons/template", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("template: %d", w.Code)
+	}
+	body := w.Body.Bytes()
+	if !bytes.HasPrefix(body, []byte{0xEF, 0xBB, 0xBF}) {
+		t.Error("missing UTF-8 BOM")
+	}
+	if !bytes.Contains(body, []byte("vorname;nachname;email;telefon;adresse")) {
+		t.Error("missing/incorrect header row")
+	}
+	if !bytes.Contains(body, []byte("Mustermann")) {
+		t.Error("missing sample row")
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "text/csv; charset=utf-8" {
+		t.Errorf("Content-Type = %q", ct)
+	}
+	if cd := w.Header().Get("Content-Disposition"); !bytes.Contains([]byte(cd), []byte("attachment")) {
+		t.Errorf("Content-Disposition = %q, want attachment", cd)
+	}
+}
+
 // A file whose header has no recognizable columns is rejected with 400.
 func TestImportPersonsUnknownHeader(t *testing.T) {
 	h := testHandler(t)
