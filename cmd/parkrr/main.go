@@ -18,6 +18,7 @@ import (
 	"github.com/preining/parkrr/internal/backup"
 	"github.com/preining/parkrr/internal/config"
 	"github.com/preining/parkrr/internal/database"
+	"github.com/preining/parkrr/internal/mail"
 	"github.com/preining/parkrr/internal/server"
 )
 
@@ -157,8 +158,17 @@ func run() error {
 		AccessKey: cfg.S3AccessKey, SecretKey: cfg.S3SecretKey,
 		Region: cfg.S3Region, Prefix: cfg.S3Prefix, UseSSL: cfg.S3UseSSL,
 	}
+	mailer := mail.New(mail.Config{
+		Host: cfg.SMTPHost, Port: cfg.SMTPPort,
+		Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
+		From: cfg.SMTPFrom, FromName: cfg.SMTPFromName, TLS: cfg.SMTPTLS,
+	})
+	if mailer.Enabled() {
+		slog.Info("SMTP e-mail enabled", "host", cfg.SMTPHost, "port", cfg.SMTPPort, "tls", cfg.SMTPTLS)
+	}
 	handler, err := server.New(pool, authMgr, webAuthn, cfg.RateLimitPerMin, cfg.MetricsToken, cfg.MetricsRequireAuth,
-		cfg.CheckBreachedPasswords, cfg.FailClosedOnBreach, cfg.BackupKey, cfg.DatabaseURL, cfg.BackupDir, s3, cleanupStop)
+		cfg.CheckBreachedPasswords, cfg.FailClosedOnBreach, cfg.BackupKey, cfg.DatabaseURL, cfg.BackupDir, s3,
+		mailer, cfg.PublicBaseURL, cleanupStop)
 	if err != nil {
 		return err
 	}

@@ -75,6 +75,16 @@ services:
       PARKRR_S3_PREFIX: ${PARKRR_S3_PREFIX:-parkrr/}
       PARKRR_S3_USE_SSL: ${PARKRR_S3_USE_SSL:-true}
       PARKRR_METRICS_TOKEN: ${PARKRR_METRICS_TOKEN:-}
+      # --- E-mail (SMTP): set PARKRR_SMTP_HOST to enable payment reminders. ---
+      PARKRR_SMTP_HOST: ${PARKRR_SMTP_HOST:-}
+      PARKRR_SMTP_PORT: ${PARKRR_SMTP_PORT:-587}
+      PARKRR_SMTP_USERNAME: ${PARKRR_SMTP_USERNAME:-}
+      PARKRR_SMTP_PASSWORD: ${PARKRR_SMTP_PASSWORD:-}
+      PARKRR_SMTP_FROM: ${PARKRR_SMTP_FROM:-}
+      PARKRR_SMTP_FROM_NAME: ${PARKRR_SMTP_FROM_NAME:-Parkrr}
+      PARKRR_SMTP_TLS: ${PARKRR_SMTP_TLS:-starttls}
+      # Externally reachable base URL, used for links inside e-mail (e.g. reminders).
+      PARKRR_PUBLIC_BASE_URL: ${PARKRR_PUBLIC_BASE_URL:-}
       PARKRR_LOG_FORMAT: ${PARKRR_LOG_FORMAT:-json}
       PARKRR_LOG_LEVEL: ${PARKRR_LOG_LEVEL:-info}
     healthcheck:

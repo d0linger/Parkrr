@@ -58,6 +58,19 @@ type Config struct {
 	BackupKey string // AES-256-GCM passphrase (separate from SessionSecret)
 	BackupDir string // if set, scheduled backups are written here
 
+	// E-mail (SMTP). Disabled when SMTPHost is empty. Used for payment reminders.
+	SMTPHost     string
+	SMTPPort     int
+	SMTPUsername string
+	SMTPPassword string
+	SMTPFrom     string // envelope/header From address
+	SMTPFromName string // optional display name
+	SMTPTLS      string // "starttls" (default) | "tls" (implicit) | "none"
+
+	// PublicBaseURL is the externally reachable base URL (e.g.
+	// https://parkrr.example.com), used to build links inside outgoing e-mail.
+	PublicBaseURL string
+
 	// S3-compatible off-site backup target (optional).
 	S3Endpoint  string
 	S3Bucket    string
@@ -102,6 +115,15 @@ func Load() (*Config, error) {
 
 		BackupKey: os.Getenv("PARKRR_BACKUP_KEY"),
 		BackupDir: os.Getenv("PARKRR_BACKUP_DIR"),
+
+		SMTPHost:      os.Getenv("PARKRR_SMTP_HOST"),
+		SMTPPort:      getenvInt("PARKRR_SMTP_PORT", 587),
+		SMTPUsername:  os.Getenv("PARKRR_SMTP_USERNAME"),
+		SMTPPassword:  os.Getenv("PARKRR_SMTP_PASSWORD"),
+		SMTPFrom:      os.Getenv("PARKRR_SMTP_FROM"),
+		SMTPFromName:  getenv("PARKRR_SMTP_FROM_NAME", "Parkrr"),
+		SMTPTLS:       getenv("PARKRR_SMTP_TLS", "starttls"),
+		PublicBaseURL: os.Getenv("PARKRR_PUBLIC_BASE_URL"),
 
 		S3Endpoint:  os.Getenv("PARKRR_S3_ENDPOINT"),
 		S3Bucket:    os.Getenv("PARKRR_S3_BUCKET"),

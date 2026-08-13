@@ -56,6 +56,7 @@
         users: '<circle cx="9" cy="8" r="3.4"/><path d="M3.5 20c.6-3.4 2.9-5.2 5.5-5.2s4.9 1.8 5.5 5.2"/><path d="M16 5.4a3.4 3.4 0 0 1 0 5.9M17.8 14.9c1.6.8 2.6 2.4 3 5.1"/>',
         log: '<rect x="5" y="3.5" width="14" height="17" rx="2"/><path d="M9 8.5h6M9 12h6M9 15.5h4"/>',
         upload: '<path d="M12 15V4M8 8l4-4 4 4"/><path d="M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/>',
+        mail: '<rect x="3.5" y="5.5" width="17" height="13" rx="2"/><path d="M4 7.5l8 6 8-6"/>',
         theme: '<path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9Z"/>',
         logout: '<path d="M9 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3M15 8l4 4-4 4M19 12H9"/>',
         box: '<path d="M3 8l9-5 9 5v8l-9 5-9-5V8Z"/><path d="M3 8l9 5 9-5M12 13v8"/>',
@@ -1489,6 +1490,14 @@
             location.hash = '#/invoices/' + st.id;
         } catch (e) { toast(e.message, 'error'); }
     }
+    async function remindInvoice(iv) {
+        if (!await confirmDialog('Zahlungserinnerung senden?',
+            'Sendet eine E-Mail mit den offenen Rechnungsdaten an den hinterlegten Kontakt der Person.', 'Senden')) return;
+        try {
+            const r = await api.post('/invoices/' + iv.id + '/remind', {});
+            toast('Erinnerung gesendet' + (r && r.to ? ' an ' + r.to : ''), 'success');
+        } catch (e) { toast(e.message || 'Senden fehlgeschlagen', 'error'); }
+    }
     async function createInvoiceFor(personId, btn) {
         if (!await confirmDialog('Rechnung erstellen?', 'Erstellt eine fortlaufend nummerierte Rechnung aus allen offenen Einzelposten (Gefährte + Einmal-Zusatzkosten). Rechnungen sind unveränderlich.', 'Erstellen')) return;
         const o = btn.textContent; btn.disabled = true; btn.textContent = 'Erstelle …';
@@ -1558,6 +1567,10 @@
             el('h2', { style: 'margin:0;flex:1' }, 'Rechnung ' + esc(iv.number), ' ', invStatusBadge(iv)),
             (canBill() && (iv.status === 'offen' || iv.status === 'teilbezahlt')) ? el('button', { class: 'btn btn-primary btn-sm', onclick: () => payInvoiceFor(iv) }, 'Bezahlen') : null,
             (canBill() && !iv.canceled && iv.status !== 'storno') ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => stornoInvoice(iv) }, 'Storno') : null,
+            // Payment reminder by e-mail — only when the invoice is still open and
+            // SMTP is configured (capability flag), so the button never dead-ends.
+            (canBill() && (iv.status === 'offen' || iv.status === 'teilbezahlt') && state.capabilities.mail)
+                ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => remindInvoice(iv) }, icon('mail', 15), ' Erinnerung') : null,
             // Server-rendered A4 PDF (authoritative deliverable). A plain GET anchor
             // carries the session cookie and opens the document inline.
             el('a', { class: 'btn btn-ghost btn-sm', href: '/api/invoices/' + id + '/pdf', target: '_blank', rel: 'noopener' }, icon('receipt', 15), ' PDF'),

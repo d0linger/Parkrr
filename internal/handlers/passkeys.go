@@ -44,6 +44,7 @@ func newCeremonyID() (string, error) {
 func (h *AuthHandler) Capabilities(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{
 		"passkeys": h.WebAuthn != nil && h.WebAuthn.Enabled(),
+		"mail":     h.Mail != nil && h.Mail.Enabled(),
 	})
 }
 

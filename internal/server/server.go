@@ -18,6 +18,7 @@ import (
 	"github.com/preining/parkrr/internal/auth"
 	"github.com/preining/parkrr/internal/backup"
 	"github.com/preining/parkrr/internal/handlers"
+	"github.com/preining/parkrr/internal/mail"
 	"github.com/preining/parkrr/internal/models"
 	"github.com/preining/parkrr/web"
 )
@@ -25,7 +26,7 @@ import (
 // New builds the top-level HTTP handler with all routes registered. Background
 // goroutines started here (rate-limiter cleanup, login-throttle cleanup) run
 // until stop is closed.
-func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, metricsRequireAuth, checkBreachedPasswords, failClosedOnBreach bool, backupKey, dbURL, backupDir string, s3 backup.S3Config, stop <-chan struct{}) (http.Handler, error) {
+func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, metricsRequireAuth, checkBreachedPasswords, failClosedOnBreach bool, backupKey, dbURL, backupDir string, s3 backup.S3Config, mailer mail.Sender, publicBaseURL string, stop <-chan struct{}) (http.Handler, error) {
 	h := handlers.New(pool)
 	h.CheckBreachedPasswords = checkBreachedPasswords
 	h.FailClosedOnBreach = failClosedOnBreach
@@ -33,6 +34,10 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	h.DatabaseURL = dbURL
 	h.BackupDir = backupDir
 	h.S3 = s3
+	if mailer != nil {
+		h.Mail = mailer
+	}
+	h.PublicBaseURL = publicBaseURL
 	ah := handlers.NewAuthHandler(h, authMgr, wa, stop)
 
 	// Archive vehicles of finished-and-settled Pauschalen in the background.
@@ -105,6 +110,8 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/persons/{id}/invoices", editor(hf(h.CreateInvoice)))
 	mux.Handle("GET /api/invoices/{id}", authed(hf(h.GetInvoice)))
 	mux.Handle("GET /api/invoices/{id}/pdf", authed(hf(h.InvoicePDF)))
+	mux.Handle("POST /api/invoices/{id}/remind", editor(hf(h.RemindInvoice)))
+	mux.Handle("POST /api/mail/test", admin(hf(h.SendTestMail)))
 	mux.Handle("POST /api/invoices/{id}/cancel", editor(hf(h.CancelInvoice)))
 	mux.Handle("POST /api/persons/{id}/pay-invoices", editor(hf(h.PayInvoices)))
 	mux.Handle("GET /api/invoices/overdue", authed(hf(h.OverdueInvoices)))
