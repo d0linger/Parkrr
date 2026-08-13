@@ -298,6 +298,9 @@ func writeInvoicePDF(w http.ResponseWriter, iv invoice) {
 	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
 	w.Header().Set("Content-Disposition", `inline; filename="`+fname+`"`)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// Invoices are sensitive and reachable via a magic-link token — never let a
+	// shared/CDN cache retain them.
+	w.Header().Set("Cache-Control", "private, no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(buf.Bytes())
 }

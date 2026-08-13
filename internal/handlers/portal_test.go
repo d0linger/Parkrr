@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -95,6 +96,17 @@ func TestSelfServicePortal(t *testing.T) {
 	h.PortalInvoicePDF(ow, oreq)
 	if ow.Code != http.StatusNotFound {
 		t.Errorf("cross-person PDF: want 404, got %d", ow.Code)
+	}
+
+	// Expiry → token stops working. Mint a fresh token, expire it, assert 404.
+	expToken := createPortalLink(t, h, pid)
+	if _, err := h.Pool.Exec(context.Background(),
+		`UPDATE self_service_tokens SET expires_at = now() - interval '1 hour' WHERE token_hash = $1`,
+		hashPortalToken(expToken)); err != nil {
+		t.Fatalf("expire token: %v", err)
+	}
+	if ew := getPortalSummary(t, h, expToken); ew.Code != http.StatusNotFound {
+		t.Errorf("expired token: want 404, got %d", ew.Code)
 	}
 
 	// Revoke → token stops working.

@@ -1100,15 +1100,21 @@
             if (!f) return;
             const fd = new FormData();
             fd.append('file', f);
+            let res;
             try {
-                const res = await api.upload('/import/persons', fd);
-                const parts = [res.imported + ' importiert'];
-                if (res.skipped) parts.push(res.skipped + ' übersprungen');
-                if (res.failed) parts.push(res.failed + ' fehlerhaft');
-                $('#modal-cancel').click(); // close the dialog cleanly
-                toast(parts.join(' · '), res.failed ? 'error' : 'success');
-                render();
-            } catch (e) { toast('Import fehlgeschlagen: ' + (e.message || e), 'error'); }
+                res = await api.upload('/import/persons', fd);
+            } catch (e) {
+                toast('Import fehlgeschlagen: ' + (e.message || e), 'error');
+                return;
+            }
+            // Report the result first, then close — a close/render hiccup must not
+            // be surfaced as an import failure.
+            const parts = [res.imported + ' importiert'];
+            if (res.skipped) parts.push(res.skipped + ' übersprungen');
+            if (res.failed) parts.push(res.failed + ' fehlerhaft');
+            toast(parts.join(' · '), res.failed ? 'error' : 'success');
+            $('#modal-cancel').click();
+            render();
         });
         await formModal({
             title: 'Personen importieren',
@@ -1132,7 +1138,7 @@
         let res;
         try { res = await api.post('/persons/' + personId + '/portal-link', { send: false }); }
         catch (e) { toast(e.message || 'Link konnte nicht erstellt werden', 'error'); return; }
-        const link = res.link;
+        let link = res.link;
         await formModal({
             title: 'Self-Service-Link',
             submitLabel: 'Fertig',
@@ -1145,7 +1151,7 @@
                     onclick: async () => { try { await navigator.clipboard.writeText(link); toast('Link kopiert', 'success'); } catch (_) { input.select(); toast('Bitte manuell kopieren', 'error'); } } }, 'Kopieren'));
                 if (res.has_email && state.capabilities.mail) {
                     row.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm',
-                        onclick: async (e) => { const b = e.currentTarget; b.disabled = true; try { const r2 = await api.post('/persons/' + personId + '/portal-link', { send: true }); toast(r2.emailed ? 'Link per E-Mail gesendet' : 'E-Mail nicht gesendet', r2.emailed ? 'success' : 'error'); } catch (er) { toast(er.message, 'error'); b.disabled = false; } } }, icon('mail', 14), ' Per E-Mail'));
+                        onclick: async (e) => { const b = e.currentTarget; b.disabled = true; try { const r2 = await api.post('/persons/' + personId + '/portal-link', { send: true }); if (r2 && r2.link) { link = r2.link; input.value = r2.link; } toast(r2.emailed ? 'Link per E-Mail gesendet' : 'E-Mail nicht gesendet', r2.emailed ? 'success' : 'error'); } catch (er) { toast(er.message, 'error'); } finally { b.disabled = false; } } }, icon('mail', 14), ' Per E-Mail'));
                 }
                 row.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm',
                     onclick: async () => { if (!await confirmDialog('Alle Links widerrufen?', 'Bestehende Self-Service-Links dieser Person werden ungültig.', 'Widerrufen')) return; try { await api.post('/persons/' + personId + '/portal-link/revoke', {}); toast('Links widerrufen', 'success'); } catch (er) { toast(er.message, 'error'); } } }, 'Alle widerrufen'));
@@ -2611,7 +2617,7 @@
         await refreshLookups();
         const [vehicles, photos, history, handovers] = await Promise.all([
             api.get('/vehicles'), api.get('/vehicles/' + id + '/photos'), api.get('/vehicles/' + id + '/history'),
-            api.get('/vehicles/' + id + '/handovers').catch(() => []),
+            api.get('/vehicles/' + id + '/handovers').catch(() => null),
         ]);
         const v = vehicles.find((x) => x.id === id);
         if (!v) { page.innerHTML = ''; page.append(emptyState('car', 'Gefährt nicht gefunden.')); return; }
@@ -2718,7 +2724,8 @@
         const hoHead = el('div', { class: 'page-head' }, el('h3', {}, 'Übergabeprotokolle'));
         if (canManage()) hoHead.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => handoverForm(id) }, '+ Protokoll'));
         hoCard.append(hoHead);
-        if (!handovers.length) hoCard.append(el('p', { class: 'muted' }, 'Noch keine Protokolle.'));
+        if (handovers === null) hoCard.append(el('p', { class: 'muted' }, 'Protokolle konnten nicht geladen werden.'));
+        else if (!handovers.length) hoCard.append(el('p', { class: 'muted' }, 'Noch keine Protokolle.'));
         else {
             handovers.forEach((ho) => {
                 const dirLbl = ho.direction === 'auslagerung' ? 'Auslagerung' : 'Einlagerung';
@@ -2814,7 +2821,8 @@
                 const stop = () => { drawing = false; };
                 canvas.addEventListener('pointerup', stop);
                 canvas.addEventListener('pointercancel', stop);
-                canvas.addEventListener('pointerleave', stop);
+                // No pointerleave: pointer capture keeps the stroke going outside the
+                // canvas until the pointer is released/cancelled.
                 const clearBtn = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', style: 'margin-top:.4rem',
                     onclick: () => { ctx.clearRect(0, 0, canvas.width, canvas.height); dirty = false; } }, 'Unterschrift löschen');
                 wrap.append(canvas, clearBtn);

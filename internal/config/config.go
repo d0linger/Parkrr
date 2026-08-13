@@ -168,6 +168,13 @@ func Load() (*Config, error) {
 	if cfg.BackupKey != "" && len(cfg.BackupKey) < 32 {
 		return nil, fmt.Errorf("PARKRR_BACKUP_KEY must be at least 32 bytes long when set (supply a random value, e.g. `openssl rand -base64 48`)")
 	}
+	// Reject an unknown SMTP TLS mode rather than silently degrading to cleartext:
+	// only none|tls|starttls are handled by the mailer.
+	switch strings.ToLower(cfg.SMTPTLS) {
+	case "none", "tls", "starttls":
+	default:
+		return nil, fmt.Errorf("PARKRR_SMTP_TLS must be one of none|tls|starttls (got %q)", cfg.SMTPTLS)
+	}
 
 	return cfg, nil
 }

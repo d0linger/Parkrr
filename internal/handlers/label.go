@@ -8,6 +8,7 @@ import (
 	"image/png"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/boombuler/barcode"
 	"github.com/boombuler/barcode/qr"
@@ -61,11 +62,18 @@ func (h *Handler) VehicleLabel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	scheme := "http"
-	if h.Auth != nil && h.Auth.RequestIsHTTPS(r) {
-		scheme = "https"
+	// Prefer the configured public base URL (canonical, not attacker-influenced);
+	// fall back to the request scheme+Host only when it is unset.
+	target := ""
+	if base := strings.TrimRight(h.PublicBaseURL, "/"); base != "" {
+		target = base + "/#/vehicles/" + strconv.FormatInt(id, 10)
+	} else {
+		scheme := "http"
+		if h.Auth != nil && h.Auth.RequestIsHTTPS(r) {
+			scheme = "https"
+		}
+		target = scheme + "://" + r.Host + "/#/vehicles/" + strconv.FormatInt(id, 10)
 	}
-	target := scheme + "://" + r.Host + "/#/vehicles/" + strconv.FormatInt(id, 10)
 	qrURI, err := qrDataURI(target, 260)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not render QR")

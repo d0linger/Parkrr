@@ -75,6 +75,8 @@ services:
       PARKRR_S3_PREFIX: ${PARKRR_S3_PREFIX:-parkrr/}
       PARKRR_S3_USE_SSL: ${PARKRR_S3_USE_SSL:-true}
       PARKRR_METRICS_TOKEN: ${PARKRR_METRICS_TOKEN:-}
+      # true = /metrics is disabled unless a token is set (fail closed); default off.
+      PARKRR_METRICS_REQUIRE_AUTH: ${PARKRR_METRICS_REQUIRE_AUTH:-false}
       # --- E-mail (SMTP): set PARKRR_SMTP_HOST to enable payment reminders. ---
       PARKRR_SMTP_HOST: ${PARKRR_SMTP_HOST:-}
       PARKRR_SMTP_PORT: ${PARKRR_SMTP_PORT:-587}

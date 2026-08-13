@@ -64,6 +64,11 @@ func epcPayload(name, iban, bic string, amount float64, reference string) (paylo
 		ref, // unstructured remittance
 		"",  // beneficiary-to-originator info
 	}
+	// Omit trailing empty fields (EPC allows this and strict readers prefer it),
+	// so the payload ends at the last populated field rather than a blank line.
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
 	payload = strings.Join(lines, "\n")
 	if len(payload) > 331 { // EPC hard limit
 		return "", "Zahldaten überschreiten die SEPA-QR-Grenze"

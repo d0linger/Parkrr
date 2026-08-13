@@ -120,9 +120,9 @@ func (h *Handler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 
 	case "persons":
 		name = "personen"
-		header = []string{"id", "vorname", "nachname", "email", "telefon", "adresse"}
+		header = []string{"id", "vorname", "nachname", "email", "telefon", "adresse", "notiz"}
 		rr, err := h.Pool.Query(r.Context(),
-			`SELECT id, first_name, last_name, email, phone, address FROM persons ORDER BY last_name, first_name`)
+			`SELECT id, first_name, last_name, email, phone, address, notes FROM persons ORDER BY last_name, first_name`)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "Export fehlgeschlagen")
 			return
@@ -130,12 +130,12 @@ func (h *Handler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 		defer rr.Close()
 		for rr.Next() {
 			var id int64
-			var fn, ln, email, phone, addr string
-			if err := rr.Scan(&id, &fn, &ln, &email, &phone, &addr); err != nil {
+			var fn, ln, email, phone, addr, notes string
+			if err := rr.Scan(&id, &fn, &ln, &email, &phone, &addr, &notes); err != nil {
 				writeError(w, http.StatusInternalServerError, "Export fehlgeschlagen")
 				return
 			}
-			rows = append(rows, []string{strconv.FormatInt(id, 10), fn, ln, email, phone, addr})
+			rows = append(rows, []string{strconv.FormatInt(id, 10), fn, ln, email, phone, addr, notes})
 		}
 		if rr.Err() != nil {
 			writeError(w, http.StatusInternalServerError, "Export fehlgeschlagen")

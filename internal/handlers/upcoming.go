@@ -33,7 +33,7 @@ func (h *Handler) EndingSoon(w http.ResponseWriter, r *http.Request) {
 		   JOIN categories c ON c.id = v.category_id
 		  WHERE NOT v.archived AND v.end_date IS NOT NULL
 		    AND v.end_date >= CURRENT_DATE
-		    AND v.end_date < CURRENT_DATE + ($1 || ' days')::interval
+		    AND v.end_date <= CURRENT_DATE + ($1 || ' days')::interval
 		  ORDER BY v.end_date, v.id`, strconv.Itoa(days))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")

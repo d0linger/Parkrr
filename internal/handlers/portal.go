@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -47,6 +48,11 @@ func (h *Handler) resolvePortalPerson(ctx context.Context, rawToken string) (int
 		   WHERE token_hash = $1 AND NOT revoked AND expires_at > now()
 		 RETURNING person_id`, hashPortalToken(rawToken)).Scan(&pid)
 	if err != nil {
+		// No matching row = invalid/expired/revoked token (the normal 404 path).
+		// A different error is an infra failure worth surfacing in the logs.
+		if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Error("portal token lookup failed", "err", err)
+		}
 		return 0, false
 	}
 	return pid, true
@@ -95,6 +101,10 @@ func (h *Handler) CreatePortalLink(w http.ResponseWriter, r *http.Request) {
 	if u, ok := auth.UserFrom(r.Context()); ok {
 		createdBy = &u.ID
 	}
+	// Opportunistic cleanup of finished tokens (same pattern as webauthn_ceremonies),
+	// so the table doesn't grow unbounded across link issuance.
+	_, _ = h.Pool.Exec(r.Context(),
+		`DELETE FROM self_service_tokens WHERE revoked OR expires_at < now() - interval '30 days'`)
 	if _, err := h.Pool.Exec(r.Context(),
 		`INSERT INTO self_service_tokens (token_hash, person_id, expires_at, created_by)
 		 VALUES ($1,$2,$3,$4)`, hash, id, expires, createdBy); err != nil {
@@ -102,16 +112,21 @@ func (h *Handler) CreatePortalLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	link := strings.TrimRight(h.PublicBaseURL, "/") + "/#/portal/" + raw
+	base := strings.TrimRight(h.PublicBaseURL, "/")
+	link := base + "/#/portal/" + raw
 
 	emailed := false
 	email = trim(email)
-	if req.Send && h.Mail != nil && h.Mail.Enabled() && email != "" {
+	// Only e-mail when an absolute base URL is configured — otherwise the link
+	// would be a useless relative "/#/portal/…" in the recipient's mail client.
+	if req.Send && h.Mail != nil && h.Mail.Enabled() && email != "" && base != "" {
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 		defer cancel()
 		if err := h.Mail.Send(ctx, []string{email}, "Ihr Parkrr-Zugang",
 			portalMailBody(trim(first+" "+last), link, expires)); err == nil {
 			emailed = true
+		} else {
+			slog.Warn("portal link e-mail failed", "person", id, "err", err)
 		}
 	}
 	h.audit(r, "create", "portal-link", id, "Self-Service-Link erstellt (gültig bis "+expires.Format("2006-01-02")+")")

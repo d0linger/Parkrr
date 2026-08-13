@@ -71,4 +71,14 @@ func TestEndingSoon(t *testing.T) {
 	if has(call("5")) {
 		t.Error("vehicle ending in 10 days must NOT appear within a 5-day window")
 	}
+
+	// Boundary: a contract ending exactly on CURRENT_DATE + days must be included
+	// (inclusive upper bound).
+	if _, err := h.Pool.Exec(context.Background(),
+		`UPDATE vehicles SET end_date = CURRENT_DATE + 30 WHERE id = $1`, veh.ID); err != nil {
+		t.Fatalf("set end_date +30: %v", err)
+	}
+	if !has(call("30")) {
+		t.Error("vehicle ending exactly on day 30 must appear within a 30-day window")
+	}
 }

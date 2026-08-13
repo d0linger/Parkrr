@@ -1131,6 +1131,10 @@ func (h *Handler) fetchInvoice(ctx context.Context, id int64) (invoice, bool, er
 		}
 		return invoice{}, false, err
 	}
+	// Invariant: a canceled/storno invoice keeps a positive Total-PaidAmount here,
+	// so OpenAmount alone does NOT mean "payable" — callers must also check
+	// Canceled / CancelsID before treating it as an open item (see serveInvoicePayQR,
+	// RemindInvoice, PortalSummary).
 	iv.OpenAmount = round2(iv.Total - iv.PaidAmount)
 	iv.Status = invoiceStatus(iv.Total, iv.PaidAmount, iv.Canceled, iv.CancelsID)
 	_ = json.Unmarshal(sellerJSON, &iv.Seller)

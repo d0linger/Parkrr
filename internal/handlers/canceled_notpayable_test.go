@@ -61,7 +61,9 @@ func TestCanceledInvoiceNotPayable(t *testing.T) {
 		t.Fatalf("portal summary: %d %s", sw.Code, sw.Body.String())
 	}
 	var sum portalSummary
-	_ = json.Unmarshal(sw.Body.Bytes(), &sum)
+	if err := json.Unmarshal(sw.Body.Bytes(), &sum); err != nil {
+		t.Fatalf("decode portal summary: %v", err)
+	}
 	if sum.OpenTotal > 0.005 {
 		t.Errorf("canceled invoice must not inflate open_total, got %v", sum.OpenTotal)
 	}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-pdf/fpdf"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/preining/parkrr/internal/auth"
 )
@@ -183,7 +184,11 @@ func (h *Handler) GetHandoverSignature(w http.ResponseWriter, r *http.Request) {
 	var data []byte
 	if err := h.Pool.QueryRow(r.Context(),
 		`SELECT signature FROM handover_protocols WHERE id=$1`, id).Scan(&data); err != nil {
-		writeError(w, http.StatusNotFound, "protocol not found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "protocol not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "query failed")
+		}
 		return
 	}
 	if len(data) == 0 {
@@ -243,7 +248,11 @@ func (h *Handler) HandoverPDF(w http.ResponseWriter, r *http.Request) {
 		   JOIN persons p ON p.id = v.person_id
 		  WHERE hp.id = $1`, id,
 	).Scan(&direction, &notes, &signer, &createdAt, &sig, &label, &plate, &person); err != nil {
-		writeError(w, http.StatusNotFound, "protocol not found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "protocol not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "query failed")
+		}
 		return
 	}
 

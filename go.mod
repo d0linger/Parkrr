@@ -5,7 +5,7 @@ go 1.26.0
 toolchain go1.26.5
 
 require (
-	github.com/boombuler/barcode v1.0.1
+	github.com/boombuler/barcode v1.1.0
 	github.com/go-pdf/fpdf v0.9.0
 	github.com/go-webauthn/webauthn v0.17.4
 	github.com/jackc/pgx/v5 v5.10.0
