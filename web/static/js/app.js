@@ -3615,12 +3615,16 @@
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' }, el('button', { class: 'back-btn', onclick: () => navigate('dashboard') }, '‹'), el('h2', { style: 'margin:0' }, 'Audit-Log')));
 
-        const q = { text: '', action: '', entity: '', offset: 0, limit: 50 };
+        const q = { text: '', action: '', entity: '', from: '', to: '', offset: 0, limit: 50 };
         const search = el('input', { type: 'search', placeholder: 'Suchen (Benutzer, Beschreibung)…', 'aria-label': 'Audit-Log durchsuchen' });
         const optionList = (map, allLabel) => [el('option', { value: '' }, allLabel), ...Object.entries(map).map(([v, l]) => el('option', { value: v }, l))];
         const actSel = el('select', { 'aria-label': 'Aktion filtern' }, ...optionList(AUDIT_ACTIONS, 'Alle Aktionen'));
         const entSel = el('select', { 'aria-label': 'Objekt filtern' }, ...optionList(AUDIT_ENTITIES, 'Alle Objekte'));
-        page.append(el('div', { class: 'card audit-filters' }, search, el('div', { class: 'audit-filter-row' }, actSel, entSel)));
+        const fromIn = el('input', { type: 'date', 'aria-label': 'Von-Datum', title: 'Von' });
+        const toIn = el('input', { type: 'date', 'aria-label': 'Bis-Datum', title: 'Bis' });
+        page.append(el('div', { class: 'card audit-filters' }, search,
+            el('div', { class: 'audit-filter-row' }, actSel, entSel),
+            el('div', { class: 'audit-filter-row' }, fromIn, toIn)));
 
         const ul = el('ul', { class: 'timeline' });
         page.append(el('div', { class: 'card' }, ul));
@@ -3634,6 +3638,8 @@
             if (q.text) p.set('q', q.text);
             if (q.action) p.set('action', q.action);
             if (q.entity) p.set('entity', q.entity);
+            if (q.from) p.set('from', q.from);
+            if (q.to) p.set('to', q.to);
             let entries = [];
             try { entries = await api.get('/audit?' + p.toString()); } catch { /* ignore */ }
             for (const a of entries) ul.append(auditItem(a));
@@ -3645,6 +3651,8 @@
         search.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => { q.text = search.value.trim(); load(true); }, 300); });
         actSel.addEventListener('change', () => { q.action = actSel.value; load(true); });
         entSel.addEventListener('change', () => { q.entity = entSel.value; load(true); });
+        fromIn.addEventListener('change', () => { q.from = fromIn.value; load(true); });
+        toIn.addEventListener('change', () => { q.to = toIn.value; load(true); });
         load(true);
     };
 

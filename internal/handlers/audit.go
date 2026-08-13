@@ -4,13 +4,14 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/preining/parkrr/internal/models"
 )
 
 // ListAudit returns audit-log entries (admin only), newest first. Supports
 // ?limit/?offset pagination plus optional filters: ?q (search username/summary),
-// ?action and ?entity.
+// ?action, ?entity and a ?from/?to date range (YYYY-MM-DD, "to" inclusive).
 func (h *Handler) ListAudit(w http.ResponseWriter, r *http.Request) {
 	limit, offset := pageParams(r, 50, 500)
 
@@ -28,6 +29,20 @@ func (h *Handler) ListAudit(w http.ResponseWriter, r *http.Request) {
 	if e := trim(r.URL.Query().Get("entity")); e != "" {
 		args = append(args, e)
 		where = append(where, fmt.Sprintf("entity = $%d", len(args)))
+	}
+	// Optional date range (YYYY-MM-DD). Parsed to time.Time so a malformed value is
+	// simply ignored (no filter) rather than reaching the query as bad input.
+	if f := trim(r.URL.Query().Get("from")); f != "" {
+		if d, perr := time.Parse("2006-01-02", f); perr == nil {
+			args = append(args, d)
+			where = append(where, fmt.Sprintf("created_at >= $%d", len(args)))
+		}
+	}
+	if to := trim(r.URL.Query().Get("to")); to != "" {
+		if d, perr := time.Parse("2006-01-02", to); perr == nil {
+			args = append(args, d.AddDate(0, 0, 1)) // inclusive of the whole "to" day
+			where = append(where, fmt.Sprintf("created_at < $%d", len(args)))
+		}
 	}
 	clause := ""
 	if len(where) > 0 {
