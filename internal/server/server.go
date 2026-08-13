@@ -71,6 +71,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	// --- Customer self-service portal (PUBLIC, token-scoped, read-only) ---
 	mux.HandleFunc("GET /api/portal/{token}/summary", h.PortalSummary)
 	mux.HandleFunc("GET /api/portal/{token}/invoices/{id}/pdf", h.PortalInvoicePDF)
+	mux.HandleFunc("GET /api/portal/{token}/invoices/{id}/pay-qr", h.PortalPayQR)
 
 	// --- Auth (protected) ---
 	mux.Handle("POST /api/auth/logout", authed(hf(ah.Logout)))
@@ -116,6 +117,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/persons/{id}/invoices", editor(hf(h.CreateInvoice)))
 	mux.Handle("GET /api/invoices/{id}", authed(hf(h.GetInvoice)))
 	mux.Handle("GET /api/invoices/{id}/pdf", authed(hf(h.InvoicePDF)))
+	mux.Handle("GET /api/invoices/{id}/pay-qr", authed(hf(h.PayQR)))
 	mux.Handle("POST /api/invoices/{id}/remind", editor(hf(h.RemindInvoice)))
 	mux.Handle("POST /api/mail/test", admin(hf(h.SendTestMail)))
 	mux.Handle("POST /api/invoices/{id}/cancel", editor(hf(h.CancelInvoice)))

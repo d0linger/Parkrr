@@ -244,6 +244,25 @@ func writeInvoicePDF(w http.ResponseWriter, iv invoice) {
 		pdf.SetTextColor(25, 25, 25)
 		pdf.MultiCell(usableW, 4.6, tr(pay), "", "L", false)
 		pdf.Ln(1)
+
+		// SEPA "Girocode" QR: scan to pre-fill the transfer. Use the open amount if
+		// there is one, else the total (a paid invoice still documents how it was paid).
+		qrAmount := iv.OpenAmount
+		if qrAmount <= 0.005 {
+			qrAmount = iv.Total
+		}
+		if payload, problem := epcPayload(snapStr(seller, "name"), iban, bic, qrAmount, iv.Number); problem == "" {
+			if qrBytes, err := qrPNG(payload, 240); err == nil {
+				pdf.RegisterImageOptionsReader("payqr", fpdf.ImageOptions{ImageType: "PNG"}, bytes.NewReader(qrBytes))
+				y := pdf.GetY() + 2
+				pdf.ImageOptions("payqr", left, y, 26, 26, false, fpdf.ImageOptions{ImageType: "PNG"}, 0, "")
+				pdf.SetXY(left+30, y+3)
+				pdf.SetFont("Helvetica", "", 8)
+				pdf.SetTextColor(90, 90, 90)
+				pdf.MultiCell(usableW-30, 4, tr("Scan zum Bezahlen (SEPA-Überweisung / Girocode)"), "", "L", false)
+				pdf.SetY(y + 28)
+			}
+		}
 	}
 	if uid := snapStr(seller, "uid"); uid != "" {
 		pdf.SetTextColor(90, 90, 90)

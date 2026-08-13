@@ -1611,6 +1611,14 @@
             page.append(el('div', { class: 'card-meta no-print', style: 'margin:-.3rem 0 .4rem' }, 'Bezahlt ' + eur(iv.paid_amount) + ' von ' + eur(iv.total) + (iv.open_amount > 0.005 ? ' · offen ' + eur(iv.open_amount) : '')));
         }
         page.append(invoiceDocument(iv));
+        // SEPA pay-QR (Girocode) for open invoices whose seller has an IBAN. Hidden
+        // in print — the PDF carries its own QR.
+        if ((iv.status === 'offen' || iv.status === 'teilbezahlt') && iv.seller && iv.seller.iban) {
+            page.append(el('div', { class: 'card no-print', style: 'text-align:center' },
+                el('h3', { style: 'margin-top:0' }, 'Bezahlen (SEPA-QR)'),
+                el('img', { src: '/api/invoices/' + iv.id + '/pay-qr', alt: 'SEPA-Zahlungs-QR', width: 200, height: 200, style: 'max-width:200px;height:auto' }),
+                el('p', { class: 'muted', style: 'font-size:.82rem;margin-bottom:0' }, 'Mit der Banking-App scannen — Betrag und Zahlungsreferenz sind vorausgefüllt.')));
+        }
     };
 
     // ---------- Rechnungs-Einstellungen (admin) ----------
@@ -5663,12 +5671,20 @@
         wrap.append(vcard);
         const icard = el('div', { class: 'portal-card' }, el('h2', {}, 'Rechnungen'));
         if (!sum.invoices.length) icard.append(el('p', { class: 'muted' }, 'Keine Rechnungen.'));
-        else sum.invoices.forEach((iv) => icard.append(
-            el('a', { class: 'portal-row link', href: '/api/portal/' + token + '/invoices/' + iv.id + '/pdf', target: '_blank', rel: 'noopener' },
-                el('span', {}, 'Rechnung ' + esc(iv.number),
-                    el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, new Date(iv.issued_on).toLocaleDateString('de-DE') + (iv.status ? ' · ' + esc(iv.status) : ''))),
-                el('span', { style: 'text-align:right' }, eur(iv.total),
-                    iv.open > 0.005 ? el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, 'offen ' + eur(iv.open)) : null))));
+        else sum.invoices.forEach((iv) => {
+            icard.append(
+                el('a', { class: 'portal-row link', href: '/api/portal/' + token + '/invoices/' + iv.id + '/pdf', target: '_blank', rel: 'noopener' },
+                    el('span', {}, 'Rechnung ' + esc(iv.number),
+                        el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, new Date(iv.issued_on).toLocaleDateString('de-DE') + (iv.status ? ' · ' + esc(iv.status) : ''))),
+                    el('span', { style: 'text-align:right' }, eur(iv.total),
+                        iv.open > 0.005 ? el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, 'offen ' + eur(iv.open)) : null)));
+            // Scan-to-pay QR for each still-open invoice.
+            if (iv.open > 0.005) {
+                icard.append(el('div', { style: 'text-align:center;padding:.4rem 0 .2rem' },
+                    el('img', { src: '/api/portal/' + token + '/invoices/' + iv.id + '/pay-qr', alt: 'SEPA-Zahlungs-QR', width: 150, height: 150, style: 'max-width:150px;height:auto' }),
+                    el('div', { class: 'muted', style: 'font-size:.72rem' }, 'Scan zum Bezahlen (SEPA)')));
+            }
+        });
         wrap.append(icard);
         wrap.append(el('p', { class: 'portal-foot muted' }, 'Read-only Ansicht · Parkrr'));
         pv.append(wrap);
