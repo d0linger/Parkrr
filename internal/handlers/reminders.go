@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	netmail "net/mail"
 	"strings"
 	"time"
 )
@@ -120,11 +121,14 @@ func (h *Handler) SendTestMail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	to := trim(req.To)
-	if to == "" {
-		writeError(w, http.StatusBadRequest, "Empfängeradresse fehlt")
+	// Validate the request-supplied recipient (RFC 5322) and use the canonical form,
+	// so a malformed/injection value never reaches the message headers.
+	addr, err := netmail.ParseAddress(trim(req.To))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "ungültige Empfängeradresse")
 		return
 	}
+	to := addr.Address
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	if err := h.Mail.Send(ctx, []string{to},

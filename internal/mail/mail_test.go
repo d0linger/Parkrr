@@ -30,6 +30,28 @@ func TestNewDefaults(t *testing.T) {
 	}
 }
 
+// cleanAddrs validates recipients via net/mail.ParseAddress: CRLF-injection and
+// malformed values are dropped, display names are normalised to the bare address.
+func TestCleanAddrsRejectsInjection(t *testing.T) {
+	got := cleanAddrs([]string{
+		"a@b.c",
+		"  bob@x.io  ",
+		"evil@x.io\r\nBcc: victim@x.io",
+		"not-an-email",
+		"Parkrr Büro <billing@park.rr>",
+		"",
+	})
+	want := []string{"a@b.c", "bob@x.io", "billing@park.rr"}
+	if len(got) != len(want) {
+		t.Fatalf("cleanAddrs = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("cleanAddrs[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestAddrOnly(t *testing.T) {
 	cases := map[string]string{
 		"a@b.c":                    "a@b.c",

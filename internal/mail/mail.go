@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"mime"
 	"net"
+	netmail "net/mail"
 	"net/smtp"
 	"strconv"
 	"strings"
@@ -192,8 +193,16 @@ func addrOnly(s string) string {
 func cleanAddrs(in []string) []string {
 	out := make([]string, 0, len(in))
 	for _, a := range in {
-		if a = stripHdr(strings.TrimSpace(a)); a != "" {
-			out = append(out, a)
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		// Validate via RFC 5322 parsing: any header-injection attempt (CR/LF) or
+		// malformed value is rejected outright, and the canonical address is used.
+		// This blocks SMTP header injection and sanitizes the value for callers and
+		// static analysis alike.
+		if parsed, err := netmail.ParseAddress(a); err == nil {
+			out = append(out, parsed.Address)
 		}
 	}
 	return out
