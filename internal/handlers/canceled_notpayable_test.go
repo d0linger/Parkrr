@@ -64,8 +64,11 @@ func TestCanceledInvoiceNotPayable(t *testing.T) {
 	if err := json.Unmarshal(sw.Body.Bytes(), &sum); err != nil {
 		t.Fatalf("decode portal summary: %v", err)
 	}
-	if sum.OpenTotal > 0.005 {
-		t.Errorf("canceled invoice must not inflate open_total, got %v", sum.OpenTotal)
+	// After cancellation the invoiced charge reverts to fakturierbar, so the customer
+	// still owes it: the portal shows the real balance (the reverted 30 €), while the
+	// canceled invoice itself contributes 0 to the payable set (checked below).
+	if sum.OpenTotal < 29.99 || sum.OpenTotal > 30.01 {
+		t.Errorf("after cancel, open_total should equal the reverted charge (~30), got %v", sum.OpenTotal)
 	}
 	for _, inv := range sum.Invoices {
 		if inv.ID == iv.ID && inv.Open > 0.005 {

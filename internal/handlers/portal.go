@@ -332,12 +332,9 @@ func (h *Handler) PortalSummary(w http.ResponseWriter, r *http.Request) {
 		pi.Open = round2(pi.Total - paid)
 		pi.Status = invoiceStatus(pi.Total, paid, canceled, cancelsID)
 		// A canceled/storno document is not payable — keep it visible but with a
-		// zero open amount so it neither inflates the total nor renders a pay-QR.
+		// zero open amount so it doesn't render a pay-QR.
 		if canceled || cancelsID != nil {
 			pi.Open = 0
-		}
-		if pi.Open > 0.005 {
-			out.OpenTotal += pi.Open
 		}
 		out.Invoices = append(out.Invoices, pi)
 	}
@@ -345,7 +342,20 @@ func (h *Handler) PortalSummary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	out.OpenTotal = round2(out.OpenTotal)
+
+	// Open total = the person's real balance (accrued rent + charges + invoiced USt
+	// − payments), identical to the admin "Offener Saldo" / PersonStats.Balance. It
+	// therefore also covers amounts owed but not yet invoiced — summing only open
+	// invoices wrongly showed 0,00 € for a person who has never been invoiced.
+	bal, err := h.outstandingByPerson(r)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	out.OpenTotal = round2(bal[pid])
+	if out.OpenTotal < 0 {
+		out.OpenTotal = 0 // credit balance → nothing to pay
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 
