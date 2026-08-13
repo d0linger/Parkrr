@@ -85,7 +85,7 @@ func TestImportPersonsCommaEnglish(t *testing.T) {
 	}
 }
 
-// A file whose header has no recognisable columns is rejected with 400.
+// A file whose header has no recognizable columns is rejected with 400.
 func TestImportPersonsUnknownHeader(t *testing.T) {
 	h := testHandler(t)
 	w := httptest.NewRecorder()

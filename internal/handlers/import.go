@@ -21,7 +21,7 @@ type importRowError struct {
 	Message string `json:"message"`
 }
 
-// importResult summarises a bulk import. Errors carries up to maxImportErrs
+// importResult summarizes a bulk import. Errors carries up to maxImportErrs
 // detail rows; Failed is the full count so the UI never under-reports.
 type importResult struct {
 	Imported int              `json:"imported"`
