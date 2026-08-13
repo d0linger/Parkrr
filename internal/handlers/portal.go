@@ -152,6 +152,81 @@ func portalMailBody(name, link string, expires time.Time) string {
 	return b.String()
 }
 
+// portalLinkInfo is the metadata view of a token (never the raw token — only its
+// hash is stored, so an existing link can't be re-shown).
+type portalLinkInfo struct {
+	ID         int64      `json:"id"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	Revoked    bool       `json:"revoked"`
+	CreatedBy  string     `json:"created_by,omitempty"`
+	Status     string     `json:"status"` // aktiv | abgelaufen | widerrufen
+}
+
+// ListPortalLinks returns a person's self-service tokens, newest first (editor+).
+func (h *Handler) ListPortalLinks(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	rows, err := h.Pool.Query(r.Context(),
+		`SELECT t.id, t.created_at, t.expires_at, t.last_used_at, t.revoked, COALESCE(u.username,'')
+		   FROM self_service_tokens t
+		   LEFT JOIN users u ON u.id = t.created_by
+		  WHERE t.person_id = $1
+		  ORDER BY t.created_at DESC`, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+	now := time.Now()
+	out := []portalLinkInfo{}
+	for rows.Next() {
+		var li portalLinkInfo
+		if err := rows.Scan(&li.ID, &li.CreatedAt, &li.ExpiresAt, &li.LastUsedAt, &li.Revoked, &li.CreatedBy); err != nil {
+			writeError(w, http.StatusInternalServerError, "scan failed")
+			return
+		}
+		switch {
+		case li.Revoked:
+			li.Status = "widerrufen"
+		case li.ExpiresAt.Before(now):
+			li.Status = "abgelaufen"
+		default:
+			li.Status = "aktiv"
+		}
+		out = append(out, li)
+	}
+	if rows.Err() != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// RevokePortalLink revokes a single token by its id (editor+). Idempotent.
+func (h *Handler) RevokePortalLink(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r) // token id
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	tag, err := h.Pool.Exec(r.Context(),
+		`UPDATE self_service_tokens SET revoked = TRUE WHERE id = $1 AND NOT revoked`, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not revoke")
+		return
+	}
+	n := tag.RowsAffected()
+	if n > 0 {
+		h.audit(r, "revoke", "portal-link", id, "Self-Service-Link widerrufen")
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"revoked": n})
+}
+
 // RevokePortalLinks revokes all active self-service tokens of a person (editor+).
 func (h *Handler) RevokePortalLinks(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)

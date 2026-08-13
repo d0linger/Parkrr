@@ -1132,35 +1132,95 @@
         });
     }
 
-    // Issue a read-only self-service magic link for a person, with copy / e-mail /
-    // revoke actions. Creating the modal already mints a link (30-day expiry).
+    // Absolute, copy-paste-able URL: the backend returns an absolute link when
+    // PARKRR_PUBLIC_BASE_URL is set, otherwise a relative "/#/portal/…" that we
+    // resolve against the current origin so it can be shared as-is.
+    const absLink = (link) => (link && link.startsWith('/')) ? location.origin + link : link;
+
+    // Self-service access management for a person: create links (chosen duration,
+    // optional e-mail), list all links with usage stats, revoke them singly or all.
     async function portalLinkFor(personId) {
-        let res;
-        try { res = await api.post('/persons/' + personId + '/portal-link', { send: false }); }
-        catch (e) { toast(e.message || 'Link konnte nicht erstellt werden', 'error'); return; }
-        let link = res.link;
         await formModal({
-            title: 'Self-Service-Link',
-            submitLabel: 'Fertig',
+            title: 'Self-Service-Zugänge',
+            submitLabel: 'Schließen',
             fields: [],
-            onRender: (body) => {
-                const input = el('input', { type: 'text', readonly: 'readonly', value: link, style: 'width:100%;font-size:.82rem', onclick: (e) => e.currentTarget.select() });
-                body.append(el('label', {}, 'Link (read-only Kundenzugang)'), input);
-                const row = el('div', { class: 'btn-row', style: 'margin-top:.6rem;gap:.5rem;flex-wrap:wrap' });
-                row.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm',
-                    onclick: async () => { try { await navigator.clipboard.writeText(link); toast('Link kopiert', 'success'); } catch (_) { input.select(); toast('Bitte manuell kopieren', 'error'); } } }, 'Kopieren'));
-                if (res.has_email && state.capabilities.mail) {
-                    row.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm',
-                        onclick: async (e) => { const b = e.currentTarget; b.disabled = true; try { const r2 = await api.post('/persons/' + personId + '/portal-link', { send: true }); if (r2 && r2.link) { link = r2.link; input.value = r2.link; } toast(r2.emailed ? 'Link per E-Mail gesendet' : 'E-Mail nicht gesendet', r2.emailed ? 'success' : 'error'); } catch (er) { toast(er.message, 'error'); } finally { b.disabled = false; } } }, icon('mail', 14), ' Per E-Mail'));
+            onRender: async (body) => {
+                // ---- create a new link ----
+                const create = el('div', { class: 'card', style: 'padding:.75rem;margin-bottom:.6rem' },
+                    el('div', { class: 'sec-eyebrow', style: 'margin-bottom:.4rem' }, 'Neuen Zugang erstellen'));
+                const dur = el('select', { style: 'font:inherit;padding:.3rem .5rem' },
+                    ...[[7, '7 Tage'], [30, '30 Tage'], [90, '90 Tage'], [180, '180 Tage'], [365, '1 Jahr']].map(([v, l]) => {
+                        const o = el('option', { value: String(v) }, l); if (v === 30) o.selected = true; return o;
+                    }));
+                const ctl = el('div', { class: 'btn-row', style: 'gap:.6rem;flex-wrap:wrap;align-items:center' },
+                    el('label', { style: 'font-size:.85rem' }, 'Gültigkeit ', dur));
+                let sendChk = null;
+                if (state.capabilities.mail) {
+                    sendChk = el('input', { type: 'checkbox' });
+                    ctl.append(el('label', { style: 'font-size:.85rem;display:inline-flex;align-items:center;gap:.3rem' }, sendChk, 'per E-Mail'));
                 }
-                row.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm',
-                    onclick: async () => { if (!await confirmDialog('Alle Links widerrufen?', 'Bestehende Self-Service-Links dieser Person werden ungültig.', 'Widerrufen')) return; try { await api.post('/persons/' + personId + '/portal-link/revoke', {}); toast('Links widerrufen', 'success'); } catch (er) { toast(er.message, 'error'); } } }, 'Alle widerrufen'));
-                body.append(row);
-                body.append(el('p', { class: 'muted', style: 'font-size:.8rem;margin-top:.5rem' },
-                    'Gültig 30 Tage. Gewährt eine read-only Ansicht (Gefährte, offene Beträge, Rechnungen). Bereits beim Öffnen wurde ein Link erzeugt.'));
+                const createBtn = el('button', { type: 'button', class: 'btn btn-primary btn-sm' }, '+ Link erzeugen');
+                ctl.append(createBtn);
+                const fresh = el('div', { style: 'margin-top:.5rem' });
+                create.append(ctl, fresh);
+                body.append(create);
+
+                // ---- existing links ----
+                body.append(el('div', { class: 'sec-eyebrow', style: 'margin:.2rem 0 .3rem' }, 'Bestehende Zugänge'));
+                const listWrap = el('div');
+                body.append(listWrap,
+                    el('p', { class: 'muted', style: 'font-size:.78rem;margin-top:.5rem' },
+                        'Der Link ist aus Sicherheitsgründen nur einmal beim Erstellen sichtbar. Bestehende Zugänge lassen sich einsehen und widerrufen.'));
+
+                async function refresh() {
+                    listWrap.innerHTML = '';
+                    let links = [];
+                    try { links = (await api.get('/persons/' + personId + '/portal-links')) || []; }
+                    catch (e) { listWrap.append(el('p', { class: 'muted' }, 'Konnte nicht geladen werden.')); return; }
+                    if (!links.length) { listWrap.append(el('p', { class: 'muted', style: 'font-size:.85rem' }, 'Noch keine Zugänge.')); return; }
+                    links.forEach((l) => listWrap.append(portalLinkRow(l, refresh)));
+                    if (links.filter((l) => l.status === 'aktiv').length > 1) {
+                        listWrap.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm', style: 'margin-top:.4rem',
+                            onclick: async () => { if (!await confirmDialog('Alle Zugänge widerrufen?', 'Alle aktiven Self-Service-Links dieser Person werden ungültig.', 'Widerrufen')) return; try { await api.post('/persons/' + personId + '/portal-link/revoke', {}); toast('Alle widerrufen', 'success'); refresh(); } catch (e) { toast(e.message, 'error'); } } }, 'Alle widerrufen'));
+                    }
+                }
+
+                createBtn.onclick = async () => {
+                    createBtn.disabled = true;
+                    try {
+                        const send = !!(sendChk && sendChk.checked);
+                        const r = await api.post('/persons/' + personId + '/portal-link', { days: Number(dur.value), send });
+                        const url = absLink(r.link);
+                        fresh.innerHTML = '';
+                        const inp = el('input', { type: 'text', readonly: 'readonly', value: url, style: 'width:100%;font-size:.8rem', onclick: (e) => e.currentTarget.select() });
+                        fresh.append(el('label', { style: 'font-size:.8rem' }, 'Neuer Link (nur jetzt sichtbar)'), inp,
+                            el('button', { type: 'button', class: 'btn btn-ghost btn-sm', style: 'margin-top:.35rem',
+                                onclick: async () => { try { await navigator.clipboard.writeText(url); toast('Link kopiert', 'success'); } catch (_) { inp.select(); toast('Bitte manuell kopieren', 'error'); } } }, 'Kopieren'));
+                        if (send) toast(r.emailed ? 'Link erstellt & per E-Mail gesendet' : (r.has_email ? 'Link erstellt · E-Mail nicht gesendet (Basis-URL fehlt?)' : 'Link erstellt · kein E-Mail-Kontakt'), r.emailed ? 'success' : 'error');
+                        else toast('Link erstellt', 'success');
+                        refresh();
+                    } catch (e) { toast(e.message || 'Fehler', 'error'); }
+                    finally { createBtn.disabled = false; }
+                };
+
+                await refresh();
             },
-            save: async () => {},
+            save: null,
         });
+    }
+
+    function portalLinkRow(l, refresh) {
+        const created = new Date(l.created_at).toLocaleDateString('de-DE');
+        const exp = new Date(l.expires_at).toLocaleDateString('de-DE');
+        const used = l.last_used_at ? ('zuletzt ' + fmtDateTime(l.last_used_at)) : 'nie genutzt';
+        const badge = el('span', { class: 'badge' + (l.status === 'aktiv' ? ' badge-active' : ''),
+            style: l.status === 'aktiv' ? '' : 'background:var(--muted);color:#fff' }, l.status);
+        return el('div', { class: 'pay-row card' },
+            el('div', { class: 'pay-main' },
+                el('div', { class: 'pay-method' }, 'gültig bis ' + exp, ' ', badge),
+                el('div', { class: 'pay-date' }, 'erstellt ' + created + ' · ' + used + (l.created_by ? ' · ' + esc(l.created_by) : ''))),
+            (l.status === 'aktiv') ? el('button', { class: 'btn btn-ghost btn-sm', title: 'Widerrufen', 'aria-label': 'Zugang widerrufen',
+                onclick: async () => { if (!await confirmDialog('Zugang widerrufen?', 'Dieser Link wird sofort ungültig.', 'Widerrufen')) return; try { await api.post('/portal-links/' + l.id + '/revoke', {}); toast('Widerrufen', 'success'); refresh(); } catch (e) { toast(e.message, 'error'); } } }, 'Widerrufen') : null);
     }
 
     // ---------- PERSON DETAIL ----------

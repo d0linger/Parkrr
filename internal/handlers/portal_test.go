@@ -43,6 +43,73 @@ func getPortalSummary(t *testing.T, h *Handler, token string) *httptest.Response
 	return w
 }
 
+func TestPortalLinkManagement(t *testing.T) {
+	h := testHandler(t)
+	pid := createIntegrationPerson(t, h)
+	pids := strconv.FormatInt(pid, 10)
+
+	raw := createPortalLink(t, h, pid)
+	_ = createPortalLink(t, h, pid) // a second token
+
+	list := func() []portalLinkInfo {
+		req := httptest.NewRequest(http.MethodGet, "/api/persons/"+pids+"/portal-links", nil)
+		req.SetPathValue("id", pids)
+		w := httptest.NewRecorder()
+		h.ListPortalLinks(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("list: %d %s", w.Code, w.Body.String())
+		}
+		var out []portalLinkInfo
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode list: %v", err)
+		}
+		return out
+	}
+
+	if got := list(); len(got) != 2 {
+		t.Fatalf("expected 2 links, got %d", len(got))
+	}
+
+	// Use the first token so last_used_at is recorded, then find its id.
+	if _, ok := h.resolvePortalPerson(context.Background(), raw); !ok {
+		t.Fatal("token should resolve before revoke")
+	}
+	var tid int64
+	if err := h.Pool.QueryRow(context.Background(),
+		`SELECT id FROM self_service_tokens WHERE token_hash=$1`, hashPortalToken(raw)).Scan(&tid); err != nil {
+		t.Fatal(err)
+	}
+
+	// Revoke that single token.
+	rreq := httptest.NewRequest(http.MethodPost, "/api/portal-links/"+strconv.FormatInt(tid, 10)+"/revoke", nil)
+	rreq.SetPathValue("id", strconv.FormatInt(tid, 10))
+	rw := httptest.NewRecorder()
+	h.RevokePortalLink(rw, rreq)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("revoke single: %d %s", rw.Code, rw.Body.String())
+	}
+
+	// The revoked one shows status "widerrufen" and carries last_used_at; the
+	// other stays "aktiv".
+	var revoked, active int
+	for _, l := range list() {
+		if l.ID == tid {
+			if l.Status != "widerrufen" {
+				t.Errorf("token %d status = %q, want widerrufen", tid, l.Status)
+			}
+			if l.LastUsedAt == nil {
+				t.Error("used token should have last_used_at")
+			}
+			revoked++
+		} else if l.Status == "aktiv" {
+			active++
+		}
+	}
+	if revoked != 1 || active != 1 {
+		t.Errorf("revoked=%d active=%d, want 1/1", revoked, active)
+	}
+}
+
 func TestSelfServicePortal(t *testing.T) {
 	h := testHandler(t)
 	compliantSeller(t, h)
