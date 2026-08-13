@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	netmail "net/mail"
 	"strings"
 	"time"
 )
@@ -105,39 +104,4 @@ func (h *Handler) reminderBody(iv invoice, name string) string {
 		b.WriteString("\n" + footer + "\n")
 	}
 	return b.String()
-}
-
-// SendTestMail sends a fixed test message to a given address (admin only), so an
-// operator can verify SMTP settings without creating an invoice.
-func (h *Handler) SendTestMail(w http.ResponseWriter, r *http.Request) {
-	if h.Mail == nil || !h.Mail.Enabled() {
-		writeError(w, http.StatusServiceUnavailable, "E-Mail ist nicht konfiguriert (SMTP)")
-		return
-	}
-	var req struct {
-		To string `json:"to"`
-	}
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	// Validate the request-supplied recipient (RFC 5322) and use the canonical form,
-	// so a malformed/injection value never reaches the message headers.
-	addr, err := netmail.ParseAddress(trim(req.To))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "ungültige Empfängeradresse")
-		return
-	}
-	to := addr.Address
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-	defer cancel()
-	if err := h.Mail.Send(ctx, []string{to},
-		"Parkrr – Test-E-Mail",
-		"Dies ist eine Test-E-Mail von Parkrr.\n\nWenn Sie diese Nachricht erhalten, ist der SMTP-Versand korrekt konfiguriert.\n",
-	); err != nil {
-		writeError(w, http.StatusBadGateway, "E-Mail konnte nicht gesendet werden: "+err.Error())
-		return
-	}
-	h.audit(r, "test", "mail", 0, "SMTP-Test an "+to)
-	writeJSON(w, http.StatusOK, map[string]any{"sent": true, "to": to})
 }

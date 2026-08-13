@@ -123,7 +123,6 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/invoices/{id}/pdf", authed(hf(h.InvoicePDF)))
 	mux.Handle("GET /api/invoices/{id}/pay-qr", authed(hf(h.PayQR)))
 	mux.Handle("POST /api/invoices/{id}/remind", editor(hf(h.RemindInvoice)))
-	mux.Handle("POST /api/mail/test", admin(hf(h.SendTestMail)))
 	mux.Handle("POST /api/invoices/{id}/cancel", editor(hf(h.CancelInvoice)))
 	mux.Handle("POST /api/persons/{id}/pay-invoices", editor(hf(h.PayInvoices)))
 	mux.Handle("GET /api/invoices/overdue", authed(hf(h.OverdueInvoices)))
