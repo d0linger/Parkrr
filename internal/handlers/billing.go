@@ -1112,15 +1112,13 @@ func (h *Handler) ListInvoices(w http.ResponseWriter, r *http.Request) {
 
 // GetInvoice returns one invoice with its line items and seller/buyer snapshots
 // (for the printable view).
-func (h *Handler) GetInvoice(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathID(r)
-	if !ok {
-		writeError(w, http.StatusBadRequest, "invalid id")
-		return
-	}
+// fetchInvoice loads a single invoice with its line items and derived fields.
+// found is false (with nil error) when no invoice has that id. Shared by the
+// JSON GetInvoice endpoint and the PDF renderer.
+func (h *Handler) fetchInvoice(ctx context.Context, id int64) (invoice, bool, error) {
 	var iv invoice
 	var sellerJSON, buyerJSON []byte
-	if err := h.Pool.QueryRow(r.Context(),
+	if err := h.Pool.QueryRow(ctx,
 		`SELECT id, number, person_id, issued_on, due_on, subtotal, ust_rate, tax_amount, total,
 		        kleinunternehmer, seller_snapshot, buyer_snapshot, note, canceled, cancels_id, paid_amount,
 		        leistung_from, leistung_to
@@ -1129,36 +1127,49 @@ func (h *Handler) GetInvoice(w http.ResponseWriter, r *http.Request) {
 		&iv.TaxAmount, &iv.Total, &iv.Kleinunternehmer, &sellerJSON, &buyerJSON, &iv.Note,
 		&iv.Canceled, &iv.CancelsID, &iv.PaidAmount, &iv.LeistungFrom, &iv.LeistungTo); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "invoice not found")
-			return
+			return invoice{}, false, nil
 		}
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
+		return invoice{}, false, err
 	}
 	iv.OpenAmount = round2(iv.Total - iv.PaidAmount)
 	iv.Status = invoiceStatus(iv.Total, iv.PaidAmount, iv.Canceled, iv.CancelsID)
 	_ = json.Unmarshal(sellerJSON, &iv.Seller)
 	_ = json.Unmarshal(buyerJSON, &iv.Buyer)
 
-	rows, err := h.Pool.Query(r.Context(),
+	rows, err := h.Pool.Query(ctx,
 		`SELECT pos, description, quantity, unit_amount, line_total FROM invoice_items
 		   WHERE invoice_id=$1 ORDER BY pos`, id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
+		return invoice{}, false, err
 	}
 	defer rows.Close()
 	iv.Items = []invoiceItem{}
 	for rows.Next() {
 		var it invoiceItem
 		if err := rows.Scan(&it.Pos, &it.Description, &it.Quantity, &it.UnitAmount, &it.LineTotal); err != nil {
-			writeError(w, http.StatusInternalServerError, "query failed")
-			return
+			return invoice{}, false, err
 		}
 		iv.Items = append(iv.Items, it)
 	}
 	if rows.Err() != nil {
+		return invoice{}, false, rows.Err()
+	}
+	return iv, true, nil
+}
+
+func (h *Handler) GetInvoice(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	iv, found, err := h.fetchInvoice(r.Context(), id)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "invoice not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, iv)
