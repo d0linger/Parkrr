@@ -192,6 +192,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	// --- Stats ---
 	mux.Handle("GET /api/overview", authed(hf(h.Overview)))
 	mux.Handle("GET /api/occupancy", authed(hf(h.Occupancy)))
+	mux.Handle("GET /api/vehicles/ending-soon", authed(hf(h.EndingSoon)))
 
 	// --- CSV export (outstanding | payments | persons | vehicles) ---
 	mux.Handle("GET /api/export/{entity}", authed(hf(h.ExportCSV)))

@@ -936,6 +936,24 @@
             page.append(odCard);
         }
 
+        // Verträge, die auslaufen — end_date in den nächsten 30 Tagen, ein Tap zum
+        // Gefährt (Vertrag verlängern / Status ändern).
+        let ending = [];
+        try { ending = (await api.get('/vehicles/ending-soon?days=30')) || []; } catch (e) { /* ignore */ }
+        if (ending.length) {
+            const enCard = el('div', { class: 'owe-card' });
+            enCard.append(el('div', { class: 'owe-head' },
+                el('span', { class: 'sec-eyebrow' }, 'Verträge laufen aus'),
+                el('span', { class: 'muted', style: 'font-size:.75rem' }, ending.length + ' · nächste 30 Tage')));
+            ending.slice(0, 6).forEach((e) => {
+                const soon = e.days_left <= 7;
+                enCard.append(el('a', { class: 'owe-row', href: '#/vehicles/' + e.id, style: 'text-decoration:none' },
+                    el('span', { class: 'owe-nm' }, esc(e.label), el('span', { class: 'muted', style: 'font-size:.72rem;margin-left:.4rem' }, esc(e.person_name))),
+                    el('span', { class: 'owe-amt', style: soon ? 'color:var(--danger)' : '' }, (e.days_left === 0 ? 'heute' : 'in ' + e.days_left + ' Tg.'), el('span', { class: 'owe-chev' }, '›'))));
+            });
+            page.append(enCard);
+        }
+
         // Revenue chart
         const revCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Umsatz pro Monat · ' + ov.year));
         revCard.append(chartLine(ov.revenue_by_month, MONTHS));
