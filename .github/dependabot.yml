@@ -12,8 +12,17 @@ updates:
       - "go"
     commit-message:
       prefix: "gomod"
+    # Batch routine minor/patch bumps into one PR; majors stay individual.
+    groups:
+      go-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
-  # GitHub Actions
+  # GitHub Actions (workflows). SHA-pinned `uses:` refs are updated in place,
+  # keeping the `# vX` comment in sync.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -24,8 +33,12 @@ updates:
       - "github-actions"
     commit-message:
       prefix: "ci"
+    groups:
+      actions:
+        patterns:
+          - "*"
 
-  # Docker base images
+  # Docker base image (Dockerfile)
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
@@ -36,3 +49,19 @@ updates:
       - "docker"
     commit-message:
       prefix: "docker"
+
+  # npm — accessibility test tooling (Playwright + axe-core), lockfile committed.
+  - package-ecosystem: "npm"
+    directory: "/tests/a11y"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "dependencies"
+      - "javascript"
+    commit-message:
+      prefix: "npm"
+    groups:
+      a11y-tooling:
+        patterns:
+          - "*"
