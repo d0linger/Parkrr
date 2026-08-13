@@ -1108,6 +1108,37 @@
             () => api.del('/persons/' + p.id), () => render(), node);
     }
 
+    // Issue a read-only self-service magic link for a person, with copy / e-mail /
+    // revoke actions. Creating the modal already mints a link (30-day expiry).
+    async function portalLinkFor(personId) {
+        let res;
+        try { res = await api.post('/persons/' + personId + '/portal-link', { send: false }); }
+        catch (e) { toast(e.message || 'Link konnte nicht erstellt werden', 'error'); return; }
+        const link = res.link;
+        await formModal({
+            title: 'Self-Service-Link',
+            submitLabel: 'Fertig',
+            fields: [],
+            onRender: (body) => {
+                const input = el('input', { type: 'text', readonly: 'readonly', value: link, style: 'width:100%;font-size:.82rem', onclick: (e) => e.currentTarget.select() });
+                body.append(el('label', {}, 'Link (read-only Kundenzugang)'), input);
+                const row = el('div', { class: 'btn-row', style: 'margin-top:.6rem;gap:.5rem;flex-wrap:wrap' });
+                row.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm',
+                    onclick: async () => { try { await navigator.clipboard.writeText(link); toast('Link kopiert', 'success'); } catch (_) { input.select(); toast('Bitte manuell kopieren', 'error'); } } }, 'Kopieren'));
+                if (res.has_email && state.capabilities.mail) {
+                    row.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm',
+                        onclick: async (e) => { const b = e.currentTarget; b.disabled = true; try { const r2 = await api.post('/persons/' + personId + '/portal-link', { send: true }); toast(r2.emailed ? 'Link per E-Mail gesendet' : 'E-Mail nicht gesendet', r2.emailed ? 'success' : 'error'); } catch (er) { toast(er.message, 'error'); b.disabled = false; } } }, icon('mail', 14), ' Per E-Mail'));
+                }
+                row.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm',
+                    onclick: async () => { if (!await confirmDialog('Alle Links widerrufen?', 'Bestehende Self-Service-Links dieser Person werden ungültig.', 'Widerrufen')) return; try { await api.post('/persons/' + personId + '/portal-link/revoke', {}); toast('Links widerrufen', 'success'); } catch (er) { toast(er.message, 'error'); } } }, 'Alle widerrufen'));
+                body.append(row);
+                body.append(el('p', { class: 'muted', style: 'font-size:.8rem;margin-top:.5rem' },
+                    'Gültig 30 Tage. Gewährt eine read-only Ansicht (Gefährte, offene Beträge, Rechnungen). Bereits beim Öffnen wurde ein Link erzeugt.'));
+            },
+            save: async () => {},
+        });
+    }
+
     // ---------- PERSON DETAIL ----------
     routes.person = async (page, id) => {
         await refreshLookups();
@@ -1136,7 +1167,8 @@
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' },
             el('button', { class: 'back-btn', onclick: () => navigate('persons'), 'aria-label': 'Zurück' }, '‹'),
-            el('h2', { style: 'margin:0' }, stats.person_name || 'Person')));
+            el('h2', { style: 'margin:0;flex:1' }, stats.person_name || 'Person'),
+            canManage() ? el('button', { class: 'btn btn-ghost btn-sm', title: 'Read-only Kundenzugang (Magic-Link)', onclick: () => portalLinkFor(id) }, icon('mail', 15), ' Self-Service') : null));
 
         // Balance card: lead with the one number the user came for (the open
         // balance) as a hero, then the derivation as a quiet breakdown.
@@ -5598,9 +5630,56 @@
         build();
     }
 
+    // Public self-service portal (no login): rendered when the hash is
+    // #/portal/<token>. Read-only view of one person's vehicles + invoices.
+    async function renderPortal(token) {
+        const lv = $('#login-view'); if (lv) lv.hidden = true;
+        const av = $('#app-view'); if (av) av.hidden = true;
+        const pv = $('#portal-view');
+        pv.hidden = false;
+        pv.innerHTML = '';
+        pv.append(skeleton(4));
+        let sum;
+        try { sum = await api.get('/portal/' + token + '/summary'); }
+        catch (e) {
+            pv.innerHTML = '';
+            pv.append(el('div', { class: 'portal-wrap' }, el('div', { class: 'portal-card' },
+                el('h1', {}, 'Parkrr'),
+                el('p', { class: 'muted' }, 'Dieser Link ist ungültig oder abgelaufen. Bitte fordern Sie einen neuen an.'))));
+            return;
+        }
+        pv.innerHTML = '';
+        const wrap = el('div', { class: 'portal-wrap' });
+        wrap.append(el('div', { class: 'portal-head' },
+            el('span', { class: 'brand-veh', 'data-veh': '34', 'aria-hidden': 'true' }),
+            el('div', {}, el('h1', {}, 'Parkrr'), el('p', { class: 'muted' }, esc(sum.person_name)))));
+        wrap.append(el('div', { class: 'portal-card' },
+            el('div', { class: 'muted' }, 'Offener Betrag'),
+            el('div', { class: 'portal-amt' + (sum.open_total > 0.005 ? ' owe' : '') }, eur(sum.open_total))));
+        const vcard = el('div', { class: 'portal-card' }, el('h2', {}, 'Ihre Gefährte'));
+        if (!sum.vehicles.length) vcard.append(el('p', { class: 'muted' }, 'Keine aktiven Gefährte.'));
+        else sum.vehicles.forEach((v) => vcard.append(el('div', { class: 'portal-row' },
+            el('span', {}, esc(v.label)), el('span', { class: 'badge' }, STATUS_LABEL[v.status] || v.status))));
+        wrap.append(vcard);
+        const icard = el('div', { class: 'portal-card' }, el('h2', {}, 'Rechnungen'));
+        if (!sum.invoices.length) icard.append(el('p', { class: 'muted' }, 'Keine Rechnungen.'));
+        else sum.invoices.forEach((iv) => icard.append(
+            el('a', { class: 'portal-row link', href: '/api/portal/' + token + '/invoices/' + iv.id + '/pdf', target: '_blank', rel: 'noopener' },
+                el('span', {}, 'Rechnung ' + esc(iv.number),
+                    el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, new Date(iv.issued_on).toLocaleDateString('de-DE') + (iv.status ? ' · ' + esc(iv.status) : ''))),
+                el('span', { style: 'text-align:right' }, eur(iv.total),
+                    iv.open > 0.005 ? el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, 'offen ' + eur(iv.open)) : null))));
+        wrap.append(icard);
+        wrap.append(el('p', { class: 'portal-foot muted' }, 'Read-only Ansicht · Parkrr'));
+        pv.append(wrap);
+    }
+
     async function init() {
         initTheme();
         applyBrand();
+        // Public portal short-circuits the whole app shell / auth flow.
+        const pm = (location.hash || '').match(/^#\/portal\/([A-Za-z0-9_-]+)$/);
+        if (pm) { await renderPortal(pm[1]); return; }
         bindStatic();
         setupInstallPrompt();
         setupOfflineIndicator();

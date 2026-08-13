@@ -1551,3 +1551,19 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .cmdk-type { font-size: .6rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; color: var(--accent-text); border: 1px solid var(--card-border); border-radius: 5px; padding: .1rem .4rem; flex: none; }
 .cmdk-lbl { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cmdk-sub { color: var(--muted); font-size: .8rem; margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
+
+/* Customer self-service portal (public, read-only) */
+.portal-view { min-height: 100dvh; padding: max(1rem, env(safe-area-inset-top)) 1rem 2rem; background: var(--bg); display: flex; justify-content: center; }
+.portal-wrap { width: 100%; max-width: 640px; display: flex; flex-direction: column; gap: 1rem; }
+.portal-head { display: flex; align-items: center; gap: .75rem; padding: .5rem .25rem; }
+.portal-head h1 { margin: 0; font-size: 1.3rem; }
+.portal-head p { margin: 0; }
+.portal-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 14px; padding: 1rem 1.1rem; }
+.portal-card h2 { margin: 0 0 .6rem; font-size: 1rem; }
+.portal-amt { font-size: 1.8rem; font-weight: 800; margin-top: .15rem; }
+.portal-amt.owe { color: var(--danger); }
+.portal-row { display: flex; justify-content: space-between; align-items: center; gap: .75rem; padding: .55rem 0; border-top: 1px solid var(--card-border); }
+.portal-card > .portal-row:first-of-type { border-top: 0; }
+a.portal-row.link { text-decoration: none; color: inherit; }
+a.portal-row.link:hover { color: var(--accent-text); }
+.portal-foot { text-align: center; font-size: .8rem; padding-bottom: env(safe-area-inset-bottom); }

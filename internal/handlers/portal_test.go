@@ -1,0 +1,111 @@
+package handlers
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+// createPortalLink issues a link for pid and returns the raw token.
+func createPortalLink(t *testing.T, h *Handler, pid int64) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/persons/"+strconv.FormatInt(pid, 10)+"/portal-link",
+		bytes.NewReader([]byte(`{}`)))
+	req.SetPathValue("id", strconv.FormatInt(pid, 10))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.CreatePortalLink(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create portal link: %d %s", w.Code, w.Body.String())
+	}
+	var res struct {
+		Link string `json:"link"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &res)
+	i := strings.Index(res.Link, "/#/portal/")
+	if i < 0 {
+		t.Fatalf("link missing portal path: %q", res.Link)
+	}
+	return res.Link[i+len("/#/portal/"):]
+}
+
+func getPortalSummary(t *testing.T, h *Handler, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/portal/"+token+"/summary", nil)
+	req.SetPathValue("token", token)
+	w := httptest.NewRecorder()
+	h.PortalSummary(w, req)
+	return w
+}
+
+func TestSelfServicePortal(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+
+	pid := createIntegrationPerson(t, h)
+	seedHandoverVehicle(t, h) // unrelated vehicle for another person (noise)
+	chargeFor(t, h, pid, 55.0)
+	iv := createInvoice(t, h, pid)
+
+	token := createPortalLink(t, h, pid)
+
+	// Valid token → summary with the person's data.
+	w := getPortalSummary(t, h, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("summary: %d %s", w.Code, w.Body.String())
+	}
+	var sum portalSummary
+	if err := json.Unmarshal(w.Body.Bytes(), &sum); err != nil {
+		t.Fatal(err)
+	}
+	if len(sum.Invoices) != 1 || sum.Invoices[0].Number != iv.Number {
+		t.Errorf("invoices = %+v, want the one issued", sum.Invoices)
+	}
+	if sum.OpenTotal <= 0 {
+		t.Errorf("open_total = %v, want > 0", sum.OpenTotal)
+	}
+
+	// Bogus token → 404.
+	if bw := getPortalSummary(t, h, "not-a-real-token"); bw.Code != http.StatusNotFound {
+		t.Errorf("bogus token: want 404, got %d", bw.Code)
+	}
+
+	// Own invoice PDF via the token.
+	preq := httptest.NewRequest(http.MethodGet, "/api/portal/"+token+"/invoices/"+strconv.FormatInt(iv.ID, 10)+"/pdf", nil)
+	preq.SetPathValue("token", token)
+	preq.SetPathValue("id", strconv.FormatInt(iv.ID, 10))
+	pw := httptest.NewRecorder()
+	h.PortalInvoicePDF(pw, preq)
+	if pw.Code != http.StatusOK || !bytes.HasPrefix(pw.Body.Bytes(), []byte("%PDF-")) {
+		t.Fatalf("portal pdf: %d", pw.Code)
+	}
+
+	// Another person's invoice must not be reachable with this token → 404.
+	otherPid := createIntegrationPerson(t, h)
+	chargeFor(t, h, otherPid, 10.0)
+	otherIv := createInvoice(t, h, otherPid)
+	oreq := httptest.NewRequest(http.MethodGet, "/api/portal/"+token+"/invoices/"+strconv.FormatInt(otherIv.ID, 10)+"/pdf", nil)
+	oreq.SetPathValue("token", token)
+	oreq.SetPathValue("id", strconv.FormatInt(otherIv.ID, 10))
+	ow := httptest.NewRecorder()
+	h.PortalInvoicePDF(ow, oreq)
+	if ow.Code != http.StatusNotFound {
+		t.Errorf("cross-person PDF: want 404, got %d", ow.Code)
+	}
+
+	// Revoke → token stops working.
+	rreq := httptest.NewRequest(http.MethodPost, "/api/persons/"+strconv.FormatInt(pid, 10)+"/portal-link/revoke", nil)
+	rreq.SetPathValue("id", strconv.FormatInt(pid, 10))
+	rw := httptest.NewRecorder()
+	h.RevokePortalLinks(rw, rreq)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("revoke: %d %s", rw.Code, rw.Body.String())
+	}
+	if aw := getPortalSummary(t, h, token); aw.Code != http.StatusNotFound {
+		t.Errorf("after revoke: want 404, got %d", aw.Code)
+	}
+}

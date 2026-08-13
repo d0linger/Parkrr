@@ -68,6 +68,10 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.HandleFunc("POST /api/auth/passkey/login/begin", ah.PasskeyLoginBegin)
 	mux.HandleFunc("POST /api/auth/passkey/login/finish", ah.PasskeyLoginFinish)
 
+	// --- Customer self-service portal (PUBLIC, token-scoped, read-only) ---
+	mux.HandleFunc("GET /api/portal/{token}/summary", h.PortalSummary)
+	mux.HandleFunc("GET /api/portal/{token}/invoices/{id}/pdf", h.PortalInvoicePDF)
+
 	// --- Auth (protected) ---
 	mux.Handle("POST /api/auth/logout", authed(hf(ah.Logout)))
 	mux.Handle("GET /api/auth/me", authed(hf(ah.Me)))
@@ -92,6 +96,8 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/persons/outstanding", authed(hf(h.OutstandingByPerson)))
 	mux.Handle("POST /api/persons", editor(hf(h.CreatePerson)))
 	mux.Handle("POST /api/import/persons", editor(hf(h.ImportPersons)))
+	mux.Handle("POST /api/persons/{id}/portal-link", editor(hf(h.CreatePortalLink)))
+	mux.Handle("POST /api/persons/{id}/portal-link/revoke", editor(hf(h.RevokePortalLinks)))
 	mux.Handle("PUT /api/persons/{id}", editor(hf(h.UpdatePerson)))
 	mux.Handle("DELETE /api/persons/{id}", editor(hf(h.DeletePerson)))
 	mux.Handle("GET /api/persons/{id}/stats", authed(hf(h.PersonStats)))

@@ -97,7 +97,12 @@ func (h *Handler) InvoicePDF(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "invoice not found")
 		return
 	}
+	writeInvoicePDF(w, iv)
+}
 
+// writeInvoicePDF renders the invoice to an A4 PDF and writes it to w. Shared by
+// the authenticated InvoicePDF endpoint and the public portal PDF endpoint.
+func writeInvoicePDF(w http.ResponseWriter, iv invoice) {
 	const (
 		left    = 20.0
 		right   = 20.0
