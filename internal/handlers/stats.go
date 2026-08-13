@@ -1025,6 +1025,65 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// hallOccupancy is per-hall placement: how many active vehicles are positioned
+// in that hall's floor plan.
+type hallOccupancy struct {
+	HallID     int64  `json:"hall_id"`
+	Name       string `json:"name"`
+	GarageName string `json:"garage_name"`
+	Placed     int    `json:"placed"`
+}
+
+// occupancyResponse answers "how full is the garage" for the dashboard. The plan
+// is free-form (area-based, no fixed slots), so occupancy is expressed as how many
+// active vehicles are positioned in a hall vs. how many exist.
+type occupancyResponse struct {
+	Active int             `json:"active"` // non-archived vehicles
+	Placed int             `json:"placed"` // …of those, positioned in a hall
+	Halls  []hallOccupancy `json:"halls"`
+}
+
+// Occupancy returns placement KPIs: total active vehicles, how many are placed in
+// a hall, and the per-hall placed count.
+func (h *Handler) Occupancy(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	resp := occupancyResponse{Halls: []hallOccupancy{}}
+	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM vehicles WHERE NOT archived`).Scan(&resp.Active); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM vehicles WHERE NOT archived AND spot_id IS NOT NULL`).Scan(&resp.Placed); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	rows, err := h.Pool.Query(ctx,
+		`SELECT h.id, h.name, g.name, count(v.id) FILTER (WHERE v.archived = false)
+		   FROM halls h
+		   JOIN garages g ON g.id = h.garage_id
+		   LEFT JOIN spots s ON s.hall_id = h.id
+		   LEFT JOIN vehicles v ON v.spot_id = s.id
+		  GROUP BY h.id, h.name, g.name
+		  ORDER BY g.name, h.name`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ho hallOccupancy
+		if err := rows.Scan(&ho.HallID, &ho.Name, &ho.GarageName, &ho.Placed); err != nil {
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		resp.Halls = append(resp.Halls, ho)
+	}
+	if rows.Err() != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // personMonthly computes combined rent (flat-rate agreements + uncovered
 // per-vehicle cost) per calendar month of a year, capped at today.
 func personMonthly(agreements []models.FlatRatePeriod, vehicles []models.Vehicle, cats map[int64]models.Category, year int, now time.Time) []float64 {

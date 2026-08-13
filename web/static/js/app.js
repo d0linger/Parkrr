@@ -824,6 +824,8 @@
     }
     routes.dashboard = async (page) => {
         const ov = await api.get('/overview' + (dashYear ? '?year=' + dashYear : ''));
+        let occ = null;
+        try { occ = await api.get('/occupancy'); } catch (e) { /* occupancy is best-effort */ }
         dashYear = ov.year;
         page.innerHTML = '';
         // Year switcher: browse past years; forward capped at the current year
@@ -883,6 +885,23 @@
             stat(ov.total_vehicles, 'Gefährte gesamt', { icon: 'car' }),
             stat(ov.total_categories, 'Tarife', { icon: 'tag' }),
         ));
+
+        // Belegung — how many active Gefährte are positioned in a hall plan, plus a
+        // per-hall breakdown. The plan is area-based (no fixed slots), so this is a
+        // placement count, not "free slots".
+        if (occ && occ.active > 0) {
+            const occCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Belegung · im Plan platziert'));
+            occCard.append(el('div', { class: 'stat-grid' },
+                stat(occ.placed + ' / ' + occ.active, 'Gefährte platziert', { icon: 'warehouse', tone: 'teal' }),
+                stat(Math.max(0, occ.active - occ.placed), 'noch nicht platziert', { icon: 'car' })));
+            (occ.halls || []).filter((hh) => hh.placed > 0).forEach((hh) => {
+                occCard.append(el('div', { class: 'status-row' },
+                    el('div', { class: 'status-name' }, esc(hh.name)),
+                    el('div', { class: 'muted', style: 'font-size:.75rem' }, esc(hh.garage_name)),
+                    el('div', { class: 'bar-val' }, String(hh.placed))));
+            });
+            page.append(occCard);
+        }
 
         // Top open balances — turns the "Offen gesamt" number into an action
         // list: who to follow up with, one tap to their page.
