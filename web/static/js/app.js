@@ -2510,7 +2510,9 @@
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' },
             el('button', { class: 'back-btn', onclick: () => navigate('vehicles'), 'aria-label': 'Zurück' }, '‹'),
-            el('h2', { style: 'margin:0;flex:1' }, esc(vehicleTitle(v))), statusBadge(v.status)));
+            el('h2', { style: 'margin:0;flex:1' }, esc(vehicleTitle(v))),
+            el('a', { class: 'btn btn-ghost btn-sm', href: '/api/vehicles/' + v.id + '/label', target: '_blank', rel: 'noopener', title: 'Druck-Label mit QR-Code' }, '🖶 Label'),
+            statusBadge(v.status)));
 
         page.append(el('div', { class: 'card' },
             el('div', { class: 'balance' }, el('span', {}, 'Person'), el('span', {}, el('a', { href: '#/persons/' + v.person_id }, esc(v.person_name)))),

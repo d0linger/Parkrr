@@ -133,6 +133,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/vehicles/{id}/reactivate", editor(hf(h.ReactivateVehicle)))
 	mux.Handle("POST /api/vehicles/{id}/duplicate", editor(hf(h.DuplicateVehicle)))
 	mux.Handle("GET /api/vehicles/{id}/history", authed(hf(h.VehicleHistory)))
+	mux.Handle("GET /api/vehicles/{id}/label", authed(hf(h.VehicleLabel)))
 	// Literal segment beats the {id} pattern in Go's ServeMux, so this is safe.
 	mux.Handle("GET /api/vehicles/unassigned", authed(hf(h.ListUnassignedVehicles)))
 
