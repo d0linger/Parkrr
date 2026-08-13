@@ -968,11 +968,23 @@
         let oweOk = true;
         try { oweMap = (await api.get('/persons/outstanding')) || {}; }
         catch (e) { oweOk = false; toast('Salden konnten nicht geladen werden', 'error'); }
+        // Overdue invoices → worst days-overdue per person, for a Fälligkeits-Badge.
+        const overdueByPerson = {};
+        try { ((await api.get('/invoices/overdue')) || []).forEach((o) => { overdueByPerson[o.person_id] = Math.max(overdueByPerson[o.person_id] || 0, o.days_overdue); }); }
+        catch (e) { /* dashboard already surfaces overdue; ignore here */ }
         mountList(page, {
             title: 'Personen', emptyIcon: 'users', emptyText: 'Noch keine Personen.',
             onAdd: canManage() ? () => personForm() : null,
             items: state.persons,
             searchText: (p) => norm(personName(p) + ' ' + p.email + ' ' + p.phone),
+            // Filter toggle: only persons with an open balance (Mahn-/Nachfass-Sicht).
+            controls: (refresh, cs) => {
+                const btn = el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-pressed': 'false',
+                    onclick: () => { cs.owedOnly = !cs.owedOnly; btn.className = 'btn btn-sm ' + (cs.owedOnly ? 'btn-primary' : 'btn-ghost'); btn.setAttribute('aria-pressed', String(!!cs.owedOnly)); refresh(); } },
+                    'Nur offen');
+                return [btn];
+            },
+            extraFilter: (p, cs) => !cs.owedOnly || (Number(oweMap[p.id]) || 0) > 0.005,
             sorts: [
                 { label: 'Name A–Z', cmp: (a, b) => personName(a).localeCompare(personName(b)) },
                 { label: 'Name Z–A', cmp: (a, b) => personName(b).localeCompare(personName(a)) },
@@ -995,9 +1007,11 @@
                             el('h3', {}, personName(p), ' ', p.has_flat_rate ? el('span', { class: 'badge badge-active', title: 'Pauschale' }, 'Pauschale') : null),
                             el('div', { class: 'card-meta' }, [p.email, p.phone].filter(Boolean).join(' · ') || 'keine Kontaktdaten')),
                         el('div', { class: 'row-side' },
-                            known ? el('div', { class: 'pcard__status' }, owes
-                                ? el('span', { class: 'pcard__owe', title: 'Offener Saldo' }, eur(bal))
-                                : el('span', { class: 'pcard__paid', title: 'Keine offenen Beträge' }, 'Bezahlt')) : null,
+                            known ? el('div', { class: 'pcard__status' },
+                                owes
+                                    ? el('span', { class: 'pcard__owe', title: 'Offener Saldo' }, eur(bal))
+                                    : el('span', { class: 'pcard__paid', title: 'Keine offenen Beträge' }, 'Bezahlt'),
+                                overdueByPerson[p.id] ? el('span', { class: 'badge', style: 'background:var(--danger);color:#fff;margin-top:.25rem', title: 'Überfällige Rechnung' }, overdueByPerson[p.id] + ' Tg. überfällig') : null) : null,
                             el('div', { class: 'card-actions' },
                                 el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': personName(p) + ' öffnen', onclick: () => navigate('persons/' + p.id) }, '›'),
                                 canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' bearbeiten', 'aria-label': personName(p) + ' bearbeiten', onclick: () => personForm(p) }, icon('edit')),
