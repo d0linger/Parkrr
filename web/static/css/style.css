@@ -1539,3 +1539,15 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-block.excl .gp-rl-name{text-transform:uppercase;letter-spacing:.05em;font-size:.62rem;text-shadow:none}
 .gp-block.gp-small .gp-rl-code,.gp-block.gp-small .gp-rl-dim{display:none}
 .gp-block.gp-tiny .gp-rlabel{display:none}
+
+/* ---------- Command palette (⌘K global search) ---------- */
+.cmdk { position: fixed; inset: 0; z-index: 60; background: rgba(6,12,20,.5); display: flex; align-items: flex-start; justify-content: center; padding: 11vh 1rem 1rem; }
+.cmdk-box { width: min(560px, 96vw); background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 14px; box-shadow: 0 24px 60px -18px rgba(0,0,0,.5); overflow: hidden; }
+.cmdk-input { width: 100%; border: 0; border-bottom: 1px solid var(--card-border); background: transparent; color: var(--text); font: inherit; font-size: 1.05rem; padding: 1rem 1.1rem; outline: none; }
+.cmdk-results { max-height: 52vh; overflow: auto; padding: .35rem; }
+.cmdk-hint { color: var(--muted); font-size: .82rem; padding: .8rem 1rem; }
+.cmdk-row { display: flex; align-items: center; gap: .6rem; padding: .55rem .7rem; border-radius: 9px; cursor: pointer; }
+.cmdk-row.on, .cmdk-row:hover { background: rgba(128,128,128,.15); }
+.cmdk-type { font-size: .6rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; color: var(--accent-text); border: 1px solid var(--card-border); border-radius: 5px; padding: .1rem .4rem; flex: none; }
+.cmdk-lbl { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cmdk-sub { color: var(--muted); font-size: .8rem; margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }

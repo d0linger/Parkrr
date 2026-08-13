@@ -5410,6 +5410,53 @@
         document.head.appendChild(link);
     }
 
+    // Global command palette (⌘K / search button): fuzzy jump to a person or
+    // Gefährt. Works over the loaded lists (small dataset) — no backend needed.
+    async function openCommandPalette() {
+        if (!state.user || document.getElementById('cmdk')) return;
+        const overlay = el('div', { id: 'cmdk', class: 'cmdk' });
+        const input = el('input', { class: 'cmdk-input', type: 'search', placeholder: 'Person, Gefährt, Kennzeichen …', autocomplete: 'off', 'aria-label': 'Suche' });
+        const results = el('div', { class: 'cmdk-results' });
+        overlay.append(el('div', { class: 'cmdk-box' }, input, results));
+        document.body.append(overlay);
+        input.focus();
+
+        let items = [], sel = 0;
+        const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey, true); };
+        overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+
+        let persons = state.persons || [], vehicles = [];
+        try { [persons, vehicles] = await Promise.all([persons.length ? Promise.resolve(persons) : api.get('/persons'), api.get('/vehicles')]); }
+        catch (e) { /* search what we already have */ }
+
+        const build = () => {
+            const q = norm(input.value.trim());
+            items = [];
+            if (q) {
+                persons.forEach((p) => { if (norm(personName(p) + ' ' + (p.email || '') + ' ' + (p.phone || '')).includes(q)) items.push({ type: 'Person', label: personName(p), sub: [p.email, p.phone].filter(Boolean).join(' · '), nav: 'persons/' + p.id }); });
+                vehicles.forEach((v) => { if (norm(vehicleTitle(v) + ' ' + (v.license_plate || '') + ' ' + (v.person_name || '') + ' ' + (v.category_name || '')).includes(q)) items.push({ type: 'Gefährt', label: vehicleTitle(v), sub: [v.license_plate, v.person_name].filter(Boolean).join(' · '), nav: 'vehicles/' + v.id }); });
+            }
+            items = items.slice(0, 12);
+            if (sel >= items.length) sel = Math.max(0, items.length - 1);
+            results.innerHTML = '';
+            if (!q) { results.append(el('div', { class: 'cmdk-hint' }, '↑↓ wählen · Enter öffnen · Esc schließen')); return; }
+            if (!items.length) { results.append(el('div', { class: 'cmdk-hint' }, 'Keine Treffer.')); return; }
+            items.forEach((it, i) => results.append(el('div', { class: 'cmdk-row' + (i === sel ? ' on' : ''), onclick: () => { close(); navigate(it.nav); } },
+                el('span', { class: 'cmdk-type' }, it.type),
+                el('span', { class: 'cmdk-lbl' }, it.label),
+                it.sub ? el('span', { class: 'cmdk-sub' }, it.sub) : null)));
+        };
+        const onKey = (e) => {
+            if (e.key === 'Escape') { e.preventDefault(); close(); }
+            else if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(items.length - 1, sel + 1); build(); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(0, sel - 1); build(); }
+            else if (e.key === 'Enter') { e.preventDefault(); if (items[sel]) { close(); navigate(items[sel].nav); } }
+        };
+        document.addEventListener('keydown', onKey, true);
+        input.addEventListener('input', () => { sel = 0; build(); });
+        build();
+    }
+
     async function init() {
         initTheme();
         applyBrand();
@@ -5420,6 +5467,10 @@
         try { state.user = await api.get('/auth/me'); showApp(); }
         catch { showLogin(); }
         if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+        const sb = $('#search-btn'); if (sb) sb.addEventListener('click', () => openCommandPalette());
+        document.addEventListener('keydown', (e) => {
+            if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K') && state.user) { e.preventDefault(); openCommandPalette(); }
+        });
     }
     document.addEventListener('DOMContentLoaded', init);
 })();
