@@ -211,9 +211,22 @@
             $('#confirm-body').textContent = message;
             const ok = $('#confirm-ok'); const cancel = $('#confirm-cancel');
             ok.textContent = okLabel;
-            const done = (v) => { ok.removeEventListener('click', onOk); cancel.removeEventListener('click', onCancel); dlg.close(); resolve(v); };
+            let settled = false;
+            const done = (v) => {
+                ok.removeEventListener('click', onOk);
+                cancel.removeEventListener('click', onCancel);
+                if (settled) return;
+                settled = true;
+                resolve(v); // resolve before close so the close-event's done(false) is a no-op
+                dlg.close();
+            };
             const onOk = () => done(true); const onCancel = () => done(false);
             ok.addEventListener('click', onOk); cancel.addEventListener('click', onCancel);
+            // Backdrop click / Escape close the dialog without a button — treat as
+            // cancel and detach the listeners so they never accumulate on the shared
+            // #confirm buttons (otherwise a re-opened confirm could fire a previously
+            // backdrop-cancelled action).
+            dlg.addEventListener('close', () => done(false), { once: true });
             dlg.showModal();
         });
     }
