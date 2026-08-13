@@ -152,6 +152,13 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/photos/{id}", authed(hf(h.GetPhoto)))
 	mux.Handle("DELETE /api/photos/{id}", editor(hf(h.DeletePhoto)))
 
+	// --- Handover protocols (Übergabeprotokoll) ---
+	mux.Handle("GET /api/vehicles/{id}/handovers", authed(hf(h.ListHandovers)))
+	mux.Handle("POST /api/vehicles/{id}/handovers", editor(hf(h.CreateHandover)))
+	mux.Handle("GET /api/handovers/{id}/signature", authed(hf(h.GetHandoverSignature)))
+	mux.Handle("GET /api/handovers/{id}/pdf", authed(hf(h.HandoverPDF)))
+	mux.Handle("DELETE /api/handovers/{id}", editor(hf(h.DeleteHandover)))
+
 	// --- Categories (tariffs) ---
 	mux.Handle("GET /api/categories", authed(hf(h.ListCategories)))
 	mux.Handle("POST /api/categories", editor(hf(h.CreateCategory)))

@@ -2551,8 +2551,9 @@
     // ---------- VEHICLE DETAIL ----------
     routes.vehicle = async (page, id) => {
         await refreshLookups();
-        const [vehicles, photos, history] = await Promise.all([
+        const [vehicles, photos, history, handovers] = await Promise.all([
             api.get('/vehicles'), api.get('/vehicles/' + id + '/photos'), api.get('/vehicles/' + id + '/history'),
+            api.get('/vehicles/' + id + '/handovers').catch(() => []),
         ]);
         const v = vehicles.find((x) => x.id === id);
         if (!v) { page.innerHTML = ''; page.append(emptyState('car', 'Gefährt nicht gefunden.')); return; }
@@ -2654,6 +2655,31 @@
         }
         page.append(photoCard);
 
+        // Übergabeprotokolle (Zustand + Unterschrift bei Ein-/Auslagerung)
+        const hoCard = el('div', { class: 'card' });
+        const hoHead = el('div', { class: 'page-head' }, el('h3', {}, 'Übergabeprotokolle'));
+        if (canManage()) hoHead.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => handoverForm(id) }, '+ Protokoll'));
+        hoCard.append(hoHead);
+        if (!handovers.length) hoCard.append(el('p', { class: 'muted' }, 'Noch keine Protokolle.'));
+        else {
+            handovers.forEach((ho) => {
+                const dirLbl = ho.direction === 'auslagerung' ? 'Auslagerung' : 'Einlagerung';
+                const row = el('div', { class: 'pay-row card' },
+                    el('div', { class: 'pay-main' },
+                        el('div', { class: 'pay-method' }, dirLbl,
+                            ho.has_signature ? el('span', { class: 'badge badge-active', style: 'margin-left:.4rem' }, 'signiert') : null),
+                        el('div', { class: 'pay-date' }, fmtDateTime(ho.created_at)
+                            + (ho.signer_name ? ' · ' + esc(ho.signer_name) : '')
+                            + (ho.created_by ? ' · ' + esc(ho.created_by) : ''))),
+                    el('div', { class: 'card-actions' },
+                        el('a', { class: 'btn btn-ghost btn-sm', href: '/api/handovers/' + ho.id + '/pdf', target: '_blank', rel: 'noopener' }, icon('receipt', 14), ' PDF'),
+                        canManage() ? el('button', { class: 'btn btn-ghost btn-sm', title: 'Protokoll löschen', 'aria-label': 'Protokoll löschen', onclick: (e) => delHandover(ho, e.currentTarget.closest('.pay-row')) }, icon('trash', 14)) : null));
+                if (ho.notes) row.querySelector('.pay-main').append(el('div', { class: 'inv-bills' }, esc(ho.notes)));
+                hoCard.append(row);
+            });
+        }
+        page.append(hoCard);
+
         // history timeline
         if (history.length) {
             const hc = el('div', { class: 'card' }, el('h3', {}, 'Verlauf'));
@@ -2698,6 +2724,53 @@
     }
     function delPhoto(p, node) {
         deleteWithUndo('Foto löschen?', 'Das Foto wird entfernt.', () => api.del('/photos/' + p.id), () => render(), node);
+    }
+    async function delHandover(ho, node) {
+        if (!await confirmDialog('Protokoll löschen?', 'Das Übergabeprotokoll wird dauerhaft entfernt.', 'Löschen')) return;
+        try { await api.del('/handovers/' + ho.id); if (node) node.remove(); toast('Protokoll gelöscht', 'success'); }
+        catch (e) { toast(e.message || 'Löschen fehlgeschlagen', 'error'); }
+    }
+    // Übergabeprotokoll form: direction + condition notes + signer + a drawn signature.
+    async function handoverForm(vehicleId) {
+        let sigData = () => '';
+        await formModal({
+            title: 'Übergabeprotokoll',
+            submitLabel: 'Speichern',
+            fields: [
+                { name: 'direction', label: 'Art', type: 'select', value: 'einlagerung',
+                    options: [{ value: 'einlagerung', label: 'Einlagerung (Übernahme)' }, { value: 'auslagerung', label: 'Auslagerung (Rückgabe)' }] },
+                { name: 'notes', label: 'Zustand / Anmerkungen', type: 'textarea', placeholder: 'z. B. Kratzer vorne links, Tank halb voll …' },
+                { name: 'signer_name', label: 'Name (Unterschrift)', type: 'text', placeholder: 'Name der unterschreibenden Person' },
+            ],
+            onRender: (body) => {
+                segmentedField(body, 'direction', [{ v: 'einlagerung', l: 'Einlagerung' }, { v: 'auslagerung', l: 'Auslagerung' }]);
+                const wrap = el('div', { class: 'field' }, el('label', {}, 'Unterschrift'));
+                const canvas = el('canvas', { width: 500, height: 180,
+                    style: 'width:100%;height:180px;touch-action:none;border:1px solid var(--border);border-radius:8px;background:#fff;display:block' });
+                const ctx = canvas.getContext('2d');
+                ctx.lineWidth = 2.4; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111';
+                let drawing = false, dirty = false, lx = 0, ly = 0;
+                const at = (e) => { const r = canvas.getBoundingClientRect(); return { x: (e.clientX - r.left) * (canvas.width / r.width), y: (e.clientY - r.top) * (canvas.height / r.height) }; };
+                canvas.addEventListener('pointerdown', (e) => { drawing = true; dirty = true; const p = at(e); lx = p.x; ly = p.y; try { canvas.setPointerCapture(e.pointerId); } catch (_) {} });
+                canvas.addEventListener('pointermove', (e) => { if (!drawing) return; const p = at(e); ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(p.x, p.y); ctx.stroke(); lx = p.x; ly = p.y; });
+                const stop = () => { drawing = false; };
+                canvas.addEventListener('pointerup', stop);
+                canvas.addEventListener('pointercancel', stop);
+                canvas.addEventListener('pointerleave', stop);
+                const clearBtn = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', style: 'margin-top:.4rem',
+                    onclick: () => { ctx.clearRect(0, 0, canvas.width, canvas.height); dirty = false; } }, 'Unterschrift löschen');
+                wrap.append(canvas, clearBtn);
+                body.append(wrap);
+                sigData = () => (dirty ? canvas.toDataURL('image/png') : '');
+            },
+            save: async (d) => {
+                await api.post('/vehicles/' + vehicleId + '/handovers', {
+                    direction: d.direction, notes: d.notes || '', signer_name: d.signer_name || '', signature: sigData(),
+                });
+                toast('Protokoll gespeichert', 'success');
+                render();
+            },
+        });
     }
     function lightbox(photoId) {
         const dlg = el('dialog', { class: 'lightbox' }, el('img', { src: '/api/photos/' + photoId, alt: '' }));
