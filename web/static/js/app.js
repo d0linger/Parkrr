@@ -55,6 +55,7 @@
         settings: '<path d="M6 4v7M6 15v5M12 4v3M12 11v9M18 4v11M18 19v1"/><circle cx="6" cy="13" r="1.8"/><circle cx="12" cy="9" r="1.8"/><circle cx="18" cy="17" r="1.8"/>',
         users: '<circle cx="9" cy="8" r="3.4"/><path d="M3.5 20c.6-3.4 2.9-5.2 5.5-5.2s4.9 1.8 5.5 5.2"/><path d="M16 5.4a3.4 3.4 0 0 1 0 5.9M17.8 14.9c1.6.8 2.6 2.4 3 5.1"/>',
         log: '<rect x="5" y="3.5" width="14" height="17" rx="2"/><path d="M9 8.5h6M9 12h6M9 15.5h4"/>',
+        upload: '<path d="M12 15V4M8 8l4-4 4 4"/><path d="M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/>',
         theme: '<path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9Z"/>',
         logout: '<path d="M9 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3M15 8l4 4-4 4M19 12H9"/>',
         box: '<path d="M3 8l9-5 9 5v8l-9 5-9-5V8Z"/><path d="M3 8l9 5 9-5M12 13v8"/>',
@@ -1019,7 +1020,32 @@
                 const btn = el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-pressed': 'false',
                     onclick: () => { cs.owedOnly = !cs.owedOnly; btn.className = 'btn btn-sm ' + (cs.owedOnly ? 'btn-primary' : 'btn-ghost'); btn.setAttribute('aria-pressed', String(!!cs.owedOnly)); refresh(); } },
                     'Nur offen');
-                return [btn];
+                const out = [btn];
+                // CSV bulk import (editor+). Round-trips the "Personen" export:
+                // columns vorname, nachname, email, telefon, adresse (';' or ',').
+                if (canManage()) {
+                    const csvIn = el('input', { type: 'file', accept: '.csv,text/csv', style: 'display:none' });
+                    csvIn.addEventListener('change', async () => {
+                        const f = csvIn.files[0];
+                        csvIn.value = '';
+                        if (!f) return;
+                        const fd = new FormData();
+                        fd.append('file', f);
+                        try {
+                            const res = await api.upload('/import/persons', fd);
+                            const parts = [res.imported + ' importiert'];
+                            if (res.skipped) parts.push(res.skipped + ' übersprungen');
+                            if (res.failed) parts.push(res.failed + ' fehlerhaft');
+                            toast(parts.join(' · '), res.failed ? 'error' : 'success');
+                            render();
+                        } catch (e) { toast('Import fehlgeschlagen: ' + (e.message || e), 'error'); }
+                    });
+                    const imp = el('button', { class: 'btn btn-ghost btn-sm', type: 'button',
+                        title: 'Personen aus CSV importieren (Spalten: vorname, nachname, email, telefon, adresse)',
+                        onclick: () => csvIn.click() }, icon('upload'), ' Import');
+                    out.push(imp, csvIn);
+                }
+                return out;
             },
             extraFilter: (p, cs) => !cs.owedOnly || (Number(oweMap[p.id]) || 0) > 0.005,
             sorts: [
