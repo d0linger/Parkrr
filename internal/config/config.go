@@ -30,15 +30,22 @@ type Config struct {
 	SessionAbsoluteMaxAge int  // seconds; hard cap on a session's total lifetime
 	SecureCookies         bool // force the Secure flag on cookies (default true; set false only for plain-HTTP dev)
 	TrustedProxies        bool
-	RateLimitPerMin       int // general per-IP request budget (0 = disabled)
+	// When TrustedProxies is on, forwarded headers (X-Forwarded-For/-Proto) are
+	// honored only if the direct peer's IP falls inside one of these CIDRs. Empty
+	// keeps the legacy behavior of trusting the headers unconditionally (a startup
+	// warning is emitted in that case). e.g. "10.0.0.0/8,127.0.0.1/32".
+	TrustedProxyCIDRs []string
+	RateLimitPerMin   int // general per-IP request budget (0 = disabled)
 
 	// WebAuthn / passkeys (feature-flagged: enabled only when RPID is set)
-	WebAuthnRPID          string   // Relying Party ID = the site's registrable domain
-	WebAuthnRPDisplayName string   // human-readable name shown by the authenticator
-	WebAuthnOrigins       []string // allowed origins, e.g. https://parkrr.example.com
+	WebAuthnRPID           string   // Relying Party ID = the site's registrable domain
+	WebAuthnRPDisplayName  string   // human-readable name shown by the authenticator
+	WebAuthnOrigins        []string // allowed origins, e.g. https://parkrr.example.com
+	WebAuthnSuspendOnClone bool     // on a WebAuthn clone warning, delete the offending credential (force re-enroll); default off = audit only
 
 	// Observability & data lifecycle
 	MetricsToken       string // Bearer token required to scrape /metrics ("" = open)
+	MetricsRequireAuth bool   // when true and MetricsToken is empty, /metrics is disabled (fail closed) instead of served open
 	AuditRetentionDays int    // prune audit entries older than N days (0 = keep forever)
 
 	// Account security
@@ -76,13 +83,16 @@ func Load() (*Config, error) {
 		SessionAbsoluteMaxAge: getenvInt("PARKRR_SESSION_ABSOLUTE_MAX_AGE", 60*60*24*90),
 		SecureCookies:         getenvBool("PARKRR_SECURE_COOKIES", true),
 		TrustedProxies:        getenvBool("PARKRR_TRUSTED_PROXY", false),
+		TrustedProxyCIDRs:     splitList(os.Getenv("PARKRR_TRUSTED_PROXY_CIDRS")),
 		RateLimitPerMin:       getenvInt("PARKRR_RATE_LIMIT_PER_MIN", 600),
 
-		WebAuthnRPID:          getenv("PARKRR_WEBAUTHN_RP_ID", ""),
-		WebAuthnRPDisplayName: getenv("PARKRR_WEBAUTHN_RP_NAME", "Parkrr"),
-		WebAuthnOrigins:       splitList(os.Getenv("PARKRR_WEBAUTHN_ORIGINS")),
+		WebAuthnRPID:           getenv("PARKRR_WEBAUTHN_RP_ID", ""),
+		WebAuthnRPDisplayName:  getenv("PARKRR_WEBAUTHN_RP_NAME", "Parkrr"),
+		WebAuthnOrigins:        splitList(os.Getenv("PARKRR_WEBAUTHN_ORIGINS")),
+		WebAuthnSuspendOnClone: getenvBool("PARKRR_WEBAUTHN_SUSPEND_ON_CLONE", false),
 
-		MetricsToken: getenv("PARKRR_METRICS_TOKEN", ""),
+		MetricsToken:       getenv("PARKRR_METRICS_TOKEN", ""),
+		MetricsRequireAuth: getenvBool("PARKRR_METRICS_REQUIRE_AUTH", false),
 		// Default to the 7-year BAO §132 retention window; money-trail rows
 		// (invoice/payment/billing) are never pruned regardless (see PruneAuditLog).
 		AuditRetentionDays: getenvInt("PARKRR_AUDIT_RETENTION_DAYS", 2555),

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -151,14 +152,33 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Prevent demoting the last admin.
-	if role != models.RoleAdmin && h.isLastAdmin(r, id) {
-		writeError(w, http.StatusConflict, "cannot demote the last remaining admin")
+	// The last-admin check and the role change must be atomic: two concurrent
+	// demotions could each observe >1 admin and race to zero. Do the check (which
+	// locks the admin rows) and the UPDATE in one transaction (finding SH-04).
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update user")
 		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+
+	// Prevent demoting the last admin. adminsRemaining locks the admin rows, so a
+	// concurrent demotion/deletion blocks until we commit (fail-closed: abort on
+	// any query error rather than assuming "not last").
+	if role != models.RoleAdmin {
+		count, targetIsAdmin, aerr := adminsRemaining(r.Context(), tx, id)
+		if aerr != nil {
+			writeError(w, http.StatusInternalServerError, "could not update user")
+			return
+		}
+		if targetIsAdmin && count <= 1 {
+			writeError(w, http.StatusConflict, "cannot demote the last remaining admin")
+			return
+		}
 	}
 
 	var old models.User
-	if err := h.Pool.QueryRow(r.Context(),
+	if err := tx.QueryRow(r.Context(),
 		`SELECT id, username, email, role, is_admin FROM users WHERE id=$1`, id).
 		Scan(&old.ID, &old.Username, &old.Email, &old.Role, &old.IsAdmin); err != nil {
 		// A missing user must 404, not silently "succeed": the UPDATE below would
@@ -178,24 +198,29 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "could not hash password")
 			return
 		}
-		_, err = h.Pool.Exec(r.Context(),
+		if _, err := tx.Exec(r.Context(),
 			`UPDATE users SET username=$1, email=$2, role=$3, is_admin=$4, password_hash=$5, updated_at=now()
-			 WHERE id=$6`, req.Username, req.Email, role, isAdmin, hash, id)
-		if err != nil {
+			 WHERE id=$6`, req.Username, req.Email, role, isAdmin, hash, id); err != nil {
 			handleUserUpdateErr(w, err)
 			return
 		}
 		// An admin-forced password change must sign the user out everywhere so
 		// the old credentials can no longer ride an existing session.
-		_, _ = h.Pool.Exec(r.Context(), `DELETE FROM sessions WHERE user_id=$1`, id)
+		if _, err := tx.Exec(r.Context(), `DELETE FROM sessions WHERE user_id=$1`, id); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not update user")
+			return
+		}
 	} else {
-		_, err := h.Pool.Exec(r.Context(),
+		if _, err := tx.Exec(r.Context(),
 			`UPDATE users SET username=$1, email=$2, role=$3, is_admin=$4, updated_at=now()
-			 WHERE id=$5`, req.Username, req.Email, role, isAdmin, id)
-		if err != nil {
+			 WHERE id=$5`, req.Username, req.Email, role, isAdmin, id); err != nil {
 			handleUserUpdateErr(w, err)
 			return
 		}
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update user")
+		return
 	}
 	newU := old
 	newU.Username, newU.Email, newU.Role, newU.IsAdmin = req.Username, req.Email, role, isAdmin
@@ -221,17 +246,35 @@ func (h *Handler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "you cannot delete your own account")
 		return
 	}
-	if h.isLastAdmin(r, id) {
+	// Lock the admin rows and delete atomically so two concurrent deletions
+	// (or a delete racing a demotion) cannot both pass the last-admin check and
+	// leave zero admins (finding SH-04).
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete user")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	count, targetIsAdmin, aerr := adminsRemaining(r.Context(), tx, id)
+	if aerr != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete user")
+		return
+	}
+	if targetIsAdmin && count <= 1 {
 		writeError(w, http.StatusConflict, "cannot delete the last remaining admin")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM users WHERE id = $1`, id)
+	ct, err := tx.Exec(r.Context(), `DELETE FROM users WHERE id = $1`, id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete user")
 		return
 	}
 	if ct.RowsAffected() == 0 {
 		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete user")
 		return
 	}
 	h.audit(r, "delete", "user", id, "deleted user")
@@ -267,17 +310,30 @@ func (h *Handler) ResetUserTOTP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reset"})
 }
 
-// isLastAdmin reports whether the given id is an admin and the only one.
-func (h *Handler) isLastAdmin(r *http.Request, id int64) bool {
-	var count int
-	var isAdmin bool
-	if err := h.Pool.QueryRow(r.Context(),
-		`SELECT (SELECT count(*) FROM users WHERE is_admin),
-		        COALESCE((SELECT is_admin FROM users WHERE id=$1), false)`, id,
-	).Scan(&count, &isAdmin); err != nil {
-		return false
+// adminsRemaining locks every admin row (FOR UPDATE, ordered by id so concurrent
+// callers acquire the locks in the same order and serialize instead of
+// deadlocking), then returns the current admin count and whether id is one of
+// them. Run inside the caller's transaction, this makes the last-admin check and
+// the following demotion/deletion atomic: a racing operation blocks on the locked
+// rows until we commit, then sees the updated state (finding SH-04). The caller
+// must treat a returned error as fail-closed and abort the mutation.
+func adminsRemaining(ctx context.Context, tx pgx.Tx, id int64) (count int, targetIsAdmin bool, err error) {
+	rows, err := tx.Query(ctx, `SELECT id FROM users WHERE is_admin ORDER BY id FOR UPDATE`)
+	if err != nil {
+		return 0, false, err
 	}
-	return isAdmin && count <= 1
+	defer rows.Close()
+	for rows.Next() {
+		var aid int64
+		if err := rows.Scan(&aid); err != nil {
+			return 0, false, err
+		}
+		count++
+		if aid == id {
+			targetIsAdmin = true
+		}
+	}
+	return count, targetIsAdmin, rows.Err()
 }
 
 func handleUserUpdateErr(w http.ResponseWriter, err error) {

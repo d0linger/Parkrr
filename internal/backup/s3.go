@@ -74,6 +74,23 @@ func UploadS3(ctx context.Context, c S3Config, name string, data []byte, keep in
 	return nil
 }
 
+// Memory guards for S3 (finding SH-06): the bucket is trusted no more than any
+// other external input, so a rogue writer or compromised endpoint must not be
+// able to exhaust process memory via a huge listing or an oversized object.
+const (
+	// maxS3ListObjects bounds how many objects a listing/prune accumulates. Real
+	// backup buckets hold at most a handful; anything past this is treated as an
+	// error rather than read into memory.
+	maxS3ListObjects = 10000
+	// maxS3DownloadBytes caps a single restored object. A restore reads the object
+	// fully into memory (io.ReadAll) and the verify/restore steps buffer more on
+	// top, so keep this well under the container's memory budget rather than at a
+	// theoretical maximum — a planted object above it is rejected up front by
+	// StatObject. 256 MiB comfortably covers a real dump while bounding the worst
+	// case (finding: reduce maxS3DownloadBytes).
+	maxS3DownloadBytes = 256 << 20 // 256 MiB
+)
+
 // ListS3 returns the backup objects in the bucket, newest first.
 func ListS3(ctx context.Context, c S3Config) ([]S3Object, error) {
 	cl, err := c.client()
@@ -84,10 +101,17 @@ func ListS3(ctx context.Context, c S3Config) ([]S3Object, error) {
 }
 
 func listWith(ctx context.Context, cl *minio.Client, c S3Config) ([]S3Object, error) {
+	// Cancel the listing on early return so minio-go's producer goroutine doesn't
+	// block forever trying to send into a channel we stopped draining.
+	lctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	var objs []S3Object
-	for o := range cl.ListObjects(ctx, c.Bucket, minio.ListObjectsOptions{Prefix: c.objectKey("parkrr-"), Recursive: true}) {
+	for o := range cl.ListObjects(lctx, c.Bucket, minio.ListObjectsOptions{Prefix: c.objectKey("parkrr-"), Recursive: true}) {
 		if o.Err != nil {
 			return nil, o.Err
+		}
+		if len(objs) >= maxS3ListObjects {
+			return nil, fmt.Errorf("backup: bucket holds more than %d objects; aborting list to bound memory", maxS3ListObjects)
 		}
 		objs = append(objs, S3Object{Name: path.Base(o.Key), Size: o.Size, Modified: o.LastModified})
 	}
@@ -116,18 +140,38 @@ func TestS3(ctx context.Context, c S3Config) error {
 	return nil
 }
 
-// DownloadS3 fetches one backup object (used for restore-from-S3, no size limit).
+// DownloadS3 fetches one backup object (used for restore-from-S3), bounded to
+// maxS3DownloadBytes so an oversized object cannot exhaust memory.
 func DownloadS3(ctx context.Context, c S3Config, name string) ([]byte, error) {
 	cl, err := c.client()
 	if err != nil {
 		return nil, err
 	}
-	obj, err := cl.GetObject(ctx, c.Bucket, c.objectKey(name), minio.GetObjectOptions{})
+	key := c.objectKey(name)
+	// A cheap HEAD first: reject an over-large object before any body is read.
+	st, err := cl.StatObject(ctx, c.Bucket, key, minio.StatObjectOptions{})
+	if err != nil {
+		return nil, err
+	}
+	if st.Size > maxS3DownloadBytes {
+		return nil, fmt.Errorf("backup: S3 object %q is %d bytes, over the %d-byte limit", name, st.Size, maxS3DownloadBytes)
+	}
+	obj, err := cl.GetObject(ctx, c.Bucket, key, minio.GetObjectOptions{})
 	if err != nil {
 		return nil, err
 	}
 	defer obj.Close()
-	return io.ReadAll(obj)
+	// Enforce the cap on the actual stream too (guards a size that grows between
+	// STAT and GET, or a lying Content-Length): read one byte past the limit and
+	// fail if it is reached.
+	data, err := io.ReadAll(io.LimitReader(obj, maxS3DownloadBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxS3DownloadBytes {
+		return nil, fmt.Errorf("backup: S3 object %q exceeds the %d-byte limit", name, maxS3DownloadBytes)
+	}
+	return data, nil
 }
 
 func pruneS3(ctx context.Context, cl *minio.Client, c S3Config, keep int) {

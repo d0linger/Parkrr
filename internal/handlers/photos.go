@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"errors"
 	"image"
 	"image/jpeg"
 	"image/png"
@@ -13,11 +14,23 @@ import (
 
 // Upload limits.
 const (
-	maxPhotoBytes       = 8 << 20 // 8 MiB raw upload cap
-	maxPhotoDimension   = 8000    // px, guards against decompression bombs
+	maxPhotoBytes     = 8 << 20    // 8 MiB raw upload cap
+	maxPhotoDimension = 8000       // px per axis, guards against decompression bombs
+	maxPhotoPixels    = 32_000_000 // total decoded-pixel budget (~128 MiB RGBA): a small,
+	//                                   highly compressible file can pass the per-axis cap yet
+	//                                   still be e.g. 8000x8000 = 64 MP; bound the product too.
 	maxPhotosPerVehicle = 20
 	jpegQuality         = 85
 )
+
+// decodeSem bounds how many image decode/re-encode operations run at once, so a
+// burst of large uploads can't multiply peak decoded memory across requests.
+var decodeSem = make(chan struct{}, 4)
+
+// errDecodeBusy is returned by sanitizeImage when all decode slots are occupied.
+// Callers map it to 503 so a flood of uploads sheds load instead of queueing
+// (each waiter would otherwise pin its raw bytes in memory).
+var errDecodeBusy = errors.New("image processing is busy")
 
 type photoMeta struct {
 	ID          int64     `json:"id"`
@@ -105,6 +118,10 @@ func (h *Handler) UploadPhoto(w http.ResponseWriter, r *http.Request) {
 
 	data, contentType, err := sanitizeImage(raw)
 	if err != nil {
+		if errors.Is(err, errDecodeBusy) {
+			writeError(w, http.StatusServiceUnavailable, "server busy, please retry shortly")
+			return
+		}
 		writeError(w, http.StatusUnsupportedMediaType, err.Error())
 		return
 	}
@@ -145,6 +162,19 @@ func sanitizeImage(raw []byte) ([]byte, string, error) {
 	if cfg.Width > maxPhotoDimension || cfg.Height > maxPhotoDimension ||
 		cfg.Width <= 0 || cfg.Height <= 0 {
 		return nil, "", errImage("image dimensions out of range")
+	}
+	// Overflow-safe total-pixel budget (int64 product) BEFORE the full decode, so a
+	// bomb that stays under the per-axis cap still can't allocate hundreds of MiB.
+	if int64(cfg.Width)*int64(cfg.Height) > maxPhotoPixels {
+		return nil, "", errImage("image is too large")
+	}
+	// Serialize the memory-heavy decode/re-encode behind a small semaphore. Shed
+	// load (rather than queue unbounded) when every slot is busy.
+	select {
+	case decodeSem <- struct{}{}:
+		defer func() { <-decodeSem }()
+	default:
+		return nil, "", errDecodeBusy
 	}
 	img, _, err := image.Decode(bytes.NewReader(raw))
 	if err != nil {

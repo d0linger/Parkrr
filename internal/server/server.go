@@ -25,7 +25,7 @@ import (
 // New builds the top-level HTTP handler with all routes registered. Background
 // goroutines started here (rate-limiter cleanup, login-throttle cleanup) run
 // until stop is closed.
-func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, checkBreachedPasswords, failClosedOnBreach bool, backupKey, dbURL, backupDir string, s3 backup.S3Config, stop <-chan struct{}) (http.Handler, error) {
+func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, metricsRequireAuth, checkBreachedPasswords, failClosedOnBreach bool, backupKey, dbURL, backupDir string, s3 backup.S3Config, stop <-chan struct{}) (http.Handler, error) {
 	h := handlers.New(pool)
 	h.CheckBreachedPasswords = checkBreachedPasswords
 	h.FailClosedOnBreach = failClosedOnBreach
@@ -211,7 +211,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/backup/restore-s3", admin(hf(h.BackupRestoreS3)))
 
 	// --- Health, readiness and metrics ---
-	registerObservability(mux, pool, metricsToken)
+	registerObservability(mux, pool, metricsToken, metricsRequireAuth)
 
 	// --- Static assets and SPA shell ---
 	staticFS, err := fs.Sub(web.StaticFS, "static")

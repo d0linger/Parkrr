@@ -38,10 +38,12 @@ jobs:
       COVERAGE_MIN: "40"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: "1.26.5"
           cache: true
@@ -71,7 +73,9 @@ jobs:
     name: Docker build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       # Minify embedded static JS before the image build (same as docker-publish),
       # so the validation build exercises the shipped, minified assets.
       - name: Minify static JavaScript
@@ -82,3 +86,25 @@ jobs:
           node --check web/static/sw.js
       - name: Build image
         run: docker build -t parkrr:ci .
+
+  actions-pinned:
+    name: Actions pinned to SHA
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      # Supply-chain guard: every external `uses:` must reference an immutable
+      # 40-char commit SHA (a movable tag can be retagged to hostile code). Local
+      # actions (uses: ./...) are exempt. Keeps the SHA pinning from regressing.
+      - name: Verify every external action is pinned to a full commit SHA
+        run: |
+          unpinned=$(grep -rnE 'uses:[[:space:]]+[^[:space:]]+' .github/workflows/ \
+            | grep -vE 'uses:[[:space:]]+\./' \
+            | grep -vE '@[0-9a-fA-F]{40}([[:space:]]|#|$)' || true)
+          if [ -n "$unpinned" ]; then
+            echo "::error::GitHub Actions must be pinned to a full 40-char commit SHA:"
+            echo "$unpinned"
+            exit 1
+          fi
+          echo "All external actions are SHA-pinned."

@@ -60,13 +60,6 @@ func (m *Manager) EncryptTOTPSecret(plaintext string) (string, error) {
 	return m.encrypt(plaintext)
 }
 
-// Seal encrypts arbitrary short-lived state (e.g. a WebAuthn ceremony challenge)
-// for storage in a cookie. Open reverses it.
-func (m *Manager) Seal(plaintext string) (string, error) { return m.encrypt(plaintext) }
-
-// Open decrypts a value produced by Seal.
-func (m *Manager) Open(ciphertext string) (string, error) { return m.decrypt(ciphertext) }
-
 // ValidateEncryptedTOTP decrypts the stored secret and checks the code.
 func (m *Manager) ValidateEncryptedTOTP(encoded, code string) bool {
 	secret, err := m.decrypt(encoded)

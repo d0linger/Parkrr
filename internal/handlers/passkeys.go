@@ -2,10 +2,13 @@ package handlers
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-webauthn/webauthn/webauthn"
 
@@ -13,13 +16,27 @@ import (
 	"github.com/preining/parkrr/internal/models"
 )
 
-// waCookie holds the short-lived, encrypted WebAuthn ceremony state (challenge)
-// between the begin and finish steps.
+// waCookie carries only an opaque ceremony id; the actual WebAuthn ceremony state
+// (challenge) lives server-side in webauthn_ceremonies (finding SH-03), so it
+// expires and is single-use rather than being a replayable, self-contained cookie.
 const waCookie = "parkrr_wa"
+
+// waCeremonyTTL bounds how long a begun ceremony may be finished.
+const waCeremonyTTL = 5 * time.Minute
 
 type waCeremony struct {
 	Session webauthn.SessionData `json:"s"`
 	Name    string               `json:"n,omitempty"`
+}
+
+// newCeremonyID returns an unguessable id used as the ceremony's primary key and
+// the value of the cookie that ties a finish request back to its begin.
+func newCeremonyID() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 // Capabilities reports optional features to the (possibly unauthenticated)
@@ -38,39 +55,70 @@ func (h *AuthHandler) passkeysEnabled(w http.ResponseWriter) bool {
 	return true
 }
 
-func (h *AuthHandler) storeCeremony(w http.ResponseWriter, sd webauthn.SessionData, name string) error {
+// storeCeremony persists the ceremony state server-side (expiring, single-use)
+// and sets a short-lived cookie carrying only the opaque id. Expired rows are
+// pruned opportunistically (the table is tiny and short-lived).
+func (h *AuthHandler) storeCeremony(ctx context.Context, w http.ResponseWriter, sd webauthn.SessionData, name string) error {
 	blob, err := json.Marshal(waCeremony{Session: sd, Name: name})
 	if err != nil {
 		return err
 	}
-	sealed, err := h.Auth.Seal(string(blob))
+	id, err := newCeremonyID()
 	if err != nil {
+		return err
+	}
+	_, _ = h.Pool.Exec(ctx, `DELETE FROM webauthn_ceremonies WHERE expires_at < now()`)
+	if _, err := h.Pool.Exec(ctx,
+		`INSERT INTO webauthn_ceremonies (id, data, expires_at) VALUES ($1,$2,$3)`,
+		id, blob, time.Now().Add(waCeremonyTTL)); err != nil {
 		return err
 	}
 	// Secure is unconditionally true: WebAuthn only runs in a secure context
 	// (HTTPS, or http://localhost which browsers treat as secure and still send
 	// Secure cookies to), so this cookie never needs to work over plain HTTP.
 	http.SetCookie(w, &http.Cookie{
-		Name: waCookie, Value: sealed, Path: "/", MaxAge: 300,
+		Name: waCookie, Value: id, Path: "/", MaxAge: int(waCeremonyTTL.Seconds()),
 		HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode,
 	})
 	return nil
 }
 
-func (h *AuthHandler) loadCeremony(r *http.Request) (waCeremony, error) {
+// loadCeremony atomically claims the ceremony named by the cookie: it locks the
+// row, verifies it is unconsumed and unexpired, and marks it consumed — so a
+// captured cookie can be used at most once, and a concurrent finish loses the
+// race (finding SH-03).
+func (h *AuthHandler) loadCeremony(ctx context.Context, r *http.Request) (waCeremony, error) {
 	var cer waCeremony
 	c, err := r.Cookie(waCookie)
 	if err != nil || c.Value == "" {
 		return cer, errors.New("no ceremony in progress")
 	}
-	plain, err := h.Auth.Open(c.Value)
+	tx, err := h.Pool.Begin(ctx)
 	if err != nil {
 		return cer, err
 	}
-	return cer, json.Unmarshal([]byte(plain), &cer)
+	defer func() { _ = tx.Rollback(ctx) }()
+	var data []byte
+	if err := tx.QueryRow(ctx,
+		`SELECT data FROM webauthn_ceremonies
+		 WHERE id=$1 AND consumed_at IS NULL AND expires_at > now()
+		 FOR UPDATE`, c.Value).Scan(&data); err != nil {
+		return cer, errors.New("no ceremony in progress")
+	}
+	if _, err := tx.Exec(ctx, `UPDATE webauthn_ceremonies SET consumed_at=now() WHERE id=$1`, c.Value); err != nil {
+		return cer, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return cer, err
+	}
+	return cer, json.Unmarshal(data, &cer)
 }
 
-func (h *AuthHandler) clearCeremony(w http.ResponseWriter) {
+// clearCeremony deletes the ceremony row (by cookie id) and expires the cookie.
+func (h *AuthHandler) clearCeremony(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+	if c, err := r.Cookie(waCookie); err == nil && c.Value != "" {
+		_, _ = h.Pool.Exec(ctx, `DELETE FROM webauthn_ceremonies WHERE id=$1`, c.Value)
+	}
 	// Deletion cookie mirroring how the ceremony cookie was set (Secure always on).
 	http.SetCookie(w, &http.Cookie{
 		Name: waCookie, Value: "", Path: "/", MaxAge: -1,
@@ -89,6 +137,10 @@ func (h *AuthHandler) PasskeyRegisterBegin(w http.ResponseWriter, r *http.Reques
 	u, _ := auth.UserFrom(r.Context())
 	var body struct {
 		Name string `json:"name"`
+		// Password re-authenticates when the login is no longer recent (step-up,
+		// finding SH-02). Checked BEFORE the ceremony so the client can prompt for
+		// it without wasting an authenticator touch.
+		Password string `json:"password"`
 	}
 	_ = decodeJSON(r, &body) // name is optional
 
@@ -97,13 +149,18 @@ func (h *AuthHandler) PasskeyRegisterBegin(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "name is too long")
 		return
 	}
+	// Step-up: registering a durable new factor requires a recent primary-factor
+	// login, or the account password if that window has closed (finding SH-02).
+	if !h.requireStepUp(w, r, u.Username, body.Password) {
+		return
+	}
 
 	opts, sd, err := h.WebAuthn.BeginRegistration(r.Context(), u)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not start passkey registration")
 		return
 	}
-	if err := h.storeCeremony(w, *sd, body.Name); err != nil {
+	if err := h.storeCeremony(r.Context(), w, *sd, body.Name); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not start passkey registration")
 		return
 	}
@@ -122,12 +179,12 @@ func (h *AuthHandler) PasskeyRegisterFinish(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	cer, err := h.loadCeremony(r)
+	cer, err := h.loadCeremony(r.Context(), r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "passkey registration expired, please retry")
 		return
 	}
-	h.clearCeremony(w)
+	h.clearCeremony(r.Context(), w, r)
 	if err := h.WebAuthn.FinishRegistration(r.Context(), u, cer.Session, r, cer.Name); err != nil {
 		// Only a real verification failure counts toward the throttle; a backend
 		// error is transient and must not lock the user out.
@@ -220,7 +277,7 @@ func (h *AuthHandler) PasskeyLoginBegin(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "could not start passkey login")
 		return
 	}
-	if err := h.storeCeremony(w, *sd, ""); err != nil {
+	if err := h.storeCeremony(r.Context(), w, *sd, ""); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not start passkey login")
 		return
 	}
@@ -236,14 +293,14 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	cer, err := h.loadCeremony(r)
+	cer, err := h.loadCeremony(r.Context(), r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "passkey login expired, please retry")
 		return
 	}
-	h.clearCeremony(w)
+	h.clearCeremony(r.Context(), w, r)
 
-	uid, err := h.WebAuthn.FinishLogin(r.Context(), cer.Session, r)
+	uid, cloneWarning, err := h.WebAuthn.FinishLogin(r.Context(), cer.Session, r)
 	if err != nil {
 		// A backend error is not a brute-force signal; don't spend the throttle
 		// budget on it and surface it as a server error.
@@ -274,6 +331,12 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 	slog.Info("login", "user", u.Username, "user_id", uid, "ip", h.Auth.ClientIP(r),
 		"role", u.Role, "method", "passkey")
 	h.auditAs(r, uid, u.Username, "login", "user", uid, u.Username+" signed in (passkey)")
+	// Finding P-06: a clone warning means the authenticator's sign counter did not
+	// advance (possible cloned key). Record it as a security audit event; the
+	// credential is deleted too when PARKRR_WEBAUTHN_SUSPEND_ON_CLONE is set.
+	if cloneWarning {
+		h.auditAs(r, uid, u.Username, "security", "passkey", uid, u.Username+": passkey clone warning (sign counter did not advance)")
+	}
 	writeJSON(w, http.StatusOK, u)
 }
 

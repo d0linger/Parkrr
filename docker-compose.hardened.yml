@@ -22,8 +22,10 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    # Belt-and-suspenders: the image already sets USER nonroot (uid 65532).
-    user: "65532:65532"
+    # Match the image's own non-root user (Dockerfile: adduser -u 10001 parkrr) and the
+    # /backups owner. Forcing a different uid (e.g. 65532) makes /backups unwritable and
+    # silently breaks scheduled backups.
+    user: "10001:10001"
     mem_limit: 256m
     pids_limit: 128
     cpus: 1.0

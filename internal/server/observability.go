@@ -87,8 +87,11 @@ func metricsMiddleware(mux *http.ServeMux, next http.Handler) http.Handler {
 
 // health wires liveness, readiness and metrics endpoints onto the mux.
 // metricsToken, when non-empty, is required as a Bearer token to scrape
-// /metrics; when empty the endpoint is open (suitable for a private network).
-func registerObservability(mux *http.ServeMux, pool *pgxpool.Pool, metricsToken string) {
+// /metrics. When empty and requireAuth is false the endpoint is served open
+// (suitable for a private network) but a startup warning is logged so the
+// exposure is never silent; when requireAuth is true it is not registered at
+// all (fail closed) — finding P-05.
+func registerObservability(mux *http.ServeMux, pool *pgxpool.Pool, metricsToken string, requireAuth bool) {
 	// Liveness: the process is up. Never touches the database.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": "ok", "version": Version})
@@ -106,6 +109,16 @@ func registerObservability(mux *http.ServeMux, pool *pgxpool.Pool, metricsToken 
 		writeJSONStatus(w, http.StatusOK, map[string]string{"status": "ready"})
 	})
 
+	if metricsToken == "" && requireAuth {
+		// Fail closed: an operator asked for authenticated metrics but supplied no
+		// token, so do not expose the endpoint at all.
+		slog.Warn("/metrics not registered: PARKRR_METRICS_REQUIRE_AUTH is set but PARKRR_METRICS_TOKEN is empty (finding P-05)")
+		return
+	}
+	if metricsToken == "" {
+		slog.Warn("/metrics is served WITHOUT authentication (PARKRR_METRICS_TOKEN is empty): " +
+			"only safe on a private/internal network. Set a token, or PARKRR_METRICS_REQUIRE_AUTH=true to disable it (finding P-05).")
+	}
 	reg := registerMetrics(pool)
 	promHandler := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 	mux.Handle("GET /metrics", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

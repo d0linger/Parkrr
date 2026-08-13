@@ -118,6 +118,15 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if err := authMgr.SetTrustedProxyCIDRs(cfg.TrustedProxyCIDRs); err != nil {
+		return err
+	}
+	if cfg.TrustedProxies && len(cfg.TrustedProxyCIDRs) == 0 {
+		slog.Warn("PARKRR_TRUSTED_PROXY is on but no PARKRR_TRUSTED_PROXY_CIDRS set: " +
+			"forwarded client IPs are trusted from ANY direct peer — a client with direct " +
+			"backend access can spoof audit/rate-limit IPs. Set the proxy CIDR allowlist and " +
+			"ensure the backend is only reachable via the proxy (finding SH-05).")
+	}
 
 	// Bootstrap/refresh the admin account from environment variables.
 	if err := bootstrapAdmin(ctx, pool, cfg); err != nil {
@@ -129,6 +138,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	webAuthn.SetSuspendOnClone(cfg.WebAuthnSuspendOnClone)
 	if webAuthn.Enabled() {
 		slog.Info("passkeys enabled", "rp_id", cfg.WebAuthnRPID, "origins", cfg.WebAuthnOrigins)
 	}
@@ -147,7 +157,7 @@ func run() error {
 		AccessKey: cfg.S3AccessKey, SecretKey: cfg.S3SecretKey,
 		Region: cfg.S3Region, Prefix: cfg.S3Prefix, UseSSL: cfg.S3UseSSL,
 	}
-	handler, err := server.New(pool, authMgr, webAuthn, cfg.RateLimitPerMin, cfg.MetricsToken,
+	handler, err := server.New(pool, authMgr, webAuthn, cfg.RateLimitPerMin, cfg.MetricsToken, cfg.MetricsRequireAuth,
 		cfg.CheckBreachedPasswords, cfg.FailClosedOnBreach, cfg.BackupKey, cfg.DatabaseURL, cfg.BackupDir, s3, cleanupStop)
 	if err != nil {
 		return err

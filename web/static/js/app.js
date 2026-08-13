@@ -215,6 +215,31 @@
         });
     }
 
+    // Step-up re-authentication (SH-02): a sensitive change (enabling 2FA, adding a
+    // passkey) is allowed without a password shortly after login; once that window
+    // closes the server answers 403 "reauth_required". withStepUp runs the action,
+    // and on that signal prompts for the account password and retries once. A
+    // cancelled prompt throws an error flagged { cancelled: true } so callers can
+    // bail silently.
+    async function promptStepUpPassword() {
+        const data = await formModal({
+            title: 'Bestätigung erforderlich',
+            submitLabel: 'Bestätigen',
+            fields: [{ name: 'password', label: 'Kontopasswort', type: 'password', required: true, help: 'Zur Sicherheit bei sicherheitsrelevanten Änderungen.' }],
+        });
+        return data ? data.password : null;
+    }
+    async function withStepUp(doCall) {
+        try {
+            return await doCall('');
+        } catch (e) {
+            if (!e || (e.message || '') !== 'reauth_required') throw e;
+            const pw = await promptStepUpPassword();
+            if (!pw) throw Object.assign(new Error('Abgebrochen'), { cancelled: true });
+            return await doCall(pw);
+        }
+    }
+
     // delete with an undo window (delayed server call)
     async function deleteWithUndo(title, message, doDelete, onDone, node) {
         if (!await confirmDialog(title, message)) return;
@@ -3732,12 +3757,12 @@
             const btn = el('button', { class: 'btn btn-primary btn-block', style: 'margin-top:.8rem' }, 'Aktivieren');
             btn.addEventListener('click', async () => {
                 try {
-                    const res = await api.post('/auth/2fa/enable', { code: inp.value });
+                    const res = await withStepUp((pw) => api.post('/auth/2fa/enable', { code: inp.value, password: pw }));
                     toast('2FA aktiviert', 'success');
                     close();
                     state.user.totp_enabled = true;
                     showBackupCodes(res.backup_codes || []);
-                } catch (e) { toast(e.message, 'error'); }
+                } catch (e) { if (e && e.cancelled) return; toast(e.message, 'error'); }
             });
             body.append(btn);
         });
@@ -5140,7 +5165,7 @@
     async function passkeyRegister() {
         if (!webauthnSupported()) { toast('Dieses Gerät unterstützt keine Passkeys', 'error'); return; }
         try {
-            const opts = await api.post('/passkeys/register/begin', {});
+            const opts = await withStepUp((pw) => api.post('/passkeys/register/begin', { password: pw }));
             const pk = opts.publicKey;
             pk.challenge = b64uToBuf(pk.challenge);
             pk.user.id = b64uToBuf(pk.user.id);
@@ -5158,7 +5183,7 @@
             toast('Passkey hinzugefügt', 'success');
             render();
         } catch (e) {
-            if (e && e.name === 'NotAllowedError') return; // user cancelled the prompt
+            if (e && (e.name === 'NotAllowedError' || e.cancelled)) return; // user cancelled the prompt / step-up
             toast(e.message || 'Passkey-Registrierung fehlgeschlagen', 'error');
         }
     }

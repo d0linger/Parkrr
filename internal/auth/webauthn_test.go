@@ -5,6 +5,24 @@ import (
 	"testing"
 )
 
+// SetSuspendOnClone must be nil-safe (passkeys disabled => service is nil) and
+// otherwise set the flag (finding P-06). The full clone-detection + delete path
+// runs inside FinishLogin and requires a real cloned-authenticator assertion, so
+// it is exercised end-to-end rather than here.
+func TestSetSuspendOnClone(t *testing.T) {
+	var nilSvc *WebAuthnService
+	nilSvc.SetSuspendOnClone(true) // must not panic on a nil service
+
+	s := &WebAuthnService{}
+	if s.suspendOnClone {
+		t.Fatal("default should be off")
+	}
+	s.SetSuspendOnClone(true)
+	if !s.suspendOnClone {
+		t.Error("SetSuspendOnClone(true) did not set the flag")
+	}
+}
+
 func TestWebAuthnInternalErrClassification(t *testing.T) {
 	base := errors.New("db down")
 	wrapped := internalErr(base)
