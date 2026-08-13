@@ -346,12 +346,19 @@
                 if (f.help) body.append(el('div', { class: 'card-meta', id: helpId }, f.help));
             }
             const form = $('#modal-form');
+            let settled = false;
+            const settle = (v) => { if (!settled) { settled = true; resolve(v); } };
             const cleanup = () => {
                 form.removeEventListener('submit', onSubmit);
                 $('#modal-cancel').removeEventListener('click', onCancel);
                 $('#modal-close').removeEventListener('click', onCancel);
             };
-            const onCancel = () => { cleanup(); dlg.close(); resolve(null); };
+            // Detach the submit handler on ANY close path (buttons, Escape, backdrop
+            // click). Otherwise a re-opened form accumulates stale submit listeners on
+            // the shared #modal-form, and a single OK fires the save once per prior
+            // open — e.g. two accidental backdrop-dismisses then OK = three saves.
+            dlg.addEventListener('close', () => { cleanup(); settle(null); }, { once: true });
+            const onCancel = () => { cleanup(); settle(null); dlg.close(); };
             // Toggle the modal's busy state while an async save is in flight.
             const setPending = (on) => {
                 const submit = $('#modal-submit');
@@ -389,13 +396,15 @@
                     }
                 }
                 if (firstInvalid) { firstInvalid.focus(); return; }
-                if (!save) { cleanup(); dlg.close(); resolve(data); return; }
+                // settle() before dlg.close() so the close-event's settle(null) is a
+                // no-op and callers still receive the submitted data.
+                if (!save) { cleanup(); settle(data); dlg.close(); return; }
                 // Async save: keep the modal open, show progress, surface errors inline.
                 formErr.hidden = true;
                 setPending(true);
                 try {
                     await save(data);
-                    cleanup(); dlg.close(); resolve(data);
+                    cleanup(); settle(data); dlg.close();
                 } catch (err) {
                     formErr.textContent = err.message || 'Speichern fehlgeschlagen';
                     formErr.hidden = false;
