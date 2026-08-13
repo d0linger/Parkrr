@@ -88,9 +88,13 @@ func (h *Handler) VehicleLabel(w http.ResponseWriter, r *http.Request) {
 		"default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	_, _ = w.Write([]byte(renderVehicleLabel(
+	// Every interpolated field is HTML-escaped and the QR is a server-generated
+	// data: URI; together with the tight per-response CSP above, no untrusted
+	// markup can reach the output.
+	page := renderVehicleLabel(
 		html.EscapeString(label), html.EscapeString(plate),
-		html.EscapeString(person), html.EscapeString(loc), qrURI)))
+		html.EscapeString(person), html.EscapeString(loc), qrURI)
+	_, _ = w.Write([]byte(page)) // #nosec G705 -- inputs HTML-escaped above (taint false positive)
 }
 
 func renderVehicleLabel(label, plate, person, loc, qrURI string) string {

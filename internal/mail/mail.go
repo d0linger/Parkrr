@@ -73,7 +73,7 @@ func (s *smtpSender) Send(ctx context.Context, to []string, subject, body string
 	if len(rcpts) == 0 {
 		return errors.New("mail: no recipients")
 	}
-	from := addrOnly(s.cfg.From)
+	from := stripHdr(addrOnly(s.cfg.From))
 	if from == "" {
 		return errors.New("mail: no From address configured")
 	}
@@ -144,16 +144,30 @@ func (s *smtpSender) Send(ctx context.Context, to []string, subject, body string
 	return c.Quit()
 }
 
+// stripHdr removes CR/LF/NUL so a value placed in a message header cannot inject
+// additional header lines (SMTP header injection, CWE-93). Applied to every
+// header field (recipients, subject, sender) as an explicit sanitizer barrier —
+// net/smtp's Rcpt/Mail and Q-encoding also guard this, this makes it defensive
+// and unmistakable.
+func stripHdr(s string) string {
+	return strings.NewReplacer("\r", "", "\n", "", "\x00", "").Replace(s)
+}
+
 // buildMessage assembles an RFC 5322 plain-text UTF-8 message with CRLF lines.
 func buildMessage(from, fromName string, to []string, subject, body string) []byte {
-	fromHeader := addrOnly(from)
+	fromAddr := stripHdr(addrOnly(from))
+	fromHeader := fromAddr
 	if strings.TrimSpace(fromName) != "" {
-		fromHeader = mime.QEncoding.Encode("utf-8", fromName) + " <" + addrOnly(from) + ">"
+		fromHeader = mime.QEncoding.Encode("utf-8", stripHdr(fromName)) + " <" + fromAddr + ">"
+	}
+	toClean := make([]string, 0, len(to))
+	for _, a := range to {
+		toClean = append(toClean, stripHdr(a))
 	}
 	var b strings.Builder
 	b.WriteString("From: " + fromHeader + "\r\n")
-	b.WriteString("To: " + strings.Join(to, ", ") + "\r\n")
-	b.WriteString("Subject: " + mime.QEncoding.Encode("utf-8", subject) + "\r\n")
+	b.WriteString("To: " + strings.Join(toClean, ", ") + "\r\n")
+	b.WriteString("Subject: " + mime.QEncoding.Encode("utf-8", stripHdr(subject)) + "\r\n")
 	b.WriteString("Date: " + time.Now().Format(time.RFC1123Z) + "\r\n")
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
@@ -178,7 +192,7 @@ func addrOnly(s string) string {
 func cleanAddrs(in []string) []string {
 	out := make([]string, 0, len(in))
 	for _, a := range in {
-		if a = strings.TrimSpace(a); a != "" {
+		if a = stripHdr(strings.TrimSpace(a)); a != "" {
 			out = append(out, a)
 		}
 	}

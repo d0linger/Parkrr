@@ -44,6 +44,24 @@ func TestAddrOnly(t *testing.T) {
 	}
 }
 
+// A CR/LF in any header field must be stripped so it cannot inject a new header
+// line (SMTP header injection). The body may keep its own newlines.
+func TestBuildMessageHeaderInjection(t *testing.T) {
+	msg := string(buildMessage(
+		"billing@park.rr", "Parkrr\r\nBcc: a@evil",
+		[]string{"kunde@example.com\r\nBcc: b@evil"},
+		"Erinnerung\r\nBcc: c@evil",
+		"Zeile 1\nZeile 2"))
+	for _, bad := range []string{"\r\nBcc:", "\nBcc:", "\r\nbcc:"} {
+		if strings.Contains(msg, bad) {
+			t.Errorf("CRLF header injection survived (%q)\n---\n%s", bad, msg)
+		}
+	}
+	if !strings.Contains(msg, "\r\n\r\nZeile 1\r\nZeile 2") {
+		t.Error("body/separator not preserved")
+	}
+}
+
 func TestBuildMessageHeaders(t *testing.T) {
 	msg := string(buildMessage("billing@park.rr", "Parkrr Büro", []string{"kunde@example.com"},
 		"Zahlungserinnerung – Rechnung 2026-0001", "Zeile 1\nZeile 2"))
