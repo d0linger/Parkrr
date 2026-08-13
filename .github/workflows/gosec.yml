@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       # gosec 2.27.x needs a newer Go to build than the app targets; pin both
       # the Go version and the gosec version so the scan is deterministic and

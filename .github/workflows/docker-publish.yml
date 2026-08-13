@@ -29,6 +29,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Minify static JavaScript
         run: |
@@ -63,6 +65,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       # Minify the embedded static JS before the image build so the shipped image
       # (go:embed web/static) carries the compact assets. Runs in the ephemeral

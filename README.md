@@ -166,7 +166,7 @@ PARKRR_WEBAUTHN_ORIGINS=https://parkrr.example.com
 | `GET /metrics` | Prometheus (request count/latency, DB pool) | `PARKRR_METRICS_TOKEN` (Bearer), if set |
 
 The container ships a `HEALTHCHECK` (`parkrr healthcheck`, self-probing — the
-distroless image has no shell/curl). The **audit log is append-only** (a DB
+image ships no curl/wget). The **audit log is append-only** (a DB
 trigger blocks UPDATE/DELETE); only the retention job
 (`PARKRR_AUDIT_RETENTION_DAYS`) may remove old entries.
 
@@ -225,7 +225,7 @@ server {
 
 Parkrr runs cleanly under a **rootless engine** (rootless Docker or Podman). It
 needs no privileged features, no host networking, and no bind mounts: the app
-image already runs as a **non-root** user (distroless `nonroot`, uid 65532),
+image already runs as a **non-root** user (the `parkrr` user, uid 10001),
 photos live in the database, and the DB uses a **named volume**. The published
 ports (`8099:8080`) are ≥ 1024, so no extra capability is required to bind them.
 
@@ -303,7 +303,7 @@ demoted or deleted.
 - **Audit log** of every change; structured logs (slog, JSON/text) with a
   request ID **and the signed-in user** per access. Login/logout and failed
   attempts are logged with user, IP and reason.
-- Runs as **non-root** in a `distroless` container.
+- Runs as a **non-root** user (`parkrr`, uid 10001) in a minimal Alpine-based container.
 
 Please do **not** report vulnerabilities via public issues — see
 [SECURITY.md](SECURITY.md).
@@ -336,7 +336,7 @@ flat rate); open balance = accrued rent + extra charges − paid.
 
 ## 🏗️ Architecture
 
-```
+```text
 cmd/parkrr/        – entry point, admin bootstrap, logging, server lifecycle
 internal/config/   – configuration from ENV
 internal/database/ – pgx pool + embedded SQL migrations (advisory-locked)
