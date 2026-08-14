@@ -4211,7 +4211,33 @@
         if (n === 'u') return [[0, 0], [r(W * .3), 0], [r(W * .3), r(H * .6)], [r(W * .7), r(H * .6)], [r(W * .7), 0], [W, 0], [W, H], [0, H]];
         return [[0, 0], [W, 0], [W, H], [0, H]]; };
 
-    const EXCL = { lane: { label: 'Fahrstraße', w: 6, h: 2 }, maint: { label: 'Wartung', w: 4, h: 3 }, wall: { label: 'Säule/Wand', w: 1, h: 1 }, exit: { label: 'Notausgang', w: 2, h: 1 }, gate: { label: 'Tor', w: 3, h: 0.5 } };
+    // Exclusion / structure catalogue. Each entry is an opaque geometry block
+    // {kind,x,y,w,h,rot,label(,mat)}; `cat` groups it in the rail (wall/open/zone),
+    // `zone:true` marks a NON-blocking area (Stellfläche — a marking, not a barrier).
+    // A wall's "Dicke" is simply its shorter side, editable via size fields/handles.
+    // lane/maint/wall/exit/gate keep their original kinds for full backward compat.
+    const EXCL = {
+        // Wände (Mauertypen) — Dicke = kürzere Kante
+        wall_ext:  { label: 'Außenwand',     w: 6,   h: 0.30,  cat: 'wall', mat: 'stahlbeton' },
+        wall_load: { label: 'Tragende Wand', w: 5,   h: 0.24,  cat: 'wall', mat: 'ziegel' },
+        wall_part: { label: 'Trennwand',     w: 4,   h: 0.115, cat: 'wall', mat: 'leichtbau' },
+        wall_fire: { label: 'Brandwand',     w: 5,   h: 0.30,  cat: 'wall', mat: 'stahlbeton' },
+        column:    { label: 'Stütze',        w: 0.4, h: 0.4,   cat: 'wall', mat: 'stahlbeton' },
+        wall:      { label: 'Säule/Wand',    w: 1,   h: 1,     cat: 'wall' }, // Legacy
+        // Öffnungen
+        gate:      { label: 'Tor',     w: 3,   h: 0.5, cat: 'open' },
+        door:      { label: 'Tür',     w: 1,   h: 0.3, cat: 'open' },
+        window:    { label: 'Fenster', w: 1.4, h: 0.3, cat: 'open' },
+        // Flächen & Zonen
+        stell:     { label: 'Stellfläche', w: 5, h: 2.5, cat: 'zone', zone: true }, // markiert, nicht sperrend
+        lane:      { label: 'Fahrstraße',  w: 6, h: 2,   cat: 'zone' },
+        maint:     { label: 'Wartung',     w: 4, h: 3,   cat: 'zone' },
+        exit:      { label: 'Notausgang',  w: 2, h: 1,   cat: 'zone' },
+    };
+    // Wall/column material labels (Mauertyp-Material) — display only.
+    const MAT = { stahlbeton: 'Stahlbeton', ziegel: 'Ziegel', leichtbau: 'Leichtbau', kalksand: 'Kalksandstein', holz: 'Holz' };
+    const isZoneKind = (k) => !!(EXCL[k] && EXCL[k].zone);      // non-blocking marked area
+    const isWallKind = (k) => !!(EXCL[k] && EXCL[k].cat === 'wall');
     // Status carries a SYMBOL + label so it is distinguishable without colour (a11y).
     const GPSTAT = { busy: { label: 'Belegt', sym: '●' }, resv: { label: 'Reserviert', sym: '◑' }, move: { label: 'Ein/Aus', sym: '⇄' } };
 
@@ -4419,7 +4445,7 @@
         const P = {
             hallId: id, garageId: data.hall.garage_id, hallName: data.hall.name, garageName: data.garage_name, halls,
             floor, Wm, Hm, tor: num(geo.tor, 3), load: num(geo.load, 5), shape: geo.shape || 'rect',
-            excl: (Array.isArray(geo.excl) ? geo.excl : []).map((e, i) => ({ id: 'x' + i, kind: e.kind || 'wall', x: num(e.x, 0), y: num(e.y, 0), w: num(e.w, 1), h: num(e.h, 1), rot: num(e.rot, 0), label: e.label || (EXCL[e.kind] ? EXCL[e.kind].label : 'Fläche') })),
+            excl: (Array.isArray(geo.excl) ? geo.excl : []).map((e, i) => ({ id: 'x' + i, kind: e.kind || 'wall', x: num(e.x, 0), y: num(e.y, 0), w: num(e.w, 1), h: num(e.h, 1), rot: num(e.rot, 0), label: e.label || (EXCL[e.kind] ? EXCL[e.kind].label : 'Fläche'), mat: e.mat || (EXCL[e.kind] ? EXCL[e.kind].mat : undefined) })),
             spots: (data.spots || []).map((s) => { const g = asObj(s.geometry); return {
                 _id: s.id, kind: 'veh', label: s.vehicle_label || s.label, spotLabel: s.label, type: s.vehicle_type || '', vehId: s.vehicle_id || null,
                 personId: s.person_id || null, personName: s.person_name || '',
@@ -4427,7 +4453,7 @@
                 plannerSymbol: s.planner_symbol || null, photoUrl: s.photo_id ? '/api/photos/' + s.photo_id : null,
                 x: num(g.x, 1), y: num(g.y, 1), w: num(g.w, s.length_m || catFoot(s.vehicle_type)[0]), h: num(g.h, s.width_m || catFoot(s.vehicle_type)[1]), rot: num(g.rot, 0), status: g.status || 'busy', _dirty: false }; }),
             palette, plannerIcons,
-            mode: 'manage', editMode: false, snap: true, gridStep: 0.5, ortho: false, zoom: 1, sel: null, selEdge: null,
+            mode: 'manage', editMode: false, snap: true, gridStep: 0.5, autoSnap: true, ortho: false, zoom: 1, sel: null, selEdge: null,
             render: (function () { try { return localStorage.getItem('gp.render') || 'symbol'; } catch (e) { return 'symbol'; } })(),
             maxed: false, CELL: 30, uid: 1, hist: [], hpos: -1, dirty: false,
         };
@@ -4442,7 +4468,8 @@
         const heightOK = (b) => b.H == null || b.H <= P.tor + 0.001;
         const weightOK = (b) => b.t == null || b.t <= P.load + 0.001;
         const warn = (b) => b.kind === 'veh' && (!heightOK(b) || !weightOK(b) || !inside(b));
-        const blocksAll = () => P.spots.concat(P.excl.map((e) => ({ ...e, kind: 'excl' })));
+        // Zones (Stellfläche) are markings, not barriers → kept out of the collision set.
+        const blocksAll = () => P.spots.concat(P.excl.filter((e) => !isZoneKind(e.kind)).map((e) => ({ ...e, kind: 'excl' })));
         const collide = (cand, selfId) => { const cq = quad(cand); for (const o of blocksAll()) { if (o._id === selfId || o.id === selfId) continue; if (!(cand.kind === 'veh' || o.kind === 'veh')) continue; if (satOverlap(cq, quad(o))) return true; } return false; };
         const validVeh = (cand, selfId) => inside(cand) && !collide(cand, selfId);
         // A vehicle placement has kind==='veh'; every exclusion has kind in EXCL
@@ -4529,6 +4556,17 @@
             const cx0 = cl.x + bl.w / 2, cy0 = cl.y + bl.h / 2;
             const SNAP = (P.snap ? (P.gridStep || 0.5) : 0.25) + 0.05;
             const xs = [...new Set(P.floor.map((p) => p[0]))], ys = [...new Set(P.floor.map((p) => p[1]))];
+            // Auto-Snap: also fang the dragged block's AABB against EVERY other block's AABB
+            // edges (vehicles, walls, lanes, zones alike) so objects click flush to each other,
+            // not just to the floor line. Zones are valid snap targets even though they never block.
+            if (P.autoSnap) {
+                const selfId = bl._id || bl.id;
+                for (const o of P.spots.concat(P.excl)) {
+                    if ((o._id || o.id) === selfId) continue;
+                    const oh = halfAABB(o), ocx = o.x + o.w / 2, ocy = o.y + o.h / 2;
+                    xs.push(ocx - oh.hx, ocx + oh.hx); ys.push(ocy - oh.hy, ocy + oh.hy);
+                }
+            }
             // Snap whichever AABB edge (lo/hi) is closest to a floor coordinate within reach.
             const snapAxis = (lo, hi, coords) => { let best = 0, bd = SNAP + 1e-9; for (const co of coords) { const dl = Math.abs(lo - co); if (dl < bd) { bd = dl; best = co - lo; } const dh = Math.abs(hi - co); if (dh < bd) { bd = dh; best = co - hi; } } return bd <= SNAP ? best : 0; };
             const dx = snapAxis(cx0 - hx, cx0 + hx, xs), dy = snapAxis(cy0 - hy, cy0 + hy, ys);
@@ -4783,17 +4821,20 @@
             });
             P.excl.forEach((b) => {
                 const ctx = !interactive(b);
-                const d = el('div', { class: 'gp-block excl ' + b.kind + (b.id === P.sel ? ' sel' : '') + (ctx ? ' dimctx' : '') });
+                const cat = (EXCL[b.kind] && EXCL[b.kind].cat) || 'zone';
+                const d = el('div', { class: 'gp-block excl gp-' + cat + ' ' + b.kind + (b.id === P.sel ? ' sel' : '') + (ctx ? ' dimctx' : '') });
                 d.dataset.id = b.id;
-                if (b.rot) d.append(el('div', { class: 'gp-rlabel' }, el('span', { class: 'gp-rl-name' }, b.label)));
-                else d.append(el('span', { class: 'gp-lab' }, el('span', { class: 'gp-who' }, b.label)));
+                // Zones show their measured area; structures show their type label.
+                const lab = isZoneKind(b.kind) ? (b.label + ' · ' + (b.w * b.h).toFixed(1).replace('.', ',') + ' m²') : b.label;
+                if (b.rot) d.append(el('div', { class: 'gp-rlabel' }, el('span', { class: 'gp-rl-name' }, lab)));
+                else d.append(el('span', { class: 'gp-lab' }, el('span', { class: 'gp-who' }, lab)));
                 if (b.id === P.sel && interactive(b) && canManageNow) addHandles(d, b.id);
                 positionBlock(d, b); layer.append(d);
             });
         }
         function renderMetrics() {
             metrics.innerHTML = '';
-            const total = polyArea(P.floor); let ex = 0, ve = 0; P.excl.forEach((b) => ex += b.w * b.h); P.spots.forEach((b) => ve += b.w * b.h);
+            const total = polyArea(P.floor); let ex = 0, ve = 0; P.excl.forEach((b) => { if (!isZoneKind(b.kind)) ex += b.w * b.h; }); P.spots.forEach((b) => ve += b.w * b.h);
             // Hall dimensions = the ACTUAL floor polygon's bounding box (same source as the
             // Breite/Tiefe readout), not the P.Wm×P.Hm canvas grid — after „Form bearbeiten"
             // shrinks the polygon inside the grid the two diverge, and the bbox is the real one.
@@ -4817,10 +4858,12 @@
             if (canManageNow && P.mode === 'plan') toolbar.append(tb('⊾ 90°', 'Rechtwinklig einrasten', () => { P.ortho = !P.ortho; renderToolbar(); toast(P.ortho ? 'Rechtwinklig an' : 'Rechtwinklig aus'); }, P.ortho));
             // Snap selector: free, or snap every ¼ / ½ / 1 m (applies to floor edits
             // and block moves alike).
-            const seg = el('div', { class: 'gp-seg', title: 'Snap-Verhalten' });
+            const seg = el('div', { class: 'gp-seg', title: 'Raster: freie Abstände oder feste Schrittweite' });
             seg.append(el('button', { class: !P.snap ? 'on' : '', onclick: () => { P.snap = false; renderToolbar(); } }, 'Frei'));
-            [['¼ m', 0.25], ['½ m', 0.5], ['1 m', 1]].forEach(([lab, step]) => seg.append(el('button', { class: (P.snap && P.gridStep === step) ? 'on' : '', onclick: () => { P.snap = true; P.gridStep = step; renderToolbar(); } }, lab)));
+            [['0,1 m', 0.1], ['¼ m', 0.25], ['½ m', 0.5], ['1 m', 1]].forEach(([lab, step]) => seg.append(el('button', { class: (P.snap && P.gridStep === step) ? 'on' : '', onclick: () => { P.snap = true; P.gridStep = step; renderToolbar(); } }, lab)));
             toolbar.append(seg);
+            // Auto-Snap: objects fang flush against each other (in addition to the floor line).
+            if (canManageNow) toolbar.append(tb('🧲', 'Auto-Snap: Objekte fangen aneinander', () => { P.autoSnap = !P.autoSnap; renderToolbar(); toast(P.autoSnap ? 'Auto-Snap an' : 'Auto-Snap aus'); }, P.autoSnap));
             // Vehicle display mode (client-side preference, remembered): symbol / photo / rectangle.
             if (P.mode === 'manage') { const dseg = el('div', { class: 'gp-seg', title: 'Fahrzeug-Darstellung' });
                 [['◈', 'symbol', 'Symbol'], ['▣', 'foto', 'Foto'], ['▭', 'rect', 'Rechteck']].forEach(([ic, key, t]) => dseg.append(el('button', { class: P.render === key ? 'on' : '', title: t, onclick: () => { P.render = key; try { localStorage.setItem('gp.render', key); } catch (e) { /* private mode */ } renderToolbar(); draw(); } }, ic)));
@@ -4867,7 +4910,7 @@
                 .then(() => {}, (err) => { toast(err.message || 'Maße speichern fehlgeschlagen', 'error'); });
             return b._dq;
         }
-        function currentGeometry() { return { floor: P.floor, Wm: P.Wm, Hm: P.Hm, tor: P.tor, load: P.load, shape: P.shape, excl: P.excl.map((e) => ({ kind: e.kind, x: round2(e.x), y: round2(e.y), w: round2(e.w), h: round2(e.h), rot: Math.round(e.rot || 0), label: e.label })) }; }
+        function currentGeometry() { return { floor: P.floor, Wm: P.Wm, Hm: P.Hm, tor: P.tor, load: P.load, shape: P.shape, excl: P.excl.map((e) => ({ kind: e.kind, x: round2(e.x), y: round2(e.y), w: round2(e.w), h: round2(e.h), rot: Math.round(e.rot || 0), label: e.label, mat: e.mat || undefined })) }; }
         async function doSaveGeom(silent) {
             P.dirty = false; renderToolbar(); // optimistic; a change during the save re-flags it
             try {
@@ -5059,17 +5102,24 @@
                 dstep('Torhöhe (m)', 'tor', P.tor.toFixed(1), '0.5'),
                 dstep('Bodenlast (t)', 'load', P.load.toFixed(1), '0.5'));
             shapeCard.append(grid2); rail.append(shapeCard);
-            // exclusions
-            const exCard = el('div', { class: 'gp-rcard card' }, el('h3', {}, 'Ausgenommene Flächen & Tore'));
-            const addrow = el('div', { class: 'gp-addrow' });
-            [['lane', '+ Fahrstraße'], ['maint', '+ Wartung'], ['wall', '+ Säule/Wand'], ['exit', '+ Notausgang'], ['gate', '+ Tor']].forEach(([k, lab]) => addrow.append(el('button', { class: 'btn btn-sm', onclick: () => addExcl(k) }, lab)));
-            exCard.append(addrow);
+            // exclusions / structures — grouped add-buttons generated from the EXCL catalogue.
+            const exCard = el('div', { class: 'gp-rcard card' }, el('h3', {}, 'Wände · Öffnungen · Flächen'));
+            const ADD_SKIP = { wall: true }; // legacy „Säule/Wand" stays supported but is superseded by wall types + Stütze
+            [['wall', 'Wände (Dicke = kurze Kante)'], ['open', 'Öffnungen'], ['zone', 'Flächen & Zonen']].forEach(([cat, gl]) => {
+                const entries = Object.entries(EXCL).filter(([k, m]) => (m.cat || 'zone') === cat && !ADD_SKIP[k]);
+                if (!entries.length) return;
+                exCard.append(el('div', { class: 'gp-exgrouplab' }, gl));
+                const row = el('div', { class: 'gp-addrow' });
+                entries.forEach(([k, m]) => row.append(el('button', { class: 'btn btn-sm', onclick: () => addExcl(k) }, '+ ' + m.label)));
+                exCard.append(row);
+            });
             const exList = el('div', { class: 'gp-exlist' });
-            if (!P.excl.length) exList.append(el('div', { class: 'muted', style: 'font-size:.76rem;margin-top:.4rem' }, 'Noch keine ausgenommenen Flächen.'));
+            if (!P.excl.length) exList.append(el('div', { class: 'muted', style: 'font-size:.76rem;margin-top:.4rem' }, 'Noch keine Wände oder Flächen.'));
             P.excl.forEach((b) => {
                 const it = el('div', { class: 'gp-exitem' + (b.id === P.sel ? ' on' : '') });
                 const sw = el('span', { class: 'gp-sw' }); sw.dataset.kind = b.kind;
-                it.append(sw, el('span', { style: 'flex:1' }, b.label, ' ', el('span', { class: 'muted num', style: 'font-size:.72rem' }, b.w + '×' + b.h + ' m')),
+                const meta = (isWallKind(b.kind) && b.mat && MAT[b.mat]) ? ' · ' + MAT[b.mat] : '';
+                it.append(sw, el('span', { style: 'flex:1' }, b.label, ' ', el('span', { class: 'muted num', style: 'font-size:.72rem' }, b.w + '×' + b.h + ' m' + meta)),
                     el('button', { class: 'gp-rm', title: 'Entfernen', onclick: (e) => { e.stopPropagation(); removeExcl(b); } }, '×'));
                 it.addEventListener('click', () => { P.sel = b.id; draw(); });
                 exList.append(it);
@@ -5077,13 +5127,21 @@
             exCard.append(exList);
             const b = P.excl.find((x) => x.id === P.sel);
             if (b) {
+                // Type switcher — sibling kinds within the selected block's own category.
+                const cat = (EXCL[b.kind] && EXCL[b.kind].cat) || 'zone';
                 const segd = el('div', { class: 'gp-segd', style: 'margin-top:.6rem' });
-                [['lane', 'Fahrstr.'], ['maint', 'Wartung'], ['wall', 'Wand'], ['exit', 'Notausg.'], ['gate', 'Tor']].forEach(([k, lab]) => segd.append(el('button', { class: b.kind === k ? 'on' : '', onclick: () => { b.kind = k; b.label = EXCL[k].label; commitGeom(); } }, lab)));
+                Object.entries(EXCL).filter(([, m]) => (m.cat || 'zone') === cat).forEach(([k, m]) => segd.append(el('button', { class: b.kind === k ? 'on' : '', onclick: () => { b.kind = k; b.label = EXCL[k].label; if (isWallKind(k) && !b.mat) b.mat = EXCL[k].mat; if (!isWallKind(k)) b.mat = undefined; commitGeom(); } }, m.label)));
                 exCard.append(segd);
-                // Direct size entry (Breite × Tiefe) for the selected zone.
+                // Material picker (Wände/Stütze only).
+                if (isWallKind(b.kind)) {
+                    const matSel = el('select', { class: 'gp-stepin', 'aria-label': 'Material', onchange: (e) => { b.mat = e.target.value || undefined; commitGeom(); } });
+                    Object.entries(MAT).forEach(([mk, ml]) => { const o = el('option', { value: mk }, ml); if ((b.mat || '') === mk) o.selected = true; matSel.append(o); });
+                    exCard.append(el('div', { class: 'gp-field', style: 'margin-top:.5rem' }, el('label', {}, 'Material'), matSel));
+                }
+                // Direct size entry (Breite × Tiefe) for the selected block.
                 const sizeRow = el('div', { class: 'gp-grid2', style: 'margin-top:.5rem' },
-                    el('div', { class: 'gp-field' }, el('label', {}, 'Breite (m)'), el('input', { class: 'gp-stepin num', type: 'number', step: '0.1', value: b.w, onchange: (e) => setExclSize(b, 'w', e.target.value) })),
-                    el('div', { class: 'gp-field' }, el('label', {}, 'Tiefe (m)'), el('input', { class: 'gp-stepin num', type: 'number', step: '0.1', value: b.h, onchange: (e) => setExclSize(b, 'h', e.target.value) })));
+                    el('div', { class: 'gp-field' }, el('label', {}, isWallKind(b.kind) ? 'Länge (m)' : 'Breite (m)'), el('input', { class: 'gp-stepin num', type: 'number', step: '0.1', value: b.w, onchange: (e) => setExclSize(b, 'w', e.target.value) })),
+                    el('div', { class: 'gp-field' }, el('label', {}, isWallKind(b.kind) ? 'Dicke (m)' : 'Tiefe (m)'), el('input', { class: 'gp-stepin num', type: 'number', step: isWallKind(b.kind) ? '0.01' : '0.1', value: b.h, onchange: (e) => setExclSize(b, 'h', e.target.value) })));
                 exCard.append(sizeRow, el('div', { class: 'muted', style: 'font-size:.72rem;margin-top:.35rem' }, 'Ecke ziehen = Größe · Ziehen = verschieben.'));
             }
             rail.append(exCard);
@@ -5100,7 +5158,7 @@
             const v = Number(value); if (!Number.isFinite(v) || v <= 0) return;
             const nv = Math.max(0.2, Math.min(dim === 'w' ? P.Wm : P.Hm, Math.round(v * 100) / 100));
             const cand = { kind: 'excl', x: b.x, y: b.y, w: dim === 'w' ? nv : b.w, h: dim === 'h' ? nv : b.h };
-            if (b.x + cand.w > P.Wm || b.y + cand.h > P.Hm || collide(cand, b.id)) { toast('Passt nicht (Rand/Kollision)', 'error'); draw(); return; }
+            if (b.x + cand.w > P.Wm || b.y + cand.h > P.Hm || (!isZoneKind(b.kind) && collide(cand, b.id))) { toast('Passt nicht (Rand/Kollision)', 'error'); draw(); return; }
             b[dim] = nv; commitGeom();
         }
         function setShape(k) { P.shape = k; P.floor = gpShape(k, P.Wm, P.Hm); hideLen(); const out = P.spots.filter((s) => !inside(s)).length; commitGeom('Form: ' + k + (out ? ' · ' + out + ' außerhalb' : ''), out ? 'warn' : ''); }
@@ -5113,8 +5171,9 @@
         }
         function clampAll() { blocksAll().forEach((b) => { const t = b.kind === 'excl' ? P.excl.find((e) => e.id === b.id) : P.spots.find((s) => s._id === b._id); if (t) { const cl = clampXY(t, t.x, t.y); t.x = cl.x; t.y = cl.y; if (t._id) t._dirty = true; } }); }
         function addExcl(k) {
-            const s = EXCL[k]; const b = { id: 'e' + (P.uid++), kind: k, x: 1, y: 1, w: s.w, h: s.h, label: s.label };
-            outer: for (let gy = 0; gy < P.Hm - s.h + 1; gy++) { for (let gx = 0; gx < P.Wm - s.w + 1; gx++) { b.x = gx; b.y = gy; if (!collide(b, null)) break outer; } }
+            const s = EXCL[k]; const b = { id: 'e' + (P.uid++), kind: k, x: 1, y: 1, w: s.w, h: s.h, label: s.label, mat: s.mat };
+            // Zones (Stellfläche) may sit anywhere; blocking structures seek a free cell.
+            if (!s.zone) outer: for (let gy = 0; gy < P.Hm - s.h + 1; gy++) { for (let gx = 0; gx < P.Wm - s.w + 1; gx++) { b.x = gx; b.y = gy; if (!collide(b, null)) break outer; } }
             P.excl.push(b); P.sel = b.id; commitGeom(s.label + ' hinzugefügt');
         }
         function removeExcl(b) { P.excl = P.excl.filter((x) => x !== b); if (P.sel === b.id) P.sel = null; commitGeom('Fläche entfernt'); }
@@ -5211,7 +5270,7 @@
                 ang = ((ang % 360) + 360) % 360; b.rot = ang;
                 act.elm.style.transform = 'rotate(' + ang + 'deg)';
                 act.elm.querySelectorAll('.gp-code,.gp-lab,.gp-warnb').forEach((t) => { t.style.transform = 'rotate(' + (-ang) + 'deg)'; }); // keep labels upright while dragging
-                act.elm.classList.toggle('invalid', b._id ? !validVeh(b, b._id) : collide(b, b.id)); return;
+                act.elm.classList.toggle('invalid', b._id ? !validVeh(b, b._id) : (isZoneKind(b.kind) ? false : collide(b, b.id))); return;
             }
             if (act.mode === 'resize') {
                 const px = (e.clientX - r.left) / P.CELL, py = (e.clientY - r.top) / P.CELL;
@@ -5219,19 +5278,19 @@
                 positionBlock(act.elm, b); // left/top/width/height (+ rotation transform)
                 const isVeh = !!b._id && b.kind !== 'excl';
                 if (isVeh) { b.L = b.w; b.W = b.h; act.elm.querySelectorAll('.gp-dim,.gp-rl-dim').forEach((t) => { t.textContent = dimText(b); }); } // live L×B
-                const bad = isVeh ? !validVeh({ kind: 'veh', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b._id) : collide({ kind: 'excl', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b.id);
+                const bad = isVeh ? !validVeh({ kind: 'veh', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b._id) : (isZoneKind(b.kind) ? false : collide({ kind: 'excl', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b.id));
                 act.elm.classList.toggle('invalid', bad); renderMetrics(); return; }
             if (!act.moved && Math.abs(e.clientX - act.sx) + Math.abs(e.clientY - act.sy) < 4) return; act.moved = true; act.elm.classList.add('moving');
             let nx = (e.clientX - r.left - act.gx) / P.CELL, ny = (e.clientY - r.top - act.gy) / P.CELL; nx = gsnap(nx); ny = gsnap(ny);
             const cl = snapPos(b, nx, ny); nx = cl.x; ny = cl.y; b.x = nx; b.y = ny; act.elm.style.left = (nx * P.CELL) + 'px'; act.elm.style.top = (ny * P.CELL) + 'px';
-            const isVeh = !!b._id && b.kind !== 'excl'; const bad = isVeh ? !validVeh({ kind: 'veh', x: nx, y: ny, w: b.w, h: b.h, rot: b.rot }, b._id) : collide({ kind: 'excl', x: nx, y: ny, w: b.w, h: b.h }, b.id); act.elm.classList.toggle('invalid', bad);
+            const isVeh = !!b._id && b.kind !== 'excl'; const bad = isVeh ? !validVeh({ kind: 'veh', x: nx, y: ny, w: b.w, h: b.h, rot: b.rot }, b._id) : (isZoneKind(b.kind) ? false : collide({ kind: 'excl', x: nx, y: ny, w: b.w, h: b.h }, b.id)); act.elm.classList.toggle('invalid', bad);
         });
         layer.addEventListener('pointerup', (e) => {
             if (!act) return; const b = act.b, d = act; act = null;
             try { d.elm.releasePointerCapture(e.pointerId); } catch (er) { /* ignore */ }
             const isVeh = !!b._id && b.kind !== 'excl';
             if (d.mode === 'rotate') {
-                const bad = isVeh ? !validVeh(b, b._id) : collide(b, b.id);
+                const bad = isVeh ? !validVeh(b, b._id) : (isZoneKind(b.kind) ? false : collide(b, b.id));
                 if (bad && !isVeh) { b.rot = d.orot; draw(); toast('Drehen: Kollision/außerhalb — zurück', 'error'); return; } // exclusions still snap back
                 P.sel = b._id || b.id;
                 if (isVeh) { b._invalid = bad; b._dirty = true; markDirty(); pushUndo(); draw(); toast(bad ? 'Gedreht — ungültige Lage, Speichern erst wenn frei' : 'Gedreht', bad ? 'warn' : ''); }
@@ -5239,7 +5298,7 @@
                 return;
             }
             if (d.mode === 'resize') {
-                const bad = isVeh ? !validVeh({ kind: 'veh', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b._id) : collide({ kind: 'excl', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b.id);
+                const bad = isVeh ? !validVeh({ kind: 'veh', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b._id) : (isZoneKind(b.kind) ? false : collide({ kind: 'excl', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b.id));
                 if (bad) { b.x = d.o0.x; b.y = d.o0.y; b.w = d.o0.w; b.h = d.o0.h; if (isVeh) { b.L = d.o0.w; b.W = d.o0.h; } P.sel = b._id || b.id; draw(); toast('Passt nicht (Rand/Kollision) — zurück', 'error'); return; }
                 P.sel = b._id || b.id;
                 if (isVeh) { b.L = b.w; b.W = b.h; persistDims(b); b._dirty = true; markDirty(); pushUndo(); } else commitGeom();
@@ -5247,7 +5306,7 @@
             }
             if (!d.moved) { P.sel = b._id || b.id; draw(); return; }
             d.elm.classList.remove('moving');
-            const bad = isVeh ? !validVeh({ kind: 'veh', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b._id) : collide({ kind: 'excl', x: b.x, y: b.y, w: b.w, h: b.h }, b.id);
+            const bad = isVeh ? !validVeh({ kind: 'veh', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b._id) : (isZoneKind(b.kind) ? false : collide({ kind: 'excl', x: b.x, y: b.y, w: b.w, h: b.h }, b.id));
             P.sel = b._id || b.id;
             if (!isVeh) { // exclusions still snap back to their last valid spot
                 if (bad) { b.x = d.ox; b.y = d.oy; toast('Kollision/außerhalb — zurück', 'error'); draw(); }

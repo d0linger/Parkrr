@@ -1346,6 +1346,22 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-block.excl.maint{background:#392c12;background-image:repeating-linear-gradient(45deg,rgba(234,180,82,.25) 0 8px,transparent 8px 16px)}
 .gp-block.excl.maint .gp-who{color:#f0d194}
 .gp-block.excl.wall{background:#0c141d;border:1px solid #2a3b4d}
+/* Mauertypen — solide „bauliche" Füllungen, je Typ ein eigener Farbton (Dicke = kurze Kante). */
+.gp-block.excl.wall_ext{background:#26313d;border:1px solid #3c4a5a;box-shadow:inset 0 0 0 1px rgba(255,255,255,.04)}
+.gp-block.excl.wall_load{background:#3a2c22;border:1px solid #5a4433;background-image:repeating-linear-gradient(90deg,rgba(0,0,0,.18) 0 6px,transparent 6px 12px)}
+.gp-block.excl.wall_part{background:#2b3540;border:1px dashed #5b6b7d}
+.gp-block.excl.wall_fire{background:#3a1c1c;border:1px solid #8a3030;background-image:repeating-linear-gradient(45deg,rgba(220,80,70,.22) 0 7px,transparent 7px 14px)}
+.gp-block.excl.column{background:#1a232e;border:1px solid #46586c;border-radius:3px;box-shadow:inset 0 0 0 2px rgba(255,255,255,.05)}
+.gp-block.excl.wall_ext .gp-who,.gp-block.excl.wall_load .gp-who,.gp-block.excl.wall_part .gp-who,.gp-block.excl.wall_fire .gp-who,.gp-block.excl.column .gp-who{color:#cfdae6}
+.gp-block.excl.wall_fire .gp-who{color:#ffc7c0}
+/* Öffnungen (Tor/Tür/Fenster) — „Lücke" in der Wand: gestrichelt/gestreift, hell umrandet. */
+.gp-block.excl.door{background:#123028;border:1px solid #2f7d63;background-image:repeating-linear-gradient(90deg,rgba(90,220,180,.30) 0 5px,transparent 5px 10px)}
+.gp-block.excl.door .gp-who{color:#a8ead4}
+.gp-block.excl.window{background:#102c3a;border:1px dashed #4ea8f5;background-image:repeating-linear-gradient(90deg,rgba(120,190,245,.28) 0 4px,transparent 4px 9px)}
+.gp-block.excl.window .gp-who{color:#bcdcff}
+/* Stellfläche — markierte, NICHT sperrende Nutzfläche (durchscheinend grün, gestrichelt). */
+.gp-block.excl.stell{background:rgba(34,180,120,.14);border:1.5px dashed #2bb47a}
+.gp-block.excl.stell .gp-who,.gp-block.excl.stell .gp-rl-name{color:#8fe6b0}
 .gp-block.dimctx{opacity:.5;cursor:default}
 .gp-block.sel{box-shadow:0 0 0 2px #fff,0 0 0 4px var(--gpteal2),0 12px 24px -8px rgba(0,0,0,.6);z-index:6;overflow:visible}
 .gp-block.moving{opacity:.94;z-index:9;cursor:grabbing}
@@ -1468,6 +1484,16 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-sw[data-kind="maint"]{background:#8a6b2a}
 .gp-sw[data-kind="wall"]{background:#2a3b4d}
 .gp-sw[data-kind="exit"]{background:#26a56b}
+.gp-sw[data-kind="wall_ext"]{background:#3c4a5a}
+.gp-sw[data-kind="wall_load"]{background:#5a4433}
+.gp-sw[data-kind="wall_part"]{background:#5b6b7d}
+.gp-sw[data-kind="wall_fire"]{background:#8a3030}
+.gp-sw[data-kind="column"]{background:#46586c;border-radius:2px}
+.gp-sw[data-kind="door"]{background:#2f7d63}
+.gp-sw[data-kind="window"]{background:#4ea8f5}
+.gp-sw[data-kind="stell"]{background:#2bb47a}
+.gp-exgrouplab{font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--gpfaint);margin:.55rem 0 .3rem}
+.gp-exgrouplab:first-child{margin-top:.2rem}
 .gp-rm{margin-left:auto;color:var(--gpfaint);font-size:1.1rem;line-height:1;background:none;border:0;cursor:pointer}
 
 /* maximize: fill the viewport, canvas + rail side by side (no overlay overlap) */
