@@ -1344,6 +1344,12 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 /* opening elements: reveal jambs, glass line, resize handles; sub-segment clear lengths */
 .gp-walljoint{stroke:none}
 .gp-ohandle{fill:#fff;stroke:#2ee6cf;stroke-width:1.5}
+/* vehicle clearance (buffer) bands — only on sides facing another vehicle */
+.gp-bufg{pointer-events:none}
+.gp-bufband{fill:rgba(240,180,90,.14);stroke:#f0b45a;stroke-width:1;stroke-dasharray:4 3}
+/* door swing / hinge flip buttons in the opening popover */
+.gp-wallpop-btn{background:rgba(255,255,255,.06);border:1px solid var(--gpline,#2a3b4d);color:var(--gpink,#eaf1f8);border-radius:6px;cursor:pointer;font-size:.9rem;line-height:1;padding:2px 6px}
+.gp-wallpop-btn:hover{border-color:var(--gpteal2);color:var(--gpteal2)}
 .gp-walllab.sub{fill:#9fb2c4;font-size:9.5px;font-weight:600;stroke-width:2.4px}
 .gp-wallpop-lab{font-size:.7rem;color:var(--gpmuted,#9fb2c4);font-weight:600}
 /* inline wall quick-edit popover (length + delete) */

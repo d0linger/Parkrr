@@ -4477,9 +4477,9 @@
                 personId: s.person_id || null, personName: s.person_name || '',
                 L: s.length_m, W: s.width_m, H: s.height_m, t: s.weight_t, needsPower: !!s.needs_power,
                 plannerSymbol: s.planner_symbol || null, photoUrl: s.photo_id ? '/api/photos/' + s.photo_id : null,
-                x: num(g.x, 1), y: num(g.y, 1), w: num(g.w, s.length_m || catFoot(s.vehicle_type)[0]), h: num(g.h, s.width_m || catFoot(s.vehicle_type)[1]), rot: num(g.rot, 0), status: g.status || 'busy', _dirty: false }; }),
+                x: num(g.x, 1), y: num(g.y, 1), w: num(g.w, s.length_m || catFoot(s.vehicle_type)[0]), h: num(g.h, s.width_m || catFoot(s.vehicle_type)[1]), rot: num(g.rot, 0), status: g.status || 'busy', noBuf: !!g.noBuf, _dirty: false }; }),
             palette, plannerIcons,
-            mode: 'manage', editMode: false, snap: true, gridStep: 0.5, autoSnap: true, calib: false, autoArea: true, ortho: false, zoom: 1, base: null, sel: null, selEdge: null,
+            mode: 'manage', editMode: false, snap: true, gridStep: 0.5, autoSnap: true, calib: false, autoArea: true, ortho: false, zoom: 1, base: null, buffer: false, bufferM: 1, sel: null, selEdge: null,
             tool: null, chain: null, preview: null, structSel: null, structEdit: false, // wall draw/edit state
             openStart: null, snapHint: null, drawKind: 'wall_ext', openKind: 'door', wallThick: null, // opening draw + last-used types + wall-thickness override (m)
             render: (function () { try { return localStorage.getItem('gp.render') || 'symbol'; } catch (e) { return 'symbol'; } })(),
@@ -4499,7 +4499,20 @@
         // Zones (Stellfläche) are markings, not barriers → kept out of the collision set.
         // Wall segments (graph) ARE barriers: vehicles can't overlap them.
         const blocksAll = () => P.spots.concat(P.excl.filter((e) => !isZoneKind(e.kind)).map((e) => ({ ...e, kind: 'excl' }))).concat(wallRects().map((r) => ({ ...r, kind: 'excl' })));
-        const collide = (cand, selfId) => { const cq = quad(cand); for (const o of blocksAll()) { if (o._id === selfId || o.id === selfId) continue; if (!(cand.kind === 'veh' || o.kind === 'veh')) continue; if (satOverlap(cq, quad(o))) return true; } return false; };
+        const expandQ = (b, m) => quad({ x: b.x - m, y: b.y - m, w: b.w + 2 * m, h: b.h + 2 * m, rot: b.rot });
+        // Collision. When buffer zones are on, ONLY vehicle↔vehicle pairs get the clearance
+        // (each half of P.bufferM) — walls, lanes and maintenance keep exact (edge-to-edge)
+        // footprints, and a vehicle with noBuf opts out entirely.
+        const collide = (cand, selfId) => {
+            const bm = P.buffer ? P.bufferM / 2 : 0;
+            const candNoBuf = cand.noBuf || (selfId != null && (P.spots.find((s) => s._id === selfId) || {}).noBuf);
+            const cq = quad(cand);
+            for (const o of blocksAll()) { if (o._id === selfId || o.id === selfId) continue; if (!(cand.kind === 'veh' || o.kind === 'veh')) continue;
+                const vv = bm > 0 && cand.kind === 'veh' && o.kind === 'veh' && !candNoBuf && !o.noBuf;
+                if (satOverlap(vv ? expandQ(cand, bm) : cq, vv ? expandQ(o, bm) : quad(o))) return true;
+            }
+            return false;
+        };
         const validVeh = (cand, selfId) => inside(cand) && !collide(cand, selfId);
         // A vehicle placement has kind==='veh'; every exclusion has kind in EXCL
         // (lane/maint/wall/exit). In Garagenplaner the exclusions are editable, in
@@ -4567,10 +4580,14 @@
         const wallThLabel = el('span', { class: 'gp-wallpop-lab' }, 'Dicke');
         const wallThIn = el('input', { type: 'number', step: '1', min: '5', class: 'gp-lenin' });
         const wallThUnit = el('span', { class: 'muted' }, 'cm');
+        const wallDoorFlip = el('button', { class: 'gp-wallpop-btn', title: 'Öffnungsrichtung spiegeln (F)' }, '⇅');
+        const wallDoorHinge = el('button', { class: 'gp-wallpop-btn', title: 'Anschlag links/rechts (Leertaste)' }, '⇄');
         const wallPopDel = el('button', { class: 'gp-wallpop-del', title: 'Löschen', 'aria-label': 'Löschen' }, '🗑');
-        const wallPop = el('div', { class: 'gp-wallpop' }, wallPopLabel, wallLenIn, wallPopUnit, wallThLabel, wallThIn, wallThUnit, wallPopDel);
+        const wallPop = el('div', { class: 'gp-wallpop' }, wallPopLabel, wallLenIn, wallPopUnit, wallThLabel, wallThIn, wallThUnit, wallDoorFlip, wallDoorHinge, wallPopDel);
         wallThIn.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') wallThIn.blur(); });
         wallThIn.addEventListener('change', () => { if (P.structSel && P.structSel.type === 'edge') { const cm = parseFloat(wallThIn.value); if (cm >= 5) setEdgeThickness(P.structSel.idx, cm); } });
+        wallDoorFlip.addEventListener('click', (e) => { e.stopPropagation(); flipDoorSide(); });
+        wallDoorHinge.addEventListener('click', (e) => { e.stopPropagation(); swapDoorHinge(); });
         wallPop.style.display = 'none'; planEl.append(wallPop);
         wallPop.addEventListener('pointerdown', (e) => e.stopPropagation());
         wallLenIn.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') wallLenIn.blur(); });
@@ -4592,6 +4609,7 @@
             wallLenIn.style.display = showInput ? '' : 'none'; wallPopUnit.style.display = showInput ? '' : 'none';
             const showTh = !!okEdge; [wallThLabel, wallThIn, wallThUnit].forEach((n) => n.style.display = showTh ? '' : 'none');
             if (showTh && document.activeElement !== wallThIn) wallThIn.value = Math.round((P.walls.edges[ss.idx].thick || 0.24) * 100);
+            const isDoor = okOpen && P.walls.edges[ss.ei].ops[ss.oi].kind === 'door'; [wallDoorFlip, wallDoorHinge].forEach((n) => n.style.display = isDoor ? '' : 'none');
             wallPopDel.title = zone ? 'Fläche löschen' : okNode ? 'Punkt auflösen (Wände verbinden)' : okOpen ? 'Öffnung löschen' : 'Segment löschen';
             const pw = P.Wm * P.CELL, ph = P.Hm * P.CELL;
             wallPop.style.left = Math.max(64, Math.min(pw - 64, mx)) + 'px';
@@ -4726,6 +4744,9 @@
             else if (m && e.key.toLowerCase() === 'y') { e.preventDefault(); doRedo(); }
             else if (e.key === 'Escape') { if (P.tool || P.chain || P.openStart || zoneDraw) { e.preventDefault(); cancelDrawing(); } else if (P.structSel || P.sel != null) { e.preventDefault(); P.structSel = null; P.sel = null; draw(); } else if (P.maxed) { toggleMax(false); } }
             else if (!typing && (e.key === 'Delete' || e.key === 'Backspace') && P.mode === 'plan' && (P.structSel || P.sel != null)) { e.preventDefault(); deleteSel(); }
+            else if (!typing && !m && e.key.toLowerCase() === 'f' && doorSel()) { e.preventDefault(); flipDoorSide(); } // F = Tür spiegeln (bei ausgewählter Tür)
+            else if (!typing && !m && e.key === ' ' && doorSel()) { e.preventDefault(); swapDoorHinge(); } // Space = Anschlag wechseln (bei ausgewählter Tür)
+            else if (!typing && !m && e.key === 'p' && P.mode === 'plan') { e.preventDefault(); P.buffer = !P.buffer; renderToolbar(); draw(); toast(P.buffer ? 'Pufferzonen an' : 'Pufferzonen aus'); } // P = Puffer-Toggle
             else if (!typing && !m && e.key.toLowerCase() === 'f') { e.preventDefault(); fitView(); toast('Eingepasst'); } // F = Einpassen
             else if (!typing && !m && e.key === ' ') { e.preventDefault(); if (!spaceDown) { spaceDown = true; planWrap.style.cursor = 'grab'; } } // Space = Pan-Modus
         };
@@ -4835,6 +4856,7 @@
             if (P.grid !== false) svg.append(svgEl('rect', { width: P.Wm * CELL, height: P.Hm * CELL, fill: 'url(#gpgrid)' }));
             drawEnclosure(); // shade the wall-enclosed parking area (+ m² label)
             drawWalls();      // wall segments, openings and (in edit mode) node handles
+            drawBuffers();    // per-side vehicle clearance bands (when enabled)
             drawWallPreview();// live chained-drawing / opening preview
             // edit handles (Garagenplaner + editMode)
             if (P.mode === 'plan' && P.editMode) {
@@ -5012,6 +5034,10 @@
                 out.push({ kind: e.kind, x: (v.a.x + v.b.x) / 2 - v.len / 2, y: (v.a.y + v.b.y) / 2 - th / 2, w: v.len, h: th, rot: Math.atan2(v.dy, v.dx) * 180 / Math.PI, _wall: true }); }
             return out;
         }
+        // Lichtes (clear/inner) length of an edge = axis length minus half the thickness of the
+        // walls meeting at each end (a room corner eats thick/2 of clear span on that side).
+        function nodePerpHalf(ni, exceptEi) { let mx = 0; P.walls.edges.forEach((x, xi) => { if (xi === exceptEi) return; if (x.a === ni || x.b === ni) mx = Math.max(mx, x.thick || 0.24); }); return mx / 2; }
+        function edgeClearLen(ei) { const e = P.walls.edges[ei], v = edgeVec(e); return Math.max(0, v.len - nodePerpHalf(e.a, ei) - nodePerpHalf(e.b, ei)); }
         function nodeAt(p, r) { let bi = -1, bd = r; P.walls.nodes.forEach((n, i) => { const d = Math.hypot(n.x - p.x, n.y - p.y); if (d < bd) { bd = d; bi = i; } }); return bi; }
         function edgeAt(p, r) { let best = null; P.walls.edges.forEach((e, i) => { const v = edgeVec(e); if (v.len < 0.02) return; let t = ((p.x - v.a.x) * v.dx + (p.y - v.a.y) * v.dy) / (v.len * v.len); t = Math.max(0, Math.min(1, t)); const x = v.a.x + t * v.dx, y = v.a.y + t * v.dy, d = Math.hypot(p.x - x, p.y - y); if (d < r && (!best || d < best.dist)) best = { i, t, x, y, dist: d }; }); return best; }
         function addNode(x, y) { for (let i = 0; i < P.walls.nodes.length; i++) if (Math.hypot(P.walls.nodes[i].x - x, P.walls.nodes[i].y - y) < 0.05) return i; P.walls.nodes.push({ x: round2(x), y: round2(y) }); return P.walls.nodes.length - 1; }
@@ -5092,6 +5118,10 @@
             }); });
             return best;
         }
+        // Türanschlag: currently-selected door opening (or null), + flip helpers.
+        function doorSel() { const ss = P.structSel; if (ss && ss.type === 'opening') { const e = P.walls.edges[ss.ei], o = e && (e.ops || [])[ss.oi]; if (o && o.kind === 'door') return { e, o }; } return null; }
+        function flipDoorSide() { const d = doorSel(); if (!d) return; d.o.side = (d.o.side || 1) * -1; pushUndo(); markDirty(); draw(); toast('Tür gespiegelt (Öffnungsrichtung)'); }
+        function swapDoorHinge() { const d = doorSel(); if (!d) return; d.o.hinge = d.o.hinge ? 0 : 1; pushUndo(); markDirty(); draw(); toast('Anschlag gewechselt (links/rechts)'); }
         function openingHandleAt(p, ei, oi, r) {
             const e = P.walls.edges[ei]; if (!e || !(e.ops || [])[oi]) return null; const v = edgeVec(e), o = e.ops[oi], hp = (o.w / v.len) / 2;
             const pLo = { x: v.a.x + v.dx * (o.c - hp), y: v.a.y + v.dy * (o.c - hp) }, pHi = { x: v.a.x + v.dx * (o.c + hp), y: v.a.y + v.dy * (o.c + hp) };
@@ -5259,22 +5289,56 @@
             const th = Math.max(2, (e.thick || 0.24) * CELL), h = th / 2;
             const P0 = (u) => [(v.a.x + v.dx * u) * CELL, (v.a.y + v.dy * u) * CELL];
             let nx = -v.dy, ny = v.dx; const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
-            const A = P0(lo), B = P0(hi);
-            const tick = (Pt) => g.append(svgEl('line', { x1: Pt[0] - nx * h, y1: Pt[1] - ny * h, x2: Pt[0] + nx * h, y2: Pt[1] + ny * h, stroke: col, 'stroke-width': 2, class: 'gp-openreveal' }));
+            const A = P0(lo), B = P0(hi), w = Math.hypot(B[0] - A[0], B[1] - A[1]);
+            // reveal jambs (wall end faces) at both ends — common to all opening kinds
+            const tick = (Pt) => g.append(svgEl('line', { x1: Pt[0] - nx * h, y1: Pt[1] - ny * h, x2: Pt[0] + nx * h, y2: Pt[1] + ny * h, stroke: col, 'stroke-width': 2.4, class: 'gp-openreveal' }));
             tick(A); tick(B);
-            const w = Math.hypot(B[0] - A[0], B[1] - A[1]);
-            if (o.kind === 'window') { g.append(svgEl('line', { x1: A[0], y1: A[1], x2: B[0], y2: B[1], stroke: col, 'stroke-width': 2, class: 'gp-openglass' })); }
-            else if (o.kind === 'door') {
-                const leafX = A[0] + nx * w * 0.92, leafY = A[1] + ny * w * 0.92;
-                g.append(svgEl('line', { x1: A[0], y1: A[1], x2: leafX, y2: leafY, stroke: col, 'stroke-width': 2 }));
-                g.append(svgEl('path', { d: 'M ' + leafX + ' ' + leafY + ' A ' + (w * 0.92) + ' ' + (w * 0.92) + ' 0 0 1 ' + B[0] + ' ' + B[1], fill: 'none', stroke: col, 'stroke-width': 1.2, 'stroke-dasharray': '2 3', opacity: 0.85 }));
-            } else { g.append(svgEl('line', { x1: A[0], y1: A[1], x2: B[0], y2: B[1], stroke: col, 'stroke-width': 3, 'stroke-dasharray': '5 3' })); }
+            if (o.kind === 'window') {
+                // two parallel glass panes + a thin sill/breast line → unmistakably a window
+                g.append(svgEl('line', { x1: A[0] - nx * h * 0.4, y1: A[1] - ny * h * 0.4, x2: B[0] - nx * h * 0.4, y2: B[1] - ny * h * 0.4, stroke: col, 'stroke-width': 1.6, class: 'gp-openglass' }));
+                g.append(svgEl('line', { x1: A[0] + nx * h * 0.4, y1: A[1] + ny * h * 0.4, x2: B[0] + nx * h * 0.4, y2: B[1] + ny * h * 0.4, stroke: col, 'stroke-width': 1.6, class: 'gp-openglass' }));
+                g.append(svgEl('line', { x1: A[0], y1: A[1], x2: B[0], y2: B[1], stroke: col, 'stroke-width': 1, opacity: 0.5 }));
+            } else if (o.kind === 'door') {
+                // leaf hinged at one end, swinging to one side of the wall (interactive: side/hinge)
+                const side = o.side || 1, hingeAtA = !o.hinge, hinge = hingeAtA ? A : B, jamb = hingeAtA ? B : A;
+                const leaf = [hinge[0] + nx * side * w, hinge[1] + ny * side * w];
+                g.append(svgEl('line', { x1: hinge[0], y1: hinge[1], x2: leaf[0], y2: leaf[1], stroke: col, 'stroke-width': 2.4 }));
+                const a0 = Math.atan2(leaf[1] - hinge[1], leaf[0] - hinge[0]); let a1 = Math.atan2(jamb[1] - hinge[1], jamb[0] - hinge[0]), da = a1 - a0;
+                while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+                let d = 'M ' + leaf[0] + ' ' + leaf[1]; for (let s = 1; s <= 10; s++) { const a = a0 + da * s / 10; d += ' L ' + (hinge[0] + Math.cos(a) * w) + ' ' + (hinge[1] + Math.sin(a) * w); }
+                g.append(svgEl('path', { d, fill: 'none', stroke: col, 'stroke-width': 1.2, 'stroke-dasharray': '2 3', opacity: 0.85 }));
+            } else {
+                // gate (Sektional-/Rolltor): guide rails along both edges + lamella ticks across
+                g.append(svgEl('line', { x1: A[0] - nx * h, y1: A[1] - ny * h, x2: B[0] - nx * h, y2: B[1] - ny * h, stroke: col, 'stroke-width': 1.6, opacity: 0.9 }));
+                g.append(svgEl('line', { x1: A[0] + nx * h, y1: A[1] + ny * h, x2: B[0] + nx * h, y2: B[1] + ny * h, stroke: col, 'stroke-width': 1.6, opacity: 0.9 }));
+                const dxn = (B[0] - A[0]) / (w || 1), dyn = (B[1] - A[1]) / (w || 1), n = Math.max(2, Math.round(w / 7));
+                for (let s = 0; s <= n; s++) { const px = A[0] + dxn * (w * s / n), py = A[1] + dyn * (w * s / n); g.append(svgEl('line', { x1: px - nx * h, y1: py - ny * h, x2: px + nx * h, y2: py + ny * h, stroke: col, 'stroke-width': 1.4, opacity: 0.7 })); }
+            }
             if (P.structSel && P.structSel.type === 'opening' && P.structSel.ei === edgeIndex(e) && P.structSel.oi === oi) {
                 g.append(svgEl('rect', { x: Math.min(A[0], B[0]) - h - 2, y: Math.min(A[1], B[1]) - h - 2, width: Math.abs(B[0] - A[0]) + th + 4, height: Math.abs(B[1] - A[1]) + th + 4, fill: 'none', stroke: '#fff', 'stroke-width': 1, 'stroke-dasharray': '3 2', opacity: 0.85 }));
                 [A, B].forEach((Pt) => g.append(svgEl('rect', { x: Pt[0] - 4, y: Pt[1] - 4, width: 8, height: 8, class: 'gp-ohandle' })));
             }
         }
         function edgeIndex(e) { return P.walls.edges.indexOf(e); }
+        // Vehicle buffer visualisation: a HALF-buffer band only on the side(s) where another
+        // vehicle actually sits within the clearance — never toward walls/lanes/maint/empty.
+        function drawBuffers() {
+            if (!P.buffer) return;
+            const CELL = P.CELL, half = P.bufferM / 2, g = svgEl('g', { class: 'gp-bufg' });
+            const vs = P.spots.filter((s) => !s.noBuf);
+            for (let i = 0; i < vs.length; i++) {
+                const a = vs[i], ah = halfAABB(a), acx = a.x + a.w / 2, acy = a.y + a.h / 2, ax0 = acx - ah.hx, ax1 = acx + ah.hx, ay0 = acy - ah.hy, ay1 = acy + ah.hy;
+                let L = false, R = false, T = false, B = false;
+                for (let j = 0; j < vs.length; j++) { if (i === j) continue; const b = vs[j], bh = halfAABB(b), bcx = b.x + b.w / 2, bcy = b.y + b.h / 2, bx0 = bcx - bh.hx, bx1 = bcx + bh.hx, by0 = bcy - bh.hy, by1 = bcy + bh.hy;
+                    if (ay0 < by1 - 0.02 && ay1 > by0 + 0.02) { if (bx0 - ax1 >= -0.02 && bx0 - ax1 < P.bufferM) R = true; if (ax0 - bx1 >= -0.02 && ax0 - bx1 < P.bufferM) L = true; }
+                    if (ax0 < bx1 - 0.02 && ax1 > bx0 + 0.02) { if (by0 - ay1 >= -0.02 && by0 - ay1 < P.bufferM) B = true; if (ay0 - by1 >= -0.02 && ay0 - by1 < P.bufferM) T = true; }
+                }
+                const band = (x, y, w, h) => { if (w > 0 && h > 0) g.append(svgEl('rect', { x: x * CELL, y: y * CELL, width: w * CELL, height: h * CELL, class: 'gp-bufband' })); };
+                if (R) band(ax1, ay0, half, ay1 - ay0); if (L) band(ax0 - half, ay0, half, ay1 - ay0);
+                if (B) band(ax0, ay1, ax1 - ax0, half); if (T) band(ax0, ay0 - half, ax1 - ax0, half);
+            }
+            svg.append(g);
+        }
         // ---- wall rendering: clean butt-capped segments, rounded node joints, cut-out openings,
         //      total node-to-node length (offset) + optional clear sub-segment lengths ----
         function drawWalls() {
@@ -5294,7 +5358,7 @@
                 if (P.mode === 'plan' && v.len > 0.3) {
                     let nx = -v.dy, ny = v.dx; const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
                     const mid = P0(0.5), off = th / 2 + 11;
-                    const tl = svgEl('text', { x: mid[0] + nx * off, y: mid[1] + ny * off + 3, 'text-anchor': 'middle', class: 'gp-walllab' }); tl.textContent = v.len.toFixed(2).replace('.', ',') + ' m'; g.append(tl);
+                    const tl = svgEl('text', { x: mid[0] + nx * off, y: mid[1] + ny * off + 3, 'text-anchor': 'middle', class: 'gp-walllab' }); tl.textContent = edgeClearLen(ei).toFixed(2).replace('.', ',') + ' m'; g.append(tl); // lichtes Maß (Achse − halbe Wandstärke je Ecke)
                     if (spans.length) { // clear (lichte) sub-segment lengths on the opposite side
                         const segs = []; let s0 = 0; for (const sp of spans) { if (sp.lo - s0 > 0.002) segs.push([s0, sp.lo]); s0 = sp.hi; } if (1 - s0 > 0.002) segs.push([s0, 1]);
                         for (const [u0, u1] of segs) { const wm = (u1 - u0) * v.len; if (wm * CELL < 26) continue; const m2 = P0((u0 + u1) / 2); const st = svgEl('text', { x: m2[0] - nx * (th / 2 + 9), y: m2[1] - ny * (th / 2 + 9) + 3, 'text-anchor': 'middle', class: 'gp-walllab sub' }); st.textContent = wm.toFixed(2).replace('.', ',') + ' m'; g.append(st); }
@@ -5336,7 +5400,9 @@
                     const th = Math.max(2, ((EXCL[P.tool] && EXCL[P.tool].h) || 0.24) * CELL);
                     svg.append(svgEl('line', { x1: ax, y1: ay, x2: bx, y2: by, stroke: WALLCOL[P.tool] || '#8aa0b6', 'stroke-width': th, 'stroke-linecap': 'round', 'stroke-dasharray': '2 6', opacity: 0.85, class: 'gp-wallpreview' }));
                     const len = Math.hypot(P.preview.x - last.x, P.preview.y - last.y);
-                    const tl = svgEl('text', { x: (ax + bx) / 2, y: (ay + by) / 2 - 6, 'text-anchor': 'middle', class: 'gp-walllab live' }); tl.textContent = len.toFixed(2).replace('.', ',') + ' m'; svg.append(tl);
+                    const drawTh = P.wallThick || (EXCL[P.tool] && EXCL[P.tool].h) || 0.24;
+                    const clr = Math.max(0, len - nodePerpHalf(P.chain[P.chain.length - 1], -1) - drawTh / 2); // lichtes Maß live
+                    const tl = svgEl('text', { x: (ax + bx) / 2, y: (ay + by) / 2 - 6, 'text-anchor': 'middle', class: 'gp-walllab live' }); tl.textContent = clr.toFixed(2).replace('.', ',') + ' m'; svg.append(tl);
                 }
                 for (const idx of P.chain) { const n = P.walls.nodes[idx]; if (n) svg.append(svgEl('circle', { cx: n.x * CELL, cy: n.y * CELL, r: 4, class: 'gp-wnode chain' })); }
             }
@@ -5388,6 +5454,7 @@
             toolbar.append(seg);
             // Auto-Snap: objects fang flush against each other (in addition to the floor line).
             if (canManageNow) toolbar.append(tb('🧲', 'Auto-Snap: Objekte fangen aneinander', () => { P.autoSnap = !P.autoSnap; renderToolbar(); toast(P.autoSnap ? 'Auto-Snap an' : 'Auto-Snap aus'); }, P.autoSnap));
+            if (canManageNow) toolbar.append(tb('🛡', 'Pufferzonen zwischen Fahrzeugen (Taste P)', () => { P.buffer = !P.buffer; renderToolbar(); draw(); toast(P.buffer ? 'Pufferzonen an · ' + P.bufferM.toFixed(1).replace('.', ',') + ' m' : 'Pufferzonen aus'); }, P.buffer));
             // Vehicle display mode (client-side preference, remembered): symbol / photo / rectangle.
             if (P.mode === 'manage') { const dseg = el('div', { class: 'gp-seg', title: 'Fahrzeug-Darstellung' });
                 [['◈', 'symbol', 'Symbol'], ['▣', 'foto', 'Foto'], ['▭', 'rect', 'Rechteck']].forEach(([ic, key, t]) => dseg.append(el('button', { class: P.render === key ? 'on' : '', title: t, onclick: () => { P.render = key; try { localStorage.setItem('gp.render', key); } catch (e) { /* private mode */ } renderToolbar(); draw(); } }, ic)));
@@ -5416,7 +5483,7 @@
             // b._wq so rapid undo/redo can't land PUTs out of order (last call wins).
             // Persist the SPOT's own unique label (hall-unique, uq_spots_hall_label), NOT the
             // vehicle display label — two like-named vehicles must not collide on save.
-            const label = b.spotLabel || b.label, geometry = { x: round2(b.x), y: round2(b.y), w: round2(b.w), h: round2(b.h), rot: Math.round(b.rot || 0), status: b.status };
+            const label = b.spotLabel || b.label, geometry = { x: round2(b.x), y: round2(b.y), w: round2(b.w), h: round2(b.h), rot: Math.round(b.rot || 0), status: b.status, noBuf: b.noBuf || undefined };
             b._wq = (b._wq || Promise.resolve())
                 .then(() => api.put('/spots/' + b._id, { label, geometry }))
                 .then(() => { b._dirty = false; }, (err) => { b._dirty = true; P.dirty = true; renderToolbar(); toast(err.message || 'Speichern fehlgeschlagen', 'error'); });
@@ -5584,6 +5651,8 @@
                 fit.append(line('Höhe ' + (b.H != null ? b.H.toFixed(1) : '?') + ' m · Tor ' + P.tor.toFixed(1) + ' m', heightOK(b)));
                 fit.append(line('Gewicht ' + (b.t != null ? b.t.toFixed(2).replace('.', ',') : '?') + ' ≤ ' + P.load.toFixed(1) + ' t', weightOK(b)));
                 el0.append(fit);
+                // Per-vehicle buffer opt-out (only meaningful while global buffer is on).
+                el0.append(el('button', { class: 'btn btn-ghost btn-sm btn-block', style: 'margin:.15rem 0 .35rem' + (b.noBuf ? '' : ';border-color:var(--gpteal2);color:var(--gpteal2)'), onclick: () => { b.noBuf = !b.noBuf; b._dirty = true; markDirty(); pushUndo(); persistSpot(b); draw(); } }, b.noBuf ? '🛡 Pufferzone: aus' : '🛡 Pufferzone: an'));
                 // Planer-Darstellung: Ladebedarf + Symbol pro Fahrzeug — direkt hier (im Sync
                 // mit dem Fahrzeug-Formular, da dieselben Fahrzeug-Spalten geschrieben werden).
                 if (b.vehId) {
@@ -5620,7 +5689,7 @@
             // Wandstärke (Mauerdicke) für NEUE Wände — je Wand später über das Popover änderbar.
             const thSel = el('select', { class: 'gp-stepin', 'aria-label': 'Wandstärke', onchange: (e) => { P.wallThick = e.target.value ? (+e.target.value / 100) : null; } });
             [['', 'Typ-Standard'], ['11.5', '11,5 cm'], ['17.5', '17,5 cm'], ['24', '24 cm'], ['30', '30 cm'], ['36.5', '36,5 cm']].forEach(([v, l]) => { const o = el('option', { value: v }, l); if ((P.wallThick != null ? String(Math.round(P.wallThick * 1000) / 10) : '') === v) o.selected = true; thSel.append(o); });
-            toolsCard.append(el('div', { class: 'gp-field', style: 'margin-top:.35rem' }, el('label', {}, 'Wandstärke (neue Wände) · Maße = Achse'), thSel));
+            toolsCard.append(el('div', { class: 'gp-field', style: 'margin-top:.35rem' }, el('label', {}, 'Wandstärke (neue Wände) · Maße = lichtes Maß'), thSel));
             toolsCard.append(el('div', { class: 'gp-exgrouplab' }, 'Öffnungen (auf eine Wand)'));
             const orow = el('div', { class: 'gp-addrow' });
             openKindsList().forEach((k) => orow.append(toolBtn(k, EXCL[k].label)));
