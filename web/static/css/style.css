@@ -1324,6 +1324,22 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-parkfill{fill:rgba(46,230,207,.14);stroke:none}
 .gp-parkg{pointer-events:none}
 .gp-parklab{fill:#8ff0e0;font-size:13px;font-weight:800;paint-order:stroke;stroke:rgba(4,20,16,.7);stroke-width:3px;letter-spacing:.02em;pointer-events:none}
+/* Wall node-graph: neutral surface, thick wall segments, nodes, opening cut-outs, live preview */
+.gp-canvasbg{fill:#0b1620}
+.gp-wallg text{pointer-events:none}
+.gp-wall{stroke-linejoin:round}
+.gp-wall.sel{stroke:#ffffff}
+.gp-wnode{fill:#0b1620;stroke:#8fe0d4;stroke-width:2;cursor:grab}
+.gp-wnode.sel{fill:#8fe0d4}
+.gp-wnode.chain{fill:#2ee6cf;stroke:none}
+.gp-openmark{}
+.gp-walllab{fill:#cfe4dd;font-size:11px;font-weight:600;paint-order:stroke;stroke:rgba(4,16,12,.78);stroke-width:3px;pointer-events:none}
+.gp-walllab.live{fill:#8ff0e0}
+.gp-wallpreview,.gp-openpreview{pointer-events:none}
+.gp-snaphint{fill:none;stroke:#2ee6cf;stroke-width:2;pointer-events:none}
+/* transparent overlay that captures pointer input while a wall/opening tool or edit mode is active */
+.gp-drawoverlay{position:absolute;inset:0;z-index:8;touch-action:none;cursor:crosshair}
+.gp-drawoverlay.edit{cursor:default}
 /* Bauplan underlay + calibration frame */
 .gp-planimg{image-rendering:auto}
 .gp-calib{position:absolute;border:2px dashed var(--gpteal2);background:rgba(46,230,207,.06);cursor:move;z-index:7;box-sizing:border-box;touch-action:none}
