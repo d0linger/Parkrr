@@ -4238,6 +4238,7 @@
     const MAT = { stahlbeton: 'Stahlbeton', ziegel: 'Ziegel', leichtbau: 'Leichtbau', kalksand: 'Kalksandstein', holz: 'Holz' };
     const isZoneKind = (k) => !!(EXCL[k] && EXCL[k].zone);      // non-blocking marked area
     const isWallKind = (k) => !!(EXCL[k] && EXCL[k].cat === 'wall');
+    const isWallDraw = (k) => !!(k && String(k).indexOf('wall_') === 0); // drawable wall segment (not column / legacy wall)
     const isOpenKind = (k) => !!(EXCL[k] && EXCL[k].cat === 'open');
     // Wall node-graph: the building is drawn as connected wall segments (edges) between
     // shared points (nodes). Openings (Tür/Fenster/Tor) live ON an edge as {c,w,kind}.
@@ -5410,7 +5411,7 @@
                 lab2(an.aEnd.x, an.aEnd.y, dA); lab2(an.bEnd.x, an.bEnd.y, dB);
                 svg.append(svgEl('circle', { cx: an.x * CELL, cy: an.y * CELL, r: 4, class: 'gp-anchor' }));
             }
-            if (P.chain && P.chain.length && P.preview && isWallKind(P.tool)) {
+            if (P.chain && P.chain.length && P.preview && isWallDraw(P.tool)) {
                 const last = P.walls.nodes[P.chain[P.chain.length - 1]];
                 if (last) {
                     const ax = last.x * CELL, ay = last.y * CELL, bx = P.preview.x * CELL, by = P.preview.y * CELL;
@@ -5714,9 +5715,9 @@
             toolsCard.append(el('div', { class: 'gp-addrow', style: 'margin-top:.4rem' },
                 el('button', { class: 'btn btn-sm gp-toggle btn-block' + (!P.tool ? ' on' : ''), title: 'Normale Maus: auswählen, verschieben, bearbeiten', onclick: () => setTool(null) }, '↖ Auswahl / Bearbeiten')));
             toolsCard.append(el('div', { class: 'muted', style: 'font-size:.72rem;margin-top:.4rem' },
-                (P.tool && isWallKind(P.tool)) ? 'Klick setzt Punkte, jede weitere Ecke zeichnet weiter. Startpunkt klicken oder Doppelklick beendet. Auf eine bestehende Wand klicken = Anbau. Rechtsklick/Esc = Werkzeug ablegen.'
+                (P.tool && isWallDraw(P.tool)) ? 'Klick setzt Punkte, jede weitere Ecke zeichnet weiter. Startpunkt klicken oder Doppelklick beendet. Auf eine bestehende Wand klicken = Anbau. Rechtsklick/Esc = Werkzeug ablegen.'
                     : (P.tool && isOpenKind(P.tool)) ? 'Auf eine Wand klicken (Start), Breite ziehen, zweiter Klick setzt die Öffnung. Rechtsklick/Esc = Werkzeug ablegen.'
-                        : (P.tool && isZoneTool(P.tool)) ? 'Ins Canvas klicken und die Fläche aufziehen. Rechtsklick/Esc = Werkzeug ablegen.'
+                        : (P.tool && (isZoneTool(P.tool) || P.tool === 'column')) ? (P.tool === 'column' ? 'Klicken setzt eine Stütze (oder aufziehen für die Größe). Rechtsklick/Esc = ablegen.' : 'Ins Canvas klicken und die Fläche aufziehen. Rechtsklick/Esc = Werkzeug ablegen.')
                             : 'Auswahl-Modus: Objekt anklicken zum Bearbeiten (Wände: Knoten ziehen, Segment doppelklicken = Punkt einfügen). Löschen nur über 🗑 am Objekt oder Entf.'));
             const grid2 = el('div', { class: 'gp-grid2', style: 'margin-top:.5rem' });
             const dstep = (label, which, val, step) => el('div', { class: 'gp-field' }, el('label', {}, label),
@@ -5727,11 +5728,12 @@
             toolsCard.append(grid2); rail.append(toolsCard);
             // Functional zones (Fahrstraße / Wartung / Notausgang / Stellfläche) — placed as
             // rectangles. Walls & openings are drawn interactively above, not added here.
-            const exCard = el('div', { class: 'gp-rcard card' }, el('h3', {}, 'Flächen & Zonen'));
+            const exCard = el('div', { class: 'gp-rcard card' }, el('h3', {}, 'Flächen, Zonen & Bauteile'));
             const zrow = el('div', { class: 'gp-addrow' });
             Object.entries(EXCL).filter(([, m]) => m.cat === 'zone').forEach(([k, m]) => zrow.append(el('button', { class: 'btn btn-sm gp-toggle' + (P.tool === k ? ' on' : ''), title: 'Im Plan aufziehen', onclick: () => setTool(P.tool === k ? null : k) }, m.label)));
+            zrow.append(el('button', { class: 'btn btn-sm gp-toggle' + (P.tool === 'column' ? ' on' : ''), title: 'Stütze setzen (klicken oder aufziehen)', onclick: () => setTool(P.tool === 'column' ? null : 'column') }, EXCL.column.label));
             exCard.append(zrow);
-            exCard.append(el('div', { class: 'muted', style: 'font-size:.72rem;margin:.1rem 0 .3rem' }, 'Zone wählen und im Plan aufziehen; danach Ecken ziehen zum Anpassen, 🗑 am Objekt löscht.'));
+            exCard.append(el('div', { class: 'muted', style: 'font-size:.72rem;margin:.1rem 0 .3rem' }, 'Wählen und im Plan aufziehen (Stütze: klicken genügt); danach Ecken ziehen, ⟳ oben = drehen, 🗑 am Objekt löscht.'));
             const exList = el('div', { class: 'gp-exlist' });
             if (!P.excl.length) exList.append(el('div', { class: 'muted', style: 'font-size:.76rem;margin-top:.4rem' }, 'Noch keine Flächen.'));
             P.excl.forEach((b) => {
@@ -6048,9 +6050,9 @@
         drawOverlay.addEventListener('pointerdown', (ev) => {
             if (ev.button !== 0 || spaceDown || P.mode !== 'plan' || P.calib || !canManageNow) return;
             ev.preventDefault(); const p = evWorld(ev);
-            if (isWallKind(P.tool)) { wallClick(snapDraw(p, ev.shiftKey)); return; }
+            if (isWallDraw(P.tool)) { wallClick(snapDraw(p, ev.shiftKey)); return; }
             if (isOpenKind(P.tool)) { openClick(p); return; }
-            if (isZoneTool(P.tool)) { const x = gsnap(p.x), y = gsnap(p.y); zoneDraw = { x0: x, y0: y, x1: x, y1: y }; try { drawOverlay.setPointerCapture(ev.pointerId); } catch (er) { /* ignore */ } return; }
+            if (isZoneTool(P.tool) || P.tool === 'column') { const x = gsnap(p.x), y = gsnap(p.y); zoneDraw = { x0: x, y0: y, x1: x, y1: y }; try { drawOverlay.setPointerCapture(ev.pointerId); } catch (er) { /* ignore */ } return; }
             editDown(ev, p);
         });
         drawOverlay.addEventListener('pointermove', (ev) => {
@@ -6072,13 +6074,17 @@
                 opDrag.moved = true; drawFloor(); positionWallPop(); return;
             }
             if (nodeDrag) {
-                let x = gsnap(p.x), y = gsnap(p.y); const R = 12 / P.CELL, tol = 8 / P.CELL; P.guide = null; let bd = R;
+                let x = gsnap(p.x), y = gsnap(p.y); const R = 12 / P.CELL, tol = 11 / P.CELL; P.guide = null; let bd = R;
                 for (let i = 0; i < P.walls.nodes.length; i++) { if (i === nodeDrag.ni) continue; const n = P.walls.nodes[i]; const d = Math.hypot(n.x - x, n.y - y); if (d < bd) { bd = d; x = n.x; y = n.y; } }
-                // ortho-align to connected neighbours (+guide)
-                P.walls.edges.forEach((e) => { const j = e.a === nodeDrag.ni ? e.b : (e.b === nodeDrag.ni ? e.a : -1); if (j < 0) return; const n = P.walls.nodes[j]; if (Math.abs(x - n.x) <= tol) { x = n.x; P.guide = { kind: 'v', x }; } if (Math.abs(y - n.y) <= tol) { y = n.y; P.guide = { kind: 'h', y }; } });
+                // Ortho-align to the nearest node's X (vertical) and Y (horizontal) across the WHOLE
+                // plan — not just direct neighbours — so a corner clicks straight above/beside any
+                // other corner. Connected neighbours are included and win when equally close.
+                let bx = tol, sx = null, by = tol, sy = null;
+                for (let i = 0; i < P.walls.nodes.length; i++) { if (i === nodeDrag.ni) continue; const n = P.walls.nodes[i]; const dxv = Math.abs(x - n.x); if (dxv < bx) { bx = dxv; sx = n.x; } const dyv = Math.abs(y - n.y); if (dyv < by) { by = dyv; sy = n.y; } }
+                if (sx != null) { x = sx; P.guide = { kind: 'v', x }; } if (sy != null) { y = sy; P.guide = { kind: 'h', y }; }
                 nodeDrag.moved = true; P.walls.nodes[nodeDrag.ni].x = round2(x); P.walls.nodes[nodeDrag.ni].y = round2(y); _encKey = null; drawFloor(); return;
             }
-            if (isWallKind(P.tool)) { const sp = snapDraw(p, ev.shiftKey); P.preview = P.chain ? sp : null; drawFloor(); return; }
+            if (isWallDraw(P.tool)) { const sp = snapDraw(p, ev.shiftKey); P.preview = P.chain ? sp : null; drawFloor(); return; }
             if (isOpenKind(P.tool)) {
                 // live distance readout to both wall ends while hovering/placing an opening
                 if (P.openStart) { const ed = P.walls.edges[P.openStart.ei]; if (ed) { const v = edgeVec(ed); let t2 = ((p.x - v.a.x) * v.dx + (p.y - v.a.y) * v.dy) / (v.len * v.len); t2 = Math.max(0, Math.min(1, t2)); P.preview = { x: v.a.x + v.dx * t2, y: v.a.y + v.dy * t2, t: t2 }; P.attach = { ei: P.openStart.ei, t: t2, x: P.preview.x, y: P.preview.y }; } }
@@ -6088,10 +6094,15 @@
         });
         drawOverlay.addEventListener('pointerup', (ev) => {
             if (zoneDraw) {
-                const x = Math.min(zoneDraw.x0, zoneDraw.x1), y = Math.min(zoneDraw.y0, zoneDraw.y1), w = Math.abs(zoneDraw.x1 - zoneDraw.x0), h = Math.abs(zoneDraw.y1 - zoneDraw.y0), kind = P.tool;
+                const kind = P.tool, x0 = zoneDraw.x0, y0 = zoneDraw.y0;
+                let x = Math.min(zoneDraw.x0, zoneDraw.x1), y = Math.min(zoneDraw.y0, zoneDraw.y1), w = Math.abs(zoneDraw.x1 - zoneDraw.x0), h = Math.abs(zoneDraw.y1 - zoneDraw.y0);
                 zoneDraw = null; try { drawOverlay.releasePointerCapture(ev.pointerId); } catch (er) { /* ignore */ }
                 P.tool = null; P.snapHint = null;
-                if (w >= 0.5 && h >= 0.5) { const b = createZone(kind, x, y, w, h); P.sel = b.id; P.structSel = null; pushUndo(); markDirty(); equalizePadding(); toast((EXCL[kind] ? EXCL[kind].label : 'Fläche') + ' erstellt', 'ok'); }
+                // Stütze: a small structural block — a tiny drag/click places a default square.
+                const isCol = kind === 'column';
+                if (isCol && (w < 0.3 || h < 0.3)) { const s = (EXCL.column && EXCL.column.w) || 0.4; x = round2(x0 - s / 2); y = round2(y0 - s / 2); w = s; h = s; }
+                const minOk = isCol ? (w >= 0.15 && h >= 0.15) : (w >= 0.5 && h >= 0.5);
+                if (minOk) { const b = createZone(kind, x, y, w, h); P.sel = b.id; P.structSel = null; pushUndo(); markDirty(); equalizePadding(); toast((EXCL[kind] ? EXCL[kind].label : 'Fläche') + ' erstellt', 'ok'); }
                 else draw();
                 return;
             }
@@ -6102,7 +6113,7 @@
         });
         drawOverlay.addEventListener('dblclick', (ev) => {
             if (P.mode !== 'plan' || P.calib) return; ev.preventDefault();
-            if (isWallKind(P.tool) && P.chain) { endChain(); return; }
+            if (isWallDraw(P.tool) && P.chain) { endChain(); return; }
             if (!P.tool) { const p = evWorld(ev), R = 12 / P.CELL; if (nodeAt(p, R) >= 0) return; const e = edgeAt(p, R); if (e) { const nn = splitEdgeAt(e.i, e.t); P.structSel = { type: 'node', idx: nn }; refreshFloorFromWalls(); pushUndo(); markDirty(); layout(); toast('Punkt eingefügt'); } }
         });
         drawOverlay.addEventListener('contextmenu', (ev) => {
