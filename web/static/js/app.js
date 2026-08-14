@@ -4548,8 +4548,9 @@
         // Inline quick-edit popover for a selected wall segment OR opening: length/width + delete.
         const wallPopLabel = el('span', { class: 'gp-wallpop-lab' }, 'Länge');
         const wallLenIn = el('input', { type: 'number', step: '0.01', min: '0.1', class: 'gp-lenin' });
+        const wallPopUnit = el('span', { class: 'muted' }, 'm');
         const wallPopDel = el('button', { class: 'gp-wallpop-del', title: 'Löschen', 'aria-label': 'Löschen' }, '🗑');
-        const wallPop = el('div', { class: 'gp-wallpop' }, wallPopLabel, wallLenIn, el('span', { class: 'muted' }, 'm'), wallPopDel);
+        const wallPop = el('div', { class: 'gp-wallpop' }, wallPopLabel, wallLenIn, wallPopUnit, wallPopDel);
         wallPop.style.display = 'none'; planEl.append(wallPop);
         wallPop.addEventListener('pointerdown', (e) => e.stopPropagation());
         wallLenIn.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') wallLenIn.blur(); });
@@ -4557,16 +4558,22 @@
         wallPopDel.addEventListener('click', (e) => { e.stopPropagation(); deleteSel(); });
         function positionWallPop() {
             const ss = P.structSel;
-            const show = P.mode === 'plan' && P.structEdit && ss && ((ss.type === 'edge' && P.walls.edges[ss.idx]) || (ss.type === 'opening' && P.walls.edges[ss.ei] && (P.walls.edges[ss.ei].ops || [])[ss.oi]));
-            if (!show) { wallPop.style.display = 'none'; return; }
-            let mx, my, val;
-            if (ss.type === 'edge') { const v = edgeVec(P.walls.edges[ss.idx]); mx = (v.a.x + v.b.x) / 2 * P.CELL; my = (v.a.y + v.b.y) / 2 * P.CELL; val = v.len; wallPopLabel.textContent = 'Länge'; }
-            else { const e = P.walls.edges[ss.ei], v = edgeVec(e), o = e.ops[ss.oi]; mx = (v.a.x + v.dx * o.c) * P.CELL; my = (v.a.y + v.dy * o.c) * P.CELL; val = o.w; wallPopLabel.textContent = 'Breite'; }
+            const okEdge = ss && ss.type === 'edge' && P.walls.edges[ss.idx];
+            const okOpen = ss && ss.type === 'opening' && P.walls.edges[ss.ei] && (P.walls.edges[ss.ei].ops || [])[ss.oi];
+            const okNode = ss && ss.type === 'node' && P.walls.nodes[ss.idx];
+            if (!(P.mode === 'plan' && P.structEdit && (okEdge || okOpen || okNode))) { wallPop.style.display = 'none'; return; }
+            let mx, my, val = null;
+            if (okEdge) { const v = edgeVec(P.walls.edges[ss.idx]); mx = (v.a.x + v.b.x) / 2 * P.CELL; my = (v.a.y + v.b.y) / 2 * P.CELL; val = v.len; wallPopLabel.textContent = 'Länge'; }
+            else if (okOpen) { const e = P.walls.edges[ss.ei], v = edgeVec(e), o = e.ops[ss.oi]; mx = (v.a.x + v.dx * o.c) * P.CELL; my = (v.a.y + v.dy * o.c) * P.CELL; val = o.w; wallPopLabel.textContent = 'Breite'; }
+            else { const n = P.walls.nodes[ss.idx]; mx = n.x * P.CELL; my = n.y * P.CELL; wallPopLabel.textContent = 'Punkt auflösen'; } // node: dissolve only
+            const showInput = val != null;
+            wallLenIn.style.display = showInput ? '' : 'none'; wallPopUnit.style.display = showInput ? '' : 'none';
+            wallPopDel.title = okNode ? 'Punkt auflösen (Wände verbinden)' : (okOpen ? 'Öffnung löschen' : 'Segment löschen');
             const pw = P.Wm * P.CELL, ph = P.Hm * P.CELL;
             wallPop.style.left = Math.max(64, Math.min(pw - 64, mx)) + 'px';
             wallPop.style.top = Math.max(30, Math.min(ph - 8, my - 26)) + 'px';
             wallPop.style.display = 'flex';
-            if (document.activeElement !== wallLenIn) wallLenIn.value = val.toFixed(2);
+            if (showInput && document.activeElement !== wallLenIn) wallLenIn.value = val.toFixed(2);
         }
         // Vertex context menu (shown on click, not permanently) — declutters the plan.
         const vertMenu = el('div', { class: 'gp-vertmenu' }); vertMenu.style.display = 'none'; planEl.append(vertMenu);
@@ -4984,7 +4991,30 @@
             P.walls.edges.splice(ei, 1, { a: e.a, b: ni, kind: e.kind, thick: e.thick, ops: opsA }, { a: ni, b: e.b, kind: e.kind, thick: e.thick, ops: opsB });
             return ni;
         }
-        function deleteNode(ni) { P.walls.edges = P.walls.edges.filter((e) => e.a !== ni && e.b !== ni); P.walls.nodes.splice(ni, 1); P.walls.edges.forEach((e) => { if (e.a > ni) e.a--; if (e.b > ni) e.b--; }); }
+        // "Punkt löschen": if the node joins exactly two segments A–B and B–C, DISSOLVE it —
+        // merge them into one continuous edge A–C (re-parameterising openings by path length).
+        // Any other degree just drops the node's incident edges. pruneNodes() cleans up.
+        function deleteNode(ni) {
+            const inc = []; P.walls.edges.forEach((e, i) => { if (e.a === ni || e.b === ni) inc.push(i); });
+            if (inc.length === 2) {
+                const e1 = P.walls.edges[inc[0]], e2 = P.walls.edges[inc[1]];
+                const A = e1.a === ni ? e1.b : e1.a, C = e2.a === ni ? e2.b : e2.a;
+                const dup = P.walls.edges.some((e, i) => i !== inc[0] && i !== inc[1] && ((e.a === A && e.b === C) || (e.a === C && e.b === A)));
+                const hi = Math.max(inc[0], inc[1]), lo = Math.min(inc[0], inc[1]);
+                if (A !== C && !dup) {
+                    const nA = P.walls.nodes[A], nB = P.walls.nodes[ni], nC = P.walls.nodes[C];
+                    const lAB = Math.hypot(nB.x - nA.x, nB.y - nA.y), lBC = Math.hypot(nC.x - nB.x, nC.y - nB.y), tot = lAB + lBC || 1;
+                    const ops = [];
+                    (e1.ops || []).forEach((o) => { const fromA = (e1.a === A ? o.c : 1 - o.c) * lAB; ops.push({ c: Math.max(0, Math.min(1, fromA / tot)), w: o.w, kind: o.kind }); });
+                    (e2.ops || []).forEach((o) => { const fromB = (e2.a === ni ? o.c : 1 - o.c) * lBC; ops.push({ c: Math.max(0, Math.min(1, (lAB + fromB) / tot)), w: o.w, kind: o.kind }); });
+                    P.walls.edges.splice(hi, 1); P.walls.edges.splice(lo, 1);
+                    P.walls.edges.push({ a: A, b: C, kind: e1.kind, thick: e1.thick, ops });
+                } else { P.walls.edges.splice(hi, 1); P.walls.edges.splice(lo, 1); }
+            } else {
+                P.walls.edges = P.walls.edges.filter((e) => e.a !== ni && e.b !== ni);
+            }
+            pruneNodes();
+        }
         function pruneNodes() { const used = new Set(); P.walls.edges.forEach((e) => { used.add(e.a); used.add(e.b); }); const keep = [], remap = {}; P.walls.nodes.forEach((n, i) => { if (used.has(i)) { remap[i] = keep.length; keep.push(n); } }); P.walls.nodes = keep; P.walls.edges.forEach((e) => { e.a = remap[e.a]; e.b = remap[e.b]; }); }
         function deleteEdge(ei) { P.walls.edges.splice(ei, 1); pruneNodes(); }
         function wallsBBox() { let a = Infinity, b = Infinity, c = -Infinity, d = -Infinity; for (const n of P.walls.nodes) { if (n.x < a) a = n.x; if (n.y < b) b = n.y; if (n.x > c) c = n.x; if (n.y > d) d = n.y; } return { minX: a, minY: b, maxX: c, maxY: d }; }
@@ -5060,6 +5090,27 @@
             const l = p.x < PAD ? Math.ceil(PAD - p.x) : 0, t = p.y < PAD ? Math.ceil(PAD - p.y) : 0;
             const r = p.x > P.Wm - PAD ? Math.ceil(p.x + PAD - P.Wm) : 0, b = p.y > P.Hm - PAD ? Math.ceil(p.y + PAD - P.Hm) : 0;
             return (l || t || r || b) ? expandCanvas(l, t, r, b) : false;
+        }
+        // AABB of everything that actually exists (walls, zones, spots, underlay).
+        function contentBBox() {
+            let a = Infinity, b = Infinity, c = -Infinity, d = -Infinity, any = false;
+            const acc = (x, y) => { any = true; if (x < a) a = x; if (y < b) b = y; if (x > c) c = x; if (y > d) d = y; };
+            P.walls.nodes.forEach((n) => acc(n.x, n.y));
+            P.excl.concat(P.spots).forEach((e) => { const h = halfAABB(e), cx = e.x + e.w / 2, cy = e.y + e.h / 2; acc(cx - h.hx, cy - h.hy); acc(cx + h.hx, cy + h.hy); });
+            if (P.plan) { acc(P.plan.x, P.plan.y); acc(P.plan.x + P.plan.w, P.plan.y + P.plan.h); }
+            return any ? { minX: a, minY: b, maxX: c, maxY: d } : null;
+        }
+        // Shrink/grow the canvas to hug the real content (+ padding) and re-fit — called when a
+        // draw action is discarded, elements are deleted, or the layout is cleaned up, so the
+        // grid never stays inflated after an accidental over-drag.
+        function normalizeCanvas() {
+            const PAD = 2, MINW = 8, MINH = 6, bb = contentBBox();
+            if (!bb) { P.Wm = 14; P.Hm = 9; P.zoom = 1; _encKey = null; layout(); return; }
+            const dx = round2(PAD - bb.minX), dy = round2(PAD - bb.minY);
+            if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) shiftWorld(dx, dy);
+            P.Wm = Math.max(MINW, Math.ceil((bb.maxX - bb.minX) + 2 * PAD));
+            P.Hm = Math.max(MINH, Math.ceil((bb.maxY - bb.minY) + 2 * PAD));
+            P.zoom = 1; _encKey = null; layout();
         }
 
         // ---- automatic Parkfläche: the area ENCLOSED by the drawn walls ----
@@ -5304,7 +5355,7 @@
             toolbar.append(tb('−', 'Verkleinern', () => { P.zoom = Math.max(0.5, +(P.zoom - 0.15).toFixed(2)); layout(); }));
             toolbar.append(el('span', { class: 'gp-zoomlbl' }, Math.round((P.zoom || 1) * 100) + '%'));
             toolbar.append(tb('+', 'Vergrößern', () => { P.zoom = Math.min(8, +(P.zoom + 0.15).toFixed(2)); layout(); }));
-            toolbar.append(tb('⤢ Passen', 'Einpassen', () => { P.zoom = 1; layout(); }));
+            toolbar.append(tb('⤢ Passen', 'Einpassen & Raster an die Wände anpassen', () => { normalizeCanvas(); }));
             if (canManageNow && P.dirty) { const sv = tb('● Speichern', 'Jetzt speichern (Auto-Save aktiv)', () => doSaveGeom(), false, 'btn-primary'); toolbar.append(sv); }
         }
         function rotateSel() {
@@ -5806,7 +5857,7 @@
             }
             return { x, y };
         }
-        function endChain(msg) { P.chain = null; P.preview = null; P.snapHint = null; P.guide = null; P.attach = null; P.chainAnchor = null; pruneNodes(); refreshFloorFromWalls(); P.structEdit = true; if (msg) toast(msg, 'ok'); layout(); }
+        function endChain(msg) { P.chain = null; P.preview = null; P.snapHint = null; P.guide = null; P.attach = null; P.chainAnchor = null; pruneNodes(); refreshFloorFromWalls(); P.structEdit = true; if (msg) toast(msg, 'ok'); normalizeCanvas(); }
         function wallClick(sp) {
             let ni, changed = false;
             if (sp.node != null) ni = sp.node;
@@ -5847,8 +5898,9 @@
         function deleteSel() {
             if (!P.structSel) return;
             if (P.structSel.type === 'opening') { const e = P.walls.edges[P.structSel.ei]; if (e && e.ops) e.ops.splice(P.structSel.oi, 1); P.structSel = null; pushUndo(); markDirty(); draw(); toast('Öffnung entfernt — Wand geschlossen'); return; }
-            if (P.structSel.type === 'node') deleteNode(P.structSel.idx); else deleteEdge(P.structSel.idx);
-            P.structSel = null; refreshFloorFromWalls(); pushUndo(); markDirty(); layout(); toast('Entfernt');
+            const isNode = P.structSel.type === 'node';
+            if (isNode) deleteNode(P.structSel.idx); else deleteEdge(P.structSel.idx);
+            P.structSel = null; refreshFloorFromWalls(); pushUndo(); markDirty(); normalizeCanvas(); toast(isNode ? 'Punkt aufgelöst' : 'Segment entfernt');
         }
         drawOverlay.addEventListener('pointerdown', (ev) => {
             if (ev.button !== 0 || spaceDown || P.mode !== 'plan' || P.calib || !canManageNow) return;
