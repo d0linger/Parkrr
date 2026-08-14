@@ -1320,6 +1320,16 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-gridline{stroke:rgba(255,255,255,.06);stroke-width:1}
 .gp-floorfill{fill:#0c1a14}
 .gp-floorstroke{fill:none;stroke:rgba(46,230,207,.4);stroke-width:2}
+/* Bauplan underlay + calibration frame */
+.gp-planimg{image-rendering:auto}
+.gp-calib{position:absolute;border:2px dashed var(--gpteal2);background:rgba(46,230,207,.06);cursor:move;z-index:7;box-sizing:border-box;touch-action:none}
+.gp-calib-tag{position:absolute;top:-20px;left:0;font-size:.62rem;font-weight:700;color:var(--gpteal2);white-space:nowrap;background:rgba(0,0,0,.55);padding:1px 6px;border-radius:6px;pointer-events:none}
+.gp-calh{position:absolute;width:15px;height:15px;background:#fff;border:2px solid var(--gpteal2);border-radius:3px;box-sizing:border-box;touch-action:none}
+.gp-calh-nw{left:-8px;top:-8px;cursor:nwse-resize}
+.gp-calh-ne{right:-8px;top:-8px;cursor:nesw-resize}
+.gp-calh-se{right:-8px;bottom:-8px;cursor:nwse-resize}
+.gp-calh-sw{left:-8px;bottom:-8px;cursor:nesw-resize}
+.gp-toggle.on{border-color:var(--gpteal2);color:var(--gpteal2)}
 .gp-vertex{fill:#eaf6ff;stroke:#0a141e;stroke-width:1.5;cursor:grab}
 .gp-edge{stroke:rgba(46,230,207,.55);stroke-width:2}
 .gp-edge.sel{stroke:#2ee6cf;stroke-width:3.5}

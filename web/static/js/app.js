@@ -4446,6 +4446,8 @@
             hallId: id, garageId: data.hall.garage_id, hallName: data.hall.name, garageName: data.garage_name, halls,
             floor, Wm, Hm, tor: num(geo.tor, 3), load: num(geo.load, 5), shape: geo.shape || 'rect',
             excl: (Array.isArray(geo.excl) ? geo.excl : []).map((e, i) => ({ id: 'x' + i, kind: e.kind || 'wall', x: num(e.x, 0), y: num(e.y, 0), w: num(e.w, 1), h: num(e.h, 1), rot: num(e.rot, 0), label: e.label || (EXCL[e.kind] ? EXCL[e.kind].label : 'Fläche'), mat: e.mat || (EXCL[e.kind] ? EXCL[e.kind].mat : undefined) })),
+            // Optional Bauplan underlay: a downscaled image (data-URL) placed in metre space.
+            plan: (geo.plan && geo.plan.href) ? { href: geo.plan.href, x: num(geo.plan.x, 0), y: num(geo.plan.y, 0), w: num(geo.plan.w, Wm), h: num(geo.plan.h, Hm), opacity: num(geo.plan.opacity, 0.55), hidden: !!geo.plan.hidden } : null,
             spots: (data.spots || []).map((s) => { const g = asObj(s.geometry); return {
                 _id: s.id, kind: 'veh', label: s.vehicle_label || s.label, spotLabel: s.label, type: s.vehicle_type || '', vehId: s.vehicle_id || null,
                 personId: s.person_id || null, personName: s.person_name || '',
@@ -4453,7 +4455,7 @@
                 plannerSymbol: s.planner_symbol || null, photoUrl: s.photo_id ? '/api/photos/' + s.photo_id : null,
                 x: num(g.x, 1), y: num(g.y, 1), w: num(g.w, s.length_m || catFoot(s.vehicle_type)[0]), h: num(g.h, s.width_m || catFoot(s.vehicle_type)[1]), rot: num(g.rot, 0), status: g.status || 'busy', _dirty: false }; }),
             palette, plannerIcons,
-            mode: 'manage', editMode: false, snap: true, gridStep: 0.5, autoSnap: true, ortho: false, zoom: 1, sel: null, selEdge: null,
+            mode: 'manage', editMode: false, snap: true, gridStep: 0.5, autoSnap: true, calib: false, ortho: false, zoom: 1, sel: null, selEdge: null,
             render: (function () { try { return localStorage.getItem('gp.render') || 'symbol'; } catch (e) { return 'symbol'; } })(),
             maxed: false, CELL: 30, uid: 1, hist: [], hpos: -1, dirty: false,
         };
@@ -4723,6 +4725,14 @@
             const clip = svgEl('clipPath', { id: 'gpclip' }); clip.append(svgEl('polygon', { points: s }));
             defs.append(pat, clip); svg.append(defs);
             svg.append(svgEl('polygon', { class: 'gp-floorfill', points: s }));
+            // Bauplan underlay — above the (opaque) floor fill, below grid + blocks. During
+            // calibration it is shown unclipped/brighter so it can be aligned past the border.
+            if (P.plan && !P.plan.hidden && P.plan.href) {
+                const im = svgEl('image', { class: 'gp-planimg', x: P.plan.x * CELL, y: P.plan.y * CELL, width: Math.max(1, P.plan.w * CELL), height: Math.max(1, P.plan.h * CELL), preserveAspectRatio: 'none', opacity: P.calib ? Math.max(0.7, P.plan.opacity) : P.plan.opacity });
+                if (!P.calib) im.setAttribute('clip-path', 'url(#gpclip)');
+                im.setAttribute('href', P.plan.href); im.setAttribute('preserveAspectRatio', 'none');
+                svg.append(im);
+            }
             if (P.grid !== false) svg.append(svgEl('rect', { width: P.Wm * CELL, height: P.Hm * CELL, fill: 'url(#gpgrid)', 'clip-path': 'url(#gpclip)' }));
             svg.append(svgEl('polygon', { class: 'gp-floorstroke', points: s }));
             // edit handles (Garagenplaner + editMode)
@@ -4831,6 +4841,65 @@
                 if (b.id === P.sel && interactive(b) && canManageNow) addHandles(d, b.id);
                 positionBlock(d, b); layer.append(d);
             });
+            drawCalibFrame();
+        }
+        // Bauplan calibration frame: a draggable/resizable rectangle over the underlay
+        // (plan mode only). drawFloor() re-renders the SVG image live; the frame lives in
+        // the block layer and updates its own style during the gesture.
+        function drawCalibFrame() {
+            if (!(P.calib && P.plan && P.mode === 'plan' && canManageNow)) return;
+            const CELL = P.CELL, pl = P.plan;
+            const fr = el('div', { class: 'gp-calib' });
+            const place = () => { fr.style.left = (pl.x * CELL) + 'px'; fr.style.top = (pl.y * CELL) + 'px'; fr.style.width = Math.max(6, pl.w * CELL) + 'px'; fr.style.height = Math.max(6, pl.h * CELL) + 'px'; };
+            place();
+            fr.append(el('span', { class: 'gp-calib-tag' }, 'Bauplan kalibrieren — ziehen · Ecke = Größe'));
+            ['nw', 'ne', 'se', 'sw'].forEach((c) => { const h = el('div', { class: 'gp-calh gp-calh-' + c }); h.dataset.c = c; fr.append(h); });
+            layer.append(fr);
+            fr.addEventListener('pointerdown', (e) => {
+                if (e.button !== 0) return;
+                const handle = e.target.closest('.gp-calh'); e.preventDefault(); e.stopPropagation();
+                const st = { mx: e.clientX, my: e.clientY, x: pl.x, y: pl.y, w: pl.w, h: pl.h, c: handle ? handle.dataset.c : null };
+                const grip = handle || fr; try { grip.setPointerCapture(e.pointerId); } catch (er) { /* ignore */ }
+                const mv = (ev) => {
+                    const dx = (ev.clientX - st.mx) / CELL, dy = (ev.clientY - st.my) / CELL;
+                    if (!st.c) { pl.x = st.x + dx; pl.y = st.y + dy; }
+                    else { let x = st.x, y = st.y, w = st.w, h = st.h;
+                        if (st.c.indexOf('w') >= 0) { x = st.x + dx; w = st.w - dx; }
+                        if (st.c.indexOf('e') >= 0) { w = st.w + dx; }
+                        if (st.c.indexOf('n') >= 0) { y = st.y + dy; h = st.h - dy; }
+                        if (st.c.indexOf('s') >= 0) { h = st.h + dy; }
+                        if (w > 0.3 && h > 0.3) { pl.x = x; pl.y = y; pl.w = w; pl.h = h; } }
+                    place(); drawFloor();
+                };
+                const up = (ev) => { try { grip.releasePointerCapture(ev.pointerId); } catch (er) { /* ignore */ } window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); markDirty(); };
+                window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up);
+            });
+        }
+        // Load an image file as the Bauplan underlay: downscale on a canvas and store a
+        // JPEG data-URL small enough to fit inside the geometry blob (256 KB cap on the
+        // whole JSON), then default its placement to the current floor bounding box.
+        function loadBauplan(file) {
+            if (!file) return;
+            const rd = new FileReader();
+            rd.onload = () => {
+                const img = new Image();
+                img.onload = () => {
+                    const MAXPX = 1400; let w = img.naturalWidth || 1, h = img.naturalHeight || 1;
+                    const sc = Math.min(1, MAXPX / Math.max(w, h)); w = Math.max(1, Math.round(w * sc)); h = Math.max(1, Math.round(h * sc));
+                    const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+                    const cx = cv.getContext('2d'); cx.fillStyle = '#fff'; cx.fillRect(0, 0, w, h); cx.drawImage(img, 0, 0, w, h);
+                    let href = cv.toDataURL('image/jpeg', 0.72);
+                    if (href.length > 200000) href = cv.toDataURL('image/jpeg', 0.5);
+                    if (href.length > 230000) { toast('Bauplan zu groß — bitte ein kleineres/kontrastärmeres Bild wählen', 'error'); return; }
+                    const bb = floorBB();
+                    P.plan = { href, x: bb.minX, y: bb.minY, w: Math.max(1, bb.maxX - bb.minX), h: Math.max(1, bb.maxY - bb.minY), opacity: 0.55, hidden: false };
+                    P.calib = true; markDirty(); draw(); renderRail(); toast('Bauplan geladen — jetzt kalibrieren (ziehen / Ecke)', 'ok');
+                };
+                img.onerror = () => toast('Bild konnte nicht gelesen werden', 'error');
+                img.src = rd.result;
+            };
+            rd.onerror = () => toast('Datei konnte nicht gelesen werden', 'error');
+            rd.readAsDataURL(file);
         }
         function renderMetrics() {
             metrics.innerHTML = '';
@@ -4910,7 +4979,7 @@
                 .then(() => {}, (err) => { toast(err.message || 'Maße speichern fehlgeschlagen', 'error'); });
             return b._dq;
         }
-        function currentGeometry() { return { floor: P.floor, Wm: P.Wm, Hm: P.Hm, tor: P.tor, load: P.load, shape: P.shape, excl: P.excl.map((e) => ({ kind: e.kind, x: round2(e.x), y: round2(e.y), w: round2(e.w), h: round2(e.h), rot: Math.round(e.rot || 0), label: e.label, mat: e.mat || undefined })) }; }
+        function currentGeometry() { return { floor: P.floor, Wm: P.Wm, Hm: P.Hm, tor: P.tor, load: P.load, shape: P.shape, excl: P.excl.map((e) => ({ kind: e.kind, x: round2(e.x), y: round2(e.y), w: round2(e.w), h: round2(e.h), rot: Math.round(e.rot || 0), label: e.label, mat: e.mat || undefined })), plan: P.plan ? { href: P.plan.href, x: round2(P.plan.x), y: round2(P.plan.y), w: round2(P.plan.w), h: round2(P.plan.h), opacity: round2(P.plan.opacity), hidden: P.plan.hidden || undefined } : undefined }; }
         async function doSaveGeom(silent) {
             P.dirty = false; renderToolbar(); // optimistic; a change during the save re-flags it
             try {
@@ -5145,6 +5214,25 @@
                 exCard.append(sizeRow, el('div', { class: 'muted', style: 'font-size:.72rem;margin-top:.35rem' }, 'Ecke ziehen = Größe · Ziehen = verschieben.'));
             }
             rail.append(exCard);
+            // ---- Bauplan (Unterlage) ----
+            const planCard = el('div', { class: 'gp-rcard card' }, el('h3', {}, 'Bauplan', el('span', { class: 'eyebrow' }, 'Unterlage')));
+            const fileIn = el('input', { type: 'file', accept: 'image/*', style: 'display:none', onchange: (e) => { loadBauplan(e.target.files && e.target.files[0]); e.target.value = ''; } });
+            planCard.append(fileIn, el('div', { class: 'gp-addrow' }, el('button', { class: 'btn btn-sm', onclick: () => fileIn.click() }, P.plan ? '↻ Bild ersetzen' : '⤒ Bauplan laden')));
+            if (P.plan) {
+                const showBtn = el('button', { class: 'btn btn-sm gp-toggle' + (!P.plan.hidden ? ' on' : ''), onclick: () => { P.plan.hidden = !P.plan.hidden; markDirty(); draw(); renderRail(); } }, P.plan.hidden ? '⦸ Ausgeblendet' : '👁 Sichtbar');
+                const calBtn = el('button', { class: 'btn btn-sm gp-toggle' + (P.calib ? ' on' : ''), onclick: () => { P.calib = !P.calib; draw(); renderRail(); } }, '⤡ Kalibrieren');
+                const op = el('input', { type: 'range', min: '10', max: '100', value: String(Math.round(P.plan.opacity * 100)), 'aria-label': 'Deckkraft', oninput: (e) => { P.plan.opacity = (+e.target.value) / 100; markDirty(); drawFloor(); } }); op.style.width = '100%';
+                planCard.append(el('div', { style: 'margin-top:.5rem;display:flex;flex-direction:column;gap:.45rem' },
+                    el('div', { class: 'gp-addrow' }, showBtn, calBtn),
+                    el('div', { class: 'gp-field' }, el('label', {}, 'Deckkraft'), op),
+                    el('div', { class: 'gp-addrow' },
+                        el('button', { class: 'btn btn-sm', title: 'Auf die Hallenfläche einpassen', onclick: () => { const bb = floorBB(); P.plan.x = bb.minX; P.plan.y = bb.minY; P.plan.w = Math.max(1, bb.maxX - bb.minX); P.plan.h = Math.max(1, bb.maxY - bb.minY); markDirty(); draw(); } }, '⤢ An Halle anpassen'),
+                        el('button', { class: 'btn btn-sm btn-danger', onclick: () => { P.plan = null; P.calib = false; markDirty(); draw(); renderRail(); toast('Bauplan entfernt'); } }, 'Entfernen'))));
+                planCard.append(el('div', { class: 'muted', style: 'font-size:.72rem;margin-top:.4rem' }, 'Kalibrieren: Bauplan verschieben und an den Ecken auf Maßstab ziehen. Wände/Fahrzeuge lassen sich dann exakt darüber platzieren.'));
+            } else {
+                planCard.append(el('div', { class: 'muted', style: 'font-size:.72rem;margin-top:.4rem' }, 'Ein Foto/Scan des Grundrisses als Unterlage laden, kalibrieren und darüber planen.'));
+            }
+            rail.append(planCard);
         }
         function setDimTo(which, value) {
             const v = Number(value); if (!Number.isFinite(v) || value === '' || v <= 0) return;
@@ -5169,7 +5257,7 @@
             else if (which === 'load') P.load = Math.max(0.5, Math.min(60, +(P.load + d * 0.5).toFixed(1)));
             hideLen(); pushUndo(); markDirty(); layout();
         }
-        function clampAll() { blocksAll().forEach((b) => { const t = b.kind === 'excl' ? P.excl.find((e) => e.id === b.id) : P.spots.find((s) => s._id === b._id); if (t) { const cl = clampXY(t, t.x, t.y); t.x = cl.x; t.y = cl.y; if (t._id) t._dirty = true; } }); }
+        function clampAll() { P.spots.concat(P.excl).forEach((t) => { const cl = clampXY(t, t.x, t.y); t.x = cl.x; t.y = cl.y; if (t._id) t._dirty = true; }); }
         function addExcl(k) {
             const s = EXCL[k]; const b = { id: 'e' + (P.uid++), kind: k, x: 1, y: 1, w: s.w, h: s.h, label: s.label, mat: s.mat };
             // Zones (Stellfläche) may sit anywhere; blocking structures seek a free cell.
@@ -5187,7 +5275,7 @@
         }
 
         // ---- mode / maximize ----
-        function setMode(m) { P.mode = m; root.dataset.mode = m; P.sel = null; P.editMode = false; hideLen(); hideVertMenu(); ctitle.textContent = m === 'plan' ? 'Garagenplaner' : 'Digitaler Zwilling'; rebuildSwitch(); draw(); }
+        function setMode(m) { P.mode = m; root.dataset.mode = m; P.sel = null; P.editMode = false; P.calib = false; hideLen(); hideVertMenu(); ctitle.textContent = m === 'plan' ? 'Garagenplaner' : 'Digitaler Zwilling'; rebuildSwitch(); draw(); }
         function toggleMax(force) { P.maxed = force == null ? !P.maxed : force; root.classList.toggle('maxed', P.maxed); maxBtn.textContent = P.maxed ? '⤢' : '⛶'; if (!P.maxed) { rail.style.left = ''; rail.style.top = ''; rail.style.right = ''; } setTimeout(layout, 20); }
         // In fullscreen the rail floats over the canvas and can be dragged by any
         // card header ("dynamisch drüberliegend und verschiebbar").
