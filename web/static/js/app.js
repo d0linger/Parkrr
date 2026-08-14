@@ -5035,42 +5035,31 @@
         }
         // ---- wall node-graph geometry ----
         function edgeVec(e) { const a = P.walls.nodes[e.a], b = P.walls.nodes[e.b]; const dx = b.x - a.x, dy = b.y - a.y; return { a, b, dx, dy, len: Math.hypot(dx, dy) }; }
-        // Bezug (reference): the drawn line is the wall AXIS (centred thickness, default), or
-        // the INNER face (thickness grows outward), or the OUTER face (grows inward). We shift
-        // each node to a mitre point so the drawn line lands on the chosen face and corners stay
-        // clean — used by rendering, collision AND the enclosure/area alike.
-        const lineIntersect = (p, d, q, e) => { const den = d.x * e.y - d.y * e.x; if (Math.abs(den) < 1e-9) return null; const t = ((q.x - p.x) * e.y - (q.y - p.y) * e.x) / den; return { x: p.x + d.x * t, y: p.y + d.y * t }; };
+        // Bezug (reference): the drawn line is the wall AXIS (centred, default), the INNER face
+        // (thickness grows outward) or the OUTER face (grows inward). Each wall is shifted
+        // PERPENDICULARLY by ±thick/2 (never moving the shared nodes → the plan can't skew); the
+        // inner faces stay continuous at the drawn corners, so collision AND the enclosed area
+        // land exactly on the drawn outline. Corners are filled by a joint at the averaged offset.
         const rectFrom = (a, b, kind, th) => { const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy); return len < 0.02 ? null : { kind, x: (a.x + b.x) / 2 - len / 2, y: (a.y + b.y) / 2 - th / 2, w: len, h: th, rot: Math.atan2(dy, dx) * 180 / Math.PI, _wall: true }; };
         function axisRects() { const out = []; for (const e of P.walls.edges) { const r = rectFrom(P.walls.nodes[e.a], P.walls.nodes[e.b], e.kind, e.thick || 0.24); if (r) out.push(r); } return out; }
-        let _moff = {}, _moffKey = null;
-        function wallMoff() {
-            if (P.wallRef === 'axis') return {};
+        let _eoff = null, _eoffKey = null;
+        function edgeOffs() { // per-edge perpendicular offset vector {ox,oy} (null in axis mode)
+            if (P.wallRef === 'axis') return null;
             const key = P.wallRef + '#' + P.walls.nodes.map((n) => round2(n.x) + ',' + round2(n.y)).join(';') + '#' + P.walls.edges.map((e) => e.a + '-' + e.b + ':' + round2(e.thick || 0.24)).join(';');
-            if (key === _moffKey) return _moff;
-            _moffKey = key; const moff = {}; _moff = moff;
-            const enc = computeEnclosure(axisRects()); if (!enc || !enc.lab) return moff; // no closed room → no offset
-            const dir = P.wallRef === 'inner' ? 1 : -1; // inner: axis moves outward; outer: inward
-            const inSide = (sx, sy) => { const gx = Math.floor((sx - enc.minX) / enc.GS), gy = Math.floor((sy - enc.minY) / enc.GSy); if (gx < 0 || gy < 0 || gx >= enc.cols || gy >= enc.rows) return false; return enc.lab[gy * enc.cols + gx] >= 0; };
-            const shift = P.walls.edges.map((e) => { const v = edgeVec(e); if (v.len < 0.02) return null; const th = e.thick || 0.24, px = -v.dy / v.len, py = v.dx / v.len, mx = (v.a.x + v.b.x) / 2, my = (v.a.y + v.b.y) / 2, off = th / 2 + enc.GS * 1.3;
-                const plus = inSide(mx + px * off, my + py * off), minus = inSide(mx - px * off, my - py * off); let s = 0; if (plus && !minus) s = -1; else if (minus && !plus) s = 1; // s·perp points exterior
-                return { px, py, ext: s * dir, mag: th / 2 }; });
-            const other = (e, ni) => e.a === ni ? P.walls.nodes[e.b] : P.walls.nodes[e.a];
-            for (let ni = 0; ni < P.walls.nodes.length; ni++) {
-                const inc = []; P.walls.edges.forEach((e, ei) => { if (e.a === ni || e.b === ni) inc.push(ei); });
-                const N = P.walls.nodes[ni];
-                if (inc.length === 2) { const s1 = shift[inc[0]], s2 = shift[inc[1]]; if (!s1 || !s2 || (!s1.ext && !s2.ext)) continue;
-                    const p1 = { x: N.x + s1.px * s1.ext * s1.mag, y: N.y + s1.py * s1.ext * s1.mag }, d1 = other(P.walls.edges[inc[0]], ni), dd1 = { x: d1.x - N.x, y: d1.y - N.y };
-                    const p2 = { x: N.x + s2.px * s2.ext * s2.mag, y: N.y + s2.py * s2.ext * s2.mag }, d2 = other(P.walls.edges[inc[1]], ni), dd2 = { x: d2.x - N.x, y: d2.y - N.y };
-                    const M = lineIntersect(p1, dd1, p2, dd2);
-                    moff[ni] = M ? { dx: M.x - N.x, dy: M.y - N.y } : { dx: (p1.x + p2.x) / 2 - N.x, dy: (p1.y + p2.y) / 2 - N.y };
-                } else if (inc.length === 1) { const s1 = shift[inc[0]]; if (s1 && s1.ext) moff[ni] = { dx: s1.px * s1.ext * s1.mag, dy: s1.py * s1.ext * s1.mag }; }
-            }
-            return moff;
+            if (key === _eoffKey) return _eoff;
+            _eoffKey = key; const enc = computeEnclosure(axisRects()); const dir = P.wallRef === 'inner' ? 1 : -1;
+            const inSide = (sx, sy) => { if (!enc || !enc.lab) return false; const gx = Math.floor((sx - enc.minX) / enc.GS), gy = Math.floor((sy - enc.minY) / enc.GSy); if (gx < 0 || gy < 0 || gx >= enc.cols || gy >= enc.rows) return false; return enc.lab[gy * enc.cols + gx] >= 0; };
+            _eoff = P.walls.edges.map((e) => { const v = edgeVec(e); if (v.len < 0.02 || !enc || !enc.lab) return { ox: 0, oy: 0 };
+                const th = e.thick || 0.24, px = -v.dy / v.len, py = v.dx / v.len, mx = (v.a.x + v.b.x) / 2, my = (v.a.y + v.b.y) / 2, off = th / 2 + enc.GS * 1.3;
+                const plus = inSide(mx + px * off, my + py * off), minus = inSide(mx - px * off, my - py * off); let s = 0; if (plus && !minus) s = -1; else if (minus && !plus) s = 1; // s·perp = exterior; interior walls (both sides room) → 0
+                const mag = (th / 2) * s * dir; return { ox: px * mag, oy: py * mag }; });
+            return _eoff;
         }
-        function nodePos(ni) { const n = P.walls.nodes[ni], m = wallMoff()[ni]; return m ? { x: n.x + m.dx, y: n.y + m.dy } : n; }
-        // Each edge → a rotated rectangle (centre = midpoint, w = length, h = thickness), placed
-        // at the Bezug-offset node positions, so walls plug into SAT collision AND the enclosure.
-        function wallRects() { const out = []; for (const e of P.walls.edges) { const r = rectFrom(nodePos(e.a), nodePos(e.b), e.kind, e.thick || 0.24); if (r) out.push(r); } return out; }
+        function edgePts(e, ei) { const v = edgeVec(e), offs = edgeOffs(), o = offs ? offs[ei] : null; if (!o) return { a: v.a, b: v.b, dx: v.dx, dy: v.dy, len: v.len }; const a = { x: v.a.x + o.ox, y: v.a.y + o.oy }, b = { x: v.b.x + o.ox, y: v.b.y + o.oy }; return { a, b, dx: b.x - a.x, dy: b.y - a.y, len: v.len }; }
+        function nodeJoint(ni) { const offs = edgeOffs(), n = P.walls.nodes[ni]; if (!offs) return n; let ox = 0, oy = 0, k = 0; P.walls.edges.forEach((e, ei) => { if (e.a === ni || e.b === ni) { ox += offs[ei].ox; oy += offs[ei].oy; k++; } }); return k ? { x: n.x + ox / k, y: n.y + oy / k } : n; }
+        // Each edge → a rotated rectangle (centre = midpoint, w = length, h = thickness), placed at
+        // the Bezug-offset position, so walls plug into SAT collision AND the enclosure raster.
+        function wallRects() { const out = []; P.walls.edges.forEach((e, ei) => { const vp = edgePts(e, ei); const r = rectFrom(vp.a, vp.b, e.kind, e.thick || 0.24); if (r) out.push(r); }); return out; }
         // Lichtes (clear/inner) length of an edge = axis length minus half the thickness of the
         // walls meeting at each end (a room corner eats thick/2 of clear span on that side).
         function nodePerpHalf(ni, exceptEi) { let mx = 0; P.walls.edges.forEach((x, xi) => { if (xi === exceptEi) return; if (x.a === ni || x.b === ni) mx = Math.max(mx, x.thick || 0.24); }); return mx / 2; }
@@ -5405,8 +5394,8 @@
         function drawWalls() {
             const CELL = P.CELL, g = svgEl('g', { class: 'gp-wallg' });
             P.walls.edges.forEach((e, ei) => {
-                // Render at the Bezug-offset node positions (vd); node HANDLES stay on the drawn line.
-                const oa = nodePos(e.a), ob = nodePos(e.b), vd = { a: oa, b: ob, dx: ob.x - oa.x, dy: ob.y - oa.y, len: Math.hypot(ob.x - oa.x, ob.y - oa.y) }; if (vd.len < 0.02) return;
+                // Render at the Bezug-offset position (vd); node HANDLES stay on the drawn line.
+                const vd = edgePts(e, ei); if (vd.len < 0.02) return;
                 const col = WALLCOL[e.kind] || '#8aa0b6', th = Math.max(2, (e.thick || 0.24) * CELL);
                 const P0 = (u) => [(vd.a.x + vd.dx * u) * CELL, (vd.a.y + vd.dy * u) * CELL];
                 const selE = P.structSel && P.structSel.type === 'edge' && P.structSel.idx === ei;
@@ -5414,8 +5403,8 @@
                 // butt-capped wall pieces between the openings (no round caps bleeding into the gap)
                 const piece = (u0, u1) => { if (u1 - u0 < 1e-4) return; const A = P0(u0), B = P0(u1); g.append(svgEl('line', { x1: A[0], y1: A[1], x2: B[0], y2: B[1], stroke: col, 'stroke-width': th, 'stroke-linecap': 'butt', class: 'gp-wall' + (selE ? ' sel' : '') })); };
                 let t0 = 0; for (const sp of spans) { piece(t0, sp.lo); t0 = sp.hi; } piece(t0, 1);
-                // rounded corner joints at this edge's nodes (before openings, so gaps stay clean)
-                [vd.a, vd.b].forEach((pt) => g.append(svgEl('circle', { cx: pt.x * CELL, cy: pt.y * CELL, r: th / 2, fill: col, class: 'gp-walljoint' })));
+                // rounded corner joints at the (averaged-offset) shared nodes, so corners fill cleanly
+                [nodeJoint(e.a), nodeJoint(e.b)].forEach((pt) => g.append(svgEl('circle', { cx: pt.x * CELL, cy: pt.y * CELL, r: th / 2, fill: col, class: 'gp-walljoint' })));
                 spans.forEach((sp) => drawOpening(g, vd, e, sp.oi, CELL));
                 if (P.mode === 'plan' && vd.len > 0.3) {
                     let nx = -vd.dy, ny = vd.dx; const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
@@ -5754,7 +5743,7 @@
             toolsCard.append(el('div', { class: 'gp-field', style: 'margin-top:.35rem' }, el('label', {}, 'Wandstärke (neue Wände)'), thSel));
             // Bezug: is the drawn line the Innen(kante), Achse (Mitte) or Außen(kante) der Wand?
             const refSeg = el('div', { class: 'gp-seg', style: 'margin-top:.15rem' });
-            [['inner', 'Innen'], ['axis', 'Achse'], ['outer', 'Außen']].forEach(([k, l]) => refSeg.append(el('button', { class: P.wallRef === k ? 'on' : '', title: 'Bezug der gezeichneten Linie — bei „Innen" ist der Umriss dein lichtes Innenmaß und m² stimmt 1:1', onclick: () => { P.wallRef = k; _moffKey = null; draw(); } }, l)));
+            [['inner', 'Innen'], ['axis', 'Achse'], ['outer', 'Außen']].forEach(([k, l]) => refSeg.append(el('button', { class: P.wallRef === k ? 'on' : '', title: 'Bezug der gezeichneten Linie — bei „Innen" ist der Umriss dein lichtes Innenmaß und m² stimmt 1:1', onclick: () => { P.wallRef = k; _eoffKey = null; draw(); } }, l)));
             toolsCard.append(el('div', { class: 'gp-field', style: 'margin-top:.35rem' }, el('label', {}, 'Bezug der Zeichenlinie'), refSeg));
             toolsCard.append(el('div', { class: 'gp-exgrouplab' }, 'Öffnungen (auf eine Wand)'));
             const orow = el('div', { class: 'gp-addrow' });
