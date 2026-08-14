@@ -4455,7 +4455,7 @@
                 plannerSymbol: s.planner_symbol || null, photoUrl: s.photo_id ? '/api/photos/' + s.photo_id : null,
                 x: num(g.x, 1), y: num(g.y, 1), w: num(g.w, s.length_m || catFoot(s.vehicle_type)[0]), h: num(g.h, s.width_m || catFoot(s.vehicle_type)[1]), rot: num(g.rot, 0), status: g.status || 'busy', _dirty: false }; }),
             palette, plannerIcons,
-            mode: 'manage', editMode: false, snap: true, gridStep: 0.5, autoSnap: true, calib: false, ortho: false, zoom: 1, sel: null, selEdge: null,
+            mode: 'manage', editMode: false, snap: true, gridStep: 0.5, autoSnap: true, calib: false, autoArea: true, ortho: false, zoom: 1, sel: null, selEdge: null,
             render: (function () { try { return localStorage.getItem('gp.render') || 'symbol'; } catch (e) { return 'symbol'; } })(),
             maxed: false, CELL: 30, uid: 1, hist: [], hpos: -1, dirty: false,
         };
@@ -4734,6 +4734,7 @@
                 svg.append(im);
             }
             if (P.grid !== false) svg.append(svgEl('rect', { width: P.Wm * CELL, height: P.Hm * CELL, fill: 'url(#gpgrid)', 'clip-path': 'url(#gpclip)' }));
+            drawEnclosure(); // shade the wall-enclosed parking area (+ m² label) when Auto-Parkfläche is on
             svg.append(svgEl('polygon', { class: 'gp-floorstroke', points: s }));
             // edit handles (Garagenplaner + editMode)
             if (P.mode === 'plan' && P.editMode) {
@@ -4901,6 +4902,103 @@
             rd.onerror = () => toast('Datei konnte nicht gelesen werden', 'error');
             rd.readAsDataURL(file);
         }
+        // ---- automatic Parkfläche: the area ENCLOSED by the drawn walls ----
+        // Walls (+ openings) are the physical building boundary. We rasterise, flood-fill
+        // the exterior from the grid border, and whatever open cell the exterior can't
+        // reach is enclosed interior = the usable parking area. "Umriss übernehmen" then
+        // traces that enclosure's OUTER face and adopts it as the hall floor polygon.
+        function wallBlocks() { return P.excl.filter((e) => isWallKind(e.kind) || (EXCL[e.kind] && EXCL[e.kind].cat === 'open')); }
+        let _enc = null, _encKey = null;
+        function enclosure() {
+            if (!P.autoArea) return null;
+            const wb = wallBlocks();
+            const key = wb.map((e) => e.kind + ':' + round2(e.x) + ',' + round2(e.y) + ',' + round2(e.w) + ',' + round2(e.h) + ',' + Math.round(e.rot || 0)).join('|') + '#' + JSON.stringify(P.floor);
+            if (key === _encKey) return _enc;
+            _encKey = key; _enc = wb.length ? computeEnclosure(wb) : null; return _enc;
+        }
+        function computeEnclosure(wb) {
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            const acc = (x, y) => { if (x < minX) minX = x; if (y < minY) minY = y; if (x > maxX) maxX = x; if (y > maxY) maxY = y; };
+            P.floor.forEach(([x, y]) => acc(x, y));
+            wb.forEach((e) => { const h = halfAABB(e), cx = e.x + e.w / 2, cy = e.y + e.h / 2; acc(cx - h.hx, cy - h.hy); acc(cx + h.hx, cy + h.hy); });
+            if (!(maxX > minX && maxY > minY)) return null;
+            const pad = 0.6; minX -= pad; minY -= pad; maxX += pad; maxY += pad;
+            const boxW = maxX - minX, boxH = maxY - minY;
+            const cols = Math.max(3, Math.min(320, Math.round(boxW / Math.max(0.12, Math.sqrt(boxW * boxH / 18000)))));
+            const rows = Math.max(3, Math.min(320, Math.round(cols * boxH / boxW)));
+            const GS = boxW / cols, GSy = boxH / rows, N = cols * rows, blocked = new Uint8Array(N);
+            for (const e of wb) {
+                const rad = (e.rot || 0) * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+                const cx = e.x + e.w / 2, cy = e.y + e.h / 2, hh = halfAABB(e);
+                const gx0 = Math.max(0, Math.floor((cx - hh.hx - minX) / GS)), gx1 = Math.min(cols - 1, Math.ceil((cx + hh.hx - minX) / GS));
+                const gy0 = Math.max(0, Math.floor((cy - hh.hy - minY) / GSy)), gy1 = Math.min(rows - 1, Math.ceil((cy + hh.hy - minY) / GSy));
+                for (let gy = gy0; gy <= gy1; gy++) for (let gx = gx0; gx <= gx1; gx++) {
+                    const px = minX + (gx + 0.5) * GS, py = minY + (gy + 0.5) * GSy, dx = px - cx, dy = py - cy;
+                    if (Math.abs(dx * cos + dy * sin) <= e.w / 2 && Math.abs(-dx * sin + dy * cos) <= e.h / 2) blocked[gy * cols + gx] = 1;
+                }
+            }
+            const seen = new Uint8Array(N), stack = [];
+            const push = (i) => { if (!seen[i] && !blocked[i]) { seen[i] = 1; stack.push(i); } };
+            for (let gx = 0; gx < cols; gx++) { push(gx); push((rows - 1) * cols + gx); }
+            for (let gy = 0; gy < rows; gy++) { push(gy * cols); push(gy * cols + cols - 1); }
+            while (stack.length) { const i = stack.pop(), gx = i % cols, gy = (i - gx) / cols; if (gx > 0) push(i - 1); if (gx < cols - 1) push(i + 1); if (gy > 0) push(i - cols); if (gy < rows - 1) push(i + cols); }
+            const interior = new Uint8Array(N); let count = 0, sx = 0, sy = 0;
+            for (let i = 0; i < N; i++) if (!blocked[i] && !seen[i]) { interior[i] = 1; count++; const gx = i % cols, gy = (i - gx) / cols; sx += minX + (gx + 0.5) * GS; sy += minY + (gy + 0.5) * GSy; }
+            if (!count) return null;
+            const rects = [];
+            for (let gy = 0; gy < rows; gy++) { let run = -1; for (let gx = 0; gx <= cols; gx++) { const on = gx < cols && interior[gy * cols + gx]; if (on && run < 0) run = gx; else if (!on && run >= 0) { rects.push({ x: minX + run * GS, y: minY + gy * GSy, w: (gx - run) * GS, h: GSy }); run = -1; } } }
+            return { area: count * GS * GSy, rects, cx: sx / count, cy: sy / count, cols, rows, minX, minY, GS, GSy, seen };
+        }
+        // Trace the outer face of the enclosed building (region = everything the exterior
+        // flood can't reach, i.e. interior + the walls around it) into a polygon and adopt
+        // it as the hall floor, so all placement/metrics use the wall-defined outline.
+        function deriveFloorFromWalls() {
+            const enc = enclosure(); if (!enc) { toast('Erst Außenwände zu einem geschlossenen Ring zeichnen', 'warn'); return; }
+            const { cols, rows, minX, minY, GS, GSy, seen } = enc;
+            const region = new Uint8Array(cols * rows); for (let i = 0; i < region.length; i++) region[i] = seen[i] ? 0 : 1;
+            // largest connected component of `region`
+            const lab = new Int32Array(region.length).fill(-1); let best = -1, bestN = 0, cur = 0;
+            for (let s = 0; s < region.length; s++) { if (!region[s] || lab[s] >= 0) continue; const st = [s]; lab[s] = cur; let n = 0; while (st.length) { const i = st.pop(); n++; const gx = i % cols, gy = (i - gx) / cols; const nb = []; if (gx > 0) nb.push(i - 1); if (gx < cols - 1) nb.push(i + 1); if (gy > 0) nb.push(i - cols); if (gy < rows - 1) nb.push(i + cols); for (const j of nb) if (region[j] && lab[j] < 0) { lab[j] = cur; st.push(j); } } if (n > bestN) { bestN = n; best = cur; } cur++; }
+            if (best < 0) { toast('Kein geschlossener Bereich erkannt', 'warn'); return; }
+            const inC = (gx, gy) => gx >= 0 && gy >= 0 && gx < cols && gy < rows && lab[gy * cols + gx] === best;
+            // boundary edges (interior-on-right), keyed start-corner → end-corner, then stitch
+            const edges = new Map(), K = (x, y) => x + ',' + y;
+            for (let gy = 0; gy < rows; gy++) for (let gx = 0; gx < cols; gx++) { if (lab[gy * cols + gx] !== best) continue;
+                if (!inC(gx, gy - 1)) edges.set(K(gx, gy), [gx + 1, gy]);
+                if (!inC(gx + 1, gy)) edges.set(K(gx + 1, gy), [gx + 1, gy + 1]);
+                if (!inC(gx, gy + 1)) edges.set(K(gx + 1, gy + 1), [gx, gy + 1]);
+                if (!inC(gx - 1, gy)) edges.set(K(gx, gy + 1), [gx, gy]);
+            }
+            if (!edges.size) { toast('Umriss nicht ableitbar', 'error'); return; }
+            // follow the loop from any start corner
+            const first = edges.keys().next().value, start = first.split(',').map(Number);
+            const loop = [start]; let cornKey = K(start[0], start[1]), guard = edges.size + 4;
+            while (guard-- > 0) { const nx = edges.get(cornKey); if (!nx) break; if (nx[0] === start[0] && nx[1] === start[1]) break; loop.push(nx); cornKey = K(nx[0], nx[1]); }
+            // drop collinear points, then convert to metres
+            const pts = loop.filter((p, i) => { const a = loop[(i - 1 + loop.length) % loop.length], b = loop[(i + 1) % loop.length]; return (p[0] - a[0]) * (b[1] - a[1]) !== (p[1] - a[1]) * (b[0] - a[0]); });
+            if (pts.length < 3) { toast('Umriss zu klein', 'warn'); return; }
+            let poly = pts.map(([gx, gy]) => [Math.round((minX + gx * GS) * 100) / 100, Math.round((minY + gy * GSy) * 100) / 100]);
+            poly = rdp(poly, 0.3); if (poly.length < 3) { toast('Umriss zu klein', 'warn'); return; }
+            // Sanity: the wall envelope must be at least the enclosed area — a partial trace
+            // (unclosed ring) collapses to a sliver, so reject it rather than wreck the floor.
+            if (Math.abs(polyArea(poly)) < enc.area * 0.5) { toast('Umriss unklar — bitte prüfen, ob die Außenwände lückenlos schließen', 'warn'); return; }
+            P.floor = poly; P.shape = 'rect'; refit(); hideLen(); pushUndo(); markDirty(); layout();
+            toast('Umriss aus Wänden übernommen · ' + Math.round(polyArea(P.floor)) + ' m²', 'ok');
+        }
+        // Ramer–Douglas–Peucker polygon simplification (closed ring).
+        function rdp(poly, eps) {
+            const d2 = (p, a, b) => { const dx = b[0] - a[0], dy = b[1] - a[1], L = dx * dx + dy * dy; if (!L) return Math.hypot(p[0] - a[0], p[1] - a[1]); let t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L; t = Math.max(0, Math.min(1, t)); return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy)); };
+            const simp = (s, e, path) => { let idx = -1, mx = eps; for (let i = s + 1; i < e; i++) { const d = d2(path[i], path[s], path[e]); if (d > mx) { mx = d; idx = i; } } if (idx < 0) return [path[s]]; return simp(s, idx, path).concat(simp(idx, e, path)); };
+            const open = poly.concat([poly[0]]); return simp(0, open.length - 1, open);
+        }
+        function drawEnclosure() {
+            const enc = enclosure(); if (!enc || enc.area < 0.3) return;
+            const CELL = P.CELL, g = svgEl('g', { class: 'gp-parkg' });
+            for (const r of enc.rects) g.append(svgEl('rect', { x: r.x * CELL, y: r.y * CELL, width: r.w * CELL, height: r.h * CELL, class: 'gp-parkfill' }));
+            svg.append(g);
+            const t = svgEl('text', { x: enc.cx * CELL, y: enc.cy * CELL, 'text-anchor': 'middle', class: 'gp-parklab' });
+            t.textContent = 'Parkfläche ' + enc.area.toFixed(1).replace('.', ',') + ' m²'; svg.append(t);
+        }
         function renderMetrics() {
             metrics.innerHTML = '';
             const total = polyArea(P.floor); let ex = 0, ve = 0; P.excl.forEach((b) => { if (!isZoneKind(b.kind)) ex += b.w * b.h; }); P.spots.forEach((b) => ve += b.w * b.h);
@@ -4915,6 +5013,8 @@
                 m(Math.round(ex) + ' m²', 'Ausgenommen', 'excl'),
                 m(fw.toFixed(1).replace('.', ',') + '×' + fh.toFixed(1).replace('.', ',') + ' m', 'Halle · ' + Math.round(total) + ' m²'),
                 m(polyPerim(P.floor).toFixed(1) + ' m', 'Umfang'));
+            const enc = enclosure();
+            if (enc && enc.area > 0.3) metrics.append(m(Math.round(enc.area) + ' m²', 'Parkfläche · Wände', 'ok'));
         }
 
         // ---- toolbar ----
@@ -5221,6 +5321,19 @@
                 exCard.append(sizeRow, el('div', { class: 'muted', style: 'font-size:.72rem;margin-top:.35rem' }, 'Ecke ziehen = Größe · Ziehen = verschieben.'));
             }
             rail.append(exCard);
+            // ---- Parkfläche (automatisch aus den Wänden) ----
+            const areaCard = el('div', { class: 'gp-rcard card' }, el('h3', {}, 'Parkfläche', el('span', { class: 'eyebrow' }, 'aus Wänden')));
+            areaCard.append(el('button', { class: 'btn btn-sm gp-toggle btn-block' + (P.autoArea ? ' on' : ''), onclick: () => { P.autoArea = !P.autoArea; draw(); renderRail(); } }, P.autoArea ? '👁 Automatisch: an' : '⦸ Automatisch: aus'));
+            if (P.autoArea) {
+                const enc0 = enclosure();
+                if (enc0 && enc0.area > 0.3) {
+                    areaCard.append(el('div', { class: 'muted', style: 'font-size:.75rem;margin:.45rem 0' }, 'Umschlossen erkannt: ' + enc0.area.toFixed(1).replace('.', ',') + ' m² (grün schraffiert).'));
+                    areaCard.append(el('button', { class: 'btn btn-sm btn-block', title: 'Den erkannten Umriss als Hallenfläche übernehmen', onclick: deriveFloorFromWalls }, '⤵ Umriss aus Wänden übernehmen'));
+                } else {
+                    areaCard.append(el('div', { class: 'muted', style: 'font-size:.75rem;margin:.45rem 0' }, 'Außenwände zu einem geschlossenen Ring zeichnen — die Parkfläche wird dann automatisch erkannt und schraffiert.'));
+                }
+            }
+            rail.append(areaCard);
             // ---- Bauplan (Unterlage) ----
             const planCard = el('div', { class: 'gp-rcard card' }, el('h3', {}, 'Bauplan', el('span', { class: 'eyebrow' }, 'Unterlage')));
             const fileIn = el('input', { type: 'file', accept: 'image/*', style: 'display:none', onchange: (e) => { loadBauplan(e.target.files && e.target.files[0]); e.target.value = ''; } });

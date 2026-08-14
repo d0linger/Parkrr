@@ -1320,6 +1320,10 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-gridline{stroke:rgba(255,255,255,.06);stroke-width:1}
 .gp-floorfill{fill:#0c1a14}
 .gp-floorstroke{fill:none;stroke:rgba(46,230,207,.4);stroke-width:2}
+/* Auto-Parkfläche: the wall-enclosed area, shaded green + centred m² label */
+.gp-parkfill{fill:rgba(46,230,207,.14);stroke:none}
+.gp-parkg{pointer-events:none}
+.gp-parklab{fill:#8ff0e0;font-size:13px;font-weight:800;paint-order:stroke;stroke:rgba(4,20,16,.7);stroke-width:3px;letter-spacing:.02em;pointer-events:none}
 /* Bauplan underlay + calibration frame */
 .gp-planimg{image-rendering:auto}
 .gp-calib{position:absolute;border:2px dashed var(--gpteal2);background:rgba(46,230,207,.06);cursor:move;z-index:7;box-sizing:border-box;touch-action:none}
