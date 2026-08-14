@@ -4582,8 +4582,10 @@
         const wallThUnit = el('span', { class: 'muted' }, 'cm');
         const wallDoorFlip = el('button', { class: 'gp-wallpop-btn', title: 'Öffnungsrichtung spiegeln (F)' }, '⇅');
         const wallDoorHinge = el('button', { class: 'gp-wallpop-btn', title: 'Anschlag links/rechts (Leertaste)' }, '⇄');
+        const wallZoneRot = el('button', { class: 'gp-wallpop-btn', title: 'Fläche 90° drehen (R) · Knopf oben = frei drehen' }, '⟳');
         const wallPopDel = el('button', { class: 'gp-wallpop-del', title: 'Löschen', 'aria-label': 'Löschen' }, '🗑');
-        const wallPop = el('div', { class: 'gp-wallpop' }, wallPopLabel, wallLenIn, wallPopUnit, wallThLabel, wallThIn, wallThUnit, wallDoorFlip, wallDoorHinge, wallPopDel);
+        const wallPop = el('div', { class: 'gp-wallpop' }, wallPopLabel, wallLenIn, wallPopUnit, wallThLabel, wallThIn, wallThUnit, wallDoorFlip, wallDoorHinge, wallZoneRot, wallPopDel);
+        wallZoneRot.addEventListener('click', (e) => { e.stopPropagation(); if (P.sel != null) { const b = P.excl.find((x) => x.id === P.sel); if (b) { b.rot = ((b.rot || 0) + 90) % 360; commitGeom('Fläche gedreht'); } } });
         wallThIn.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') wallThIn.blur(); });
         wallThIn.addEventListener('change', () => { if (P.structSel && P.structSel.type === 'edge') { const cm = parseFloat(wallThIn.value); if (cm >= 5) setEdgeThickness(P.structSel.idx, cm); } });
         wallDoorFlip.addEventListener('click', (e) => { e.stopPropagation(); flipDoorSide(); });
@@ -4610,6 +4612,7 @@
             const showTh = !!okEdge; [wallThLabel, wallThIn, wallThUnit].forEach((n) => n.style.display = showTh ? '' : 'none');
             if (showTh && document.activeElement !== wallThIn) wallThIn.value = Math.round((P.walls.edges[ss.idx].thick || 0.24) * 100);
             const isDoor = okOpen && P.walls.edges[ss.ei].ops[ss.oi].kind === 'door'; [wallDoorFlip, wallDoorHinge].forEach((n) => n.style.display = isDoor ? '' : 'none');
+            wallZoneRot.style.display = zone ? '' : 'none';
             wallPopDel.title = zone ? 'Fläche löschen' : okNode ? 'Punkt auflösen (Wände verbinden)' : okOpen ? 'Öffnung löschen' : 'Segment löschen';
             const pw = P.Wm * P.CELL, ph = P.Hm * P.CELL;
             wallPop.style.left = Math.max(64, Math.min(pw - 64, mx)) + 'px';
@@ -4746,6 +4749,7 @@
             else if (!typing && (e.key === 'Delete' || e.key === 'Backspace') && P.mode === 'plan' && (P.structSel || P.sel != null)) { e.preventDefault(); deleteSel(); }
             else if (!typing && !m && e.key.toLowerCase() === 'f' && doorSel()) { e.preventDefault(); flipDoorSide(); } // F = Tür spiegeln (bei ausgewählter Tür)
             else if (!typing && !m && e.key === ' ' && doorSel()) { e.preventDefault(); swapDoorHinge(); } // Space = Anschlag wechseln (bei ausgewählter Tür)
+            else if (!typing && !m && e.key.toLowerCase() === 'r' && P.mode === 'plan' && P.sel != null) { const b = P.excl.find((x) => x.id === P.sel); if (b) { e.preventDefault(); b.rot = ((b.rot || 0) + 90) % 360; commitGeom('Fläche gedreht'); } } // R = Fläche 90° drehen
             else if (!typing && !m && e.key === 'p' && P.mode === 'plan') { e.preventDefault(); P.buffer = !P.buffer; renderToolbar(); draw(); toast(P.buffer ? 'Pufferzonen an' : 'Pufferzonen aus'); } // P = Puffer-Toggle
             else if (!typing && !m && e.key.toLowerCase() === 'f') { e.preventDefault(); fitView(); toast('Eingepasst'); } // F = Einpassen
             else if (!typing && !m && e.key === ' ') { e.preventDefault(); if (!spaceDown) { spaceDown = true; planWrap.style.cursor = 'grab'; } } // Space = Pan-Modus
@@ -5227,7 +5231,19 @@
             if (!count) return null;
             const rects = [];
             for (let gy = 0; gy < rows; gy++) { let run = -1; for (let gx = 0; gx <= cols; gx++) { const on = gx < cols && interior[gy * cols + gx]; if (on && run < 0) run = gx; else if (!on && run >= 0) { rects.push({ x: minX + run * GS, y: minY + gy * GSy, w: (gx - run) * GS, h: GSy }); run = -1; } } }
-            return { area: count * GS * GSy, rects, cx: sx / count, cy: sy / count, cols, rows, minX, minY, GS, GSy, seen };
+            // Per-room m²: connected components of the interior grid, each with area + centroid.
+            const lab = new Int32Array(N).fill(-1); const rooms = []; let cur = 0;
+            for (let s = 0; s < N; s++) { if (!interior[s] || lab[s] >= 0) continue;
+                const st = [s]; lab[s] = cur; let n = 0, rx = 0, ry = 0;
+                while (st.length) { const i = st.pop(), gx = i % cols, gy = (i - gx) / cols; n++; rx += minX + (gx + 0.5) * GS; ry += minY + (gy + 0.5) * GSy;
+                    if (gx > 0 && interior[i - 1] && lab[i - 1] < 0) { lab[i - 1] = cur; st.push(i - 1); }
+                    if (gx < cols - 1 && interior[i + 1] && lab[i + 1] < 0) { lab[i + 1] = cur; st.push(i + 1); }
+                    if (gy > 0 && interior[i - cols] && lab[i - cols] < 0) { lab[i - cols] = cur; st.push(i - cols); }
+                    if (gy < rows - 1 && interior[i + cols] && lab[i + cols] < 0) { lab[i + cols] = cur; st.push(i + cols); } }
+                const a = n * GS * GSy; if (a > 0.5) rooms.push({ area: a, cx: rx / n, cy: ry / n }); cur++;
+            }
+            rooms.sort((p, q) => q.area - p.area);
+            return { area: count * GS * GSy, rects, rooms, cx: sx / count, cy: sy / count, cols, rows, minX, minY, GS, GSy, seen };
         }
         // Trace the outer face of the enclosed building (region = everything the exterior
         // flood can't reach = interior + surrounding walls) into a simplified metre polygon.
@@ -5278,8 +5294,9 @@
             const CELL = P.CELL, g = svgEl('g', { class: 'gp-parkg' });
             for (const r of enc.rects) g.append(svgEl('rect', { x: r.x * CELL, y: r.y * CELL, width: r.w * CELL, height: r.h * CELL, class: 'gp-parkfill' }));
             svg.append(g);
-            const t = svgEl('text', { x: enc.cx * CELL, y: enc.cy * CELL, 'text-anchor': 'middle', class: 'gp-parklab' });
-            t.textContent = 'Parkfläche ' + enc.area.toFixed(1).replace('.', ',') + ' m²'; svg.append(t);
+            // One m² label PER enclosed room (single room → "Parkfläche", mehrere → "Raum N").
+            const rooms = (enc.rooms && enc.rooms.length) ? enc.rooms : [{ area: enc.area, cx: enc.cx, cy: enc.cy }];
+            rooms.forEach((rm, i) => { const t = svgEl('text', { x: rm.cx * CELL, y: rm.cy * CELL, 'text-anchor': 'middle', class: 'gp-parklab' }); t.textContent = (rooms.length > 1 ? 'Raum ' + (i + 1) + ' · ' : 'Parkfläche ') + rm.area.toFixed(1).replace('.', ',') + ' m²'; svg.append(t); });
         }
         // Draw one opening in the (already cut-out) gap: reveal jambs at both ends + a kind
         // symbol (window glass / door leaf+swing / gate bar), plus handles when selected.
@@ -5435,7 +5452,7 @@
                 m(fw.toFixed(1).replace('.', ',') + '×' + fh.toFixed(1).replace('.', ',') + ' m', 'Halle · ' + Math.round(total) + ' m²'),
                 m(polyPerim(P.floor).toFixed(1) + ' m', 'Umfang'));
             const enc = P.autoArea ? enclosure() : null;
-            if (enc && enc.area > 0.3) metrics.append(m(Math.round(enc.area) + ' m²', 'Parkfläche · Wände', 'ok'));
+            if (enc && enc.area > 0.3) { const nr = (enc.rooms || []).length; metrics.append(m(Math.round(enc.area) + ' m²', 'Parkfläche' + (nr > 1 ? ' · ' + nr + ' Räume' : ' · Wände'), 'ok')); }
         }
 
         // ---- toolbar ----
@@ -6011,6 +6028,8 @@
             if (ni >= 0) { P.structSel = { type: 'node', idx: ni }; P.sel = null; nodeDrag = { ni, moved: false }; cap(); draw(); return; }
             const e = edgeAt(p, R);
             if (e) { P.structSel = { type: 'edge', idx: e.i }; P.sel = null; draw(); return; }
+            // rotate knob of the currently-selected zone (matches the layer's .gp-rot at top:-22px)
+            if (P.sel != null) { const b = P.excl.find((x) => x.id === P.sel); if (b) { const rad = (b.rot || 0) * Math.PI / 180, off = b.h / 2 + 22 / P.CELL, cx = b.x + b.w / 2, cy = b.y + b.h / 2, kx = cx + Math.sin(rad) * off, ky = cy - Math.cos(rad) * off; if (Math.hypot(p.x - kx, p.y - ky) < R + 4 / P.CELL) { zoneDrag = { id: b.id, mode: 'rotate', cx, cy, moved: false }; cap(); return; } } }
             // zones (excl rectangles): corner handle → resize, body → move
             const dirs = ['nw', 'ne', 'se', 'sw'];
             for (let i = P.excl.length - 1; i >= 0; i--) { const b = P.excl[i], cs = quad(b);
@@ -6041,6 +6060,7 @@
             if (zoneDrag) {
                 const b = P.excl.find((x) => x.id === zoneDrag.id); if (!b) { zoneDrag = null; return; }
                 if (zoneDrag.mode === 'move') { b.x = Math.max(0, Math.min(P.Wm - b.w, gsnap(p.x - zoneDrag.gx))); b.y = Math.max(0, Math.min(P.Hm - b.h, gsnap(p.y - zoneDrag.gy))); snapZoneFaces(b); }
+                else if (zoneDrag.mode === 'rotate') { let ang = Math.atan2(p.y - zoneDrag.cy, p.x - zoneDrag.cx) * 180 / Math.PI + 90; if (!ev.altKey) ang = Math.round(ang / 15) * 15; b.rot = ((ang % 360) + 360) % 360; }
                 else { const nr = resizeBlock(zoneDrag.o0, zoneDrag.dir, p.x, p.y); b.x = Math.max(0, nr.x); b.y = Math.max(0, nr.y); b.w = nr.w; b.h = nr.h; }
                 zoneDrag.moved = true; const elm = layer.querySelector('.gp-block[data-id="' + b.id + '"]'); if (elm) positionBlock(elm, b); positionWallPop(); return;
             }
