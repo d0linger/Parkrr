@@ -5056,7 +5056,21 @@
             return _eoff;
         }
         function edgePts(e, ei) { const v = edgeVec(e), offs = edgeOffs(), o = offs ? offs[ei] : null; if (!o) return { a: v.a, b: v.b, dx: v.dx, dy: v.dy, len: v.len }; const a = { x: v.a.x + o.ox, y: v.a.y + o.oy }, b = { x: v.b.x + o.ox, y: v.b.y + o.oy }; return { a, b, dx: b.x - a.x, dy: b.y - a.y, len: v.len }; }
-        function nodeJoint(ni) { const offs = edgeOffs(), n = P.walls.nodes[ni]; if (!offs) return n; let ox = 0, oy = 0, k = 0; P.walls.edges.forEach((e, ei) => { if (e.a === ni || e.b === ni) { ox += offs[ei].ox; oy += offs[ei].oy; k++; } }); return k ? { x: n.x + ox / k, y: n.y + oy / k } : n; }
+        // Corner point = where the two offset wall CENTRELINES actually cross (mitre) — so the
+        // handle/joint sits exactly on the rendered corner. Display-only: walls still use the
+        // perpendicular offset above (no node movement → no skew). 1 edge / junction → averaged.
+        const lineX = (p, d, q, e) => { const den = d.x * e.y - d.y * e.x; if (Math.abs(den) < 1e-9) return null; const t = ((q.x - p.x) * e.y - (q.y - p.y) * e.x) / den; return { x: p.x + d.x * t, y: p.y + d.y * t }; };
+        function nodeJoint(ni) {
+            const offs = edgeOffs(), n = P.walls.nodes[ni]; if (!offs) return n;
+            const inc = []; P.walls.edges.forEach((e, ei) => { if (e.a === ni || e.b === ni) inc.push(ei); });
+            if (inc.length === 2) {
+                const e1 = P.walls.edges[inc[0]], e2 = P.walls.edges[inc[1]], o1 = offs[inc[0]], o2 = offs[inc[1]];
+                const f1 = e1.a === ni ? P.walls.nodes[e1.b] : P.walls.nodes[e1.a], f2 = e2.a === ni ? P.walls.nodes[e2.b] : P.walls.nodes[e2.a];
+                const M = lineX({ x: n.x + o1.ox, y: n.y + o1.oy }, { x: f1.x - n.x, y: f1.y - n.y }, { x: n.x + o2.ox, y: n.y + o2.oy }, { x: f2.x - n.x, y: f2.y - n.y });
+                if (M) return M;
+            }
+            let ox = 0, oy = 0, k = 0; inc.forEach((ei) => { ox += offs[ei].ox; oy += offs[ei].oy; k++; }); return k ? { x: n.x + ox / k, y: n.y + oy / k } : n;
+        }
         // Each edge → a rotated rectangle (centre = midpoint, w = length, h = thickness), placed at
         // the Bezug-offset position, so walls plug into SAT collision AND the enclosure raster.
         function wallRects() { const out = []; P.walls.edges.forEach((e, ei) => { const vp = edgePts(e, ei); const r = rectFrom(vp.a, vp.b, e.kind, e.thick || 0.24); if (r) out.push(r); }); return out; }
