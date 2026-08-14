@@ -5068,6 +5068,9 @@
         // span; axis ⇒ minus ½ wall per corner; outer ⇒ minus a full wall per corner.
         function labelLen(ei) { const e = P.walls.edges[ei], v = edgeVec(e); if (P.wallRef === 'inner') return v.len; if (P.wallRef === 'outer') return Math.max(0, v.len - 2 * nodePerpHalf(e.a, ei) - 2 * nodePerpHalf(e.b, ei)); return Math.max(0, v.len - nodePerpHalf(e.a, ei) - nodePerpHalf(e.b, ei)); }
         function nodeAt(p, r) { let bi = -1, bd = r; P.walls.nodes.forEach((n, i) => { const d = Math.hypot(n.x - p.x, n.y - p.y); if (d < bd) { bd = d; bi = i; } }); return bi; }
+        // Node hit-test against the DISPLAYED handle position (the offset corner) so grabbing the
+        // dot the user actually sees works in Innen/Außen mode; equals nodeAt in Achse mode.
+        function nodeJointAt(p, r) { let bi = -1, bd = r; for (let i = 0; i < P.walls.nodes.length; i++) { const jp = nodeJoint(i); const d = Math.hypot(jp.x - p.x, jp.y - p.y); if (d < bd) { bd = d; bi = i; } } return bi; }
         function edgeAt(p, r) { let best = null; P.walls.edges.forEach((e, i) => { const v = edgeVec(e); if (v.len < 0.02) return; let t = ((p.x - v.a.x) * v.dx + (p.y - v.a.y) * v.dy) / (v.len * v.len); t = Math.max(0, Math.min(1, t)); const x = v.a.x + t * v.dx, y = v.a.y + t * v.dy, d = Math.hypot(p.x - x, p.y - y); if (d < r && (!best || d < best.dist)) best = { i, t, x, y, dist: d }; }); return best; }
         function addNode(x, y) { for (let i = 0; i < P.walls.nodes.length; i++) if (Math.hypot(P.walls.nodes[i].x - x, P.walls.nodes[i].y - y) < 0.05) return i; P.walls.nodes.push({ x: round2(x), y: round2(y) }); return P.walls.nodes.length - 1; }
         function addEdge(a, b, kind) { if (a === b) return; if (P.walls.edges.some((e) => (e.a === a && e.b === b) || (e.a === b && e.b === a))) return; P.walls.edges.push({ a, b, kind, thick: P.wallThick || (EXCL[kind] && EXCL[kind].h) || 0.24, ops: [] }); }
@@ -5417,7 +5420,7 @@
                 }
             });
             if (P.mode === 'plan' && !P.calib && !P.tool) { // node handles only in structure-edit mode
-                P.walls.nodes.forEach((n, i) => { const sel = P.structSel && P.structSel.type === 'node' && P.structSel.idx === i; g.append(svgEl('circle', { cx: n.x * CELL, cy: n.y * CELL, r: sel ? 7 : 5, class: 'gp-wnode' + (sel ? ' sel' : ''), 'data-node': i })); });
+                P.walls.nodes.forEach((n, i) => { const jp = nodeJoint(i); const sel = P.structSel && P.structSel.type === 'node' && P.structSel.idx === i; g.append(svgEl('circle', { cx: jp.x * CELL, cy: jp.y * CELL, r: sel ? 7 : 5, class: 'gp-wnode' + (sel ? ' sel' : ''), 'data-node': i })); });
             }
             svg.append(g);
         }
@@ -6066,8 +6069,8 @@
             // opening body → select + move along the wall
             const op = openingAt(p, R);
             if (op) { const e = P.walls.edges[op.ei], v = edgeVec(e), o = e.ops[op.oi], t = ((p.x - v.a.x) * v.dx + (p.y - v.a.y) * v.dy) / (v.len * v.len); P.structSel = { type: 'opening', ei: op.ei, oi: op.oi }; P.sel = null; opDrag = { ei: op.ei, oi: op.oi, mode: 'move', grab: t - o.c, moved: false }; cap(); draw(); return; }
-            const ni = nodeAt(p, R);
-            if (ni >= 0) { P.structSel = { type: 'node', idx: ni }; P.sel = null; nodeDrag = { ni, moved: false }; cap(); draw(); return; }
+            const ni = nodeJointAt(p, R);
+            if (ni >= 0) { P.structSel = { type: 'node', idx: ni }; P.sel = null; nodeDrag = { ni, moved: false, gx: P.walls.nodes[ni].x - p.x, gy: P.walls.nodes[ni].y - p.y }; cap(); draw(); return; }
             const e = edgeAt(p, R);
             if (e) { P.structSel = { type: 'edge', idx: e.i }; P.sel = null; draw(); return; }
             // rotate knob of the currently-selected zone (matches the layer's .gp-rot at top:-22px)
@@ -6114,7 +6117,7 @@
                 opDrag.moved = true; drawFloor(); positionWallPop(); return;
             }
             if (nodeDrag) {
-                let x = gsnap(p.x), y = gsnap(p.y); const R = 12 / P.CELL, tol = 11 / P.CELL; P.guide = null; let bd = R;
+                let x = gsnap(p.x + (nodeDrag.gx || 0)), y = gsnap(p.y + (nodeDrag.gy || 0)); const R = 12 / P.CELL, tol = 11 / P.CELL; P.guide = null; let bd = R;
                 for (let i = 0; i < P.walls.nodes.length; i++) { if (i === nodeDrag.ni) continue; const n = P.walls.nodes[i]; const d = Math.hypot(n.x - x, n.y - y); if (d < bd) { bd = d; x = n.x; y = n.y; } }
                 // Ortho-align to the nearest node's X (vertical) and Y (horizontal) across the WHOLE
                 // plan — not just direct neighbours — so a corner clicks straight above/beside any
@@ -6154,7 +6157,7 @@
         drawOverlay.addEventListener('dblclick', (ev) => {
             if (P.mode !== 'plan' || P.calib) return; ev.preventDefault();
             if (isWallDraw(P.tool) && P.chain) { endChain(); return; }
-            if (!P.tool) { const p = evWorld(ev), R = 12 / P.CELL; if (nodeAt(p, R) >= 0) return; const e = edgeAt(p, R); if (e) { const nn = splitEdgeAt(e.i, e.t); P.structSel = { type: 'node', idx: nn }; refreshFloorFromWalls(); pushUndo(); markDirty(); layout(); toast('Punkt eingefügt'); } }
+            if (!P.tool) { const p = evWorld(ev), R = 12 / P.CELL; if (nodeJointAt(p, R) >= 0) return; const e = edgeAt(p, R); if (e) { const nn = splitEdgeAt(e.i, e.t); P.structSel = { type: 'node', idx: nn }; refreshFloorFromWalls(); pushUndo(); markDirty(); layout(); toast('Punkt eingefügt'); } }
         });
         drawOverlay.addEventListener('contextmenu', (ev) => {
             if (P.mode !== 'plan' || P.calib) return; ev.preventDefault();
