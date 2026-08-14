@@ -89,6 +89,21 @@ func TestOutstandingByPersonMatchesStats(t *testing.T) {
 		t.Errorf("outstanding %.2f != stats balance %.2f (beyond timing noise)", got, bal)
 	}
 
+	// The person-scoped pass (used by the customer portal) must agree with the
+	// all-persons pass — same math, just filtered.
+	req := httptest.NewRequest(http.MethodGet, "/api/persons/outstanding", nil)
+	all, err := h.outstandingByPerson(req, 0)
+	if err != nil {
+		t.Fatalf("outstanding(all): %v", err)
+	}
+	scoped, err := h.outstandingByPerson(req, personID)
+	if err != nil {
+		t.Fatalf("outstanding(scoped): %v", err)
+	}
+	if math.Abs(scoped[personID]-all[personID]) > 0.05 {
+		t.Errorf("scoped balance %.2f != all-persons %.2f for person %d", scoped[personID], all[personID], personID)
+	}
+
 	// P2.2: money truth = recorded payments. Settling = recording a payment of the
 	// open amount (marking the toggle no longer moves the money). The tolerance
 	// covers the same continuous-accrual timing noise as the divergence check.

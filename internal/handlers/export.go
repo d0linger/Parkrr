@@ -55,7 +55,7 @@ func (h *Handler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 	case "outstanding":
 		name = "offene-posten"
 		header = []string{"person_id", "name", "offen_eur"}
-		bal, err := h.outstandingByPerson(r) // map[personID]outstanding, names not included
+		bal, err := h.outstandingByPerson(r, 0) // map[personID]outstanding, names not included
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "Export fehlgeschlagen")
 			return

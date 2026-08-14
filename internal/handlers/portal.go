@@ -347,7 +347,7 @@ func (h *Handler) PortalSummary(w http.ResponseWriter, r *http.Request) {
 	// − payments), identical to the admin "Offener Saldo" / PersonStats.Balance. It
 	// therefore also covers amounts owed but not yet invoiced — summing only open
 	// invoices wrongly showed 0,00 € for a person who has never been invoiced.
-	bal, err := h.outstandingByPerson(r)
+	bal, err := h.outstandingByPerson(r, pid)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
