@@ -1,43 +1,65 @@
-# Garagenplaner – Redesign status (audit)
+# Garagenplaner – Abgleich mit den ursprünglichen Redesign-Anforderungen (Artifact)
 
-Status of the wall-based planner redesign. Legend: ✅ done · 🟡 partial/pragmatic · ⬜ open.
+Reconciliation of the **original Artifact requirements** against the current Parkrr
+implementation. Sources: the sandbox artifact `stellplatz-sandbox.html`, the
+integration proposal `garagenplaner-ausbau.html`, and the initial 5-point spec.
 
-## Core model & mechanics
-- ✅ Config-driven entity catalogue (`EXCL`: wall types, openings, zones) — new types are data, not code.
-- ✅ Sandbox mechanics: drag / resize / rotate, snap-to-grid (frei · 0,1 · ¼ · ½ · 1 m).
-- ✅ Decoupled rotated-SAT collision (`quad` / `satOverlap`) + realtime valid/invalid feedback.
-- ✅ Opaque persistence (`hall.geometry` incl. `walls` graph) + undo/redo + autosave. No migration.
-- ✅ Vehicle symbol/icon system preserved (built-in + custom planner icons).
+Legend: ✅ vollständig · 🟡 teilweise/pragmatisch · ⬜ offen.
+Code: everything lives in `web/static/js/app.js` (`buildGP`) unless noted.
 
-## Wall editor
-- ✅ Interactive chained wall drawing (2-click, live preview + length, close/ESC/right-click/Doppelklick).
-- ✅ Node graph: drag node, split segment (Doppelklick / mid-wall Anbau), **dissolve point** (A–B–C → A–C).
-- ✅ Wall types (Außen/Trag/Trenn/Brand) + material tag + **thickness parameter** (default for new walls, per-wall via popover).
-- ✅ Openings (Tor/Tür/Fenster) as **clean cut-outs** and **editable objects** (select / move along wall / resize handles / delete → wall re-closes).
-- ✅ Wall totals: full node-to-node length shown offset outside the wall + clear (lichte) sub-segment lengths.
-- ✅ Quick-edit popover for wall (Länge + Dicke), opening (Breite), node (auflösen), zone (löschen) — all with on-object 🗑.
+---
 
-## Layout / measurement feedback
-- ✅ "Wände sind die Grenze": floor outline auto-derived from the wall enclosure; Parkfläche m² live.
-- ✅ Orthogonal (H/V) snapping with dashed guide-line; ⊾90°/Shift hard-lock.
-- ✅ T-junction anchor distances + **live left/right distances on hover** when placing openings/walls on a wall.
-- ✅ Auto-expanding canvas (scale is a stable base; growth no longer rescales) + **equal padding on all 4 sides**.
-- 🟡 Inner vs. axis dimensions: displayed length is the **axis (centerline)** measure; thickness is a parameter and is
-     drawn centered on the axis. True *inner-clear* dimension chains and one-sided (outward) wall extrusion are **not**
-     implemented — the centerline+centered-thickness model is the current (standard-CAD) choice.
+## A. Ursprüngliche Sandbox-Grundanforderungen (5-Punkte-Spec)
 
-## Objects & zones
-- ✅ Rubber-band zone creation (Fahrstraße/Wartung/Notausgang/Stellfläche): arm tool → click-drag → edit state.
-- ✅ On-canvas zone delete (🗑 popover) — no side-menu detour needed.
-- ✅ Vehicles **and** zones snap flush to the **inner face** of nearby axis-aligned walls.
-- 🟡 Zone rotation is not exposed in the unified overlay (move + corner-resize only).
+| # | Anforderung | Status | Umsetzung |
+|---|---|---|---|
+| A1 | Flexibles, config-getriebenes Objekt-Modell (Typen ohne Code erweiterbar) | ✅ | `EXCL`-Katalog + `walls`-Graph; neue Typen = Daten |
+| A2 | Sandbox-Mechaniken: verschieben/drehen/skalieren, Snap-Grid (frei·0,1·¼·½·1 m) | ✅ | `resizeBlock`, `snapPos`, `gsnap`, Grid-Seg |
+| A3 | Entkoppelte Kollisionsprüfung (rotiertes SAT) + Puffer/Clearance | 🟡 | SAT (`quad`/`satOverlap`) ✅; **Clearance-Puffer um Fahrzeuge nicht portiert** (siehe B4) |
+| A4 | Realtime-Feedback (grün/gelb/rot) | ✅ | `statusOf`/`warn`/`collide`, `validVeh` |
+| A5 | Refactoring-Garantie: bestehende Funktionen erhalten | ✅ | Additiv; Symbole/Icons/Undo/Autosave/Spots intakt |
 
-## UX
-- ✅ Delete-safety: left-click empty only deselects; right-click/ESC cancel the tool / deselect — **never delete**.
-- ✅ Active tool clearly highlighted (filled state) in the rail.
-- ✅ Grid shrinks back to content on discard/delete/Passen (no permanently inflated grid).
+## B. Integrations-Proposal (garagenplaner-ausbau.html) – 6 Capabilities
 
-## Open / nice-to-have
-- ⬜ Inner-clear dimension chains + outward wall extrusion (see 🟡 above).
-- ⬜ Zone rotation in the overlay.
-- ⬜ Bauplan underlay for very large images (currently downscaled + size-capped to fit the geometry blob).
+| # | Capability | Status | Umsetzung |
+|---|---|---|---|
+| B1 | Mauertypen mit Dicke & Material | ✅ | `wall_ext/load/part/fire`, `mat`, **Dicke als Parameter** (Default + je Wand) |
+| B2 | Ketten-Wandzeichnen + Auto-Snap | ✅ | `wallClick`/`snapDraw` (Kette, Ortho-Guide, Knoten-Snap) |
+| B3 | Echter Wanddurchbruch (Tor/Tür/Fenster) | ✅ | Sauberer Cut (Butt-Caps + Joints) + **eigenständige, editierbare Öffnungs-Objekte** |
+| B4 | Clearance-Pufferzonen um Fahrzeuge | ⬜ | **Offen** – im Sandkasten vorhanden, nach Parkrr nicht portiert |
+| B5 | Raumflächen (m² je umschlossenem Raum) | 🟡 | **Gesamt-Parkfläche** live (`computeEnclosure`); **kein** m²-Ausweis je einzelnem Raum |
+| B6 | Weitere Bauteile per Config (EXCL erweitern) | ✅ | Neue Kinds rein per `EXCL`-Eintrag |
+| — | Additiv & ohne Migration (`currentGeometry()` additiv, opaque JSONB) | ✅ | `walls`/`plan`/`mat` additiv serialisiert, 256 KB-Cap |
+
+## C. Sandbox-Zielfeatures (stellplatz-sandbox.html)
+
+| Feature | Status | Umsetzung |
+|---|---|---|
+| Wände zeichnen (Kette) | ✅ | interaktiver 2-Klick-Editor + Live-Vorschau/Maße |
+| Auto-Snap aller Objekte | ✅ | `snapPos` (Objektkanten) + **Innenwand-Face-Snap** für Fahrzeuge/Zonen |
+| Winkel-Snap (Ortho H/V) | ✅ | `snapDraw` + gestrichelte Guide-Line |
+| Tore/Türen schneiden die Wand | ✅ | Maske-freier Cut; Öffnungen als Objekte |
+| Bauplan laden + Kalibrieren | ✅ | Downscale → geometry `plan`, verschieben/skalieren/Deckkraft |
+| Stellfläche markieren | ✅ | nicht-sperrende Zone (`stell`), Aufziehen + m² |
+| Räume m² | 🟡 | siehe B5 (Gesamt statt je Raum) |
+| Speichern/Laden | ✅ | Persistenz via DB-`geometry` + Autosave (statt JSON-Datei; robuster) |
+| Ohne Code erweitern | ✅ | siehe A1/B6 |
+
+---
+
+## D. Später ergänzte Optimierungen (alle umgesetzt)
+
+Interaktiver Wand-Editor · Knoten ziehen/teilen/**auflösen** (A–B–C→A–C) · Segment- vs.
+Punkt-Löschen · Öffnungen editierbar · Gesamt-Wandlänge trotz Durchbrüchen + lichte
+Teilmaße · T-Kreuzungs-Abstände + **Live-Distanzen beim Öffnungs-Hover** · Ortho-Guides ·
+**auto-expandierendes, wieder schrumpfendes Canvas mit gleichmäßigem Padding** ·
+Wand-/Öffnungs-/Zonen-Popover mit 🗑 · **Lösch-Schutz** (Links-/Rechtsklick ins Leere
+löscht nie) · **Rubber-Band-Zonen** · **aktives Werkzeug hervorgehoben**.
+
+## E. Offen / nächste Schritte
+
+- ⬜ **B4 Clearance-Pufferzonen um Fahrzeuge** – Abstand pro Fahrzeug + Prüfung/Visualisierung.
+- 🟡 **B5 m² je Raum** – getrennte Räume separat ausweisen (Flood-Fill je Region statt Summe).
+- 🟡 **Innenmaße / Wand-Extrusion nach außen** – aktuell Achs-Maß + zentrierte Dicke
+      (Standard-CAD); lichtes Maß + einseitige Extrusion offen.
+- 🟡 **Zonen-Rotation** im vereinheitlichten Overlay (aktuell nur Move + Eck-Resize).
