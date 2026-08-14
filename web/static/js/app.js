@@ -4544,24 +4544,29 @@
         lenBox.style.display = 'none'; planEl.append(lenBox);
         // Transparent capture layer for interactive wall drawing / node editing (plan mode).
         const drawOverlay = el('div', { class: 'gp-drawoverlay' }); drawOverlay.style.display = 'none'; planEl.append(drawOverlay);
-        let nodeDrag = null;
-        // Inline quick-edit popover for a selected wall segment: exact length + delete.
+        let nodeDrag = null, opDrag = null;
+        // Inline quick-edit popover for a selected wall segment OR opening: length/width + delete.
+        const wallPopLabel = el('span', { class: 'gp-wallpop-lab' }, 'Länge');
         const wallLenIn = el('input', { type: 'number', step: '0.01', min: '0.1', class: 'gp-lenin' });
-        const wallPopDel = el('button', { class: 'gp-wallpop-del', title: 'Segment löschen', 'aria-label': 'Segment löschen' }, '🗑');
-        const wallPop = el('div', { class: 'gp-wallpop' }, wallLenIn, el('span', { class: 'muted' }, 'm'), wallPopDel);
+        const wallPopDel = el('button', { class: 'gp-wallpop-del', title: 'Löschen', 'aria-label': 'Löschen' }, '🗑');
+        const wallPop = el('div', { class: 'gp-wallpop' }, wallPopLabel, wallLenIn, el('span', { class: 'muted' }, 'm'), wallPopDel);
         wallPop.style.display = 'none'; planEl.append(wallPop);
         wallPop.addEventListener('pointerdown', (e) => e.stopPropagation());
         wallLenIn.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') wallLenIn.blur(); });
-        wallLenIn.addEventListener('change', () => { if (P.structSel && P.structSel.type === 'edge') { const L = parseFloat(wallLenIn.value); if (L > 0.05) setEdgeLength(P.structSel.idx, L); } });
+        wallLenIn.addEventListener('change', () => { const ss = P.structSel; if (!ss) return; const val = parseFloat(wallLenIn.value); if (!(val > 0.05)) return; if (ss.type === 'edge') setEdgeLength(ss.idx, val); else if (ss.type === 'opening') setOpeningWidth(ss.ei, ss.oi, val); });
         wallPopDel.addEventListener('click', (e) => { e.stopPropagation(); deleteSel(); });
         function positionWallPop() {
-            if (!(P.mode === 'plan' && P.structEdit && P.structSel && P.structSel.type === 'edge' && P.walls.edges[P.structSel.idx])) { wallPop.style.display = 'none'; return; }
-            const v = edgeVec(P.walls.edges[P.structSel.idx]), pw = P.Wm * P.CELL, ph = P.Hm * P.CELL;
-            const mx = (v.a.x + v.b.x) / 2 * P.CELL, my = (v.a.y + v.b.y) / 2 * P.CELL;
+            const ss = P.structSel;
+            const show = P.mode === 'plan' && P.structEdit && ss && ((ss.type === 'edge' && P.walls.edges[ss.idx]) || (ss.type === 'opening' && P.walls.edges[ss.ei] && (P.walls.edges[ss.ei].ops || [])[ss.oi]));
+            if (!show) { wallPop.style.display = 'none'; return; }
+            let mx, my, val;
+            if (ss.type === 'edge') { const v = edgeVec(P.walls.edges[ss.idx]); mx = (v.a.x + v.b.x) / 2 * P.CELL; my = (v.a.y + v.b.y) / 2 * P.CELL; val = v.len; wallPopLabel.textContent = 'Länge'; }
+            else { const e = P.walls.edges[ss.ei], v = edgeVec(e), o = e.ops[ss.oi]; mx = (v.a.x + v.dx * o.c) * P.CELL; my = (v.a.y + v.dy * o.c) * P.CELL; val = o.w; wallPopLabel.textContent = 'Breite'; }
+            const pw = P.Wm * P.CELL, ph = P.Hm * P.CELL;
             wallPop.style.left = Math.max(64, Math.min(pw - 64, mx)) + 'px';
             wallPop.style.top = Math.max(30, Math.min(ph - 8, my - 26)) + 'px';
             wallPop.style.display = 'flex';
-            if (document.activeElement !== wallLenIn) wallLenIn.value = v.len.toFixed(2);
+            if (document.activeElement !== wallLenIn) wallLenIn.value = val.toFixed(2);
         }
         // Vertex context menu (shown on click, not permanently) — declutters the plan.
         const vertMenu = el('div', { class: 'gp-vertmenu' }); vertMenu.style.display = 'none'; planEl.append(vertMenu);
@@ -5004,6 +5009,31 @@
             P.walls.nodes[mv] = { x: round2(f.x + dx * L), y: round2(f.y + dy * L) };
             refreshFloorFromWalls(); pushUndo(); markDirty(); layout(); toast('Länge ' + L.toFixed(2).replace('.', ',') + ' m', 'ok');
         }
+        // Openings: an opening lives on edge ei at index oi as {c(param),w(m),kind}.
+        function setOpeningWidth(ei, oi, w) {
+            const e = P.walls.edges[ei]; if (!e || !(e.ops || [])[oi]) return; const v = edgeVec(e);
+            w = Math.max(0.2, Math.min(v.len * 0.98, w)); const o = e.ops[oi]; o.w = round2(w);
+            const hp = (w / v.len) / 2; o.c = Math.max(hp, Math.min(1 - hp, o.c));
+            pushUndo(); markDirty(); layout(); toast('Öffnung ' + w.toFixed(2).replace('.', ',') + ' m', 'ok');
+        }
+        function openingAt(p, r) {
+            let best = null;
+            P.walls.edges.forEach((e, ei) => { const v = edgeVec(e); if (v.len < 0.02) return; (e.ops || []).forEach((o, oi) => {
+                const t = ((p.x - v.a.x) * v.dx + (p.y - v.a.y) * v.dy) / (v.len * v.len), along = t * v.len, c = o.c * v.len, half = o.w / 2;
+                if (along < c - half - r || along > c + half + r) return;
+                const px = v.a.x + t * v.dx, py = v.a.y + t * v.dy, perp = Math.hypot(p.x - px, p.y - py);
+                if (perp > (e.thick || 0.24) / 2 + r) return;
+                if (!best || perp < best.perp) best = { ei, oi, perp };
+            }); });
+            return best;
+        }
+        function openingHandleAt(p, ei, oi, r) {
+            const e = P.walls.edges[ei]; if (!e || !(e.ops || [])[oi]) return null; const v = edgeVec(e), o = e.ops[oi], hp = (o.w / v.len) / 2;
+            const pLo = { x: v.a.x + v.dx * (o.c - hp), y: v.a.y + v.dy * (o.c - hp) }, pHi = { x: v.a.x + v.dx * (o.c + hp), y: v.a.y + v.dy * (o.c + hp) };
+            if (Math.hypot(p.x - pLo.x, p.y - pLo.y) < r) return 'lo';
+            if (Math.hypot(p.x - pHi.x, p.y - pHi.y) < r) return 'hi';
+            return null;
+        }
         // Infinite-canvas support: shift ALL geometry (walls/zones/spots/floor/plan) by dx,dy.
         function shiftWorld(dx, dy) {
             if (!dx && !dy) return;
@@ -5131,22 +5161,55 @@
             const t = svgEl('text', { x: enc.cx * CELL, y: enc.cy * CELL, 'text-anchor': 'middle', class: 'gp-parklab' });
             t.textContent = 'Parkfläche ' + enc.area.toFixed(1).replace('.', ',') + ' m²'; svg.append(t);
         }
-        // ---- wall rendering (segments with opening cut-outs, length labels, node handles) ----
+        // Draw one opening in the (already cut-out) gap: reveal jambs at both ends + a kind
+        // symbol (window glass / door leaf+swing / gate bar), plus handles when selected.
+        function drawOpening(g, v, e, oi, CELL) {
+            const o = e.ops[oi], col = OPENCOL[o.kind] || '#4ea8f5', hp = (o.w / v.len) / 2;
+            const lo = Math.max(0, o.c - hp), hi = Math.min(1, o.c + hp);
+            const th = Math.max(2, (e.thick || 0.24) * CELL), h = th / 2;
+            const P0 = (u) => [(v.a.x + v.dx * u) * CELL, (v.a.y + v.dy * u) * CELL];
+            let nx = -v.dy, ny = v.dx; const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
+            const A = P0(lo), B = P0(hi);
+            const tick = (Pt) => g.append(svgEl('line', { x1: Pt[0] - nx * h, y1: Pt[1] - ny * h, x2: Pt[0] + nx * h, y2: Pt[1] + ny * h, stroke: col, 'stroke-width': 2, class: 'gp-openreveal' }));
+            tick(A); tick(B);
+            const w = Math.hypot(B[0] - A[0], B[1] - A[1]);
+            if (o.kind === 'window') { g.append(svgEl('line', { x1: A[0], y1: A[1], x2: B[0], y2: B[1], stroke: col, 'stroke-width': 2, class: 'gp-openglass' })); }
+            else if (o.kind === 'door') {
+                const leafX = A[0] + nx * w * 0.92, leafY = A[1] + ny * w * 0.92;
+                g.append(svgEl('line', { x1: A[0], y1: A[1], x2: leafX, y2: leafY, stroke: col, 'stroke-width': 2 }));
+                g.append(svgEl('path', { d: 'M ' + leafX + ' ' + leafY + ' A ' + (w * 0.92) + ' ' + (w * 0.92) + ' 0 0 1 ' + B[0] + ' ' + B[1], fill: 'none', stroke: col, 'stroke-width': 1.2, 'stroke-dasharray': '2 3', opacity: 0.85 }));
+            } else { g.append(svgEl('line', { x1: A[0], y1: A[1], x2: B[0], y2: B[1], stroke: col, 'stroke-width': 3, 'stroke-dasharray': '5 3' })); }
+            if (P.structSel && P.structSel.type === 'opening' && P.structSel.ei === edgeIndex(e) && P.structSel.oi === oi) {
+                g.append(svgEl('rect', { x: Math.min(A[0], B[0]) - h - 2, y: Math.min(A[1], B[1]) - h - 2, width: Math.abs(B[0] - A[0]) + th + 4, height: Math.abs(B[1] - A[1]) + th + 4, fill: 'none', stroke: '#fff', 'stroke-width': 1, 'stroke-dasharray': '3 2', opacity: 0.85 }));
+                [A, B].forEach((Pt) => g.append(svgEl('rect', { x: Pt[0] - 4, y: Pt[1] - 4, width: 8, height: 8, class: 'gp-ohandle' })));
+            }
+        }
+        function edgeIndex(e) { return P.walls.edges.indexOf(e); }
+        // ---- wall rendering: clean butt-capped segments, rounded node joints, cut-out openings,
+        //      total node-to-node length (offset) + optional clear sub-segment lengths ----
         function drawWalls() {
             const CELL = P.CELL, g = svgEl('g', { class: 'gp-wallg' });
             P.walls.edges.forEach((e, ei) => {
                 const v = edgeVec(e); if (v.len < 0.02) return;
                 const col = WALLCOL[e.kind] || '#8aa0b6', th = Math.max(2, (e.thick || 0.24) * CELL);
-                const ax = v.a.x * CELL, ay = v.a.y * CELL, bx = v.b.x * CELL, by = v.b.y * CELL;
-                const sel = P.structSel && P.structSel.type === 'edge' && P.structSel.idx === ei;
-                const spans = (e.ops || []).map((o) => { const hp = (o.w / v.len) / 2; return { lo: Math.max(0, o.c - hp), hi: Math.min(1, o.c + hp), kind: o.kind }; }).sort((p, q) => p.lo - q.lo);
-                const piece = (u0, u1) => { if (u1 - u0 < 1e-4) return; g.append(svgEl('line', { x1: ax + (bx - ax) * u0, y1: ay + (by - ay) * u0, x2: ax + (bx - ax) * u1, y2: ay + (by - ay) * u1, stroke: col, 'stroke-width': th, 'stroke-linecap': 'round', class: 'gp-wall' + (sel ? ' sel' : '') })); };
-                let t0 = 0;
-                for (const sp of spans) { piece(t0, sp.lo);
-                    g.append(svgEl('line', { x1: ax + (bx - ax) * sp.lo, y1: ay + (by - ay) * sp.lo, x2: ax + (bx - ax) * sp.hi, y2: ay + (by - ay) * sp.hi, stroke: OPENCOL[sp.kind] || '#4ea8f5', 'stroke-width': Math.max(2, th * 0.55), 'stroke-linecap': 'butt', 'stroke-dasharray': sp.kind === 'window' ? '3 3' : null, class: 'gp-openmark' }));
-                    t0 = sp.hi; }
-                piece(t0, 1);
-                if (P.mode === 'plan' && v.len * CELL > 34) { const tl = svgEl('text', { x: (ax + bx) / 2, y: (ay + by) / 2 - 5, 'text-anchor': 'middle', class: 'gp-walllab' }); tl.textContent = v.len.toFixed(2).replace('.', ',') + ' m'; g.append(tl); }
+                const P0 = (u) => [(v.a.x + v.dx * u) * CELL, (v.a.y + v.dy * u) * CELL];
+                const selE = P.structSel && P.structSel.type === 'edge' && P.structSel.idx === ei;
+                const spans = (e.ops || []).map((o, oi) => { const hp = (o.w / v.len) / 2; return { lo: Math.max(0, o.c - hp), hi: Math.min(1, o.c + hp), oi }; }).sort((a, b) => a.lo - b.lo);
+                // butt-capped wall pieces between the openings (no round caps bleeding into the gap)
+                const piece = (u0, u1) => { if (u1 - u0 < 1e-4) return; const A = P0(u0), B = P0(u1); g.append(svgEl('line', { x1: A[0], y1: A[1], x2: B[0], y2: B[1], stroke: col, 'stroke-width': th, 'stroke-linecap': 'butt', class: 'gp-wall' + (selE ? ' sel' : '') })); };
+                let t0 = 0; for (const sp of spans) { piece(t0, sp.lo); t0 = sp.hi; } piece(t0, 1);
+                // rounded corner joints at this edge's nodes (before openings, so gaps stay clean)
+                [v.a, v.b].forEach((pt) => g.append(svgEl('circle', { cx: pt.x * CELL, cy: pt.y * CELL, r: th / 2, fill: col, class: 'gp-walljoint' })));
+                spans.forEach((sp) => drawOpening(g, v, e, sp.oi, CELL));
+                if (P.mode === 'plan' && v.len > 0.3) {
+                    let nx = -v.dy, ny = v.dx; const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
+                    const mid = P0(0.5), off = th / 2 + 11;
+                    const tl = svgEl('text', { x: mid[0] + nx * off, y: mid[1] + ny * off + 3, 'text-anchor': 'middle', class: 'gp-walllab' }); tl.textContent = v.len.toFixed(2).replace('.', ',') + ' m'; g.append(tl);
+                    if (spans.length) { // clear (lichte) sub-segment lengths on the opposite side
+                        const segs = []; let s0 = 0; for (const sp of spans) { if (sp.lo - s0 > 0.002) segs.push([s0, sp.lo]); s0 = sp.hi; } if (1 - s0 > 0.002) segs.push([s0, 1]);
+                        for (const [u0, u1] of segs) { const wm = (u1 - u0) * v.len; if (wm * CELL < 26) continue; const m2 = P0((u0 + u1) / 2); const st = svgEl('text', { x: m2[0] - nx * (th / 2 + 9), y: m2[1] - ny * (th / 2 + 9) + 3, 'text-anchor': 'middle', class: 'gp-walllab sub' }); st.textContent = wm.toFixed(2).replace('.', ',') + ' m'; g.append(st); }
+                    }
+                }
             });
             if (P.mode === 'plan' && !P.calib && !P.tool) { // node handles only in structure-edit mode
                 P.walls.nodes.forEach((n, i) => { const sel = P.structSel && P.structSel.type === 'node' && P.structSel.idx === i; g.append(svgEl('circle', { cx: n.x * CELL, cy: n.y * CELL, r: sel ? 7 : 5, class: 'gp-wnode' + (sel ? ' sel' : ''), 'data-node': i })); });
@@ -5168,6 +5231,14 @@
                 if (dA > 0.05) lab(v.a.x, v.a.y, dA.toFixed(2).replace('.', ',') + ' m');
                 if (dB > 0.05) lab(v.b.x, v.b.y, dB.toFixed(2).replace('.', ',') + ' m');
             } }
+            // T-junction anchor: keep showing the attach point's distances to the tapped wall's
+            // ends throughout the whole chain, so 90° branches can be placed precisely.
+            if (P.chainAnchor && P.chain) { const an = P.chainAnchor;
+                const dA = Math.hypot(an.x - an.aEnd.x, an.y - an.aEnd.y), dB = Math.hypot(an.x - an.bEnd.x, an.y - an.bEnd.y);
+                const lab2 = (ex, ey, d) => { if (d < 0.05) return; const tt = svgEl('text', { x: (an.x + ex) / 2 * CELL, y: (an.y + ey) / 2 * CELL - 4, 'text-anchor': 'middle', class: 'gp-distlab' }); tt.textContent = d.toFixed(2).replace('.', ',') + ' m'; svg.append(tt); };
+                lab2(an.aEnd.x, an.aEnd.y, dA); lab2(an.bEnd.x, an.bEnd.y, dB);
+                svg.append(svgEl('circle', { cx: an.x * CELL, cy: an.y * CELL, r: 4, class: 'gp-anchor' }));
+            }
             if (P.chain && P.chain.length && P.preview && isWallKind(P.tool)) {
                 const last = P.walls.nodes[P.chain[P.chain.length - 1]];
                 if (last) {
@@ -5582,7 +5653,7 @@
         }
 
         // ---- mode / maximize ----
-        function setMode(m) { P.mode = m; root.dataset.mode = m; P.sel = null; P.editMode = false; P.calib = false; P.tool = null; P.chain = null; P.openStart = null; P.preview = null; P.structEdit = false; P.structSel = null; hideLen(); hideVertMenu(); ctitle.textContent = m === 'plan' ? 'Garagenplaner' : 'Digitaler Zwilling'; rebuildSwitch(); draw(); }
+        function setMode(m) { P.mode = m; root.dataset.mode = m; P.sel = null; P.editMode = false; P.calib = false; P.tool = null; P.chain = null; P.openStart = null; P.preview = null; P.structEdit = false; P.structSel = null; P.chainAnchor = null; P.guide = null; P.attach = null; hideLen(); hideVertMenu(); ctitle.textContent = m === 'plan' ? 'Garagenplaner' : 'Digitaler Zwilling'; rebuildSwitch(); draw(); }
         function toggleMax(force) { P.maxed = force == null ? !P.maxed : force; root.classList.toggle('maxed', P.maxed); maxBtn.textContent = P.maxed ? '⤢' : '⛶'; if (!P.maxed) { rail.style.left = ''; rail.style.top = ''; rail.style.right = ''; } setTimeout(layout, 20); }
         // In fullscreen the rail floats over the canvas and can be dragged by any
         // card header ("dynamisch drüberliegend und verschiebbar").
@@ -5714,7 +5785,7 @@
         });
 
         // ---- interactive wall drawing / node editing (overlay in plan mode) ----
-        function setTool(kind) { P.tool = kind || null; P.chain = null; P.openStart = null; P.preview = null; P.snapHint = null; P.guide = null; P.attach = null; if (P.tool) { P.structEdit = false; P.structSel = null; } draw(); }
+        function setTool(kind) { P.tool = kind || null; P.chain = null; P.openStart = null; P.preview = null; P.snapHint = null; P.guide = null; P.attach = null; P.chainAnchor = null; if (P.tool) { P.structEdit = false; P.structSel = null; } draw(); }
         function setStructEdit(on) { P.structEdit = !!on; if (P.structEdit) { P.tool = null; P.chain = null; P.openStart = null; } else { P.structSel = null; } P.guide = null; P.attach = null; draw(); }
         function evWorld(ev) { const r = planEl.getBoundingClientRect(); return { x: (ev.clientX - r.left) / P.CELL, y: (ev.clientY - r.top) / P.CELL }; }
         // Snap a drawing point: existing node > point on an existing wall (Anbau, records the
@@ -5735,11 +5806,15 @@
             }
             return { x, y };
         }
-        function endChain(msg) { P.chain = null; P.preview = null; P.snapHint = null; P.guide = null; P.attach = null; pruneNodes(); refreshFloorFromWalls(); P.structEdit = true; if (msg) toast(msg, 'ok'); layout(); }
+        function endChain(msg) { P.chain = null; P.preview = null; P.snapHint = null; P.guide = null; P.attach = null; P.chainAnchor = null; pruneNodes(); refreshFloorFromWalls(); P.structEdit = true; if (msg) toast(msg, 'ok'); layout(); }
         function wallClick(sp) {
             let ni, changed = false;
             if (sp.node != null) ni = sp.node;
-            else if (sp.edge != null) { ni = splitEdgeAt(sp.edge, sp.t); changed = true; } // start/continue on a wall = Anbau (splits it)
+            else if (sp.edge != null) {
+                // Anbau: record the attach point's distances to the ORIGINAL wall's ends first
+                if (!P.chain) { const v0 = edgeVec(P.walls.edges[sp.edge]); P.chainAnchor = { x: sp.x, y: sp.y, aEnd: { x: v0.a.x, y: v0.a.y }, bEnd: { x: v0.b.x, y: v0.b.y } }; }
+                ni = splitEdgeAt(sp.edge, sp.t); changed = true;
+            }
             else ni = addNode(sp.x, sp.y);
             if (!P.chain) { P.chain = [ni]; if (changed) { refreshFloorFromWalls(); pushUndo(); markDirty(); } draw(); return; }
             const lastNi = P.chain[P.chain.length - 1]; if (ni === lastNi) return;
@@ -5758,13 +5833,20 @@
             ed.ops = ed.ops || []; ed.ops.push({ c, w, kind: P.tool }); pushUndo(); markDirty(); draw(); toast(EXCL[P.tool].label + ' eingefügt', 'ok');
         }
         function editDown(ev, p) {
-            const R = 12 / P.CELL, ni = nodeAt(p, R);
-            if (ni >= 0) { P.structSel = { type: 'node', idx: ni }; nodeDrag = { ni, moved: false }; try { drawOverlay.setPointerCapture(ev.pointerId); } catch (er) { /* ignore */ } draw(); return; }
+            const R = 12 / P.CELL, cap = () => { try { drawOverlay.setPointerCapture(ev.pointerId); } catch (er) { /* ignore */ } };
+            // resize handle of the already-selected opening wins
+            if (P.structSel && P.structSel.type === 'opening') { const h = openingHandleAt(p, P.structSel.ei, P.structSel.oi, R); if (h) { opDrag = { ei: P.structSel.ei, oi: P.structSel.oi, mode: 'resize', end: h, moved: false }; cap(); return; } }
+            // opening body → select + move along the wall
+            const op = openingAt(p, R);
+            if (op) { const e = P.walls.edges[op.ei], v = edgeVec(e), o = e.ops[op.oi], t = ((p.x - v.a.x) * v.dx + (p.y - v.a.y) * v.dy) / (v.len * v.len); P.structSel = { type: 'opening', ei: op.ei, oi: op.oi }; opDrag = { ei: op.ei, oi: op.oi, mode: 'move', grab: t - o.c, moved: false }; cap(); draw(); return; }
+            const ni = nodeAt(p, R);
+            if (ni >= 0) { P.structSel = { type: 'node', idx: ni }; nodeDrag = { ni, moved: false }; cap(); draw(); return; }
             const e = edgeAt(p, R);
             P.structSel = e ? { type: 'edge', idx: e.i } : null; draw();
         }
         function deleteSel() {
             if (!P.structSel) return;
+            if (P.structSel.type === 'opening') { const e = P.walls.edges[P.structSel.ei]; if (e && e.ops) e.ops.splice(P.structSel.oi, 1); P.structSel = null; pushUndo(); markDirty(); draw(); toast('Öffnung entfernt — Wand geschlossen'); return; }
             if (P.structSel.type === 'node') deleteNode(P.structSel.idx); else deleteEdge(P.structSel.idx);
             P.structSel = null; refreshFloorFromWalls(); pushUndo(); markDirty(); layout(); toast('Entfernt');
         }
@@ -5778,6 +5860,13 @@
         drawOverlay.addEventListener('pointermove', (ev) => {
             let p = evWorld(ev);
             if ((P.chain || nodeDrag) && maybeExpand(p)) p = evWorld(ev); // auto-expand canvas while drawing/dragging
+            if (opDrag) {
+                const e = P.walls.edges[opDrag.ei]; if (!e || !(e.ops || [])[opDrag.oi]) { opDrag = null; return; }
+                const v = edgeVec(e), o = e.ops[opDrag.oi]; let t = ((p.x - v.a.x) * v.dx + (p.y - v.a.y) * v.dy) / (v.len * v.len);
+                if (opDrag.mode === 'move') { const hp = (o.w / v.len) / 2; o.c = Math.max(hp, Math.min(1 - hp, t - opDrag.grab)); }
+                else { t = Math.max(0, Math.min(1, t)); const hp = (o.w / v.len) / 2, fixed = opDrag.end === 'lo' ? (o.c + hp) : (o.c - hp); const lo = Math.min(t, fixed), hi = Math.max(t, fixed), wNew = (hi - lo) * v.len; if (wNew >= 0.2) { o.c = (lo + hi) / 2; o.w = round2(wNew); } }
+                opDrag.moved = true; drawFloor(); positionWallPop(); return;
+            }
             if (nodeDrag) {
                 let x = gsnap(p.x), y = gsnap(p.y); const R = 12 / P.CELL, tol = 8 / P.CELL; P.guide = null; let bd = R;
                 for (let i = 0; i < P.walls.nodes.length; i++) { if (i === nodeDrag.ni) continue; const n = P.walls.nodes[i]; const d = Math.hypot(n.x - x, n.y - y); if (d < bd) { bd = d; x = n.x; y = n.y; } }
@@ -5789,6 +5878,7 @@
             if (isOpenKind(P.tool) && P.openStart) { const ed = P.walls.edges[P.openStart.ei]; if (ed) { const v = edgeVec(ed); let t2 = ((p.x - v.a.x) * v.dx + (p.y - v.a.y) * v.dy) / (v.len * v.len); t2 = Math.max(0, Math.min(1, t2)); P.preview = { x: v.a.x + v.dx * t2, y: v.a.y + v.dy * t2, t: t2 }; } drawFloor(); }
         });
         drawOverlay.addEventListener('pointerup', (ev) => {
+            if (opDrag) { const moved = opDrag.moved; opDrag = null; try { drawOverlay.releasePointerCapture(ev.pointerId); } catch (er) { /* ignore */ } if (moved) { pushUndo(); markDirty(); } draw(); return; }
             if (!nodeDrag) return; const moved = nodeDrag.moved; nodeDrag = null; P.guide = null; try { drawOverlay.releasePointerCapture(ev.pointerId); } catch (er) { /* ignore */ }
             if (moved) { refreshFloorFromWalls(); pushUndo(); markDirty(); layout(); } else draw();
         });
@@ -5803,7 +5893,7 @@
             if (P.openStart) { P.openStart = null; P.preview = null; draw(); return; }
             if (P.structSel) deleteSel();
         });
-        drawOverlay.addEventListener('pointercancel', () => { if (nodeDrag) { nodeDrag = null; draw(); } });
+        drawOverlay.addEventListener('pointercancel', () => { if (nodeDrag || opDrag) { nodeDrag = null; opDrag = null; draw(); } });
 
         // ---- palette drag → place ----
         let drag = null, prev = null;
