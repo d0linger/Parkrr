@@ -1,0 +1,21 @@
+# Prometheus scrape config for Parkrr.
+# The app exposes Prometheus metrics at /metrics on its internal port 8080.
+# Both services share the compose network `parkrr-net`, so Prometheus reaches
+# the app by its service name (`app`) — no host port is needed.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: parkrr
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["app:8080"]
+        labels:
+          service: parkrr
+    # If you set PARKRR_METRICS_TOKEN on the app, uncomment the block below and
+    # write the same token into deploy/monitoring/metrics_token (one line, no
+    # newline) so Prometheus sends it as a Bearer credential:
+    # authorization:
+    #   type: Bearer
+    #   credentials_file: /etc/prometheus/metrics_token

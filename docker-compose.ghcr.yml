@@ -44,7 +44,7 @@ services:
       PARKRR_ADMIN_USERNAME: ${PARKRR_ADMIN_USERNAME:-admin}
       PARKRR_ADMIN_EMAIL: ${PARKRR_ADMIN_EMAIL:-admin@example.com}
       PARKRR_ADMIN_PASSWORD: ${PARKRR_ADMIN_PASSWORD:?PARKRR_ADMIN_PASSWORD must be set}
-      # --- Security (SESSION_SECRET required, min. 16 chars) ---
+      # --- Security (SESSION_SECRET required, min. 32 chars) ---
       PARKRR_SESSION_SECRET: ${PARKRR_SESSION_SECRET:?PARKRR_SESSION_SECRET must be set}
       PARKRR_SESSION_MAX_AGE: ${PARKRR_SESSION_MAX_AGE:-604800}
       PARKRR_SESSION_SLIDING: ${PARKRR_SESSION_SLIDING:-false}
@@ -60,6 +60,8 @@ services:
       PARKRR_RATE_LIMIT_PER_MIN: ${PARKRR_RATE_LIMIT_PER_MIN:-600}
       PARKRR_AUDIT_RETENTION_DAYS: ${PARKRR_AUDIT_RETENTION_DAYS:-365}
       PARKRR_METRICS_TOKEN: ${PARKRR_METRICS_TOKEN:-}
+      # true = /metrics is disabled unless a token is set (fail closed); default off.
+      PARKRR_METRICS_REQUIRE_AUTH: ${PARKRR_METRICS_REQUIRE_AUTH:-false}
       PARKRR_LOG_FORMAT: ${PARKRR_LOG_FORMAT:-json}
       PARKRR_LOG_LEVEL: ${PARKRR_LOG_LEVEL:-info}
     healthcheck:

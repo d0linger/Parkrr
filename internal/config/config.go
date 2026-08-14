@@ -58,6 +58,19 @@ type Config struct {
 	BackupKey string // AES-256-GCM passphrase (separate from SessionSecret)
 	BackupDir string // if set, scheduled backups are written here
 
+	// E-mail (SMTP). Disabled when SMTPHost is empty. Used for payment reminders.
+	SMTPHost     string
+	SMTPPort     int
+	SMTPUsername string
+	SMTPPassword string
+	SMTPFrom     string // envelope/header From address
+	SMTPFromName string // optional display name
+	SMTPTLS      string // "starttls" (default) | "tls" (implicit) | "none"
+
+	// PublicBaseURL is the externally reachable base URL (e.g.
+	// https://parkrr.example.com), used to build links inside outgoing e-mail.
+	PublicBaseURL string
+
 	// S3-compatible off-site backup target (optional).
 	S3Endpoint  string
 	S3Bucket    string
@@ -103,6 +116,15 @@ func Load() (*Config, error) {
 		BackupKey: os.Getenv("PARKRR_BACKUP_KEY"),
 		BackupDir: os.Getenv("PARKRR_BACKUP_DIR"),
 
+		SMTPHost:      os.Getenv("PARKRR_SMTP_HOST"),
+		SMTPPort:      getenvInt("PARKRR_SMTP_PORT", 587),
+		SMTPUsername:  os.Getenv("PARKRR_SMTP_USERNAME"),
+		SMTPPassword:  os.Getenv("PARKRR_SMTP_PASSWORD"),
+		SMTPFrom:      os.Getenv("PARKRR_SMTP_FROM"),
+		SMTPFromName:  getenv("PARKRR_SMTP_FROM_NAME", "Parkrr"),
+		SMTPTLS:       getenv("PARKRR_SMTP_TLS", "starttls"),
+		PublicBaseURL: os.Getenv("PARKRR_PUBLIC_BASE_URL"),
+
 		S3Endpoint:  os.Getenv("PARKRR_S3_ENDPOINT"),
 		S3Bucket:    os.Getenv("PARKRR_S3_BUCKET"),
 		S3AccessKey: os.Getenv("PARKRR_S3_ACCESS_KEY"),
@@ -145,6 +167,13 @@ func Load() (*Config, error) {
 	// be as strong as the session secret — it protects every database dump.
 	if cfg.BackupKey != "" && len(cfg.BackupKey) < 32 {
 		return nil, fmt.Errorf("PARKRR_BACKUP_KEY must be at least 32 bytes long when set (supply a random value, e.g. `openssl rand -base64 48`)")
+	}
+	// Reject an unknown SMTP TLS mode rather than silently degrading to cleartext:
+	// only none|tls|starttls are handled by the mailer.
+	switch strings.ToLower(cfg.SMTPTLS) {
+	case "none", "tls", "starttls":
+	default:
+		return nil, fmt.Errorf("PARKRR_SMTP_TLS must be one of none|tls|starttls (got %q)", cfg.SMTPTLS)
 	}
 
 	return cfg, nil

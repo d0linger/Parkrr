@@ -308,9 +308,9 @@ func (h *Handler) periodSettledByPaymentByPerson(ctx context.Context) (map[int64
 // skews every person's dashboard receivable.
 func sumByPerson(ctx context.Context, q interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
-}, sql string) (map[int64]float64, error) {
+}, sql string, args ...any) (map[int64]float64, error) {
 	out := map[int64]float64{}
-	rows, err := q.Query(ctx, sql)
+	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -589,16 +589,24 @@ func (h *Handler) personAccruedTotal(r *http.Request, id int64) (float64, error)
 // math is identical to PersonStats.Balance and the dashboard's TopOutstanding,
 // expressed through the same shared helpers (personRent / chargeAmounts /
 // recurringSums) — keep the three in sync. Returns person_id → open balance
-// (≤ 0 means settled).
-func (h *Handler) outstandingByPerson(r *http.Request) (map[int64]float64, error) {
+// (≤ 0 means settled). personID > 0 restricts the whole computation to that one
+// person (used by the customer portal, which needs a single balance and must not
+// scan every person); 0 computes everyone (persons list / dashboard). The money
+// math is the same either way — one source of truth, just filtered.
+func (h *Handler) outstandingByPerson(r *http.Request, personID int64) (map[int64]float64, error) {
 	ctx := r.Context()
-	vehicles, cats, err := h.loadVehiclesWithCategories(r, 0)
+	vehicles, cats, err := h.loadVehiclesWithCategories(r, personID)
 	if err != nil {
 		return nil, err
 	}
-	agByPerson, err := h.loadAllAgreements(ctx, 0)
+	agByPerson, err := h.loadAllAgreements(ctx, personID)
 	if err != nil {
 		return nil, err
+	}
+	// Shared $1 = personID for the scoped raw queries below (empty when personID==0).
+	var scopeArgs []any
+	if personID != 0 {
+		scopeArgs = append(scopeArgs, personID)
 	}
 	now := time.Now()
 	until := models.DayAfter(now)
@@ -613,7 +621,11 @@ func (h *Handler) outstandingByPerson(r *http.Request) (map[int64]float64, error
 	// One-off charges per person (total accrued; the paid portion no longer drives
 	// the payment-based balance, so it is not accumulated).
 	chargesByPerson := map[int64]float64{}
-	crows, err := h.Pool.Query(ctx, `SELECT person_id, vehicle_id, amount, quantity, charged_on, paid FROM charges`)
+	chargesSQL := `SELECT person_id, vehicle_id, amount, quantity, charged_on, paid FROM charges`
+	if personID != 0 {
+		chargesSQL += ` WHERE person_id = $1`
+	}
+	crows, err := h.Pool.Query(ctx, chargesSQL, scopeArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -660,15 +672,21 @@ func (h *Handler) outstandingByPerson(r *http.Request) (map[int64]float64, error
 	// P2.2 — open = accrued − payments received (the money truth), per person.
 	// Don't fail open: a swallowed error would drop everyone's payments and
 	// overstate every receivable on the dashboard.
-	paymentsByPerson, err := sumByPerson(ctx, h.Pool,
-		`SELECT person_id, COALESCE(SUM(amount),0) FROM payments WHERE NOT reversed GROUP BY person_id`)
+	paySQL := `SELECT person_id, COALESCE(SUM(amount),0) FROM payments WHERE NOT reversed`
+	if personID != 0 {
+		paySQL += ` AND person_id = $1`
+	}
+	paymentsByPerson, err := sumByPerson(ctx, h.Pool, paySQL+` GROUP BY person_id`, scopeArgs...)
 	if err != nil {
 		return nil, err
 	}
 
 	// Invoiced USt is owed on top of the net accrual (see PersonStats).
-	invoicedTaxByPerson, err := sumByPerson(ctx, h.Pool,
-		`SELECT person_id, COALESCE(SUM(tax_amount),0) FROM invoices WHERE NOT canceled AND cancels_id IS NULL GROUP BY person_id`)
+	taxSQL := `SELECT person_id, COALESCE(SUM(tax_amount),0) FROM invoices WHERE NOT canceled AND cancels_id IS NULL`
+	if personID != 0 {
+		taxSQL += ` AND person_id = $1`
+	}
+	invoicedTaxByPerson, err := sumByPerson(ctx, h.Pool, taxSQL+` GROUP BY person_id`, scopeArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -687,6 +705,12 @@ func (h *Handler) outstandingByPerson(r *http.Request) (map[int64]float64, error
 		return nil, serr
 	}
 
+	// When scoped to one person, compute only that id (and always include it, so a
+	// person with no activity yet still resolves to a 0 balance).
+	if personID != 0 {
+		personIDs = map[int64]struct{}{personID: {}}
+	}
+
 	out := make(map[int64]float64, len(personIDs))
 	for pid := range personIDs {
 		tAcc := personRent(agByPerson[pid], vehByPerson[pid], cats, time.Time{}, until)
@@ -701,7 +725,7 @@ func (h *Handler) outstandingByPerson(r *http.Request) (map[int64]float64, error
 // list, so each row can show its settlement status without loading per-person
 // stats one at a time.
 func (h *Handler) OutstandingByPerson(w http.ResponseWriter, r *http.Request) {
-	out, err := h.outstandingByPerson(r)
+	out, err := h.outstandingByPerson(r, 0)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -1022,6 +1046,65 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		resp.PaymentsByMonth[m] = round2(resp.PaymentsByMonth[m])
 	}
 
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// hallOccupancy is per-hall placement: how many active vehicles are positioned
+// in that hall's floor plan.
+type hallOccupancy struct {
+	HallID     int64  `json:"hall_id"`
+	Name       string `json:"name"`
+	GarageName string `json:"garage_name"`
+	Placed     int    `json:"placed"`
+}
+
+// occupancyResponse answers "how full is the garage" for the dashboard. The plan
+// is free-form (area-based, no fixed slots), so occupancy is expressed as how many
+// active vehicles are positioned in a hall vs. how many exist.
+type occupancyResponse struct {
+	Active int             `json:"active"` // non-archived vehicles
+	Placed int             `json:"placed"` // …of those, positioned in a hall
+	Halls  []hallOccupancy `json:"halls"`
+}
+
+// Occupancy returns placement KPIs: total active vehicles, how many are placed in
+// a hall, and the per-hall placed count.
+func (h *Handler) Occupancy(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	resp := occupancyResponse{Halls: []hallOccupancy{}}
+	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM vehicles WHERE NOT archived`).Scan(&resp.Active); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM vehicles WHERE NOT archived AND spot_id IS NOT NULL`).Scan(&resp.Placed); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	rows, err := h.Pool.Query(ctx,
+		`SELECT h.id, h.name, g.name, count(v.id) FILTER (WHERE v.archived = false)
+		   FROM halls h
+		   JOIN garages g ON g.id = h.garage_id
+		   LEFT JOIN spots s ON s.hall_id = h.id
+		   LEFT JOIN vehicles v ON v.spot_id = s.id
+		  GROUP BY h.id, h.name, g.name
+		  ORDER BY g.name, h.name`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ho hallOccupancy
+		if err := rows.Scan(&ho.HallID, &ho.Name, &ho.GarageName, &ho.Placed); err != nil {
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		resp.Halls = append(resp.Halls, ho)
+	}
+	if rows.Err() != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 

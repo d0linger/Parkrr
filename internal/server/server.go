@@ -18,6 +18,7 @@ import (
 	"github.com/preining/parkrr/internal/auth"
 	"github.com/preining/parkrr/internal/backup"
 	"github.com/preining/parkrr/internal/handlers"
+	"github.com/preining/parkrr/internal/mail"
 	"github.com/preining/parkrr/internal/models"
 	"github.com/preining/parkrr/web"
 )
@@ -25,14 +26,19 @@ import (
 // New builds the top-level HTTP handler with all routes registered. Background
 // goroutines started here (rate-limiter cleanup, login-throttle cleanup) run
 // until stop is closed.
-func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, metricsRequireAuth, checkBreachedPasswords, failClosedOnBreach bool, backupKey, dbURL, backupDir string, s3 backup.S3Config, stop <-chan struct{}) (http.Handler, error) {
+func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, metricsRequireAuth, checkBreachedPasswords, failClosedOnBreach bool, backupKey, dbURL, backupDir string, s3 backup.S3Config, mailer mail.Sender, publicBaseURL string, stop <-chan struct{}) (http.Handler, error) {
 	h := handlers.New(pool)
+	h.Auth = authMgr
 	h.CheckBreachedPasswords = checkBreachedPasswords
 	h.FailClosedOnBreach = failClosedOnBreach
 	h.BackupKey = backupKey
 	h.DatabaseURL = dbURL
 	h.BackupDir = backupDir
 	h.S3 = s3
+	if mailer != nil {
+		h.Mail = mailer
+	}
+	h.PublicBaseURL = publicBaseURL
 	ah := handlers.NewAuthHandler(h, authMgr, wa, stop)
 
 	// Archive vehicles of finished-and-settled Pauschalen in the background.
@@ -63,6 +69,11 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.HandleFunc("POST /api/auth/passkey/login/begin", ah.PasskeyLoginBegin)
 	mux.HandleFunc("POST /api/auth/passkey/login/finish", ah.PasskeyLoginFinish)
 
+	// --- Customer self-service portal (PUBLIC, token-scoped, read-only) ---
+	mux.HandleFunc("GET /api/portal/{token}/summary", h.PortalSummary)
+	mux.HandleFunc("GET /api/portal/{token}/invoices/{id}/pdf", h.PortalInvoicePDF)
+	mux.HandleFunc("GET /api/portal/{token}/invoices/{id}/pay-qr", h.PortalPayQR)
+
 	// --- Auth (protected) ---
 	mux.Handle("POST /api/auth/logout", authed(hf(ah.Logout)))
 	mux.Handle("GET /api/auth/me", authed(hf(ah.Me)))
@@ -86,6 +97,12 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/persons", authed(hf(h.ListPersons)))
 	mux.Handle("GET /api/persons/outstanding", authed(hf(h.OutstandingByPerson)))
 	mux.Handle("POST /api/persons", editor(hf(h.CreatePerson)))
+	mux.Handle("POST /api/import/persons", editor(hf(h.ImportPersons)))
+	mux.Handle("GET /api/import/persons/template", editor(hf(h.ImportTemplate)))
+	mux.Handle("POST /api/persons/{id}/portal-link", editor(hf(h.CreatePortalLink)))
+	mux.Handle("GET /api/persons/{id}/portal-links", editor(hf(h.ListPortalLinks)))
+	mux.Handle("POST /api/persons/{id}/portal-link/revoke", editor(hf(h.RevokePortalLinks)))
+	mux.Handle("POST /api/portal-links/{id}/revoke", editor(hf(h.RevokePortalLink)))
 	mux.Handle("PUT /api/persons/{id}", editor(hf(h.UpdatePerson)))
 	mux.Handle("DELETE /api/persons/{id}", editor(hf(h.DeletePerson)))
 	mux.Handle("GET /api/persons/{id}/stats", authed(hf(h.PersonStats)))
@@ -103,6 +120,9 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/persons/{id}/invoices", authed(hf(h.ListInvoices)))
 	mux.Handle("POST /api/persons/{id}/invoices", editor(hf(h.CreateInvoice)))
 	mux.Handle("GET /api/invoices/{id}", authed(hf(h.GetInvoice)))
+	mux.Handle("GET /api/invoices/{id}/pdf", authed(hf(h.InvoicePDF)))
+	mux.Handle("GET /api/invoices/{id}/pay-qr", authed(hf(h.PayQR)))
+	mux.Handle("POST /api/invoices/{id}/remind", editor(hf(h.RemindInvoice)))
 	mux.Handle("POST /api/invoices/{id}/cancel", editor(hf(h.CancelInvoice)))
 	mux.Handle("POST /api/persons/{id}/pay-invoices", editor(hf(h.PayInvoices)))
 	mux.Handle("GET /api/invoices/overdue", authed(hf(h.OverdueInvoices)))
@@ -133,6 +153,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/vehicles/{id}/reactivate", editor(hf(h.ReactivateVehicle)))
 	mux.Handle("POST /api/vehicles/{id}/duplicate", editor(hf(h.DuplicateVehicle)))
 	mux.Handle("GET /api/vehicles/{id}/history", authed(hf(h.VehicleHistory)))
+	mux.Handle("GET /api/vehicles/{id}/label", authed(hf(h.VehicleLabel)))
 	// Literal segment beats the {id} pattern in Go's ServeMux, so this is safe.
 	mux.Handle("GET /api/vehicles/unassigned", authed(hf(h.ListUnassignedVehicles)))
 
@@ -141,6 +162,13 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/vehicles/{id}/photos", editor(hf(h.UploadPhoto)))
 	mux.Handle("GET /api/photos/{id}", authed(hf(h.GetPhoto)))
 	mux.Handle("DELETE /api/photos/{id}", editor(hf(h.DeletePhoto)))
+
+	// --- Handover protocols (Übergabeprotokoll) ---
+	mux.Handle("GET /api/vehicles/{id}/handovers", authed(hf(h.ListHandovers)))
+	mux.Handle("POST /api/vehicles/{id}/handovers", editor(hf(h.CreateHandover)))
+	mux.Handle("GET /api/handovers/{id}/signature", authed(hf(h.GetHandoverSignature)))
+	mux.Handle("GET /api/handovers/{id}/pdf", authed(hf(h.HandoverPDF)))
+	mux.Handle("DELETE /api/handovers/{id}", editor(hf(h.DeleteHandover)))
 
 	// --- Categories (tariffs) ---
 	mux.Handle("GET /api/categories", authed(hf(h.ListCategories)))
@@ -190,6 +218,11 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 
 	// --- Stats ---
 	mux.Handle("GET /api/overview", authed(hf(h.Overview)))
+	mux.Handle("GET /api/occupancy", authed(hf(h.Occupancy)))
+	mux.Handle("GET /api/vehicles/ending-soon", authed(hf(h.EndingSoon)))
+
+	// --- CSV export (outstanding | payments | persons | vehicles) ---
+	mux.Handle("GET /api/export/{entity}", authed(hf(h.ExportCSV)))
 
 	// --- Users & audit (admin only) ---
 	mux.Handle("GET /api/users", admin(hf(h.ListUsers)))

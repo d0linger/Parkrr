@@ -20,6 +20,7 @@ import (
 	"github.com/preining/parkrr/internal/backup"
 
 	"github.com/preining/parkrr/internal/auth"
+	"github.com/preining/parkrr/internal/mail"
 )
 
 // Handler holds shared dependencies for all HTTP handlers.
@@ -38,6 +39,16 @@ type Handler struct {
 	BackupDir   string
 	S3          backup.S3Config
 	hibpClient  *http.Client
+	// Mail sends transactional e-mail (payment reminders). Defaults to a disabled
+	// sender when SMTP is not configured, so it is never nil.
+	Mail mail.Sender
+	// PublicBaseURL is the externally reachable base (e.g. https://parkrr.example.com),
+	// used to build links in outgoing e-mail. Empty falls back to a relative hint.
+	PublicBaseURL string
+	// Auth is the session manager, used here only for RequestIsHTTPS so scheme
+	// detection (e.g. in the QR label) honors the trusted-proxy CIDR gate. May be
+	// nil in tests that construct a bare Handler.
+	Auth *auth.Manager
 }
 
 // New constructs a Handler.
@@ -45,6 +56,7 @@ func New(pool *pgxpool.Pool) *Handler {
 	return &Handler{
 		Pool:       pool,
 		hibpClient: &http.Client{Timeout: 5 * time.Second},
+		Mail:       mail.New(mail.Config{}), // disabled until configured
 	}
 }
 

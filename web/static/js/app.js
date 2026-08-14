@@ -55,6 +55,9 @@
         settings: '<path d="M6 4v7M6 15v5M12 4v3M12 11v9M18 4v11M18 19v1"/><circle cx="6" cy="13" r="1.8"/><circle cx="12" cy="9" r="1.8"/><circle cx="18" cy="17" r="1.8"/>',
         users: '<circle cx="9" cy="8" r="3.4"/><path d="M3.5 20c.6-3.4 2.9-5.2 5.5-5.2s4.9 1.8 5.5 5.2"/><path d="M16 5.4a3.4 3.4 0 0 1 0 5.9M17.8 14.9c1.6.8 2.6 2.4 3 5.1"/>',
         log: '<rect x="5" y="3.5" width="14" height="17" rx="2"/><path d="M9 8.5h6M9 12h6M9 15.5h4"/>',
+        upload: '<path d="M12 15V4M8 8l4-4 4 4"/><path d="M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/>',
+        download: '<path d="M12 4v11M8 11l4 4 4-4"/><path d="M5 19h14"/>',
+        mail: '<rect x="3.5" y="5.5" width="17" height="13" rx="2"/><path d="M4 7.5l8 6 8-6"/>',
         theme: '<path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9Z"/>',
         logout: '<path d="M9 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3M15 8l4 4-4 4M19 12H9"/>',
         box: '<path d="M3 8l9-5 9 5v8l-9 5-9-5V8Z"/><path d="M3 8l9 5 9-5M12 13v8"/>',
@@ -208,9 +211,22 @@
             $('#confirm-body').textContent = message;
             const ok = $('#confirm-ok'); const cancel = $('#confirm-cancel');
             ok.textContent = okLabel;
-            const done = (v) => { ok.removeEventListener('click', onOk); cancel.removeEventListener('click', onCancel); dlg.close(); resolve(v); };
+            let settled = false;
+            const done = (v) => {
+                ok.removeEventListener('click', onOk);
+                cancel.removeEventListener('click', onCancel);
+                if (settled) return;
+                settled = true;
+                resolve(v); // resolve before close so the close-event's done(false) is a no-op
+                dlg.close();
+            };
             const onOk = () => done(true); const onCancel = () => done(false);
             ok.addEventListener('click', onOk); cancel.addEventListener('click', onCancel);
+            // Backdrop click / Escape close the dialog without a button — treat as
+            // cancel and detach the listeners so they never accumulate on the shared
+            // #confirm buttons (otherwise a re-opened confirm could fire a previously
+            // backdrop-cancelled action).
+            dlg.addEventListener('close', () => done(false), { once: true });
             dlg.showModal();
         });
     }
@@ -343,12 +359,19 @@
                 if (f.help) body.append(el('div', { class: 'card-meta', id: helpId }, f.help));
             }
             const form = $('#modal-form');
+            let settled = false;
+            const settle = (v) => { if (!settled) { settled = true; resolve(v); } };
             const cleanup = () => {
                 form.removeEventListener('submit', onSubmit);
                 $('#modal-cancel').removeEventListener('click', onCancel);
                 $('#modal-close').removeEventListener('click', onCancel);
             };
-            const onCancel = () => { cleanup(); dlg.close(); resolve(null); };
+            // Detach the submit handler on ANY close path (buttons, Escape, backdrop
+            // click). Otherwise a re-opened form accumulates stale submit listeners on
+            // the shared #modal-form, and a single OK fires the save once per prior
+            // open — e.g. two accidental backdrop-dismisses then OK = three saves.
+            dlg.addEventListener('close', () => { cleanup(); settle(null); }, { once: true });
+            const onCancel = () => { cleanup(); settle(null); dlg.close(); };
             // Toggle the modal's busy state while an async save is in flight.
             const setPending = (on) => {
                 const submit = $('#modal-submit');
@@ -386,13 +409,15 @@
                     }
                 }
                 if (firstInvalid) { firstInvalid.focus(); return; }
-                if (!save) { cleanup(); dlg.close(); resolve(data); return; }
+                // settle() before dlg.close() so the close-event's settle(null) is a
+                // no-op and callers still receive the submitted data.
+                if (!save) { cleanup(); settle(data); dlg.close(); return; }
                 // Async save: keep the modal open, show progress, surface errors inline.
                 formErr.hidden = true;
                 setPending(true);
                 try {
                     await save(data);
-                    cleanup(); dlg.close(); resolve(data);
+                    cleanup(); settle(data); dlg.close();
                 } catch (err) {
                     formErr.textContent = err.message || 'Speichern fehlgeschlagen';
                     formErr.hidden = false;
@@ -824,6 +849,8 @@
     }
     routes.dashboard = async (page) => {
         const ov = await api.get('/overview' + (dashYear ? '?year=' + dashYear : ''));
+        let occ = null;
+        try { occ = await api.get('/occupancy'); } catch (e) { /* occupancy is best-effort */ }
         dashYear = ov.year;
         page.innerHTML = '';
         // Year switcher: browse past years; forward capped at the current year
@@ -884,6 +911,23 @@
             stat(ov.total_categories, 'Tarife', { icon: 'tag' }),
         ));
 
+        // Belegung — how many active Gefährte are positioned in a hall plan, plus a
+        // per-hall breakdown. The plan is area-based (no fixed slots), so this is a
+        // placement count, not "free slots".
+        if (occ && occ.active > 0) {
+            const occCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Belegung · im Plan platziert'));
+            occCard.append(el('div', { class: 'stat-grid' },
+                stat(occ.placed + ' / ' + occ.active, 'Gefährte platziert', { icon: 'warehouse', tone: 'teal' }),
+                stat(Math.max(0, occ.active - occ.placed), 'noch nicht platziert', { icon: 'car' })));
+            (occ.halls || []).filter((hh) => hh.placed > 0).forEach((hh) => {
+                occCard.append(el('div', { class: 'status-row' },
+                    el('div', { class: 'status-name' }, esc(hh.name)),
+                    el('div', { class: 'muted', style: 'font-size:.75rem' }, esc(hh.garage_name)),
+                    el('div', { class: 'bar-val' }, String(hh.placed))));
+            });
+            page.append(occCard);
+        }
+
         // Top open balances — turns the "Offen gesamt" number into an action
         // list: who to follow up with, one tap to their page.
         if (ov.top_outstanding && ov.top_outstanding.length) {
@@ -917,6 +961,24 @@
             page.append(odCard);
         }
 
+        // Verträge, die auslaufen — end_date in den nächsten 30 Tagen, ein Tap zum
+        // Gefährt (Vertrag verlängern / Status ändern).
+        let ending = [];
+        try { ending = (await api.get('/vehicles/ending-soon?days=30')) || []; } catch (e) { /* ignore */ }
+        if (ending.length) {
+            const enCard = el('div', { class: 'owe-card' });
+            enCard.append(el('div', { class: 'owe-head' },
+                el('span', { class: 'sec-eyebrow' }, 'Verträge laufen aus'),
+                el('span', { class: 'muted', style: 'font-size:.75rem' }, ending.length + ' · nächste 30 Tage')));
+            ending.slice(0, 6).forEach((e) => {
+                const soon = e.days_left <= 7;
+                enCard.append(el('a', { class: 'owe-row', href: '#/vehicles/' + e.id, style: 'text-decoration:none' },
+                    el('span', { class: 'owe-nm' }, esc(e.label), el('span', { class: 'muted', style: 'font-size:.72rem;margin-left:.4rem' }, esc(e.person_name))),
+                    el('span', { class: 'owe-amt', style: soon ? 'color:var(--danger)' : '' }, (e.days_left === 0 ? 'heute' : 'in ' + e.days_left + ' Tg.'), el('span', { class: 'owe-chev' }, '›'))));
+            });
+            page.append(enCard);
+        }
+
         // Revenue chart
         const revCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Umsatz pro Monat · ' + ov.year));
         revCard.append(chartLine(ov.revenue_by_month, MONTHS));
@@ -945,6 +1007,18 @@
         }
         scCard.append(bars);
         page.append(scCard);
+
+        // CSV export for accounting — a plain download link carries the session
+        // cookie; the server sends it as a ;-separated, BOM-prefixed attachment.
+        const expLink = (entity, label) => el('a', { class: 'btn btn-ghost btn-sm', href: '/api/export/' + entity, download: '' }, '⭳ ' + label);
+        page.append(el('div', { class: 'chart-card' },
+            el('h3', {}, 'Export (CSV)'),
+            el('div', { class: 'muted', style: 'font-size:.82rem;margin:-.35rem 0 .7rem' }, 'Für Buchhaltung/Steuerberater — öffnet direkt in Excel/LibreOffice.'),
+            el('div', { class: 'btn-row', style: 'flex-wrap:wrap;gap:.5rem' },
+                expLink('outstanding', 'Offene Posten'),
+                expLink('payments', 'Zahlungen'),
+                expLink('persons', 'Personen'),
+                expLink('vehicles', 'Gefährte'))));
     };
 
     // ================= PERSONS =================
@@ -956,11 +1030,30 @@
         let oweOk = true;
         try { oweMap = (await api.get('/persons/outstanding')) || {}; }
         catch (e) { oweOk = false; toast('Salden konnten nicht geladen werden', 'error'); }
+        // Overdue invoices → worst days-overdue per person, for a Fälligkeits-Badge.
+        const overdueByPerson = {};
+        try { ((await api.get('/invoices/overdue')) || []).forEach((o) => { overdueByPerson[o.person_id] = Math.max(overdueByPerson[o.person_id] || 0, o.days_overdue); }); }
+        catch (e) { /* dashboard already surfaces overdue; ignore here */ }
         mountList(page, {
             title: 'Personen', emptyIcon: 'users', emptyText: 'Noch keine Personen.',
             onAdd: canManage() ? () => personForm() : null,
             items: state.persons,
             searchText: (p) => norm(personName(p) + ' ' + p.email + ' ' + p.phone),
+            // Filter toggle: only persons with an open balance (Mahn-/Nachfass-Sicht).
+            controls: (refresh, cs) => {
+                const btn = el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-pressed': 'false',
+                    onclick: () => { cs.owedOnly = !cs.owedOnly; btn.className = 'btn btn-sm ' + (cs.owedOnly ? 'btn-primary' : 'btn-ghost'); btn.setAttribute('aria-pressed', String(!!cs.owedOnly)); refresh(); } },
+                    'Nur offen');
+                const out = [btn];
+                // CSV bulk import (editor+): opens a dialog to download an example
+                // file or pick a CSV. Round-trips the "Personen" export.
+                if (canManage()) {
+                    out.push(el('button', { class: 'btn btn-ghost btn-sm', type: 'button',
+                        title: 'Personen aus CSV importieren', onclick: () => importPersonsDialog() }, icon('upload'), ' Import'));
+                }
+                return out;
+            },
+            extraFilter: (p, cs) => !cs.owedOnly || (Number(oweMap[p.id]) || 0) > 0.005,
             sorts: [
                 { label: 'Name A–Z', cmp: (a, b) => personName(a).localeCompare(personName(b)) },
                 { label: 'Name Z–A', cmp: (a, b) => personName(b).localeCompare(personName(a)) },
@@ -983,9 +1076,11 @@
                             el('h3', {}, personName(p), ' ', p.has_flat_rate ? el('span', { class: 'badge badge-active', title: 'Pauschale' }, 'Pauschale') : null),
                             el('div', { class: 'card-meta' }, [p.email, p.phone].filter(Boolean).join(' · ') || 'keine Kontaktdaten')),
                         el('div', { class: 'row-side' },
-                            known ? el('div', { class: 'pcard__status' }, owes
-                                ? el('span', { class: 'pcard__owe', title: 'Offener Saldo' }, eur(bal))
-                                : el('span', { class: 'pcard__paid', title: 'Keine offenen Beträge' }, 'Bezahlt')) : null,
+                            known ? el('div', { class: 'pcard__status' },
+                                owes
+                                    ? el('span', { class: 'pcard__owe', title: 'Offener Saldo' }, eur(bal))
+                                    : el('span', { class: 'pcard__paid', title: 'Keine offenen Beträge' }, 'Bezahlt'),
+                                overdueByPerson[p.id] ? el('span', { class: 'badge', style: 'background:var(--danger);color:#fff;margin-top:.25rem', title: 'Überfällige Rechnung' }, overdueByPerson[p.id] + ' Tg. überfällig') : null) : null,
                             el('div', { class: 'card-actions' },
                                 el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': personName(p) + ' öffnen', onclick: () => navigate('persons/' + p.id) }, '›'),
                                 canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' bearbeiten', 'aria-label': personName(p) + ' bearbeiten', onclick: () => personForm(p) }, icon('edit')),
@@ -1018,6 +1113,138 @@
             () => api.del('/persons/' + p.id), () => render(), node);
     }
 
+    // Import dialog: offer an example-file download or pick a CSV to import.
+    async function importPersonsDialog() {
+        const csvIn = el('input', { type: 'file', accept: '.csv,text/csv', style: 'display:none' });
+        csvIn.addEventListener('change', async () => {
+            const f = csvIn.files[0];
+            csvIn.value = '';
+            if (!f) return;
+            const fd = new FormData();
+            fd.append('file', f);
+            let res;
+            try {
+                res = await api.upload('/import/persons', fd);
+            } catch (e) {
+                toast('Import fehlgeschlagen: ' + (e.message || e), 'error');
+                return;
+            }
+            // Report the result first, then close — a close/render hiccup must not
+            // be surfaced as an import failure.
+            const parts = [res.imported + ' importiert'];
+            if (res.skipped) parts.push(res.skipped + ' übersprungen');
+            if (res.failed) parts.push(res.failed + ' fehlerhaft');
+            toast(parts.join(' · '), res.failed ? 'error' : 'success');
+            $('#modal-cancel').click();
+            render();
+        });
+        await formModal({
+            title: 'Personen importieren',
+            submitLabel: 'Schließen',
+            fields: [],
+            onRender: (body) => {
+                body.append(el('p', { class: 'muted', style: 'margin-top:0;font-size:.85rem' },
+                    'CSV mit den Spalten vorname, nachname, email, telefon, adresse (optional notiz). Trennzeichen ; oder , — erste Zeile ist die Kopfzeile. Doppelte E-Mails und ungültige Zeilen werden übersprungen.'));
+                body.append(el('div', { class: 'btn-row', style: 'gap:.5rem;flex-wrap:wrap;margin-top:.3rem' },
+                    el('a', { class: 'btn btn-ghost btn-sm', href: '/api/import/persons/template', download: 'parkrr-personen-vorlage.csv' }, icon('download', 14), ' Beispiel-Datei'),
+                    el('button', { type: 'button', class: 'btn btn-primary btn-sm', onclick: () => csvIn.click() }, icon('upload', 14), ' Datei wählen …'),
+                    csvIn));
+            },
+            save: null,
+        });
+    }
+
+    // Absolute, copy-paste-able URL: the backend returns an absolute link when
+    // PARKRR_PUBLIC_BASE_URL is set, otherwise a relative "/#/portal/…" that we
+    // resolve against the current origin so it can be shared as-is.
+    const absLink = (link) => (link && link.startsWith('/')) ? location.origin + link : link;
+
+    // Self-service access management for a person: create links (chosen duration,
+    // optional e-mail), list all links with usage stats, revoke them singly or all.
+    async function portalLinkFor(personId) {
+        await formModal({
+            title: 'Self-Service-Zugänge',
+            submitLabel: 'Schließen',
+            fields: [],
+            onRender: async (body) => {
+                // ---- create a new link ----
+                const create = el('div', { class: 'card', style: 'padding:.75rem;margin-bottom:.6rem' },
+                    el('div', { class: 'sec-eyebrow', style: 'margin-bottom:.4rem' }, 'Neuen Zugang erstellen'));
+                const dur = el('select', { style: 'font:inherit;padding:.3rem .5rem' },
+                    ...[[7, '7 Tage'], [30, '30 Tage'], [90, '90 Tage'], [180, '180 Tage'], [365, '1 Jahr']].map(([v, l]) => {
+                        const o = el('option', { value: String(v) }, l); if (v === 30) o.selected = true; return o;
+                    }));
+                const ctl = el('div', { class: 'btn-row', style: 'gap:.6rem;flex-wrap:wrap;align-items:center' },
+                    el('label', { style: 'font-size:.85rem' }, 'Gültigkeit ', dur));
+                let sendChk = null;
+                if (state.capabilities.mail) {
+                    sendChk = el('input', { type: 'checkbox' });
+                    ctl.append(el('label', { style: 'font-size:.85rem;display:inline-flex;align-items:center;gap:.3rem' }, sendChk, 'per E-Mail'));
+                }
+                const createBtn = el('button', { type: 'button', class: 'btn btn-primary btn-sm' }, '+ Link erzeugen');
+                ctl.append(createBtn);
+                const fresh = el('div', { style: 'margin-top:.5rem' });
+                create.append(ctl, fresh);
+                body.append(create);
+
+                // ---- existing links ----
+                body.append(el('div', { class: 'sec-eyebrow', style: 'margin:.2rem 0 .3rem' }, 'Bestehende Zugänge'));
+                const listWrap = el('div');
+                body.append(listWrap,
+                    el('p', { class: 'muted', style: 'font-size:.78rem;margin-top:.5rem' },
+                        'Der Link ist aus Sicherheitsgründen nur einmal beim Erstellen sichtbar. Bestehende Zugänge lassen sich einsehen und widerrufen.'));
+
+                async function refresh() {
+                    listWrap.innerHTML = '';
+                    let links = [];
+                    try { links = (await api.get('/persons/' + personId + '/portal-links')) || []; }
+                    catch (e) { listWrap.append(el('p', { class: 'muted' }, 'Konnte nicht geladen werden.')); return; }
+                    if (!links.length) { listWrap.append(el('p', { class: 'muted', style: 'font-size:.85rem' }, 'Noch keine Zugänge.')); return; }
+                    links.forEach((l) => listWrap.append(portalLinkRow(l, refresh)));
+                    if (links.filter((l) => l.status === 'aktiv').length > 1) {
+                        listWrap.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm', style: 'margin-top:.4rem',
+                            onclick: async () => { if (!await confirmDialog('Alle Zugänge widerrufen?', 'Alle aktiven Self-Service-Links dieser Person werden ungültig.', 'Widerrufen')) return; try { await api.post('/persons/' + personId + '/portal-link/revoke', {}); toast('Alle widerrufen', 'success'); refresh(); } catch (e) { toast(e.message, 'error'); } } }, 'Alle widerrufen'));
+                    }
+                }
+
+                createBtn.onclick = async () => {
+                    createBtn.disabled = true;
+                    try {
+                        const send = !!(sendChk && sendChk.checked);
+                        const r = await api.post('/persons/' + personId + '/portal-link', { days: Number(dur.value), send });
+                        const url = absLink(r.link);
+                        fresh.innerHTML = '';
+                        const inp = el('input', { type: 'text', readonly: 'readonly', value: url, style: 'width:100%;font-size:.8rem', onclick: (e) => e.currentTarget.select() });
+                        fresh.append(el('label', { style: 'font-size:.8rem' }, 'Neuer Link (nur jetzt sichtbar)'), inp,
+                            el('button', { type: 'button', class: 'btn btn-ghost btn-sm', style: 'margin-top:.35rem',
+                                onclick: async () => { try { await navigator.clipboard.writeText(url); toast('Link kopiert', 'success'); } catch (_) { inp.select(); toast('Bitte manuell kopieren', 'error'); } } }, 'Kopieren'));
+                        if (send) toast(r.emailed ? 'Link erstellt & per E-Mail gesendet' : (r.has_email ? 'Link erstellt · E-Mail nicht gesendet (Basis-URL fehlt?)' : 'Link erstellt · kein E-Mail-Kontakt'), r.emailed ? 'success' : 'error');
+                        else toast('Link erstellt', 'success');
+                        refresh();
+                    } catch (e) { toast(e.message || 'Fehler', 'error'); }
+                    finally { createBtn.disabled = false; }
+                };
+
+                await refresh();
+            },
+            save: null,
+        });
+    }
+
+    function portalLinkRow(l, refresh) {
+        const created = new Date(l.created_at).toLocaleDateString('de-DE');
+        const exp = new Date(l.expires_at).toLocaleDateString('de-DE');
+        const used = l.last_used_at ? ('zuletzt ' + fmtDateTime(l.last_used_at)) : 'nie genutzt';
+        const badge = el('span', { class: 'badge' + (l.status === 'aktiv' ? ' badge-active' : ''),
+            style: l.status === 'aktiv' ? '' : 'background:var(--muted);color:#fff' }, l.status);
+        return el('div', { class: 'pay-row card' },
+            el('div', { class: 'pay-main' },
+                el('div', { class: 'pay-method' }, 'gültig bis ' + exp, ' ', badge),
+                el('div', { class: 'pay-date' }, 'erstellt ' + created + ' · ' + used + (l.created_by ? ' · ' + esc(l.created_by) : ''))),
+            (l.status === 'aktiv') ? el('button', { class: 'btn btn-ghost btn-sm', title: 'Widerrufen', 'aria-label': 'Zugang widerrufen',
+                onclick: async () => { if (!await confirmDialog('Zugang widerrufen?', 'Dieser Link wird sofort ungültig.', 'Widerrufen')) return; try { await api.post('/portal-links/' + l.id + '/revoke', {}); toast('Widerrufen', 'success'); refresh(); } catch (e) { toast(e.message, 'error'); } } }, 'Widerrufen') : null);
+    }
+
     // ---------- PERSON DETAIL ----------
     routes.person = async (page, id) => {
         await refreshLookups();
@@ -1046,7 +1273,8 @@
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' },
             el('button', { class: 'back-btn', onclick: () => navigate('persons'), 'aria-label': 'Zurück' }, '‹'),
-            el('h2', { style: 'margin:0' }, stats.person_name || 'Person')));
+            el('h2', { style: 'margin:0;flex:1' }, stats.person_name || 'Person'),
+            canManage() ? el('button', { class: 'btn btn-ghost btn-sm', title: 'Read-only Kundenzugang (Magic-Link)', onclick: () => portalLinkFor(id) }, icon('mail', 15), ' Self-Service') : null));
 
         // Balance card: lead with the one number the user came for (the open
         // balance) as a hero, then the derivation as a quiet breakdown.
@@ -1400,6 +1628,14 @@
             location.hash = '#/invoices/' + st.id;
         } catch (e) { toast(e.message, 'error'); }
     }
+    async function remindInvoice(iv) {
+        if (!await confirmDialog('Zahlungserinnerung senden?',
+            'Sendet eine E-Mail mit den offenen Rechnungsdaten an den hinterlegten Kontakt der Person.', 'Senden')) return;
+        try {
+            const r = await api.post('/invoices/' + iv.id + '/remind', {});
+            toast('Erinnerung gesendet' + (r && r.to ? ' an ' + r.to : ''), 'success');
+        } catch (e) { toast(e.message || 'Senden fehlgeschlagen', 'error'); }
+    }
     async function createInvoiceFor(personId, btn) {
         if (!await confirmDialog('Rechnung erstellen?', 'Erstellt eine fortlaufend nummerierte Rechnung aus allen offenen Einzelposten (Gefährte + Einmal-Zusatzkosten). Rechnungen sind unveränderlich.', 'Erstellen')) return;
         const o = btn.textContent; btn.disabled = true; btn.textContent = 'Erstelle …';
@@ -1469,11 +1705,26 @@
             el('h2', { style: 'margin:0;flex:1' }, 'Rechnung ' + esc(iv.number), ' ', invStatusBadge(iv)),
             (canBill() && (iv.status === 'offen' || iv.status === 'teilbezahlt')) ? el('button', { class: 'btn btn-primary btn-sm', onclick: () => payInvoiceFor(iv) }, 'Bezahlen') : null,
             (canBill() && !iv.canceled && iv.status !== 'storno') ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => stornoInvoice(iv) }, 'Storno') : null,
-            el('button', { class: 'btn btn-ghost btn-sm', onclick: () => window.print() }, icon('receipt', 15), ' Drucken / PDF')));
+            // Payment reminder by e-mail — only when the invoice is still open and
+            // SMTP is configured (capability flag), so the button never dead-ends.
+            (canBill() && (iv.status === 'offen' || iv.status === 'teilbezahlt') && state.capabilities.mail)
+                ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => remindInvoice(iv) }, icon('mail', 15), ' Erinnerung') : null,
+            // Server-rendered A4 PDF (authoritative deliverable). A plain GET anchor
+            // carries the session cookie and opens the document inline.
+            el('a', { class: 'btn btn-ghost btn-sm', href: '/api/invoices/' + id + '/pdf', target: '_blank', rel: 'noopener' }, icon('receipt', 15), ' PDF'),
+            el('button', { class: 'btn btn-ghost btn-sm', onclick: () => window.print() }, 'Drucken')));
         if (iv.status === 'teilbezahlt' || iv.status === 'bezahlt') {
             page.append(el('div', { class: 'card-meta no-print', style: 'margin:-.3rem 0 .4rem' }, 'Bezahlt ' + eur(iv.paid_amount) + ' von ' + eur(iv.total) + (iv.open_amount > 0.005 ? ' · offen ' + eur(iv.open_amount) : '')));
         }
         page.append(invoiceDocument(iv));
+        // SEPA pay-QR (Girocode) for open invoices whose seller has an IBAN. Hidden
+        // in print — the PDF carries its own QR.
+        if ((iv.status === 'offen' || iv.status === 'teilbezahlt') && iv.seller && iv.seller.iban) {
+            page.append(el('div', { class: 'card no-print', style: 'text-align:center' },
+                el('h3', { style: 'margin-top:0' }, 'Bezahlen (SEPA-QR)'),
+                el('img', { src: '/api/invoices/' + iv.id + '/pay-qr', alt: 'SEPA-Zahlungs-QR', width: 200, height: 200, style: 'max-width:200px;height:auto' }),
+                el('p', { class: 'muted', style: 'font-size:.82rem;margin-bottom:0' }, 'Mit der Banking-App scannen — Betrag und Zahlungsreferenz sind vorausgefüllt.')));
+        }
     };
 
     // ---------- Rechnungs-Einstellungen (admin) ----------
@@ -2446,8 +2697,9 @@
     // ---------- VEHICLE DETAIL ----------
     routes.vehicle = async (page, id) => {
         await refreshLookups();
-        const [vehicles, photos, history] = await Promise.all([
+        const [vehicles, photos, history, handovers] = await Promise.all([
             api.get('/vehicles'), api.get('/vehicles/' + id + '/photos'), api.get('/vehicles/' + id + '/history'),
+            api.get('/vehicles/' + id + '/handovers').catch(() => null),
         ]);
         const v = vehicles.find((x) => x.id === id);
         if (!v) { page.innerHTML = ''; page.append(emptyState('car', 'Gefährt nicht gefunden.')); return; }
@@ -2465,7 +2717,9 @@
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' },
             el('button', { class: 'back-btn', onclick: () => navigate('vehicles'), 'aria-label': 'Zurück' }, '‹'),
-            el('h2', { style: 'margin:0;flex:1' }, esc(vehicleTitle(v))), statusBadge(v.status)));
+            el('h2', { style: 'margin:0;flex:1' }, esc(vehicleTitle(v))),
+            el('a', { class: 'btn btn-ghost btn-sm', href: '/api/vehicles/' + v.id + '/label', target: '_blank', rel: 'noopener', title: 'Druck-Label mit QR-Code' }, '🖶 Label'),
+            statusBadge(v.status)));
 
         page.append(el('div', { class: 'card' },
             el('div', { class: 'balance' }, el('span', {}, 'Person'), el('span', {}, el('a', { href: '#/persons/' + v.person_id }, esc(v.person_name)))),
@@ -2547,6 +2801,32 @@
         }
         page.append(photoCard);
 
+        // Übergabeprotokolle (Zustand + Unterschrift bei Ein-/Auslagerung)
+        const hoCard = el('div', { class: 'card' });
+        const hoHead = el('div', { class: 'page-head' }, el('h3', {}, 'Übergabeprotokolle'));
+        if (canManage()) hoHead.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => handoverForm(id) }, '+ Protokoll'));
+        hoCard.append(hoHead);
+        if (handovers === null) hoCard.append(el('p', { class: 'muted' }, 'Protokolle konnten nicht geladen werden.'));
+        else if (!handovers.length) hoCard.append(el('p', { class: 'muted' }, 'Noch keine Protokolle.'));
+        else {
+            handovers.forEach((ho) => {
+                const dirLbl = ho.direction === 'auslagerung' ? 'Auslagerung' : 'Einlagerung';
+                const row = el('div', { class: 'pay-row card' },
+                    el('div', { class: 'pay-main' },
+                        el('div', { class: 'pay-method' }, dirLbl,
+                            ho.has_signature ? el('span', { class: 'badge badge-active', style: 'margin-left:.4rem' }, 'signiert') : null),
+                        el('div', { class: 'pay-date' }, fmtDateTime(ho.created_at)
+                            + (ho.signer_name ? ' · ' + esc(ho.signer_name) : '')
+                            + (ho.created_by ? ' · ' + esc(ho.created_by) : ''))),
+                    el('div', { class: 'card-actions' },
+                        el('a', { class: 'btn btn-ghost btn-sm', href: '/api/handovers/' + ho.id + '/pdf', target: '_blank', rel: 'noopener' }, icon('receipt', 14), ' PDF'),
+                        canManage() ? el('button', { class: 'btn btn-ghost btn-sm', title: 'Protokoll löschen', 'aria-label': 'Protokoll löschen', onclick: (e) => delHandover(ho, e.currentTarget.closest('.pay-row')) }, icon('trash', 14)) : null));
+                if (ho.notes) row.querySelector('.pay-main').append(el('div', { class: 'inv-bills' }, esc(ho.notes)));
+                hoCard.append(row);
+            });
+        }
+        page.append(hoCard);
+
         // history timeline
         if (history.length) {
             const hc = el('div', { class: 'card' }, el('h3', {}, 'Verlauf'));
@@ -2591,6 +2871,54 @@
     }
     function delPhoto(p, node) {
         deleteWithUndo('Foto löschen?', 'Das Foto wird entfernt.', () => api.del('/photos/' + p.id), () => render(), node);
+    }
+    async function delHandover(ho, node) {
+        if (!await confirmDialog('Protokoll löschen?', 'Das Übergabeprotokoll wird dauerhaft entfernt.', 'Löschen')) return;
+        try { await api.del('/handovers/' + ho.id); if (node) node.remove(); toast('Protokoll gelöscht', 'success'); }
+        catch (e) { toast(e.message || 'Löschen fehlgeschlagen', 'error'); }
+    }
+    // Übergabeprotokoll form: direction + condition notes + signer + a drawn signature.
+    async function handoverForm(vehicleId) {
+        let sigData = () => '';
+        await formModal({
+            title: 'Übergabeprotokoll',
+            submitLabel: 'Speichern',
+            fields: [
+                { name: 'direction', label: 'Art', type: 'select', value: 'einlagerung',
+                    options: [{ value: 'einlagerung', label: 'Einlagerung (Übernahme)' }, { value: 'auslagerung', label: 'Auslagerung (Rückgabe)' }] },
+                { name: 'notes', label: 'Zustand / Anmerkungen', type: 'textarea', placeholder: 'z. B. Kratzer vorne links, Tank halb voll …' },
+                { name: 'signer_name', label: 'Name (Unterschrift)', type: 'text', placeholder: 'Name der unterschreibenden Person' },
+            ],
+            onRender: (body) => {
+                segmentedField(body, 'direction', [{ v: 'einlagerung', l: 'Einlagerung' }, { v: 'auslagerung', l: 'Auslagerung' }]);
+                const wrap = el('div', { class: 'field' }, el('label', {}, 'Unterschrift'));
+                const canvas = el('canvas', { width: 500, height: 180,
+                    style: 'width:100%;height:180px;touch-action:none;border:1px solid var(--border);border-radius:8px;background:#fff;display:block' });
+                const ctx = canvas.getContext('2d');
+                ctx.lineWidth = 2.4; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111';
+                let drawing = false, dirty = false, lx = 0, ly = 0;
+                const at = (e) => { const r = canvas.getBoundingClientRect(); return { x: (e.clientX - r.left) * (canvas.width / r.width), y: (e.clientY - r.top) * (canvas.height / r.height) }; };
+                canvas.addEventListener('pointerdown', (e) => { drawing = true; dirty = true; const p = at(e); lx = p.x; ly = p.y; try { canvas.setPointerCapture(e.pointerId); } catch (_) {} });
+                canvas.addEventListener('pointermove', (e) => { if (!drawing) return; const p = at(e); ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(p.x, p.y); ctx.stroke(); lx = p.x; ly = p.y; });
+                const stop = () => { drawing = false; };
+                canvas.addEventListener('pointerup', stop);
+                canvas.addEventListener('pointercancel', stop);
+                // No pointerleave: pointer capture keeps the stroke going outside the
+                // canvas until the pointer is released/cancelled.
+                const clearBtn = el('button', { type: 'button', class: 'btn btn-ghost btn-sm', style: 'margin-top:.4rem',
+                    onclick: () => { ctx.clearRect(0, 0, canvas.width, canvas.height); dirty = false; } }, 'Unterschrift löschen');
+                wrap.append(canvas, clearBtn);
+                body.append(wrap);
+                sigData = () => (dirty ? canvas.toDataURL('image/png') : '');
+            },
+            save: async (d) => {
+                await api.post('/vehicles/' + vehicleId + '/handovers', {
+                    direction: d.direction, notes: d.notes || '', signer_name: d.signer_name || '', signature: sigData(),
+                });
+                toast('Protokoll gespeichert', 'success');
+                render();
+            },
+        });
     }
     function lightbox(photoId) {
         const dlg = el('dialog', { class: 'lightbox' }, el('img', { src: '/api/photos/' + photoId, alt: '' }));
@@ -3568,12 +3896,16 @@
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' }, el('button', { class: 'back-btn', onclick: () => navigate('dashboard') }, '‹'), el('h2', { style: 'margin:0' }, 'Audit-Log')));
 
-        const q = { text: '', action: '', entity: '', offset: 0, limit: 50 };
+        const q = { text: '', action: '', entity: '', from: '', to: '', offset: 0, limit: 50 };
         const search = el('input', { type: 'search', placeholder: 'Suchen (Benutzer, Beschreibung)…', 'aria-label': 'Audit-Log durchsuchen' });
         const optionList = (map, allLabel) => [el('option', { value: '' }, allLabel), ...Object.entries(map).map(([v, l]) => el('option', { value: v }, l))];
         const actSel = el('select', { 'aria-label': 'Aktion filtern' }, ...optionList(AUDIT_ACTIONS, 'Alle Aktionen'));
         const entSel = el('select', { 'aria-label': 'Objekt filtern' }, ...optionList(AUDIT_ENTITIES, 'Alle Objekte'));
-        page.append(el('div', { class: 'card audit-filters' }, search, el('div', { class: 'audit-filter-row' }, actSel, entSel)));
+        const fromIn = el('input', { type: 'date', 'aria-label': 'Von-Datum', title: 'Von' });
+        const toIn = el('input', { type: 'date', 'aria-label': 'Bis-Datum', title: 'Bis' });
+        page.append(el('div', { class: 'card audit-filters' }, search,
+            el('div', { class: 'audit-filter-row' }, actSel, entSel),
+            el('div', { class: 'audit-filter-row' }, fromIn, toIn)));
 
         const ul = el('ul', { class: 'timeline' });
         page.append(el('div', { class: 'card' }, ul));
@@ -3587,6 +3919,8 @@
             if (q.text) p.set('q', q.text);
             if (q.action) p.set('action', q.action);
             if (q.entity) p.set('entity', q.entity);
+            if (q.from) p.set('from', q.from);
+            if (q.to) p.set('to', q.to);
             let entries = [];
             try { entries = await api.get('/audit?' + p.toString()); } catch { /* ignore */ }
             for (const a of entries) ul.append(auditItem(a));
@@ -3598,6 +3932,8 @@
         search.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => { q.text = search.value.trim(); load(true); }, 300); });
         actSel.addEventListener('change', () => { q.action = actSel.value; load(true); });
         entSel.addEventListener('change', () => { q.entity = entSel.value; load(true); });
+        fromIn.addEventListener('change', () => { q.from = fromIn.value; load(true); });
+        toIn.addEventListener('change', () => { q.to = toIn.value; load(true); });
         load(true);
     };
 
@@ -5363,9 +5699,111 @@
         document.head.appendChild(link);
     }
 
+    // Global command palette (⌘K / search button): fuzzy jump to a person or
+    // Gefährt. Works over the loaded lists (small dataset) — no backend needed.
+    async function openCommandPalette() {
+        if (!state.user || document.getElementById('cmdk')) return;
+        const overlay = el('div', { id: 'cmdk', class: 'cmdk' });
+        const input = el('input', { class: 'cmdk-input', type: 'search', placeholder: 'Person, Gefährt, Kennzeichen …', autocomplete: 'off', 'aria-label': 'Suche' });
+        const results = el('div', { class: 'cmdk-results' });
+        overlay.append(el('div', { class: 'cmdk-box' }, input, results));
+        document.body.append(overlay);
+        input.focus();
+
+        let items = [], sel = 0;
+        const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey, true); };
+        overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+
+        let persons = state.persons || [], vehicles = [];
+        try { [persons, vehicles] = await Promise.all([persons.length ? Promise.resolve(persons) : api.get('/persons'), api.get('/vehicles')]); }
+        catch (e) { /* search what we already have */ }
+
+        const build = () => {
+            const q = norm(input.value.trim());
+            items = [];
+            if (q) {
+                persons.forEach((p) => { if (norm(personName(p) + ' ' + (p.email || '') + ' ' + (p.phone || '')).includes(q)) items.push({ type: 'Person', label: personName(p), sub: [p.email, p.phone].filter(Boolean).join(' · '), nav: 'persons/' + p.id }); });
+                vehicles.forEach((v) => { if (norm(vehicleTitle(v) + ' ' + (v.license_plate || '') + ' ' + (v.person_name || '') + ' ' + (v.category_name || '')).includes(q)) items.push({ type: 'Gefährt', label: vehicleTitle(v), sub: [v.license_plate, v.person_name].filter(Boolean).join(' · '), nav: 'vehicles/' + v.id }); });
+            }
+            items = items.slice(0, 12);
+            if (sel >= items.length) sel = Math.max(0, items.length - 1);
+            results.innerHTML = '';
+            if (!q) { results.append(el('div', { class: 'cmdk-hint' }, '↑↓ wählen · Enter öffnen · Esc schließen')); return; }
+            if (!items.length) { results.append(el('div', { class: 'cmdk-hint' }, 'Keine Treffer.')); return; }
+            items.forEach((it, i) => results.append(el('div', { class: 'cmdk-row' + (i === sel ? ' on' : ''), onclick: () => { close(); navigate(it.nav); } },
+                el('span', { class: 'cmdk-type' }, it.type),
+                el('span', { class: 'cmdk-lbl' }, it.label),
+                it.sub ? el('span', { class: 'cmdk-sub' }, it.sub) : null)));
+        };
+        const onKey = (e) => {
+            if (e.key === 'Escape') { e.preventDefault(); close(); }
+            else if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(items.length - 1, sel + 1); build(); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(0, sel - 1); build(); }
+            else if (e.key === 'Enter') { e.preventDefault(); if (items[sel]) { close(); navigate(items[sel].nav); } }
+        };
+        document.addEventListener('keydown', onKey, true);
+        input.addEventListener('input', () => { sel = 0; build(); });
+        build();
+    }
+
+    // Public self-service portal (no login): rendered when the hash is
+    // #/portal/<token>. Read-only view of one person's vehicles + invoices.
+    async function renderPortal(token) {
+        const lv = $('#login-view'); if (lv) lv.hidden = true;
+        const av = $('#app-view'); if (av) av.hidden = true;
+        const pv = $('#portal-view');
+        pv.hidden = false;
+        pv.innerHTML = '';
+        pv.append(skeleton(4));
+        let sum;
+        try { sum = await api.get('/portal/' + token + '/summary'); }
+        catch (e) {
+            pv.innerHTML = '';
+            pv.append(el('div', { class: 'portal-wrap' }, el('div', { class: 'portal-card' },
+                el('h1', {}, 'Parkrr'),
+                el('p', { class: 'muted' }, 'Dieser Link ist ungültig oder abgelaufen. Bitte fordern Sie einen neuen an.'))));
+            return;
+        }
+        pv.innerHTML = '';
+        const wrap = el('div', { class: 'portal-wrap' });
+        wrap.append(el('div', { class: 'portal-head' },
+            el('span', { class: 'brand-veh', 'data-veh': '34', 'aria-hidden': 'true' }),
+            el('div', {}, el('h1', {}, 'Parkrr'), el('p', { class: 'muted' }, esc(sum.person_name)))));
+        wrap.append(el('div', { class: 'portal-card' },
+            el('div', { class: 'muted' }, 'Offener Betrag'),
+            el('div', { class: 'portal-amt' + (sum.open_total > 0.005 ? ' owe' : '') }, eur(sum.open_total))));
+        const vcard = el('div', { class: 'portal-card' }, el('h2', {}, 'Ihre Gefährte'));
+        if (!sum.vehicles.length) vcard.append(el('p', { class: 'muted' }, 'Keine aktiven Gefährte.'));
+        else sum.vehicles.forEach((v) => vcard.append(el('div', { class: 'portal-row' },
+            el('span', {}, esc(v.label)), el('span', { class: 'badge' }, STATUS_LABEL[v.status] || v.status))));
+        wrap.append(vcard);
+        const icard = el('div', { class: 'portal-card' }, el('h2', {}, 'Rechnungen'));
+        if (!sum.invoices.length) icard.append(el('p', { class: 'muted' }, 'Keine Rechnungen.'));
+        else sum.invoices.forEach((iv) => {
+            icard.append(
+                el('a', { class: 'portal-row link', href: '/api/portal/' + token + '/invoices/' + iv.id + '/pdf', target: '_blank', rel: 'noopener' },
+                    el('span', {}, 'Rechnung ' + esc(iv.number),
+                        el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, new Date(iv.issued_on).toLocaleDateString('de-DE') + (iv.status ? ' · ' + esc(iv.status) : ''))),
+                    el('span', { style: 'text-align:right' }, eur(iv.total),
+                        iv.open > 0.005 ? el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, 'offen ' + eur(iv.open)) : null)));
+            // Scan-to-pay QR for each still-open invoice.
+            if (iv.open > 0.005) {
+                icard.append(el('div', { style: 'text-align:center;padding:.4rem 0 .2rem' },
+                    el('img', { src: '/api/portal/' + token + '/invoices/' + iv.id + '/pay-qr', alt: 'SEPA-Zahlungs-QR', width: 150, height: 150, style: 'max-width:150px;height:auto' }),
+                    el('div', { class: 'muted', style: 'font-size:.72rem' }, 'Scan zum Bezahlen (SEPA)')));
+            }
+        });
+        wrap.append(icard);
+        wrap.append(el('p', { class: 'portal-foot muted' }, 'Read-only Ansicht · Parkrr'));
+        pv.append(wrap);
+    }
+
     async function init() {
         initTheme();
         applyBrand();
+        // Public portal short-circuits the whole app shell / auth flow.
+        const pm = (location.hash || '').match(/^#\/portal\/([A-Za-z0-9_-]+)$/);
+        if (pm) { await renderPortal(pm[1]); return; }
         bindStatic();
         setupInstallPrompt();
         setupOfflineIndicator();
@@ -5373,6 +5811,10 @@
         try { state.user = await api.get('/auth/me'); showApp(); }
         catch { showLogin(); }
         if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+        const sb = $('#search-btn'); if (sb) sb.addEventListener('click', () => openCommandPalette());
+        document.addEventListener('keydown', (e) => {
+            if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K') && state.user) { e.preventDefault(); openCommandPalette(); }
+        });
     }
     document.addEventListener('DOMContentLoaded', init);
 })();
