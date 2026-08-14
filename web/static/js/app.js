@@ -4998,7 +4998,14 @@
                 if (P.dirty) scheduleSave();
                 else if (heldInvalid && !silent) toast(heldInvalid + (heldInvalid === 1 ? ' Fahrzeug ungültig platziert — nicht gespeichert' : ' Fahrzeuge ungültig platziert — nicht gespeichert'), 'warn');
                 else if (!silent) toast('Grundriss gespeichert', 'ok');
-            } catch (err) { if (!silent) toast(err.message || 'Speichern fehlgeschlagen', 'error'); P.dirty = true; renderToolbar(); scheduleSave(); }
+            } catch (err) {
+                // A 400 means the geometry is rejected as-is (almost always: too large — a
+                // heavy Bauplan underlay). Retrying can't help, so surface it even on the
+                // silent auto-save path and DON'T reschedule an endless failing loop.
+                if (err.status === 400) { toast('Grundriss zu groß zum Speichern — Bauplan verkleinern/entfernen', 'error'); P.dirty = true; renderToolbar(); return; }
+                if (!silent) toast(err.message || 'Speichern fehlgeschlagen', 'error');
+                P.dirty = true; renderToolbar(); scheduleSave();
+            }
         }
         async function dupHall() {
             try { const hl = await api.post('/garages/' + P.garageId + '/halls', { name: P.hallName + ' (Kopie)', geometry: currentGeometry() }); toast('Halle dupliziert', 'ok'); navigate('hall/' + hl.id); }
