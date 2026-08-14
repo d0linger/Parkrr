@@ -4545,6 +4545,24 @@
         // Transparent capture layer for interactive wall drawing / node editing (plan mode).
         const drawOverlay = el('div', { class: 'gp-drawoverlay' }); drawOverlay.style.display = 'none'; planEl.append(drawOverlay);
         let nodeDrag = null;
+        // Inline quick-edit popover for a selected wall segment: exact length + delete.
+        const wallLenIn = el('input', { type: 'number', step: '0.01', min: '0.1', class: 'gp-lenin' });
+        const wallPopDel = el('button', { class: 'gp-wallpop-del', title: 'Segment löschen', 'aria-label': 'Segment löschen' }, '🗑');
+        const wallPop = el('div', { class: 'gp-wallpop' }, wallLenIn, el('span', { class: 'muted' }, 'm'), wallPopDel);
+        wallPop.style.display = 'none'; planEl.append(wallPop);
+        wallPop.addEventListener('pointerdown', (e) => e.stopPropagation());
+        wallLenIn.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') wallLenIn.blur(); });
+        wallLenIn.addEventListener('change', () => { if (P.structSel && P.structSel.type === 'edge') { const L = parseFloat(wallLenIn.value); if (L > 0.05) setEdgeLength(P.structSel.idx, L); } });
+        wallPopDel.addEventListener('click', (e) => { e.stopPropagation(); deleteSel(); });
+        function positionWallPop() {
+            if (!(P.mode === 'plan' && P.structEdit && P.structSel && P.structSel.type === 'edge' && P.walls.edges[P.structSel.idx])) { wallPop.style.display = 'none'; return; }
+            const v = edgeVec(P.walls.edges[P.structSel.idx]), pw = P.Wm * P.CELL, ph = P.Hm * P.CELL;
+            const mx = (v.a.x + v.b.x) / 2 * P.CELL, my = (v.a.y + v.b.y) / 2 * P.CELL;
+            wallPop.style.left = Math.max(64, Math.min(pw - 64, mx)) + 'px';
+            wallPop.style.top = Math.max(30, Math.min(ph - 8, my - 26)) + 'px';
+            wallPop.style.display = 'flex';
+            if (document.activeElement !== wallLenIn) wallLenIn.value = v.len.toFixed(2);
+        }
         // Vertex context menu (shown on click, not permanently) — declutters the plan.
         const vertMenu = el('div', { class: 'gp-vertmenu' }); vertMenu.style.display = 'none'; planEl.append(vertMenu);
         function hideVertMenu() { vertMenu.style.display = 'none'; }
@@ -4714,7 +4732,7 @@
 
         // ---- CAD-standard navigation: Ctrl+wheel = zoom to cursor, middle-drag = pan ----
         function zoomAt(clientX, clientY, factor) {
-            const nz = Math.max(0.5, Math.min(4, +(P.zoom * factor).toFixed(3)));
+            const nz = Math.max(0.4, Math.min(8, +(P.zoom * factor).toFixed(3)));
             if (nz === P.zoom) return;
             const rB = planEl.getBoundingClientRect();
             const wx = (clientX - rB.left) / P.CELL, wy = (clientY - rB.top) / P.CELL; // world point under cursor
@@ -4741,6 +4759,7 @@
             const drawActive = P.mode === 'plan' && !P.calib && canManageNow && (!!P.tool || P.structEdit);
             drawOverlay.style.display = drawActive ? 'block' : 'none';
             drawOverlay.classList.toggle('edit', !P.tool);
+            positionWallPop();
             const used = P.spots.length;
             occN.textContent = used + ' Gefährte';
             const tot = polyArea(P.floor); let ve = 0; P.spots.forEach((b) => { ve += b.w * b.h; });
@@ -4975,6 +4994,43 @@
             else if (P.walls.nodes.length >= 2) { const bb = wallsBBox(); const pad = 0.1; P.floor = [[bb.minX - pad, bb.minY - pad], [bb.maxX + pad, bb.minY - pad], [bb.maxX + pad, bb.maxY + pad], [bb.minX - pad, bb.maxY + pad]]; }
         }
         function encNow() { const wb = wallBlocks(); return wb.length ? computeEnclosure(wb) : null; }
+        // Set an edge's exact length by moving its freer end along the drawing direction
+        // (the end with fewer connections stays put if the other is a shared junction).
+        function setEdgeLength(ei, L) {
+            const e = P.walls.edges[ei]; if (!e) return; const v = edgeVec(e); if (v.len < 1e-6 || !(L > 0.05)) return;
+            const deg = (n) => P.walls.edges.reduce((s, x) => s + (x.a === n || x.b === n ? 1 : 0), 0);
+            let mv, fx; if (deg(e.b) <= deg(e.a)) { mv = e.b; fx = e.a; } else { mv = e.a; fx = e.b; }
+            const f = P.walls.nodes[fx], m = P.walls.nodes[mv]; let dx = m.x - f.x, dy = m.y - f.y; const d = Math.hypot(dx, dy) || 1; dx /= d; dy /= d;
+            P.walls.nodes[mv] = { x: round2(f.x + dx * L), y: round2(f.y + dy * L) };
+            refreshFloorFromWalls(); pushUndo(); markDirty(); layout(); toast('Länge ' + L.toFixed(2).replace('.', ',') + ' m', 'ok');
+        }
+        // Infinite-canvas support: shift ALL geometry (walls/zones/spots/floor/plan) by dx,dy.
+        function shiftWorld(dx, dy) {
+            if (!dx && !dy) return;
+            P.walls.nodes.forEach((n) => { n.x = round2(n.x + dx); n.y = round2(n.y + dy); });
+            P.excl.forEach((e) => { e.x += dx; e.y += dy; });
+            P.spots.forEach((s) => { s.x += dx; s.y += dy; s._dirty = true; });
+            P.floor = P.floor.map(([x, y]) => [round2(x + dx), round2(y + dy)]);
+            if (P.plan) { P.plan.x += dx; P.plan.y += dy; }
+        }
+        // Grow the canvas by l/t/r/b metres while keeping the on-screen scale (CELL) and the
+        // content visually anchored (scroll compensation) → drawing past the edge feels infinite.
+        function expandCanvas(l, t, r, b) {
+            if (!(l || t || r || b)) return false;
+            const CELL0 = P.CELL, sl = planWrap.scrollLeft, st = planWrap.scrollTop;
+            if (l || t) shiftWorld(l, t);
+            P.Wm += l + r; P.Hm += t + b; _encKey = null;
+            layout();
+            if (P.CELL > 0 && Math.abs(P.CELL - CELL0) > 0.5) { P.zoom = Math.max(0.4, Math.min(8, P.zoom * CELL0 / P.CELL)); layout(); }
+            planWrap.scrollLeft = sl + l * P.CELL; planWrap.scrollTop = st + t * P.CELL;
+            return true;
+        }
+        function maybeExpand(p) {
+            const PAD = 1.2;
+            const l = p.x < PAD ? Math.ceil(PAD - p.x) : 0, t = p.y < PAD ? Math.ceil(PAD - p.y) : 0;
+            const r = p.x > P.Wm - PAD ? Math.ceil(p.x + PAD - P.Wm) : 0, b = p.y > P.Hm - PAD ? Math.ceil(p.y + PAD - P.Hm) : 0;
+            return (l || t || r || b) ? expandCanvas(l, t, r, b) : false;
+        }
 
         // ---- automatic Parkfläche: the area ENCLOSED by the drawn walls ----
         // Walls (+ openings) are the physical building boundary. We rasterise, flood-fill
@@ -5100,6 +5156,18 @@
         function drawWallPreview() {
             if (P.mode !== 'plan') return;
             const CELL = P.CELL;
+            // orthogonal snap guide-line (spans the canvas)
+            if (P.guide && (P.chain || nodeDrag)) {
+                if (P.guide.kind === 'h') svg.append(svgEl('line', { x1: 0, y1: P.guide.y * CELL, x2: P.Wm * CELL, y2: P.guide.y * CELL, class: 'gp-guide' }));
+                else svg.append(svgEl('line', { x1: P.guide.x * CELL, y1: 0, x2: P.guide.x * CELL, y2: P.Hm * CELL, class: 'gp-guide' }));
+            }
+            // dynamic distance readout: attach point → both ends of the existing wall
+            if (P.attach && P.chain) { const ed = P.walls.edges[P.attach.ei]; if (ed) { const v = edgeVec(ed);
+                const dA = P.attach.t * v.len, dB = (1 - P.attach.t) * v.len;
+                const lab = (nx, ny, txt) => { const tt = svgEl('text', { x: (nx + P.attach.x) / 2 * CELL, y: (ny + P.attach.y) / 2 * CELL - 4, 'text-anchor': 'middle', class: 'gp-distlab' }); tt.textContent = txt; svg.append(tt); };
+                if (dA > 0.05) lab(v.a.x, v.a.y, dA.toFixed(2).replace('.', ',') + ' m');
+                if (dB > 0.05) lab(v.b.x, v.b.y, dB.toFixed(2).replace('.', ',') + ' m');
+            } }
             if (P.chain && P.chain.length && P.preview && isWallKind(P.tool)) {
                 const last = P.walls.nodes[P.chain[P.chain.length - 1]];
                 if (last) {
@@ -5164,7 +5232,7 @@
             if (canManageNow && P.mode === 'manage') { const rb = tb('⟳ Drehen', 'Auswahl drehen', rotateSel); rb.disabled = !(P.sel && P.spots.find((s) => s._id === P.sel)); toolbar.append(rb); }
             toolbar.append(tb('−', 'Verkleinern', () => { P.zoom = Math.max(0.5, +(P.zoom - 0.15).toFixed(2)); layout(); }));
             toolbar.append(el('span', { class: 'gp-zoomlbl' }, Math.round((P.zoom || 1) * 100) + '%'));
-            toolbar.append(tb('+', 'Vergrößern', () => { P.zoom = Math.min(4, +(P.zoom + 0.15).toFixed(2)); layout(); }));
+            toolbar.append(tb('+', 'Vergrößern', () => { P.zoom = Math.min(8, +(P.zoom + 0.15).toFixed(2)); layout(); }));
             toolbar.append(tb('⤢ Passen', 'Einpassen', () => { P.zoom = 1; layout(); }));
             if (canManageNow && P.dirty) { const sv = tb('● Speichern', 'Jetzt speichern (Auto-Save aktiv)', () => doSaveGeom(), false, 'btn-primary'); toolbar.append(sv); }
         }
@@ -5646,19 +5714,28 @@
         });
 
         // ---- interactive wall drawing / node editing (overlay in plan mode) ----
-        function setTool(kind) { P.tool = kind || null; P.chain = null; P.openStart = null; P.preview = null; P.snapHint = null; if (P.tool) { P.structEdit = false; P.structSel = null; } draw(); }
-        function setStructEdit(on) { P.structEdit = !!on; if (P.structEdit) { P.tool = null; P.chain = null; P.openStart = null; } else { P.structSel = null; } draw(); }
+        function setTool(kind) { P.tool = kind || null; P.chain = null; P.openStart = null; P.preview = null; P.snapHint = null; P.guide = null; P.attach = null; if (P.tool) { P.structEdit = false; P.structSel = null; } draw(); }
+        function setStructEdit(on) { P.structEdit = !!on; if (P.structEdit) { P.tool = null; P.chain = null; P.openStart = null; } else { P.structSel = null; } P.guide = null; P.attach = null; draw(); }
         function evWorld(ev) { const r = planEl.getBoundingClientRect(); return { x: (ev.clientX - r.left) / P.CELL, y: (ev.clientY - r.top) / P.CELL }; }
-        // Snap a drawing point: existing node > point on an existing wall (Anbau) > grid(+ortho).
+        // Snap a drawing point: existing node > point on an existing wall (Anbau, records the
+        // attach split for the distance readout) > grid, with automatic orthogonal (H/V) snap
+        // to the chain's last point within an ~8px tolerance (or hard-locked via ⊾90°/Shift).
         function snapDraw(p, shift) {
-            const R = 12 / P.CELL; P.snapHint = null;
+            const R = 12 / P.CELL, tol = 8 / P.CELL; P.snapHint = null; P.guide = null; P.attach = null;
             const ni = nodeAt(p, R); if (ni >= 0) { const n = P.walls.nodes[ni]; P.snapHint = { x: n.x, y: n.y }; return { x: n.x, y: n.y, node: ni }; }
-            const e = edgeAt(p, R); if (e) { P.snapHint = { x: e.x, y: e.y }; return { x: e.x, y: e.y, edge: e.i, t: e.t }; }
+            const e = edgeAt(p, R); if (e) { P.snapHint = { x: e.x, y: e.y }; P.attach = { ei: e.i, t: e.t, x: e.x, y: e.y }; return { x: e.x, y: e.y, edge: e.i, t: e.t }; }
             let x = gsnap(p.x), y = gsnap(p.y);
-            if ((P.ortho || shift) && P.chain && P.chain.length) { const last = P.walls.nodes[P.chain[P.chain.length - 1]]; if (last) { if (Math.abs(x - last.x) < Math.abs(y - last.y)) x = last.x; else y = last.y; } }
+            if (P.chain && P.chain.length) {
+                const last = P.walls.nodes[P.chain[P.chain.length - 1]];
+                if (last) { const dX = Math.abs(x - last.x), dY = Math.abs(y - last.y), hard = P.ortho || shift;
+                    if (hard) { if (dX < dY) { x = last.x; P.guide = { kind: 'v', x }; } else { y = last.y; P.guide = { kind: 'h', y }; } }
+                    else if (dY <= tol && dY <= dX) { y = last.y; P.guide = { kind: 'h', y }; }
+                    else if (dX <= tol) { x = last.x; P.guide = { kind: 'v', x }; }
+                }
+            }
             return { x, y };
         }
-        function endChain(msg) { P.chain = null; P.preview = null; P.snapHint = null; pruneNodes(); refreshFloorFromWalls(); if (msg) toast(msg, 'ok'); layout(); }
+        function endChain(msg) { P.chain = null; P.preview = null; P.snapHint = null; P.guide = null; P.attach = null; pruneNodes(); refreshFloorFromWalls(); P.structEdit = true; if (msg) toast(msg, 'ok'); layout(); }
         function wallClick(sp) {
             let ni, changed = false;
             if (sp.node != null) ni = sp.node;
@@ -5699,15 +5776,20 @@
             editDown(ev, p);
         });
         drawOverlay.addEventListener('pointermove', (ev) => {
-            const p = evWorld(ev);
-            if (nodeDrag) { let x = gsnap(p.x), y = gsnap(p.y); const R = 12 / P.CELL; let bd = R;
+            let p = evWorld(ev);
+            if ((P.chain || nodeDrag) && maybeExpand(p)) p = evWorld(ev); // auto-expand canvas while drawing/dragging
+            if (nodeDrag) {
+                let x = gsnap(p.x), y = gsnap(p.y); const R = 12 / P.CELL, tol = 8 / P.CELL; P.guide = null; let bd = R;
                 for (let i = 0; i < P.walls.nodes.length; i++) { if (i === nodeDrag.ni) continue; const n = P.walls.nodes[i]; const d = Math.hypot(n.x - x, n.y - y); if (d < bd) { bd = d; x = n.x; y = n.y; } }
-                nodeDrag.moved = true; P.walls.nodes[nodeDrag.ni].x = round2(x); P.walls.nodes[nodeDrag.ni].y = round2(y); _encKey = null; drawFloor(); return; }
-            if (isWallKind(P.tool)) { P.preview = P.chain ? snapDraw(p, ev.shiftKey) : null; snapDraw(p, ev.shiftKey); drawFloor(); return; }
+                // ortho-align to connected neighbours (+guide)
+                P.walls.edges.forEach((e) => { const j = e.a === nodeDrag.ni ? e.b : (e.b === nodeDrag.ni ? e.a : -1); if (j < 0) return; const n = P.walls.nodes[j]; if (Math.abs(x - n.x) <= tol) { x = n.x; P.guide = { kind: 'v', x }; } if (Math.abs(y - n.y) <= tol) { y = n.y; P.guide = { kind: 'h', y }; } });
+                nodeDrag.moved = true; P.walls.nodes[nodeDrag.ni].x = round2(x); P.walls.nodes[nodeDrag.ni].y = round2(y); _encKey = null; drawFloor(); return;
+            }
+            if (isWallKind(P.tool)) { const sp = snapDraw(p, ev.shiftKey); P.preview = P.chain ? sp : null; drawFloor(); return; }
             if (isOpenKind(P.tool) && P.openStart) { const ed = P.walls.edges[P.openStart.ei]; if (ed) { const v = edgeVec(ed); let t2 = ((p.x - v.a.x) * v.dx + (p.y - v.a.y) * v.dy) / (v.len * v.len); t2 = Math.max(0, Math.min(1, t2)); P.preview = { x: v.a.x + v.dx * t2, y: v.a.y + v.dy * t2, t: t2 }; } drawFloor(); }
         });
         drawOverlay.addEventListener('pointerup', (ev) => {
-            if (!nodeDrag) return; const moved = nodeDrag.moved; nodeDrag = null; try { drawOverlay.releasePointerCapture(ev.pointerId); } catch (er) { /* ignore */ }
+            if (!nodeDrag) return; const moved = nodeDrag.moved; nodeDrag = null; P.guide = null; try { drawOverlay.releasePointerCapture(ev.pointerId); } catch (er) { /* ignore */ }
             if (moved) { refreshFloorFromWalls(); pushUndo(); markDirty(); layout(); } else draw();
         });
         drawOverlay.addEventListener('dblclick', (ev) => {
