@@ -4480,7 +4480,7 @@
                 plannerSymbol: s.planner_symbol || null, photoUrl: s.photo_id ? '/api/photos/' + s.photo_id : null,
                 x: num(g.x, 1), y: num(g.y, 1), w: num(g.w, s.length_m || catFoot(s.vehicle_type)[0]), h: num(g.h, s.width_m || catFoot(s.vehicle_type)[1]), rot: num(g.rot, 0), status: g.status || 'busy', noBuf: !!g.noBuf, _dirty: false }; }),
             palette, plannerIcons,
-            mode: 'manage', editMode: false, snap: true, gridStep: 0.5, autoSnap: true, calib: false, autoArea: true, ortho: false, zoom: 1, base: null, buffer: false, bufferM: 1, sel: null, selEdge: null,
+            mode: 'manage', editMode: false, snap: true, gridStep: 0.5, autoSnap: true, calib: false, autoArea: true, ortho: false, zoom: 1, base: null, buffer: false, bufferM: 1, roomSel: null, wallRef: (geo.wallRef === 'inner' || geo.wallRef === 'outer') ? geo.wallRef : 'axis', sel: null, selEdge: null,
             tool: null, chain: null, preview: null, structSel: null, structEdit: false, // wall draw/edit state
             openStart: null, snapHint: null, drawKind: 'wall_ext', openKind: 'door', wallThick: null, // opening draw + last-used types + wall-thickness override (m)
             render: (function () { try { return localStorage.getItem('gp.render') || 'symbol'; } catch (e) { return 'symbol'; } })(),
@@ -4593,6 +4593,10 @@
         wallDoorHinge.addEventListener('click', (e) => { e.stopPropagation(); swapDoorHinge(); });
         wallPop.style.display = 'none'; planEl.append(wallPop);
         wallPop.addEventListener('pointerdown', (e) => e.stopPropagation());
+        // Click-to-show room area badge (above vehicles/zones, so it's never overlapped).
+        const roomBadge = el('div', { class: 'gp-roombadge' }); roomBadge.style.display = 'none'; planEl.append(roomBadge);
+        function positionRoomBadge() { if (!P.roomSel || !P.autoArea) { roomBadge.style.display = 'none'; return; } roomBadge.textContent = 'Raum · ' + P.roomSel.area.toFixed(1).replace('.', ',') + ' m²'; roomBadge.style.left = (P.roomSel.x * P.CELL) + 'px'; roomBadge.style.top = (P.roomSel.y * P.CELL) + 'px'; roomBadge.style.display = 'block'; }
+        function showRoom(p) { const rm = roomAt(p); P.roomSel = rm ? { x: p.x, y: p.y, area: rm.area } : null; positionRoomBadge(); return !!rm; }
         wallLenIn.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') wallLenIn.blur(); });
         wallLenIn.addEventListener('change', () => { const ss = P.structSel; if (!ss) return; const val = parseFloat(wallLenIn.value); if (!(val > 0.05)) return; if (ss.type === 'edge') setEdgeLength(ss.idx, val); else if (ss.type === 'opening') setOpeningWidth(ss.ei, ss.oi, val); });
         wallPopDel.addEventListener('click', (e) => { e.stopPropagation(); deleteSel(); });
@@ -4831,7 +4835,7 @@
             const drawActive = P.mode === 'plan' && !P.calib && canManageNow;
             drawOverlay.style.display = drawActive ? 'block' : 'none';
             drawOverlay.classList.toggle('edit', !P.tool);
-            positionWallPop();
+            positionWallPop(); positionRoomBadge();
             const used = P.spots.length;
             occN.textContent = used + ' Gefährte';
             const tot = polyArea(P.floor); let ve = 0; P.spots.forEach((b) => { ve += b.w * b.h; });
@@ -5031,18 +5035,49 @@
         }
         // ---- wall node-graph geometry ----
         function edgeVec(e) { const a = P.walls.nodes[e.a], b = P.walls.nodes[e.b]; const dx = b.x - a.x, dy = b.y - a.y; return { a, b, dx, dy, len: Math.hypot(dx, dy) }; }
-        // Each edge → a rotated rectangle (centre = midpoint, w = length, h = thickness) so
-        // walls plug straight into the existing SAT collision AND the enclosure raster.
-        function wallRects() {
-            const out = [];
-            for (const e of P.walls.edges) { const v = edgeVec(e); if (v.len < 0.02) continue; const th = e.thick || 0.24;
-                out.push({ kind: e.kind, x: (v.a.x + v.b.x) / 2 - v.len / 2, y: (v.a.y + v.b.y) / 2 - th / 2, w: v.len, h: th, rot: Math.atan2(v.dy, v.dx) * 180 / Math.PI, _wall: true }); }
-            return out;
+        // Bezug (reference): the drawn line is the wall AXIS (centred thickness, default), or
+        // the INNER face (thickness grows outward), or the OUTER face (grows inward). We shift
+        // each node to a mitre point so the drawn line lands on the chosen face and corners stay
+        // clean — used by rendering, collision AND the enclosure/area alike.
+        const lineIntersect = (p, d, q, e) => { const den = d.x * e.y - d.y * e.x; if (Math.abs(den) < 1e-9) return null; const t = ((q.x - p.x) * e.y - (q.y - p.y) * e.x) / den; return { x: p.x + d.x * t, y: p.y + d.y * t }; };
+        const rectFrom = (a, b, kind, th) => { const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy); return len < 0.02 ? null : { kind, x: (a.x + b.x) / 2 - len / 2, y: (a.y + b.y) / 2 - th / 2, w: len, h: th, rot: Math.atan2(dy, dx) * 180 / Math.PI, _wall: true }; };
+        function axisRects() { const out = []; for (const e of P.walls.edges) { const r = rectFrom(P.walls.nodes[e.a], P.walls.nodes[e.b], e.kind, e.thick || 0.24); if (r) out.push(r); } return out; }
+        let _moff = {}, _moffKey = null;
+        function wallMoff() {
+            if (P.wallRef === 'axis') return {};
+            const key = P.wallRef + '#' + P.walls.nodes.map((n) => round2(n.x) + ',' + round2(n.y)).join(';') + '#' + P.walls.edges.map((e) => e.a + '-' + e.b + ':' + round2(e.thick || 0.24)).join(';');
+            if (key === _moffKey) return _moff;
+            _moffKey = key; const moff = {}; _moff = moff;
+            const enc = computeEnclosure(axisRects()); if (!enc || !enc.lab) return moff; // no closed room → no offset
+            const dir = P.wallRef === 'inner' ? 1 : -1; // inner: axis moves outward; outer: inward
+            const inSide = (sx, sy) => { const gx = Math.floor((sx - enc.minX) / enc.GS), gy = Math.floor((sy - enc.minY) / enc.GSy); if (gx < 0 || gy < 0 || gx >= enc.cols || gy >= enc.rows) return false; return enc.lab[gy * enc.cols + gx] >= 0; };
+            const shift = P.walls.edges.map((e) => { const v = edgeVec(e); if (v.len < 0.02) return null; const th = e.thick || 0.24, px = -v.dy / v.len, py = v.dx / v.len, mx = (v.a.x + v.b.x) / 2, my = (v.a.y + v.b.y) / 2, off = th / 2 + enc.GS * 1.3;
+                const plus = inSide(mx + px * off, my + py * off), minus = inSide(mx - px * off, my - py * off); let s = 0; if (plus && !minus) s = -1; else if (minus && !plus) s = 1; // s·perp points exterior
+                return { px, py, ext: s * dir, mag: th / 2 }; });
+            const other = (e, ni) => e.a === ni ? P.walls.nodes[e.b] : P.walls.nodes[e.a];
+            for (let ni = 0; ni < P.walls.nodes.length; ni++) {
+                const inc = []; P.walls.edges.forEach((e, ei) => { if (e.a === ni || e.b === ni) inc.push(ei); });
+                const N = P.walls.nodes[ni];
+                if (inc.length === 2) { const s1 = shift[inc[0]], s2 = shift[inc[1]]; if (!s1 || !s2 || (!s1.ext && !s2.ext)) continue;
+                    const p1 = { x: N.x + s1.px * s1.ext * s1.mag, y: N.y + s1.py * s1.ext * s1.mag }, d1 = other(P.walls.edges[inc[0]], ni), dd1 = { x: d1.x - N.x, y: d1.y - N.y };
+                    const p2 = { x: N.x + s2.px * s2.ext * s2.mag, y: N.y + s2.py * s2.ext * s2.mag }, d2 = other(P.walls.edges[inc[1]], ni), dd2 = { x: d2.x - N.x, y: d2.y - N.y };
+                    const M = lineIntersect(p1, dd1, p2, dd2);
+                    moff[ni] = M ? { dx: M.x - N.x, dy: M.y - N.y } : { dx: (p1.x + p2.x) / 2 - N.x, dy: (p1.y + p2.y) / 2 - N.y };
+                } else if (inc.length === 1) { const s1 = shift[inc[0]]; if (s1 && s1.ext) moff[ni] = { dx: s1.px * s1.ext * s1.mag, dy: s1.py * s1.ext * s1.mag }; }
+            }
+            return moff;
         }
+        function nodePos(ni) { const n = P.walls.nodes[ni], m = wallMoff()[ni]; return m ? { x: n.x + m.dx, y: n.y + m.dy } : n; }
+        // Each edge → a rotated rectangle (centre = midpoint, w = length, h = thickness), placed
+        // at the Bezug-offset node positions, so walls plug into SAT collision AND the enclosure.
+        function wallRects() { const out = []; for (const e of P.walls.edges) { const r = rectFrom(nodePos(e.a), nodePos(e.b), e.kind, e.thick || 0.24); if (r) out.push(r); } return out; }
         // Lichtes (clear/inner) length of an edge = axis length minus half the thickness of the
         // walls meeting at each end (a room corner eats thick/2 of clear span on that side).
         function nodePerpHalf(ni, exceptEi) { let mx = 0; P.walls.edges.forEach((x, xi) => { if (xi === exceptEi) return; if (x.a === ni || x.b === ni) mx = Math.max(mx, x.thick || 0.24); }); return mx / 2; }
         function edgeClearLen(ei) { const e = P.walls.edges[ei], v = edgeVec(e); return Math.max(0, v.len - nodePerpHalf(e.a, ei) - nodePerpHalf(e.b, ei)); }
+        // Displayed dimension depends on the Bezug: inner ⇒ the drawn length is already the clear
+        // span; axis ⇒ minus ½ wall per corner; outer ⇒ minus a full wall per corner.
+        function labelLen(ei) { const e = P.walls.edges[ei], v = edgeVec(e); if (P.wallRef === 'inner') return v.len; if (P.wallRef === 'outer') return Math.max(0, v.len - 2 * nodePerpHalf(e.a, ei) - 2 * nodePerpHalf(e.b, ei)); return Math.max(0, v.len - nodePerpHalf(e.a, ei) - nodePerpHalf(e.b, ei)); }
         function nodeAt(p, r) { let bi = -1, bd = r; P.walls.nodes.forEach((n, i) => { const d = Math.hypot(n.x - p.x, n.y - p.y); if (d < bd) { bd = d; bi = i; } }); return bi; }
         function edgeAt(p, r) { let best = null; P.walls.edges.forEach((e, i) => { const v = edgeVec(e); if (v.len < 0.02) return; let t = ((p.x - v.a.x) * v.dx + (p.y - v.a.y) * v.dy) / (v.len * v.len); t = Math.max(0, Math.min(1, t)); const x = v.a.x + t * v.dx, y = v.a.y + t * v.dy, d = Math.hypot(p.x - x, p.y - y); if (d < r && (!best || d < best.dist)) best = { i, t, x, y, dist: d }; }); return best; }
         function addNode(x, y) { for (let i = 0; i < P.walls.nodes.length; i++) if (Math.hypot(P.walls.nodes[i].x - x, P.walls.nodes[i].y - y) < 0.05) return i; P.walls.nodes.push({ x: round2(x), y: round2(y) }); return P.walls.nodes.length - 1; }
@@ -5241,10 +5276,10 @@
                     if (gx < cols - 1 && interior[i + 1] && lab[i + 1] < 0) { lab[i + 1] = cur; st.push(i + 1); }
                     if (gy > 0 && interior[i - cols] && lab[i - cols] < 0) { lab[i - cols] = cur; st.push(i - cols); }
                     if (gy < rows - 1 && interior[i + cols] && lab[i + cols] < 0) { lab[i + cols] = cur; st.push(i + cols); } }
-                const a = n * GS * GSy; if (a > 0.5) rooms.push({ area: a, cx: rx / n, cy: ry / n }); cur++;
+                const a = n * GS * GSy; if (a > 0.5) rooms.push({ id: cur, area: a, cx: rx / n, cy: ry / n }); cur++;
             }
             rooms.sort((p, q) => q.area - p.area);
-            return { area: count * GS * GSy, rects, rooms, cx: sx / count, cy: sy / count, cols, rows, minX, minY, GS, GSy, seen };
+            return { area: count * GS * GSy, rects, rooms, lab, cx: sx / count, cy: sy / count, cols, rows, minX, minY, GS, GSy, seen };
         }
         // Trace the outer face of the enclosed building (region = everything the exterior
         // flood can't reach = interior + surrounding walls) into a simplified metre polygon.
@@ -5288,6 +5323,14 @@
             const d2 = (p, a, b) => { const dx = b[0] - a[0], dy = b[1] - a[1], L = dx * dx + dy * dy; if (!L) return Math.hypot(p[0] - a[0], p[1] - a[1]); let t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L; t = Math.max(0, Math.min(1, t)); return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy)); };
             const simp = (s, e, path) => { let idx = -1, mx = eps; for (let i = s + 1; i < e; i++) { const d = d2(path[i], path[s], path[e]); if (d > mx) { mx = d; idx = i; } } if (idx < 0) return [path[s]]; return simp(s, idx, path).concat(simp(idx, e, path)); };
             const open = poly.concat([poly[0]]); return simp(0, open.length - 1, open);
+        }
+        // Which enclosed room contains a world point (for the click-to-show readout)?
+        function roomAt(p) {
+            const enc = P.autoArea ? enclosure() : null; if (!enc || !enc.lab) return null;
+            const gx = Math.floor((p.x - enc.minX) / enc.GS), gy = Math.floor((p.y - enc.minY) / enc.GSy);
+            if (gx < 0 || gy < 0 || gx >= enc.cols || gy >= enc.rows) return null;
+            const id = enc.lab[gy * enc.cols + gx]; if (id < 0) return null;
+            return (enc.rooms || []).find((r) => r.id === id) || null;
         }
         function drawEnclosure() {
             if (!P.autoArea) return;
@@ -5362,24 +5405,25 @@
         function drawWalls() {
             const CELL = P.CELL, g = svgEl('g', { class: 'gp-wallg' });
             P.walls.edges.forEach((e, ei) => {
-                const v = edgeVec(e); if (v.len < 0.02) return;
+                // Render at the Bezug-offset node positions (vd); node HANDLES stay on the drawn line.
+                const oa = nodePos(e.a), ob = nodePos(e.b), vd = { a: oa, b: ob, dx: ob.x - oa.x, dy: ob.y - oa.y, len: Math.hypot(ob.x - oa.x, ob.y - oa.y) }; if (vd.len < 0.02) return;
                 const col = WALLCOL[e.kind] || '#8aa0b6', th = Math.max(2, (e.thick || 0.24) * CELL);
-                const P0 = (u) => [(v.a.x + v.dx * u) * CELL, (v.a.y + v.dy * u) * CELL];
+                const P0 = (u) => [(vd.a.x + vd.dx * u) * CELL, (vd.a.y + vd.dy * u) * CELL];
                 const selE = P.structSel && P.structSel.type === 'edge' && P.structSel.idx === ei;
-                const spans = (e.ops || []).map((o, oi) => { const hp = (o.w / v.len) / 2; return { lo: Math.max(0, o.c - hp), hi: Math.min(1, o.c + hp), oi }; }).sort((a, b) => a.lo - b.lo);
+                const spans = (e.ops || []).map((o, oi) => { const hp = (o.w / vd.len) / 2; return { lo: Math.max(0, o.c - hp), hi: Math.min(1, o.c + hp), oi }; }).sort((a, b) => a.lo - b.lo);
                 // butt-capped wall pieces between the openings (no round caps bleeding into the gap)
                 const piece = (u0, u1) => { if (u1 - u0 < 1e-4) return; const A = P0(u0), B = P0(u1); g.append(svgEl('line', { x1: A[0], y1: A[1], x2: B[0], y2: B[1], stroke: col, 'stroke-width': th, 'stroke-linecap': 'butt', class: 'gp-wall' + (selE ? ' sel' : '') })); };
                 let t0 = 0; for (const sp of spans) { piece(t0, sp.lo); t0 = sp.hi; } piece(t0, 1);
                 // rounded corner joints at this edge's nodes (before openings, so gaps stay clean)
-                [v.a, v.b].forEach((pt) => g.append(svgEl('circle', { cx: pt.x * CELL, cy: pt.y * CELL, r: th / 2, fill: col, class: 'gp-walljoint' })));
-                spans.forEach((sp) => drawOpening(g, v, e, sp.oi, CELL));
-                if (P.mode === 'plan' && v.len > 0.3) {
-                    let nx = -v.dy, ny = v.dx; const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
+                [vd.a, vd.b].forEach((pt) => g.append(svgEl('circle', { cx: pt.x * CELL, cy: pt.y * CELL, r: th / 2, fill: col, class: 'gp-walljoint' })));
+                spans.forEach((sp) => drawOpening(g, vd, e, sp.oi, CELL));
+                if (P.mode === 'plan' && vd.len > 0.3) {
+                    let nx = -vd.dy, ny = vd.dx; const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
                     const mid = P0(0.5), off = th / 2 + 11;
-                    const tl = svgEl('text', { x: mid[0] + nx * off, y: mid[1] + ny * off + 3, 'text-anchor': 'middle', class: 'gp-walllab' }); tl.textContent = edgeClearLen(ei).toFixed(2).replace('.', ',') + ' m'; g.append(tl); // lichtes Maß (Achse − halbe Wandstärke je Ecke)
-                    if (spans.length) { // clear (lichte) sub-segment lengths on the opposite side
+                    const tl = svgEl('text', { x: mid[0] + nx * off, y: mid[1] + ny * off + 3, 'text-anchor': 'middle', class: 'gp-walllab' }); tl.textContent = labelLen(ei).toFixed(2).replace('.', ',') + ' m'; g.append(tl); // dimension per Bezug (Innen/Achse/Außen)
+                    if (spans.length) { // clear sub-segment lengths on the opposite side
                         const segs = []; let s0 = 0; for (const sp of spans) { if (sp.lo - s0 > 0.002) segs.push([s0, sp.lo]); s0 = sp.hi; } if (1 - s0 > 0.002) segs.push([s0, 1]);
-                        for (const [u0, u1] of segs) { const wm = (u1 - u0) * v.len; if (wm * CELL < 26) continue; const m2 = P0((u0 + u1) / 2); const st = svgEl('text', { x: m2[0] - nx * (th / 2 + 9), y: m2[1] - ny * (th / 2 + 9) + 3, 'text-anchor': 'middle', class: 'gp-walllab sub' }); st.textContent = wm.toFixed(2).replace('.', ',') + ' m'; g.append(st); }
+                        for (const [u0, u1] of segs) { const wm = (u1 - u0) * vd.len; if (wm * CELL < 26) continue; const m2 = P0((u0 + u1) / 2); const st = svgEl('text', { x: m2[0] - nx * (th / 2 + 9), y: m2[1] - ny * (th / 2 + 9) + 3, 'text-anchor': 'middle', class: 'gp-walllab sub' }); st.textContent = wm.toFixed(2).replace('.', ',') + ' m'; g.append(st); }
                     }
                 }
             });
@@ -5418,8 +5462,8 @@
                     const th = Math.max(2, ((EXCL[P.tool] && EXCL[P.tool].h) || 0.24) * CELL);
                     svg.append(svgEl('line', { x1: ax, y1: ay, x2: bx, y2: by, stroke: WALLCOL[P.tool] || '#8aa0b6', 'stroke-width': th, 'stroke-linecap': 'round', 'stroke-dasharray': '2 6', opacity: 0.85, class: 'gp-wallpreview' }));
                     const len = Math.hypot(P.preview.x - last.x, P.preview.y - last.y);
-                    const drawTh = P.wallThick || (EXCL[P.tool] && EXCL[P.tool].h) || 0.24;
-                    const clr = Math.max(0, len - nodePerpHalf(P.chain[P.chain.length - 1], -1) - drawTh / 2); // lichtes Maß live
+                    const drawTh = P.wallThick || (EXCL[P.tool] && EXCL[P.tool].h) || 0.24, ph = nodePerpHalf(P.chain[P.chain.length - 1], -1);
+                    const clr = P.wallRef === 'inner' ? len : P.wallRef === 'outer' ? Math.max(0, len - 2 * ph - drawTh) : Math.max(0, len - ph - drawTh / 2); // live dim per Bezug
                     const tl = svgEl('text', { x: (ax + bx) / 2, y: (ay + by) / 2 - 6, 'text-anchor': 'middle', class: 'gp-walllab live' }); tl.textContent = clr.toFixed(2).replace('.', ',') + ' m'; svg.append(tl);
                 }
                 for (const idx of P.chain) { const n = P.walls.nodes[idx]; if (n) svg.append(svgEl('circle', { cx: n.x * CELL, cy: n.y * CELL, r: 4, class: 'gp-wnode chain' })); }
@@ -5521,7 +5565,7 @@
         function currentWalls() {
             return { nodes: P.walls.nodes.map((n) => ({ x: round2(n.x), y: round2(n.y) })), edges: P.walls.edges.map((e) => ({ a: e.a, b: e.b, kind: e.kind, thick: round2(e.thick), ops: (e.ops && e.ops.length) ? e.ops.map((o) => ({ c: round2(o.c), w: round2(o.w), kind: o.kind })) : undefined })) };
         }
-        function currentGeometry() { return { floor: P.floor, Wm: P.Wm, Hm: P.Hm, tor: P.tor, load: P.load, shape: P.shape, excl: P.excl.map((e) => ({ kind: e.kind, x: round2(e.x), y: round2(e.y), w: round2(e.w), h: round2(e.h), rot: Math.round(e.rot || 0), label: e.label, mat: e.mat || undefined })), walls: (P.walls.edges.length ? currentWalls() : undefined), plan: P.plan ? { href: P.plan.href, x: round2(P.plan.x), y: round2(P.plan.y), w: round2(P.plan.w), h: round2(P.plan.h), opacity: round2(P.plan.opacity), hidden: P.plan.hidden || undefined } : undefined }; }
+        function currentGeometry() { return { floor: P.floor, Wm: P.Wm, Hm: P.Hm, tor: P.tor, load: P.load, shape: P.shape, excl: P.excl.map((e) => ({ kind: e.kind, x: round2(e.x), y: round2(e.y), w: round2(e.w), h: round2(e.h), rot: Math.round(e.rot || 0), label: e.label, mat: e.mat || undefined })), walls: (P.walls.edges.length ? currentWalls() : undefined), wallRef: P.wallRef !== 'axis' ? P.wallRef : undefined, plan: P.plan ? { href: P.plan.href, x: round2(P.plan.x), y: round2(P.plan.y), w: round2(P.plan.w), h: round2(P.plan.h), opacity: round2(P.plan.opacity), hidden: P.plan.hidden || undefined } : undefined }; }
         async function doSaveGeom(silent) {
             P.dirty = false; renderToolbar(); // optimistic; a change during the save re-flags it
             try {
@@ -5707,7 +5751,11 @@
             // Wandstärke (Mauerdicke) für NEUE Wände — je Wand später über das Popover änderbar.
             const thSel = el('select', { class: 'gp-stepin', 'aria-label': 'Wandstärke', onchange: (e) => { P.wallThick = e.target.value ? (+e.target.value / 100) : null; } });
             [['', 'Typ-Standard'], ['11.5', '11,5 cm'], ['17.5', '17,5 cm'], ['24', '24 cm'], ['30', '30 cm'], ['36.5', '36,5 cm']].forEach(([v, l]) => { const o = el('option', { value: v }, l); if ((P.wallThick != null ? String(Math.round(P.wallThick * 1000) / 10) : '') === v) o.selected = true; thSel.append(o); });
-            toolsCard.append(el('div', { class: 'gp-field', style: 'margin-top:.35rem' }, el('label', {}, 'Wandstärke (neue Wände) · Maße = lichtes Maß'), thSel));
+            toolsCard.append(el('div', { class: 'gp-field', style: 'margin-top:.35rem' }, el('label', {}, 'Wandstärke (neue Wände)'), thSel));
+            // Bezug: is the drawn line the Innen(kante), Achse (Mitte) or Außen(kante) der Wand?
+            const refSeg = el('div', { class: 'gp-seg', style: 'margin-top:.15rem' });
+            [['inner', 'Innen'], ['axis', 'Achse'], ['outer', 'Außen']].forEach(([k, l]) => refSeg.append(el('button', { class: P.wallRef === k ? 'on' : '', title: 'Bezug der gezeichneten Linie — bei „Innen" ist der Umriss dein lichtes Innenmaß und m² stimmt 1:1', onclick: () => { P.wallRef = k; _moffKey = null; draw(); } }, l)));
+            toolsCard.append(el('div', { class: 'gp-field', style: 'margin-top:.35rem' }, el('label', {}, 'Bezug der Zeichenlinie'), refSeg));
             toolsCard.append(el('div', { class: 'gp-exgrouplab' }, 'Öffnungen (auf eine Wand)'));
             const orow = el('div', { class: 'gp-addrow' });
             openKindsList().forEach((k) => orow.append(toolBtn(k, EXCL[k].label)));
@@ -5903,11 +5951,13 @@
         let act = null;
         layer.addEventListener('pointerdown', (e) => {
             if (e.button !== 0 || spaceDown) return; // Space held → let planWrap pan
+            P.roomSel = null; // any plan click clears the room badge; an empty click re-shows it
             const rt = e.target.closest('.gp-rot');
             if (rt && canManageNow) { const bb = P.spots.find((x) => x._id == rt.dataset.rotid) || P.excl.find((x) => x.id === rt.dataset.rotid); if (bb) { act = { mode: 'rotate', b: bb, elm: e.target.closest('.gp-block'), cx: bb.x + bb.w / 2, cy: bb.y + bb.h / 2, orot: bb.rot || 0 }; e.target.setPointerCapture(e.pointerId); } return; }
             const rz = e.target.closest('.gp-rz');
             if (rz && canManageNow) { const id = rz.dataset.rz; const bb = P.spots.find((x) => x._id == id) || P.excl.find((x) => x.id === id); if (bb) { act = { mode: 'resize', b: bb, elm: e.target.closest('.gp-block'), dir: rz.dataset.dir, o0: { x: bb.x, y: bb.y, w: bb.w, h: bb.h, rot: bb.rot || 0 } }; e.target.setPointerCapture(e.pointerId); } return; }
-            const elm = e.target.closest('.gp-block'); if (!elm) return;
+            const elm = e.target.closest('.gp-block');
+            if (!elm) { const r = planEl.getBoundingClientRect(); showRoom({ x: (e.clientX - r.left) / P.CELL, y: (e.clientY - r.top) / P.CELL }); draw(); return; } // empty floor → room m²
             const id = elm.dataset.id; const b = P.spots.find((x) => x._id == id) || P.excl.find((x) => x.id === id); if (!b) return;
             if (!interactive(b) || !canManageNow) { P.sel = b._id || b.id; draw(); return; }
             const r = planEl.getBoundingClientRect();
@@ -6021,6 +6071,7 @@
         }
         function editDown(ev, p) {
             const R = 12 / P.CELL, cap = () => { try { drawOverlay.setPointerCapture(ev.pointerId); } catch (er) { /* ignore */ } };
+            P.roomSel = null; // any click clears the room badge (empty-room click re-shows it below)
             // resize handle of the already-selected opening wins
             if (P.structSel && P.structSel.type === 'opening') { const h = openingHandleAt(p, P.structSel.ei, P.structSel.oi, R); if (h) { opDrag = { ei: P.structSel.ei, oi: P.structSel.oi, mode: 'resize', end: h, moved: false }; cap(); return; } }
             // opening body → select + move along the wall
@@ -6037,8 +6088,8 @@
             for (let i = P.excl.length - 1; i >= 0; i--) { const b = P.excl[i], cs = quad(b);
                 for (let c = 0; c < 4; c++) if (Math.hypot(cs[c][0] - p.x, cs[c][1] - p.y) < R) { P.sel = b.id; P.structSel = null; zoneDrag = { id: b.id, mode: 'resize', dir: dirs[c], o0: { x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot || 0 }, moved: false }; cap(); draw(); return; } }
             for (let i = P.excl.length - 1; i >= 0; i--) { const b = P.excl[i]; if (pointInBlock(b, p)) { P.sel = b.id; P.structSel = null; zoneDrag = { id: b.id, mode: 'move', gx: p.x - b.x, gy: p.y - b.y, moved: false }; cap(); draw(); return; } }
-            // empty click → deselect only (NEVER delete)
-            P.structSel = null; P.sel = null; draw();
+            // empty click → deselect only (NEVER delete); on an enclosed room, show its m²
+            P.structSel = null; P.sel = null; showRoom(p); draw();
         }
         function deleteSel() {
             if (!P.structSel) { if (P.sel != null) { const b = P.excl.find((x) => x.id === P.sel); if (b) removeExcl(b); } return; }

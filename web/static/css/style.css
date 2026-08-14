@@ -1350,6 +1350,8 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 /* door swing / hinge flip buttons in the opening popover */
 .gp-wallpop-btn{background:rgba(255,255,255,.06);border:1px solid var(--gpline,#2a3b4d);color:var(--gpink,#eaf1f8);border-radius:6px;cursor:pointer;font-size:.9rem;line-height:1;padding:2px 6px}
 .gp-wallpop-btn:hover{border-color:var(--gpteal2);color:var(--gpteal2)}
+/* click-to-show room area badge (sits above vehicles/zones) */
+.gp-roombadge{position:absolute;z-index:9;transform:translate(-50%,-50%);background:rgba(4,20,16,.9);border:1px solid var(--gpteal2);color:#8ff0e0;font-size:.78rem;font-weight:700;padding:3px 9px;border-radius:9px;pointer-events:none;white-space:nowrap;box-shadow:0 4px 14px -4px rgba(0,0,0,.6)}
 .gp-walllab.sub{fill:#9fb2c4;font-size:9.5px;font-weight:600;stroke-width:2.4px}
 .gp-wallpop-lab{font-size:.7rem;color:var(--gpmuted,#9fb2c4);font-weight:600}
 /* inline wall quick-edit popover (length + delete) */

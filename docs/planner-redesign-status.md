@@ -61,7 +61,8 @@ löscht nie) · **Rubber-Band-Zonen** · **aktives Werkzeug hervorgehoben** ·
 
 ## E. Offen / nächste Schritte
 
-- 🟡 **Wand-Extrusion nach außen** – lichte Raummaße werden bereits korrekt **berechnet
-      & angezeigt**; die *Geometrie* liegt weiter auf der Achse mit zentrierter Dicke
-      (Standard-CAD). Einseitige Extrusion (Innenkante zeichnen, Wand wächst nach außen)
-      ist der letzte optionale Modell-Umbau.
+Alle Kernpunkte umgesetzt. ✅ **Bezug-Umschalter Innen/Achse/Außen** (mitre-Offset der
+Knoten → Rendering, Kollision UND m² folgen der gewählten Kante; „Innen" ⇒ gezeichneter
+Umriss = lichtes Innenmaß, m² stimmt 1:1). ✅ **Klick auf einen Raum zeigt dessen m²**
+(Badge über Fahrzeugen/Zonen). Keine offenen Punkte mehr — nur noch Feinschliff nach
+Praxistest.
