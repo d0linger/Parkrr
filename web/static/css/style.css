@@ -1364,7 +1364,8 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-calh-ne{right:-8px;top:-8px;cursor:nesw-resize}
 .gp-calh-se{right:-8px;bottom:-8px;cursor:nwse-resize}
 .gp-calh-sw{left:-8px;bottom:-8px;cursor:nesw-resize}
-.gp-toggle.on{border-color:var(--gpteal2);color:var(--gpteal2)}
+.gp-toggle.on{border-color:var(--gpteal2);background:var(--gpteal2);color:#06231d;font-weight:700;box-shadow:0 0 0 1px var(--gpteal2),0 2px 8px -2px rgba(46,230,207,.5)}
+.gp-toggle.on:hover{background:var(--gpteal);border-color:var(--gpteal)}
 .gp-vertex{fill:#eaf6ff;stroke:#0a141e;stroke-width:1.5;cursor:grab}
 .gp-edge{stroke:rgba(46,230,207,.55);stroke-width:2}
 .gp-edge.sel{stroke:#2ee6cf;stroke-width:3.5}
