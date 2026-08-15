@@ -557,6 +557,9 @@ func (h *Handler) validatePayment(req *paymentRequest) (time.Time, string) {
 	}
 	paidOn := time.Now()
 	if trim(req.PaidOn) != "" {
+		if !validDateLength(trim(req.PaidOn)) {
+			return time.Time{}, "paid_on is too long"
+		}
 		t, perr := time.Parse(dateLayout, trim(req.PaidOn))
 		if perr != nil {
 			return time.Time{}, "paid_on must be YYYY-MM-DD"
