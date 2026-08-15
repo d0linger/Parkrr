@@ -27,3 +27,8 @@
 *Vulnerability:* Although vehicle notes were restricted on creation/modification, the vehicle status change endpoint accepted an unrestricted `Note` field for logging the transition in the history database. This allowed users with editor permissions to bypass length controls and submit massive string payloads.
 *Learning:* Input sanitization and length bounds must be applied to text fields across all mutating endpoints, including transition/history logs, to prevent DB bloat and DoS/memory pressure.
 *Prevention:* Enforce the centralized note length validator (`validNoteLength`) on all endpoints receiving text notes or transition details.
+
+## 2026-07-16 - [Expanded CSV Formula Injection Mitigation]
+*Vulnerability:* CSV export formula injection protection (`csvSafe`) only checked for `=`, `+`, `-`, `@`, `\t`, and `\r`. Inputs starting with `|` (pipe, used in DDE/cmd execution payloads in older spreadsheet applications) or `%` were left unguarded.
+*Learning:* Spreadsheet formula injection (CWE-1236) triggers vary depending on the target software (Excel, LibreOffice, Calc). Sanitization functions must include all known trigger symbols (`=`, `+`, `-`, `@`, `\t`, `\r`, `|`, `%`) and maintain symmetric unguarding logic for round-trip safety.
+*Prevention:* Always include `|` and `%` alongside standard operators in CSV cell escaping routines and ensure import unguarding mirrors export escaping.

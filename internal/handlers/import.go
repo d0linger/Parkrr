@@ -48,7 +48,7 @@ var personHeaderAliases = map[string]string{
 func csvUnguard(s string) string {
 	if len(s) >= 2 && s[0] == '\'' {
 		switch s[1] {
-		case '=', '+', '-', '@', '\t', '\r':
+		case '=', '+', '-', '@', '\t', '\r', '|', '%':
 			return s[1:]
 		}
 	}
