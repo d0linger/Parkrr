@@ -27,7 +27,7 @@ func csvDateP(t *time.Time) string {
 }
 
 // csvSafe neutralizes spreadsheet formula injection (CWE-1236): a cell whose
-// first byte is a formula trigger (= + - @) or a control char (TAB/CR) is
+// first byte is a formula trigger (= + - @ | %) or a control char (TAB/CR) is
 // prefixed with a single apostrophe, which Excel/LibreOffice render as a text
 // literal. Parkrr's own CSV import strips this guard again (see csvUnguard) so
 // an exported file re-imports losslessly.
@@ -36,7 +36,7 @@ func csvSafe(s string) string {
 		return s
 	}
 	switch s[0] {
-	case '=', '+', '-', '@', '\t', '\r':
+	case '=', '+', '-', '@', '\t', '\r', '|', '%':
 		return "'" + s
 	}
 	return s
