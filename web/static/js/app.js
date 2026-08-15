@@ -5286,12 +5286,39 @@
         // traces that enclosure's OUTER face and adopts it as the hall floor polygon.
         // Enclosure boundary = drawn wall segments (graph) + any legacy excl walls/openings.
         function wallBlocks() { return wallRects().concat(P.excl.filter((e) => isWallKind(e.kind) || isOpenKind(e.kind))); }
+        // Exact interior m² when the walls form ONE simple closed loop (the common single-room
+        // case): shoelace of the inner-face polygon — in Innen the drawn ring IS the inner face,
+        // so 5×5 ⇒ 25,00 m² exactly, not the raster's quantised ~24,1. Junctions / multiple loops /
+        // open chains return null and keep the (general) raster area.
+        function loopInteriorArea() {
+            const NDS = P.walls.nodes, E = P.walls.edges; if (E.length < 3) return null;
+            const adj = NDS.map(() => []);
+            for (let i = 0; i < E.length; i++) { const e = E[i]; if (e.a === e.b) return null; adj[e.a].push(i); adj[e.b].push(i); }
+            for (let i = 0; i < NDS.length; i++) if (adj[i].length && adj[i].length !== 2) return null; // any junction/stub ⇒ not a simple ring
+            const startN = E[0].a, order = [], eth = []; let curN = startN, curE = 0, guard = E.length + 2; const seenE = new Set();
+            do { order.push(curN); eth.push(E[curE].thick || 0.24); seenE.add(curE);
+                const nextN = E[curE].a === curN ? E[curE].b : E[curE].a, cand = adj[nextN]; curN = nextN; curE = cand[0] === curE ? cand[1] : cand[0];
+            } while (curN !== startN && guard-- > 0);
+            if (seenE.size !== E.length || order.length < 3) return null; // must be a single loop over ALL walls
+            const poly = order.map((i) => NDS[i]), k = poly.length;
+            if (P.wallRef === 'inner') return polyArea(poly.map((p) => [p.x, p.y])); // drawn line = inner face → exact
+            // Achse/Außen: inset each edge from the drawn line to the inner face, re-intersect, shoelace.
+            const area = (sgn) => {
+                const ln = poly.map((a, i) => { const b = poly[(i + 1) % k], dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L, d = P.wallRef === 'outer' ? eth[i] : eth[i] / 2; return { px: a.x - uy * sgn * d, py: a.y + ux * sgn * d, dx: ux, dy: uy }; });
+                const ip = ln.map((L2, i) => { const L1 = ln[(i - 1 + k) % k], den = L1.dx * L2.dy - L1.dy * L2.dx; if (Math.abs(den) < 1e-9) return [L2.px, L2.py]; const t = ((L2.px - L1.px) * L2.dy - (L2.py - L1.py) * L2.dx) / den; return [L1.px + L1.dx * t, L1.py + L1.dy * t]; });
+                return polyArea(ip);
+            };
+            return Math.min(area(1), area(-1)); // the inward offset is the smaller of the two
+        }
         let _enc = null, _encKey = null;
         function enclosure() {
             const wb = wallBlocks();
-            const key = wb.map((e) => e.kind + ':' + round2(e.x) + ',' + round2(e.y) + ',' + round2(e.w) + ',' + round2(e.h) + ',' + Math.round(e.rot || 0)).join('|') + '#' + JSON.stringify(P.floor);
+            const key = P.wallRef + '#' + wb.map((e) => e.kind + ':' + round2(e.x) + ',' + round2(e.y) + ',' + round2(e.w) + ',' + round2(e.h) + ',' + Math.round(e.rot || 0)).join('|') + '#' + JSON.stringify(P.floor);
             if (key === _encKey) return _enc;
-            _encKey = key; _enc = wb.length ? computeEnclosure(wb) : null; return _enc;
+            _encKey = key; _enc = wb.length ? computeEnclosure(wb) : null;
+            // Replace the quantised raster area with the exact loop area for a single enclosed room.
+            if (_enc && _enc.rooms && _enc.rooms.length === 1) { const exact = loopInteriorArea(); if (exact != null && exact > 0.3) { _enc.area = exact; _enc.rooms[0].area = exact; } }
+            return _enc;
         }
         function computeEnclosure(wb) {
             let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
