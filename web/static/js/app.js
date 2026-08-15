@@ -5074,6 +5074,34 @@
         // Each edge → a rotated rectangle (centre = midpoint, w = length, h = thickness), placed at
         // the Bezug-offset position, so walls plug into SAT collision AND the enclosure raster.
         function wallRects() { const out = []; P.walls.edges.forEach((e, ei) => { const vp = edgePts(e, ei); const r = rectFrom(vp.a, vp.b, e.kind, e.thick || 0.24); if (r) out.push(r); }); return out; }
+        // Miter-joined wall polygons: per edge, the two boundary lines (offset-centreline ± t/2)
+        // are intersected with the ANGULARLY-adjacent neighbour's boundary at each node, so
+        // corners and T-/X-junctions merge cleanly (no gaps/steps/stubs) at any Bezug.
+        let _wc = null, _wcKey = null;
+        function wallCorners() {
+            const key = P.wallRef + '#' + P.walls.nodes.map((n) => round2(n.x) + ',' + round2(n.y)).join(';') + '#' + P.walls.edges.map((e) => e.a + '-' + e.b + ':' + round2(e.thick || 0.24)).join(';');
+            if (key === _wcKey) return _wc;
+            _wcKey = key; const N = P.walls.nodes, E = P.walls.edges, offs = edgeOffs() || E.map(() => ({ ox: 0, oy: 0 }));
+            const inc = N.map(() => []);
+            E.forEach((e, ei) => { const a = N[e.a], b = N[e.b]; if (!a || !b) return; const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1;
+                inc[e.a].push({ ei, dx: dx / L, dy: dy / L, ang: Math.atan2(dy, dx) }); inc[e.b].push({ ei, dx: -dx / L, dy: -dy / L, ang: Math.atan2(-dy, -dx) }); });
+            inc.forEach((l) => l.sort((p, q) => p.ang - q.ang));
+            const X = (px, py, dx, dy, qx, qy, ex, ey) => { const den = dx * ey - dy * ex; if (Math.abs(den) < 1e-9) return null; const t = ((qx - px) * ey - (qy - py) * ex) / den; return { x: px + dx * t, y: py + dy * t }; };
+            const corner = (ni, ei) => {
+                const list = inc[ni], k = list.findIndex((h) => h.ei === ei), he = list[k], n = list.length;
+                const th = E[ei].thick || 0.24, o = offs[ei], base = { x: N[ni].x + o.ox, y: N[ni].y + o.oy }, nx = -he.dy, ny = he.dx, MIT = th * 6;
+                let left = { x: base.x + nx * th / 2, y: base.y + ny * th / 2 }, right = { x: base.x - nx * th / 2, y: base.y - ny * th / 2 };
+                if (n >= 2) {
+                    const nb = list[(k + 1) % n]; if (nb.ei !== ei) { const thN = E[nb.ei].thick || 0.24, oN = offs[nb.ei], bx = N[ni].x + oN.ox, by = N[ni].y + oN.oy, nnx = -nb.dy, nny = nb.dx;
+                        const M = X(left.x, left.y, he.dx, he.dy, bx - nnx * thN / 2, by - nny * thN / 2, nb.dx, nb.dy); if (M && Math.hypot(M.x - N[ni].x, M.y - N[ni].y) <= MIT) left = M; }
+                    const pb = list[(k - 1 + n) % n]; if (pb.ei !== ei) { const thP = E[pb.ei].thick || 0.24, oP = offs[pb.ei], bx = N[ni].x + oP.ox, by = N[ni].y + oP.oy, ppx = -pb.dy, ppy = pb.dx;
+                        const M = X(right.x, right.y, he.dx, he.dy, bx + ppx * thP / 2, by + ppy * thP / 2, pb.dx, pb.dy); if (M && Math.hypot(M.x - N[ni].x, M.y - N[ni].y) <= MIT) right = M; }
+                }
+                return { left, right };
+            };
+            _wc = E.map((e, ei) => { const a = N[e.a], b = N[e.b]; if (!a || !b) return null; const cA = corner(e.a, ei), cB = corner(e.b, ei); return { aL: cA.left, aR: cA.right, bL: cB.right, bR: cB.left }; });
+            return _wc;
+        }
         // Lichtes (clear/inner) length of an edge = axis length minus half the thickness of the
         // walls meeting at each end (a room corner eats thick/2 of clear span on that side).
         function nodePerpHalf(ni, exceptEi) { let mx = 0; P.walls.edges.forEach((x, xi) => { if (xi === exceptEi) return; if (x.a === ni || x.b === ni) mx = Math.max(mx, x.thick || 0.24); }); return mx / 2; }
@@ -5410,18 +5438,21 @@
         //      total node-to-node length (offset) + optional clear sub-segment lengths ----
         function drawWalls() {
             const CELL = P.CELL, g = svgEl('g', { class: 'gp-wallg' });
+            const wcs = wallCorners();
             P.walls.edges.forEach((e, ei) => {
-                // Render at the Bezug-offset position (vd); node HANDLES stay on the drawn line.
-                const vd = edgePts(e, ei); if (vd.len < 0.02) return;
+                const wc = wcs[ei]; if (!wc) return;
                 const col = WALLCOL[e.kind] || '#8aa0b6', th = Math.max(2, (e.thick || 0.24) * CELL);
-                const P0 = (u) => [(vd.a.x + vd.dx * u) * CELL, (vd.a.y + vd.dy * u) * CELL];
                 const selE = P.structSel && P.structSel.type === 'edge' && P.structSel.idx === ei;
+                // offset (mitred) centre line = midpoint of the two boundaries, for openings + labels
+                const oa = { x: (wc.aL.x + wc.aR.x) / 2, y: (wc.aL.y + wc.aR.y) / 2 }, ob = { x: (wc.bL.x + wc.bR.x) / 2, y: (wc.bL.y + wc.bR.y) / 2 };
+                const vd = { a: oa, b: ob, dx: ob.x - oa.x, dy: ob.y - oa.y, len: Math.hypot(ob.x - oa.x, ob.y - oa.y) }; if (vd.len < 0.02) return;
+                const P0 = (u) => [(oa.x + vd.dx * u) * CELL, (oa.y + vd.dy * u) * CELL];
+                const Lp = (u) => [(wc.aL.x + (wc.bL.x - wc.aL.x) * u) * CELL, (wc.aL.y + (wc.bL.y - wc.aL.y) * u) * CELL];
+                const Rp = (u) => [(wc.aR.x + (wc.bR.x - wc.aR.x) * u) * CELL, (wc.aR.y + (wc.bR.y - wc.aR.y) * u) * CELL];
                 const spans = (e.ops || []).map((o, oi) => { const hp = (o.w / vd.len) / 2; return { lo: Math.max(0, o.c - hp), hi: Math.min(1, o.c + hp), oi }; }).sort((a, b) => a.lo - b.lo);
-                // butt-capped wall pieces between the openings (no round caps bleeding into the gap)
-                const piece = (u0, u1) => { if (u1 - u0 < 1e-4) return; const A = P0(u0), B = P0(u1); g.append(svgEl('line', { x1: A[0], y1: A[1], x2: B[0], y2: B[1], stroke: col, 'stroke-width': th, 'stroke-linecap': 'butt', class: 'gp-wall' + (selE ? ' sel' : '') })); };
+                // filled, mitre-joined wall body — drawn in pieces so openings leave clean gaps
+                const piece = (u0, u1) => { if (u1 - u0 < 1e-4) return; const l0 = Lp(u0), l1 = Lp(u1), r1 = Rp(u1), r0 = Rp(u0); g.append(svgEl('polygon', { points: l0[0] + ',' + l0[1] + ' ' + l1[0] + ',' + l1[1] + ' ' + r1[0] + ',' + r1[1] + ' ' + r0[0] + ',' + r0[1], fill: col, class: 'gp-wallpoly' + (selE ? ' sel' : '') })); };
                 let t0 = 0; for (const sp of spans) { piece(t0, sp.lo); t0 = sp.hi; } piece(t0, 1);
-                // rounded corner joints at the (averaged-offset) shared nodes, so corners fill cleanly
-                [nodeJoint(e.a), nodeJoint(e.b)].forEach((pt) => g.append(svgEl('circle', { cx: pt.x * CELL, cy: pt.y * CELL, r: th / 2, fill: col, class: 'gp-walljoint' })));
                 spans.forEach((sp) => drawOpening(g, vd, e, sp.oi, CELL));
                 if (P.mode === 'plan' && vd.len > 0.3) {
                     let nx = -vd.dy, ny = vd.dx; const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;

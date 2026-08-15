@@ -1329,6 +1329,9 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-wallg text{pointer-events:none}
 .gp-wall{stroke-linejoin:round}
 .gp-wall.sel{stroke:#ffffff}
+/* filled, mitre-joined wall polygon */
+.gp-wallpoly{stroke:none;stroke-linejoin:round}
+.gp-wallpoly.sel{stroke:#ffffff;stroke-width:1.5}
 .gp-wnode{fill:#0b1620;stroke:#8fe0d4;stroke-width:2;cursor:grab}
 .gp-wnode.sel{fill:#8fe0d4}
 .gp-wnode.chain{fill:#2ee6cf;stroke:none}
