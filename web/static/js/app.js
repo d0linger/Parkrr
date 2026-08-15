@@ -4787,6 +4787,12 @@
             // (+margins) up to the budget, so a short hall isn't marooned in a tall box.
             const boxH = P.maxed ? maxBudget : Math.min(maxBudget, ph + 2 * M + 2); // +2 = the wrapper's 1px borders (border-box), else a 2px scrollbar shows
             planWrap.style.height = boxH + 'px';
+            // Centre the floor in its wrapper: split the spare space to both sides so a plan that
+            // doesn't fill the viewport sits centred (no lopsided empty band). Margins collapse to
+            // 0 the moment the content overflows, so panning/scrolling is unaffected.
+            const freeW = Math.max(0, (planWrap.clientWidth || pw) - pw), freeH = Math.max(0, boxH - ph);
+            planEl.style.marginLeft = Math.floor(freeW / 2) + 'px';
+            planEl.style.marginTop = Math.floor(freeH / 2) + 'px';
             draw();
         }
         const resizeH = () => { if (!root.isConnected) { window.removeEventListener('resize', resizeH); return; } layout(); };
@@ -5090,12 +5096,17 @@
             const corner = (ni, ei) => {
                 const list = inc[ni], k = list.findIndex((h) => h.ei === ei), he = list[k], n = list.length;
                 const th = E[ei].thick || 0.24, o = offs[ei], base = { x: N[ni].x + o.ox, y: N[ni].y + o.oy }, nx = -he.dy, ny = he.dx, MIT = th * 6;
-                let left = { x: base.x + nx * th / 2, y: base.y + ny * th / 2 }, right = { x: base.x - nx * th / 2, y: base.y - ny * th / 2 };
+                const oth = he.ei === ei ? (E[ei].a === ni ? N[E[ei].b] : N[E[ei].a]) : null, eL = oth ? Math.hypot(oth.x - N[ni].x, oth.y - N[ni].y) : 1e9;
+                const lp = { x: base.x + nx * th / 2, y: base.y + ny * th / 2 }, rp = { x: base.x - nx * th / 2, y: base.y - ny * th / 2 };
+                let left = lp, right = rp;
+                // Accept a mitre only if it neither exceeds the mitre limit NOR overshoots more than
+                // half this edge's length along it — that stops spikes when two nodes sit close.
+                const ok = (M, p0) => M && Math.hypot(M.x - N[ni].x, M.y - N[ni].y) <= MIT && Math.abs((M.x - p0.x) * he.dx + (M.y - p0.y) * he.dy) <= eL * 0.5;
                 if (n >= 2) {
                     const nb = list[(k + 1) % n]; if (nb.ei !== ei) { const thN = E[nb.ei].thick || 0.24, oN = offs[nb.ei], bx = N[ni].x + oN.ox, by = N[ni].y + oN.oy, nnx = -nb.dy, nny = nb.dx;
-                        const M = X(left.x, left.y, he.dx, he.dy, bx - nnx * thN / 2, by - nny * thN / 2, nb.dx, nb.dy); if (M && Math.hypot(M.x - N[ni].x, M.y - N[ni].y) <= MIT) left = M; }
+                        const M = X(lp.x, lp.y, he.dx, he.dy, bx - nnx * thN / 2, by - nny * thN / 2, nb.dx, nb.dy); if (ok(M, lp)) left = M; }
                     const pb = list[(k - 1 + n) % n]; if (pb.ei !== ei) { const thP = E[pb.ei].thick || 0.24, oP = offs[pb.ei], bx = N[ni].x + oP.ox, by = N[ni].y + oP.oy, ppx = -pb.dy, ppy = pb.dx;
-                        const M = X(right.x, right.y, he.dx, he.dy, bx + ppx * thP / 2, by + ppy * thP / 2, pb.dx, pb.dy); if (M && Math.hypot(M.x - N[ni].x, M.y - N[ni].y) <= MIT) right = M; }
+                        const M = X(rp.x, rp.y, he.dx, he.dy, bx + ppx * thP / 2, by + ppy * thP / 2, pb.dx, pb.dy); if (ok(M, rp)) right = M; }
                 }
                 return { left, right };
             };
@@ -5253,8 +5264,20 @@
             _encKey = null; layout();
             planWrap.scrollLeft = Math.max(0, sl + dx * P.CELL); planWrap.scrollTop = Math.max(0, st + dy * P.CELL);
         }
-        // Equal padding AND refit the scale to the content (Einpassen / cleanup after discard).
-        function fitView() { P.base = null; P.zoom = 1; equalizePadding(); }
+        // Zoom-to-fit: hug the content AABB with a small RELATIVE margin (≈5 % of the larger
+        // side, clamped 0.4–1.5 m — not a fixed 2 m that dwarfs a small plan), refit the scale so
+        // it fills the viewport, and let layout() centre it. This is the Einpassen / fullscreen fit.
+        function fitView() {
+            const bb = contentBBox();
+            if (!bb) { P.base = null; P.zoom = 1; equalizePadding(); return; }
+            const w = bb.maxX - bb.minX, h = bb.maxY - bb.minY;
+            const pad = Math.min(1.5, Math.max(0.4, Math.max(w, h) * 0.05));
+            const dx = round2(pad - bb.minX), dy = round2(pad - bb.minY);
+            if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) shiftWorld(dx, dy);
+            P.Wm = Math.max(8, round2(w + 2 * pad)); P.Hm = Math.max(6, round2(h + 2 * pad));
+            P.base = null; P.zoom = 1; _encKey = null; _eoffKey = null; _wcKey = null;
+            layout();
+        }
 
         // ---- automatic Parkfläche: the area ENCLOSED by the drawn walls ----
         // Walls (+ openings) are the physical building boundary. We rasterise, flood-fill
@@ -5447,11 +5470,15 @@
                 const oa = { x: (wc.aL.x + wc.aR.x) / 2, y: (wc.aL.y + wc.aR.y) / 2 }, ob = { x: (wc.bL.x + wc.bR.x) / 2, y: (wc.bL.y + wc.bR.y) / 2 };
                 const vd = { a: oa, b: ob, dx: ob.x - oa.x, dy: ob.y - oa.y, len: Math.hypot(ob.x - oa.x, ob.y - oa.y) }; if (vd.len < 0.02) return;
                 const P0 = (u) => [(oa.x + vd.dx * u) * CELL, (oa.y + vd.dy * u) * CELL];
-                const Lp = (u) => [(wc.aL.x + (wc.bL.x - wc.aL.x) * u) * CELL, (wc.aL.y + (wc.bL.y - wc.aL.y) * u) * CELL];
-                const Rp = (u) => [(wc.aR.x + (wc.bR.x - wc.aR.x) * u) * CELL, (wc.aR.y + (wc.bR.y - wc.aR.y) * u) * CELL];
+                // Boundary point at param u: the true mitre corner at the wall ENDS (u=0/1), but a
+                // PERPENDICULAR cut everywhere in between — so an opening punches a clean, square
+                // hole (the mitre-length ≠ centre-length mismatch no longer bleeds wall into the gap).
+                const perpx = -vd.dy / vd.len, perpy = vd.dx / vd.len, hw = (e.thick || 0.24) / 2;
+                const leftAt = (u) => u <= 1e-6 ? [wc.aL.x * CELL, wc.aL.y * CELL] : u >= 1 - 1e-6 ? [wc.bL.x * CELL, wc.bL.y * CELL] : [(oa.x + vd.dx * u + perpx * hw) * CELL, (oa.y + vd.dy * u + perpy * hw) * CELL];
+                const rightAt = (u) => u <= 1e-6 ? [wc.aR.x * CELL, wc.aR.y * CELL] : u >= 1 - 1e-6 ? [wc.bR.x * CELL, wc.bR.y * CELL] : [(oa.x + vd.dx * u - perpx * hw) * CELL, (oa.y + vd.dy * u - perpy * hw) * CELL];
                 const spans = (e.ops || []).map((o, oi) => { const hp = (o.w / vd.len) / 2; return { lo: Math.max(0, o.c - hp), hi: Math.min(1, o.c + hp), oi }; }).sort((a, b) => a.lo - b.lo);
                 // filled, mitre-joined wall body — drawn in pieces so openings leave clean gaps
-                const piece = (u0, u1) => { if (u1 - u0 < 1e-4) return; const l0 = Lp(u0), l1 = Lp(u1), r1 = Rp(u1), r0 = Rp(u0); g.append(svgEl('polygon', { points: l0[0] + ',' + l0[1] + ' ' + l1[0] + ',' + l1[1] + ' ' + r1[0] + ',' + r1[1] + ' ' + r0[0] + ',' + r0[1], fill: col, class: 'gp-wallpoly' + (selE ? ' sel' : '') })); };
+                const piece = (u0, u1) => { if (u1 - u0 < 1e-4) return; const l0 = leftAt(u0), l1 = leftAt(u1), r1 = rightAt(u1), r0 = rightAt(u0); g.append(svgEl('polygon', { points: l0[0] + ',' + l0[1] + ' ' + l1[0] + ',' + l1[1] + ' ' + r1[0] + ',' + r1[1] + ' ' + r0[0] + ',' + r0[1], fill: col, class: 'gp-wallpoly' + (selE ? ' sel' : '') })); };
                 let t0 = 0; for (const sp of spans) { piece(t0, sp.lo); t0 = sp.hi; } piece(t0, 1);
                 spans.forEach((sp) => drawOpening(g, vd, e, sp.oi, CELL));
                 if (P.mode === 'plan' && vd.len > 0.3) {
@@ -5926,7 +5953,9 @@
 
         // ---- mode / maximize ----
         function setMode(m) { P.mode = m; root.dataset.mode = m; P.sel = null; P.editMode = false; P.calib = false; P.tool = null; P.chain = null; P.openStart = null; P.preview = null; P.structEdit = false; P.structSel = null; P.chainAnchor = null; P.guide = null; P.attach = null; hideLen(); hideVertMenu(); ctitle.textContent = m === 'plan' ? 'Garagenplaner' : 'Digitaler Zwilling'; rebuildSwitch(); draw(); }
-        function toggleMax(force) { P.maxed = force == null ? !P.maxed : force; root.classList.toggle('maxed', P.maxed); maxBtn.textContent = P.maxed ? '⤢' : '⛶'; if (!P.maxed) { rail.style.left = ''; rail.style.top = ''; rail.style.right = ''; } setTimeout(layout, 20); }
+        // Re-fit on enter AND exit so the plan fills whichever viewport we land in (entering
+        // fullscreen used to keep the small windowed scale → a tiny plan marooned in a huge canvas).
+        function toggleMax(force) { P.maxed = force == null ? !P.maxed : force; root.classList.toggle('maxed', P.maxed); maxBtn.textContent = P.maxed ? '⤢' : '⛶'; if (!P.maxed) { rail.style.left = ''; rail.style.top = ''; rail.style.right = ''; } setTimeout(() => { if (P.walls.edges.length) fitView(); else layout(); }, 20); }
         // In fullscreen the rail floats over the canvas and can be dragged by any
         // card header ("dynamisch drüberliegend und verschiebbar").
         let railDrag = null;
