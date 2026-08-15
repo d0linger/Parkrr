@@ -175,6 +175,14 @@ func TestInputLengthValidation(t *testing.T) {
 			errMsg:     "start_date is too long",
 		},
 		{
+			name:       "CreatePayment: PaidOn too long",
+			path:       "/api/persons/1/payments",
+			method:     "POST",
+			body:       paymentRequest{Amount: 10, PaidOn: longDate},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "paid_on is too long",
+		},
+		{
 			name:       "CreateAgreement: StartDate too long",
 			path:       "/api/persons/1/agreements",
 			method:     "POST",
@@ -255,6 +263,9 @@ func TestInputLengthValidation(t *testing.T) {
 			case "CreateRecurringCharge: StartDate too long":
 				req.SetPathValue("id", "1")
 				h.CreateRecurringCharge(w, req)
+			case "CreatePayment: PaidOn too long":
+				req.SetPathValue("id", "1")
+				h.CreatePayment(w, req)
 			case "SaveBackupSchedule: Volume cron too long", "SaveBackupSchedule: S3 cron too long":
 				h.SaveBackupSchedule(w, req)
 			}
