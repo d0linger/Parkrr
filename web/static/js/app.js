@@ -4529,7 +4529,8 @@
         // aufschlagende Tür can be flagged (soft warning) where it overlaps a vehicle/Stellfläche (S3-A).
         function doorSweepQuad(e, o) {
             const v = edgeVec(e); if (v.len < 0.02) return null; const hp = (o.w / v.len) / 2, w = o.w;
-            const A = { x: v.a.x + v.dx * (o.c - hp), y: v.a.y + v.dy * (o.c - hp) }, B = { x: v.a.x + v.dx * (o.c + hp), y: v.a.y + v.dy * (o.c + hp) };
+            const off = (edgeOffs() || [])[P.walls.edges.indexOf(e)] || { ox: 0, oy: 0 }; // door renders on the offset wall, so test the sweep there too (F5)
+            const A = { x: v.a.x + v.dx * (o.c - hp) + off.ox, y: v.a.y + v.dy * (o.c - hp) + off.oy }, B = { x: v.a.x + v.dx * (o.c + hp) + off.ox, y: v.a.y + v.dy * (o.c + hp) + off.oy };
             const nx = -v.dy / v.len, ny = v.dx / v.len, s = o.side || 1, hinge = o.hinge ? B : A, jamb = o.hinge ? A : B;
             return [[hinge.x, hinge.y], [jamb.x, jamb.y], [jamb.x + nx * s * w, jamb.y + ny * s * w], [hinge.x + nx * s * w, hinge.y + ny * s * w]];
         }
@@ -4749,13 +4750,13 @@
         // ---- undo/redo (index-based history over hall geometry + placement
         // geometry, not existence). The current state always lives at hist[hpos];
         // pushUndo() records the state AFTER a mutation, undo/redo step the pointer. ----
-        const snapshot = () => JSON.stringify({ floor: P.floor, Wm: P.Wm, Hm: P.Hm, tor: P.tor, load: P.load, shape: P.shape, excl: P.excl, walls: P.walls, spots: P.spots.map((s) => ({ _id: s._id, x: s.x, y: s.y, w: s.w, h: s.h, rot: s.rot, status: s.status })) });
+        const snapshot = () => JSON.stringify({ floor: P.floor, Wm: P.Wm, Hm: P.Hm, tor: P.tor, load: P.load, shape: P.shape, excl: P.excl, walls: P.walls, spots: P.spots.map((s) => ({ _id: s._id, x: s.x, y: s.y, w: s.w, h: s.h, rot: s.rot, status: s.status, noBuf: !!s.noBuf })) });
         // restore reverts local state; a spot is flagged _dirty ONLY when a value
         // actually changed, so undo/redo can re-persist exactly those to the server.
         function restore(js) {
             const st = JSON.parse(js); P.floor = st.floor; P.Wm = st.Wm; P.Hm = st.Hm; P.tor = st.tor; P.load = st.load; P.shape = st.shape; P.excl = st.excl; if (st.walls) P.walls = st.walls; P.structSel = null;
             st.spots.forEach((g) => { const s = P.spots.find((x) => x._id === g._id); if (!s) return;
-                if (s.x !== g.x || s.y !== g.y || s.w !== g.w || s.h !== g.h || s.rot !== g.rot || s.status !== g.status) { s.x = g.x; s.y = g.y; s.w = g.w; s.h = g.h; s.rot = g.rot; s.status = g.status; s._dirty = true; } });
+                if (s.x !== g.x || s.y !== g.y || s.w !== g.w || s.h !== g.h || s.rot !== g.rot || s.status !== g.status || !!s.noBuf !== !!g.noBuf) { s.x = g.x; s.y = g.y; s.w = g.w; s.h = g.h; s.rot = g.rot; s.status = g.status; s.noBuf = !!g.noBuf; s._dirty = true; } });
         }
         function pushUndo() { P.hist = P.hist.slice(0, P.hpos + 1); P.hist.push(snapshot()); if (P.hist.length > 80) P.hist.shift(); P.hpos = P.hist.length - 1; }
         function commitGeom(msg, kind) { pushUndo(); markDirty(); draw(); if (msg) toast(msg, kind || ''); }
@@ -5161,7 +5162,7 @@
         function splitEdgeAt(ei, t) {
             const e = P.walls.edges[ei], v = edgeVec(e), ni = addNode(v.a.x + t * v.dx, v.a.y + t * v.dy);
             if (ni === e.a || ni === e.b) return ni;
-            const opsA = [], opsB = []; (e.ops || []).forEach((o) => { if (o.c <= t) opsA.push({ c: t < 1e-6 ? 0 : o.c / t, w: o.w, kind: o.kind }); else opsB.push({ c: (o.c - t) / (1 - t), w: o.w, kind: o.kind }); });
+            const opsA = [], opsB = []; (e.ops || []).forEach((o) => { const base = { w: o.w, kind: o.kind, side: o.side, hinge: o.hinge, frame: o.frame }; if (o.c <= t) opsA.push({ ...base, c: t < 1e-6 ? 0 : o.c / t }); else opsB.push({ ...base, c: (o.c - t) / (1 - t) }); }); // keep door side/hinge/frame across a split (F2)
             P.walls.edges.splice(ei, 1, { a: e.a, b: ni, kind: e.kind, thick: e.thick, ops: opsA }, { a: ni, b: e.b, kind: e.kind, thick: e.thick, ops: opsB });
             return ni;
         }
@@ -5179,8 +5180,10 @@
                     const nA = P.walls.nodes[A], nB = P.walls.nodes[ni], nC = P.walls.nodes[C];
                     const lAB = Math.hypot(nB.x - nA.x, nB.y - nA.y), lBC = Math.hypot(nC.x - nB.x, nC.y - nB.y), tot = lAB + lBC || 1;
                     const ops = [];
-                    (e1.ops || []).forEach((o) => { const fromA = (e1.a === A ? o.c : 1 - o.c) * lAB; ops.push({ c: Math.max(0, Math.min(1, fromA / tot)), w: o.w, kind: o.kind }); });
-                    (e2.ops || []).forEach((o) => { const fromB = (e2.a === ni ? o.c : 1 - o.c) * lBC; ops.push({ c: Math.max(0, Math.min(1, (lAB + fromB) / tot)), w: o.w, kind: o.kind }); });
+                    // Keep door side/hinge/frame; when the merge reverses an edge's direction, flip
+                    // the swing side + hinge end so the door still points the same way in the world (F3).
+                    (e1.ops || []).forEach((o) => { const rev = e1.a !== A, fromA = (rev ? 1 - o.c : o.c) * lAB; ops.push({ c: Math.max(0, Math.min(1, fromA / tot)), w: o.w, kind: o.kind, side: rev ? -(o.side || 1) : o.side, hinge: rev ? (o.hinge ? 0 : 1) : o.hinge, frame: o.frame }); });
+                    (e2.ops || []).forEach((o) => { const rev = e2.a !== ni, fromB = (rev ? 1 - o.c : o.c) * lBC; ops.push({ c: Math.max(0, Math.min(1, (lAB + fromB) / tot)), w: o.w, kind: o.kind, side: rev ? -(o.side || 1) : o.side, hinge: rev ? (o.hinge ? 0 : 1) : o.hinge, frame: o.frame }); });
                     P.walls.edges.splice(hi, 1); P.walls.edges.splice(lo, 1);
                     P.walls.edges.push({ a: A, b: C, kind: e1.kind, thick: e1.thick, ops });
                 } else { P.walls.edges.splice(hi, 1); P.walls.edges.splice(lo, 1); }
@@ -5238,7 +5241,8 @@
         function swapDoorHinge() { const d = doorSel(); if (!d) return; d.o.hinge = d.o.hinge ? 0 : 1; pushUndo(); markDirty(); draw(); toast('Anschlag gewechselt (links/rechts)'); }
         function openingHandleAt(p, ei, oi, r) {
             const e = P.walls.edges[ei]; if (!e || !(e.ops || [])[oi]) return null; const v = edgeVec(e), o = e.ops[oi], hp = (o.w / v.len) / 2;
-            const pLo = { x: v.a.x + v.dx * (o.c - hp), y: v.a.y + v.dy * (o.c - hp) }, pHi = { x: v.a.x + v.dx * (o.c + hp), y: v.a.y + v.dy * (o.c + hp) };
+            const off = (edgeOffs() || [])[ei] || { ox: 0, oy: 0 }; // grips render on the offset centre line (F6)
+            const pLo = { x: v.a.x + v.dx * (o.c - hp) + off.ox, y: v.a.y + v.dy * (o.c - hp) + off.oy }, pHi = { x: v.a.x + v.dx * (o.c + hp) + off.ox, y: v.a.y + v.dy * (o.c + hp) + off.oy };
             if (Math.hypot(p.x - pLo.x, p.y - pLo.y) < r) return 'lo';
             if (Math.hypot(p.x - pHi.x, p.y - pHi.y) < r) return 'hi';
             return null;
@@ -5381,11 +5385,14 @@
             for (const e of wb) {
                 const rad = (e.rot || 0) * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
                 const cx = e.x + e.w / 2, cy = e.y + e.h / 2, hh = halfAABB(e);
-                const gx0 = Math.max(0, Math.floor((cx - hh.hx - minX) / GS)), gx1 = Math.min(cols - 1, Math.ceil((cx + hh.hx - minX) / GS));
-                const gy0 = Math.max(0, Math.floor((cy - hh.hy - minY) / GSy)), gy1 = Math.min(rows - 1, Math.ceil((cy + hh.hy - minY) / GSy));
+                const gx0 = Math.max(0, Math.floor((cx - hh.hx - minX) / GS) - 1), gx1 = Math.min(cols - 1, Math.ceil((cx + hh.hx - minX) / GS) + 1);
+                const gy0 = Math.max(0, Math.floor((cy - hh.hy - minY) / GSy) - 1), gy1 = Math.min(rows - 1, Math.ceil((cy + hh.hy - minY) / GSy) + 1);
+                // Conservative: block a cell whose centre is within HALF a cell of the wall — a wall
+                // thinner than the grid (GS > thickness on large plans) then still blocks a full band
+                // instead of letting the exterior flood leak straight through (F1).
                 for (let gy = gy0; gy <= gy1; gy++) for (let gx = gx0; gx <= gx1; gx++) {
                     const px = minX + (gx + 0.5) * GS, py = minY + (gy + 0.5) * GSy, dx = px - cx, dy = py - cy;
-                    if (Math.abs(dx * cos + dy * sin) <= e.w / 2 && Math.abs(-dx * sin + dy * cos) <= e.h / 2) blocked[gy * cols + gx] = 1;
+                    if (Math.abs(dx * cos + dy * sin) <= e.w / 2 + GS / 2 && Math.abs(-dx * sin + dy * cos) <= e.h / 2 + GSy / 2) blocked[gy * cols + gx] = 1;
                 }
             }
             const seen = new Uint8Array(N), stack = [];
@@ -6399,8 +6406,9 @@
         // initial paint — sync the floor bound to any loaded walls first
         if (P.walls.edges.length) refreshFloorFromWalls();
         setMode(P.mode);
-        pushUndo();
-        requestAnimationFrame(() => { if (P.walls.edges.length) fitView(); else layout(); if (focusTarget != null) requestAnimationFrame(() => focusSpot(focusTarget)); });
+        // Fit FIRST, then take the undo baseline — fitView() canonicalises coordinates (shiftWorld),
+        // so recording the baseline afterwards keeps hist[0] == what's on screen (no undo jump) (F4).
+        requestAnimationFrame(() => { if (P.walls.edges.length) fitView(); else layout(); pushUndo(); if (focusTarget != null) requestAnimationFrame(() => focusSpot(focusTarget)); });
     }
 
     function openMenu() {
