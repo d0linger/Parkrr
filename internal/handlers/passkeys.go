@@ -176,7 +176,7 @@ func (h *AuthHandler) PasskeyRegisterFinish(w http.ResponseWriter, r *http.Reque
 	u, _ := auth.UserFrom(r.Context())
 	// Throttle: cap repeated failed attestation verifications (CPU-heavy) per
 	// user, matching the TOTP-enable ceremony.
-	key, _, ok := h.checkRateLimit(w, r, u.Username)
+	key, ip, ok := h.checkRateLimit(w, r, u.Username)
 	if !ok {
 		return
 	}
@@ -194,12 +194,12 @@ func (h *AuthHandler) PasskeyRegisterFinish(w http.ResponseWriter, r *http.Reque
 			writeError(w, http.StatusInternalServerError, "could not register passkey")
 			return
 		}
-		h.Limiter.RecordFailure(key)
+		h.recordReauthFailure(key, ip)
 		slog.Warn("passkey registration failed", "user", u.Username, "err", err)
 		writeError(w, http.StatusBadRequest, "could not verify passkey")
 		return
 	}
-	h.Limiter.Reset(key)
+	h.resetReauth(key, ip)
 	h.audit(r, "create", "passkey", u.ID, u.Username+" registered a passkey")
 	writeJSON(w, http.StatusCreated, map[string]string{"status": "registered"})
 }
