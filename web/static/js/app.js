@@ -2,6 +2,25 @@
 (() => {
     'use strict';
 
+    // ---------- client-error telemetry (AR4): report uncaught SPA errors to the
+    // server (auth-gated, rate-limited, no PII). Capped per session so a repeating
+    // error can't spam. Never throws itself. ----------
+    const APP_VERSION = 'v181';
+    (function () {
+        let sent = 0;
+        const report = (message, stack) => {
+            if (sent >= 5 || !message) return; sent++;
+            try {
+                fetch('/api/client-error', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+                    body: JSON.stringify({ message: String(message).slice(0, 500), stack: String(stack || '').slice(0, 4000), url: location.pathname, version: APP_VERSION }),
+                }).catch(() => { });
+            } catch (e) { /* never let reporting break the app */ }
+        };
+        window.addEventListener('error', (e) => report(e.message, e.error && e.error.stack));
+        window.addEventListener('unhandledrejection', (e) => { const r = e.reason; report((r && r.message) || 'unhandledrejection', r && r.stack); });
+    })();
+
     // ---------- utilities ----------
     const $ = (sel, root = document) => root.querySelector(sel);
     const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));

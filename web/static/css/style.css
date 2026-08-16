@@ -1650,3 +1650,14 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 a.portal-row.link { text-decoration: none; color: inherit; }
 a.portal-row.link:hover { color: var(--accent-text); }
 .portal-foot { text-align: center; font-size: .8rem; padding-bottom: env(safe-area-inset-bottom); }
+
+/* QW4 — global reduced-motion safety net: neutralise any animation/transition not
+   already handled per-component, for vestibular-sensitive users (WCAG 2.3.3). */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: .001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .001ms !important;
+        scroll-behavior: auto !important;
+    }
+}
