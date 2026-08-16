@@ -3,6 +3,7 @@ package server
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -243,6 +244,9 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/backup/s3/file/{name}", admin(hf(h.BackupS3Download)))
 	mux.Handle("POST /api/backup/restore-s3", admin(hf(h.BackupRestoreS3)))
 
+	// Client-side error telemetry (SPA window.onerror → server log).
+	mux.Handle("POST /api/client-error", authed(hf(h.ClientError)))
+
 	// --- Health, readiness and metrics ---
 	registerObservability(mux, pool, metricsToken, metricsRequireAuth)
 
@@ -267,7 +271,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	indexHTML = fingerprintAsset(indexHTML, staticFS, "/js/app.js", "js/app.js")
 	indexHTML = fingerprintAsset(indexHTML, staticFS, "/css/style.css", "css/style.css")
 
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("GET /", gzipStatic(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/")
 		// Service worker must be served from the root scope.
 		if path == "sw.js" {
@@ -300,7 +304,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
 		_, _ = w.Write(indexHTML)
-	})
+	})))
 
 	return buildChain(authMgr, mux, rateLimitPerMin, stop), nil
 }
@@ -382,6 +386,77 @@ func limitRequestBody(next http.Handler) http.Handler {
 			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// gzipCompressible reports whether a Content-Type is worth gzip-encoding.
+func gzipCompressible(ct string) bool {
+	ct = strings.ToLower(ct)
+	for _, p := range []string{"text/", "application/javascript", "application/json", "image/svg+xml", "application/manifest+json", "application/wasm"} {
+		if strings.HasPrefix(ct, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// gzipResponseWriter lazily starts gzip on the first write, deciding from the
+// Content-Type the inner handler set. Non-compressible, already-encoded, 204/304
+// and partial responses pass through untouched.
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	gz          *gzip.Writer
+	wroteHeader bool
+	passthrough bool
+}
+
+func (g *gzipResponseWriter) WriteHeader(code int) {
+	if g.wroteHeader {
+		return
+	}
+	g.wroteHeader = true
+	h := g.Header()
+	if code == http.StatusNoContent || code == http.StatusNotModified ||
+		h.Get("Content-Encoding") != "" || !gzipCompressible(h.Get("Content-Type")) {
+		g.passthrough = true
+		g.ResponseWriter.WriteHeader(code)
+		return
+	}
+	h.Del("Content-Length") // length changes once compressed
+	h.Set("Content-Encoding", "gzip")
+	h.Add("Vary", "Accept-Encoding")
+	g.gz = gzip.NewWriter(g.ResponseWriter)
+	g.ResponseWriter.WriteHeader(code)
+}
+
+func (g *gzipResponseWriter) Write(b []byte) (int, error) {
+	if !g.wroteHeader {
+		g.WriteHeader(http.StatusOK)
+	}
+	if g.passthrough {
+		return g.ResponseWriter.Write(b)
+	}
+	return g.gz.Write(b)
+}
+
+func (g *gzipResponseWriter) Close() {
+	if g.gz != nil {
+		_ = g.gz.Close()
+	}
+}
+
+// gzipStatic transparently gzip-encodes compressible static/SPA responses when
+// the client advertises gzip support. Range requests bypass it (gzip and byte
+// ranges don't mix); the FileServer's fingerprinted immutable caching is kept.
+func gzipStatic(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") || r.Header.Get("Range") != "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		gw := &gzipResponseWriter{ResponseWriter: w}
+		defer gw.Close()
+		next.ServeHTTP(gw, r)
 	})
 }
 
