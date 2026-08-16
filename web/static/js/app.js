@@ -4187,6 +4187,7 @@
 
     // --- pure geometry (metres) ---
     const polyArea = (pts) => { let a = 0; for (let i = 0; i < pts.length; i++) { const j = (i + 1) % pts.length; a += pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1]; } return Math.abs(a) / 2; };
+    const ringAreaS = (pts) => { let a = 0; for (let i = 0; i < pts.length; i++) { const j = (i + 1) % pts.length; a += pts[i].x * pts[j].y - pts[j].x * pts[i].y; } return a / 2; }; // signed area of a {x,y} ring
     const polyPerim = (pts) => { let s = 0; for (let i = 0; i < pts.length; i++) { const a = pts[i], b = pts[(i + 1) % pts.length]; s += Math.hypot(b[0] - a[0], b[1] - a[1]); } return s; };
     const pip = (x, y, pts) => { let inside = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1]; if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) inside = !inside; } return inside; };
     const ccw = (p, q, r) => (r[1] - p[1]) * (q[0] - p[0]) > (q[1] - p[1]) * (r[0] - p[0]);
@@ -4490,8 +4491,8 @@
                 plannerSymbol: s.planner_symbol || null, photoUrl: s.photo_id ? '/api/photos/' + s.photo_id : null,
                 x: num(g.x, 1), y: num(g.y, 1), w: num(g.w, s.length_m || catFoot(s.vehicle_type)[0]), h: num(g.h, s.width_m || catFoot(s.vehicle_type)[1]), rot: num(g.rot, 0), status: g.status || 'busy', noBuf: !!g.noBuf, _dirty: false }; }),
             palette, plannerIcons,
-            mode: 'manage', editMode: false, snap: true, gridStep: 0.5, autoSnap: true, calib: false, autoArea: true, ortho: false, zoom: 1, base: null, buffer: false, bufferM: 1, roomSel: null, wallRef: (geo.wallRef === 'inner' || geo.wallRef === 'outer') ? geo.wallRef : 'axis', sel: null, selEdge: null,
-            tool: null, chain: null, preview: null, structSel: null, structEdit: false, // wall draw/edit state
+            mode: 'manage', snap: true, gridStep: 0.5, autoSnap: true, calib: false, autoArea: true, ortho: false, zoom: 1, base: null, buffer: false, bufferM: 1, roomSel: null, wallRef: (geo.wallRef === 'inner' || geo.wallRef === 'outer') ? geo.wallRef : 'axis', sel: null,
+            tool: null, chain: null, preview: null, structSel: null, // wall draw/edit state
             openStart: null, snapHint: null, drawKind: 'wall_ext', openKind: 'door', wallThick: null, // opening draw + last-used types + wall-thickness override (m)
             render: (function () { try { return localStorage.getItem('gp.render') || 'symbol'; } catch (e) { return 'symbol'; } })(),
             maxed: false, CELL: 30, uid: 1, hist: [], hpos: -1, dirty: false,
@@ -4528,10 +4529,9 @@
         // Door leaf sweep as a conservative quad (the w×w square on the hinge's swing side), so an
         // aufschlagende Tür can be flagged (soft warning) where it overlaps a vehicle/Stellfläche (S3-A).
         function doorSweepQuad(e, o) {
-            const v = edgeVec(e); if (v.len < 0.02) return null; const hp = (o.w / v.len) / 2, w = o.w;
-            const off = (edgeOffs() || [])[P.walls.edges.indexOf(e)] || { ox: 0, oy: 0 }; // door renders on the offset wall, so test the sweep there too (F5)
-            const A = { x: v.a.x + v.dx * (o.c - hp) + off.ox, y: v.a.y + v.dy * (o.c - hp) + off.oy }, B = { x: v.a.x + v.dx * (o.c + hp) + off.ox, y: v.a.y + v.dy * (o.c + hp) + off.oy };
-            const nx = -v.dy / v.len, ny = v.dx / v.len, s = o.side || 1, hinge = o.hinge ? B : A, jamb = o.hinge ? A : B;
+            const v = edgeVec(e); if (v.len < 0.02) return null; const hp = (o.w / v.len) / 2, w = o.w, ei = P.walls.edges.indexOf(e);
+            const A = offCenterPt(ei, o.c - hp), B = offCenterPt(ei, o.c + hp); // sweep on the mitre-offset centre line where the door renders (F5/C3)
+            const nx = A.nx, ny = A.ny, s = o.side || 1, hinge = o.hinge ? B : A, jamb = o.hinge ? A : B;
             return [[hinge.x, hinge.y], [jamb.x, jamb.y], [jamb.x + nx * s * w, jamb.y + ny * s * w], [hinge.x + nx * s * w, hinge.y + ny * s * w]];
         }
         const sweepHitsSpot = (sw) => { if (!sw) return false; for (const b of P.spots) if (satOverlap(sw, quad(b))) return true; return false; };
@@ -4579,10 +4579,6 @@
         const stage = el('div', { class: 'gp-stage' }, canvas, rail);
         root.append(appbar, stage);
 
-        // edge-length editor (Garagenplaner)
-        const lenIn = el('input', { type: 'number', step: '0.01', min: '0.1', class: 'gp-lenin' });
-        const lenBox = el('div', { class: 'gp-lenbox' }, lenIn, el('span', { class: 'muted' }, 'm'));
-        lenBox.style.display = 'none'; planEl.append(lenBox);
         // Transparent capture layer for interactive wall drawing / node editing (plan mode).
         const drawOverlay = el('div', { class: 'gp-drawoverlay' }); drawOverlay.style.display = 'none'; planEl.append(drawOverlay);
         let nodeDrag = null, opDrag = null, zoneDrag = null, zoneDraw = null;
@@ -4650,21 +4646,8 @@
             wallPop.style.display = 'flex';
             if (showInput && document.activeElement !== wallLenIn) wallLenIn.value = val.toFixed(2);
         }
-        // Vertex context menu (shown on click, not permanently) — declutters the plan.
-        const vertMenu = el('div', { class: 'gp-vertmenu' }); vertMenu.style.display = 'none'; planEl.append(vertMenu);
-        function hideVertMenu() { vertMenu.style.display = 'none'; }
-        function showVertMenu(vi) {
-            vertMenu.innerHTML = '';
-            vertMenu.append(el('div', { class: 'gp-vm-title' }, 'Ecke ' + (vi + 1)));
-            if (P.floor.length > 3) { const del = el('button', { class: 'gp-vm-btn danger' }, '✕ Punkt löschen'); del.addEventListener('click', () => { P.floor.splice(vi, 1); hideVertMenu(); commitGeom('Punkt entfernt'); }); vertMenu.append(del); }
-            else vertMenu.append(el('div', { class: 'gp-vm-note' }, 'Mindestens 3 Ecken'));
-            let lx = P.floor[vi][0] * P.CELL, ly = P.floor[vi][1] * P.CELL - 12;
-            lx = Math.max(70, Math.min(P.Wm * P.CELL - 70, lx)); ly = Math.max(34, Math.min(P.Hm * P.CELL - 10, ly));
-            vertMenu.style.left = lx + 'px'; vertMenu.style.top = ly + 'px'; vertMenu.style.display = 'flex';
-        }
-        lenIn.addEventListener('pointerdown', (e) => e.stopPropagation());
-        lenIn.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') lenIn.blur(); });
-        lenIn.addEventListener('change', () => { if (P.selEdge == null) return; const L = parseFloat(lenIn.value); if (L > 0.05) { setEdgeLen(P.selEdge, L); } });
+        // (legacy floor-vertex context menu removed — the wall editor replaced it)
+        function hideVertMenu() { /* no-op: kept for the shared draw/mode-switch call sites */ }
 
         // ---- geometry mutations ----
         const snapV = (v, step) => (P.snap ? Math.round(v / step) * step : Math.round(v * 100) / 100);
@@ -4741,8 +4724,6 @@
             ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].forEach((dir) => { const h = el('div', { class: 'gp-rz gp-rz-' + dir }); h.dataset.rz = id; h.dataset.dir = dir; d.append(h); });
             const rot = el('div', { class: 'gp-rot', title: 'Drehen (Snap 15°, frei mit Alt)' }); rot.dataset.rotid = id; d.append(rot);
         }
-        function edgeLen(i) { const n = P.floor.length, a = P.floor[i], b = P.floor[(i + 1) % n]; return Math.hypot(b[0] - a[0], b[1] - a[1]); }
-        function setEdgeLen(i, L) { const n = P.floor.length, a = P.floor[i], b = P.floor[(i + 1) % n], d = Math.hypot(b[0] - a[0], b[1] - a[1]); if (d < 0.01 || !(L > 0)) return; const nb = [a[0] + (b[0] - a[0]) / d * L, a[1] + (b[1] - a[1]) / d * L]; nb[0] = Math.max(-100, Math.min(200, nb[0])); nb[1] = Math.max(-100, Math.min(200, nb[1])); P.floor[(i + 1) % n] = nb; refit(); pushUndo(); markDirty(); layout(); toast('Länge ' + L.toFixed(2) + ' m'); }
         // After a free floor edit, re-home the polygon into [0,Wm]×[0,Hm]: shift any
         // negative coords to origin and grow Wm/Hm to fit, so enlarging an edge works.
         function refit() { let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity; P.floor.forEach(([x, y]) => { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); }); const dx = minX < 0 ? -minX : 0, dy = minY < 0 ? -minY : 0; if (dx || dy) { P.floor = P.floor.map(([x, y]) => [x + dx, y + dy]); P.excl.forEach((e) => { e.x += dx; e.y += dy; }); P.spots.forEach((s) => { s.x += dx; s.y += dy; s._dirty = true; }); maxX += dx; maxY += dy; } P.Wm = Math.max(6, Math.ceil(maxX - 1e-6)); P.Hm = Math.max(5, Math.ceil(maxY - 1e-6)); clampAll(); }
@@ -4788,7 +4769,7 @@
         window.addEventListener('keydown', keyHandler);
         window.addEventListener('keyup', keyUpHandler);
 
-        function hideLen() { P.selEdge = null; lenBox.style.display = 'none'; }
+        function hideLen() { /* no-op stub — kept for the shared undo/mode-switch call sites */ }
 
         // ---- layout / sizing ----
         function layout() {
@@ -4874,9 +4855,7 @@
         }
         function drawFloor() {
             svg.innerHTML = '';
-            // While editing the floor the SVG must sit ABOVE the block layer so its
-            // vertex/edge/length handles receive pointer events (layer covers the plan).
-            svg.style.zIndex = (P.mode === 'plan' && P.editMode) ? '5' : '0';
+            svg.style.zIndex = '0'; // the SVG stays below the interaction overlay (walls define the plan)
             const CELL = P.CELL, s = ptsAttr();
             // grid pattern
             const defs = svgEl('defs');
@@ -4898,43 +4877,6 @@
             drawWalls();      // wall segments, openings and (in edit mode) node handles
             drawBuffers();    // per-side vehicle clearance bands (when enabled)
             drawWallPreview();// live chained-drawing / opening preview
-            // edit handles (Garagenplaner + editMode)
-            if (P.mode === 'plan' && P.editMode) {
-                const n = P.floor.length;
-                // Floor centroid (metres) → offset edge labels/handles INWARD so they
-                // aren't clipped when an edge sits on the canvas boundary.
-                let cX = 0, cY = 0, cA = 0; for (let k = 0; k < n; k++) { const [x0, y0] = P.floor[k], [x1, y1] = P.floor[(k + 1) % n]; const cr = x0 * y1 - x1 * y0; cA += cr; cX += (x0 + x1) * cr; cY += (y0 + y1) * cr; } if (Math.abs(cA) > 1e-6) { cX /= (3 * cA); cY /= (3 * cA); } else { cX = 0; cY = 0; P.floor.forEach(([x, y]) => { cX += x; cY += y; }); cX /= n; cY /= n; }
-                for (let i = 0; i < n; i++) {
-                    const a = P.floor[i], b = P.floor[(i + 1) % n];
-                    const hit = svgEl('line', { class: 'gp-edgehit', 'data-edge': i, x1: a[0] * CELL, y1: a[1] * CELL, x2: b[0] * CELL, y2: b[1] * CELL, stroke: 'transparent', 'stroke-width': 14 }); hit.style.cursor = 'move'; svg.append(hit);
-                    const vis = svgEl('line', { 'data-edge': i, x1: a[0] * CELL, y1: a[1] * CELL, x2: b[0] * CELL, y2: b[1] * CELL, class: i === P.selEdge ? 'gp-edge sel' : 'gp-edge' }); vis.style.pointerEvents = 'none'; svg.append(vis);
-                    const emx = (a[0] + b[0]) / 2, emy = (a[1] + b[1]) / 2, mx = emx * CELL, my = emy * CELL;
-                    // Offset the label PERPENDICULAR to the edge (not toward the centroid —
-                    // for concave shapes that pushes it ALONG the line into the "+"), on the
-                    // side that points inward (toward the centroid).
-                    const ex = b[0] - a[0], ey = b[1] - a[1]; let nx = -ey, ny = ex; const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
-                    if ((cX - emx) * nx + (cY - emy) * ny < 0) { nx = -nx; ny = -ny; }
-                    const tl = svgEl('text', { x: mx + nx * 26, y: my + ny * 26 + 3, 'text-anchor': 'middle', class: i === P.selEdge ? 'gp-edgelab sel' : 'gp-edgelab' }); tl.style.pointerEvents = 'none'; tl.textContent = edgeLen(i).toFixed(2) + ' m'; svg.append(tl);
-                    // Clickable "+" near the edge midpoint (offset inward) to insert a point.
-                    const addg = svgEl('g', { class: 'gp-edgeadd', 'data-add': i, transform: 'translate(' + mx + ' ' + my + ')' }); // on the line; label sits inward, so they don't overlap
-                    addg.append(svgEl('circle', { r: 7 }), svgEl('path', { d: 'M-3.5 0H3.5M0 -3.5V3.5' }));
-                    svg.append(addg);
-                }
-                for (let j = 0; j < n; j++) {
-                    svg.append(svgEl('circle', { class: 'gp-vertex', cx: P.floor[j][0] * CELL, cy: P.floor[j][1] * CELL, r: 6, 'data-vi': j }));
-                }
-                posLen();
-            } else { hideLen(); hideVertMenu(); }
-        }
-        function posLen() {
-            if (P.selEdge == null || P.mode !== 'plan' || !P.editMode) { lenBox.style.display = 'none'; return; }
-            const n = P.floor.length, a = P.floor[P.selEdge], b = P.floor[(P.selEdge + 1) % n];
-            const pw = P.Wm * P.CELL, ph = P.Hm * P.CELL;
-            // Clamp inside the plan so the input is never cut off at an edge.
-            let lx = (a[0] + b[0]) / 2 * P.CELL, ly = (a[1] + b[1]) / 2 * P.CELL - 18;
-            lx = Math.max(52, Math.min(pw - 52, lx)); ly = Math.max(20, Math.min(ph - 8, ly));
-            lenBox.style.left = lx + 'px'; lenBox.style.top = ly + 'px'; lenBox.style.display = 'flex';
-            if (document.activeElement !== lenIn) lenIn.value = edgeLen(P.selEdge).toFixed(2);
         }
         function positionBlock(d, b) {
             const bw = b.w * P.CELL, bh = b.h * P.CELL;
@@ -5142,10 +5084,20 @@
             _wc = E.map((e, ei) => { const a = N[e.a], b = N[e.b]; if (!a || !b) return null; const cA = corner(e.a, ei), cB = corner(e.b, ei); return { aL: cA.left, aR: cA.right, bL: cB.right, bR: cB.left }; });
             return _wc;
         }
+        // Point on the RENDERED (mitre-offset) centre line of edge ei at drawn-edge param oc, plus the
+        // unit wall normal there — so door sweeps / opening grips sit exactly under the drawn opening (C3).
+        function offCenterPt(ei, oc) {
+            const e = P.walls.edges[ei], v0 = edgeVec(e), wc = (wallCorners() || [])[ei];
+            const wx = v0.a.x + v0.dx * oc, wy = v0.a.y + v0.dy * oc;
+            if (!wc) { const L = v0.len || 1; return { x: wx, y: wy, nx: -v0.dy / L, ny: v0.dx / L }; }
+            const oa = { x: (wc.aL.x + wc.aR.x) / 2, y: (wc.aL.y + wc.aR.y) / 2 }, ob = { x: (wc.bL.x + wc.bR.x) / 2, y: (wc.bL.y + wc.bR.y) / 2 };
+            const dx = ob.x - oa.x, dy = ob.y - oa.y, L2 = dx * dx + dy * dy || 1, L = Math.sqrt(L2);
+            const cc = Math.max(0, Math.min(1, ((wx - oa.x) * dx + (wy - oa.y) * dy) / L2));
+            return { x: oa.x + dx * cc, y: oa.y + dy * cc, nx: -dy / L, ny: dx / L };
+        }
         // Lichtes (clear/inner) length of an edge = axis length minus half the thickness of the
         // walls meeting at each end (a room corner eats thick/2 of clear span on that side).
         function nodePerpHalf(ni, exceptEi) { let mx = 0; P.walls.edges.forEach((x, xi) => { if (xi === exceptEi) return; if (x.a === ni || x.b === ni) mx = Math.max(mx, x.thick || 0.24); }); return mx / 2; }
-        function edgeClearLen(ei) { const e = P.walls.edges[ei], v = edgeVec(e); return Math.max(0, v.len - nodePerpHalf(e.a, ei) - nodePerpHalf(e.b, ei)); }
         // Displayed dimension depends on the Bezug: inner ⇒ the drawn length is already the clear
         // span; axis ⇒ minus ½ wall per corner; outer ⇒ minus a full wall per corner.
         function labelLen(ei) { const e = P.walls.edges[ei], v = edgeVec(e); if (P.wallRef === 'inner') return v.len; if (P.wallRef === 'outer') return Math.max(0, v.len - 2 * nodePerpHalf(e.a, ei) - 2 * nodePerpHalf(e.b, ei)); return Math.max(0, v.len - nodePerpHalf(e.a, ei) - nodePerpHalf(e.b, ei)); }
@@ -5241,8 +5193,7 @@
         function swapDoorHinge() { const d = doorSel(); if (!d) return; d.o.hinge = d.o.hinge ? 0 : 1; pushUndo(); markDirty(); draw(); toast('Anschlag gewechselt (links/rechts)'); }
         function openingHandleAt(p, ei, oi, r) {
             const e = P.walls.edges[ei]; if (!e || !(e.ops || [])[oi]) return null; const v = edgeVec(e), o = e.ops[oi], hp = (o.w / v.len) / 2;
-            const off = (edgeOffs() || [])[ei] || { ox: 0, oy: 0 }; // grips render on the offset centre line (F6)
-            const pLo = { x: v.a.x + v.dx * (o.c - hp) + off.ox, y: v.a.y + v.dy * (o.c - hp) + off.oy }, pHi = { x: v.a.x + v.dx * (o.c + hp) + off.ox, y: v.a.y + v.dy * (o.c + hp) + off.oy };
+            const pLo = offCenterPt(ei, o.c - hp), pHi = offCenterPt(ei, o.c + hp); // grips on the mitre-offset centre line (F6/C3)
             if (Math.hypot(p.x - pLo.x, p.y - pLo.y) < r) return 'lo';
             if (Math.hypot(p.x - pHi.x, p.y - pHi.y) < r) return 'hi';
             return null;
@@ -5319,38 +5270,49 @@
         // traces that enclosure's OUTER face and adopts it as the hall floor polygon.
         // Enclosure boundary = drawn wall segments (graph) + any legacy excl walls/openings.
         function wallBlocks() { return wallRects().concat(P.excl.filter((e) => isWallKind(e.kind) || isOpenKind(e.kind))); }
-        // Exact interior m² when the walls form ONE simple closed loop (the common single-room
-        // case): shoelace of the inner-face polygon — in Innen the drawn ring IS the inner face,
-        // so 5×5 ⇒ 25,00 m² exactly, not the raster's quantised ~24,1. Junctions / multiple loops /
-        // open chains return null and keep the (general) raster area.
-        // Point-in-polygon (ray cast) and simple-polygon self-intersection test — used by the exact
-        // single-room area (subtract interior columns; reject self-crossing rings).
+        // Point-in-polygon (ray cast) + simple-polygon self-intersection test — used by the exact
+        // per-room area (match rooms, subtract interior columns, reject degenerate faces).
         const pointInPoly = (x, y, poly) => { let c = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y; if (((yi > y) !== (yj > y)) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c; } return c; };
         const segCross = (p1, p2, p3, p4) => { const d = (a, b, c) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x); const d1 = d(p3, p4, p1), d2 = d(p3, p4, p2), d3 = d(p1, p2, p3), d4 = d(p1, p2, p4); return ((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0)); };
         const polySelfIntersects = (poly) => { const k = poly.length; for (let i = 0; i < k; i++) { const a1 = poly[i], a2 = poly[(i + 1) % k]; for (let j = i + 1; j < k; j++) { if (j === i || (j + 1) % k === i || (i + 1) % k === j) continue; if (segCross(a1, a2, poly[j], poly[(j + 1) % k])) return true; } } return false; };
-        // Returns { area, ring } for ONE simple closed wall loop (the common single-room case), else
-        // null. Innen ⇒ the drawn ring IS the inner face (exact); Achse/Außen inset each edge to the
-        // inner face using the ring's winding, then re-intersect. `ring` is the inner-face polygon,
-        // so callers can subtract interior obstructions (columns) that fall inside it.
-        function loopInteriorArea() {
-            const NDS = P.walls.nodes, E = P.walls.edges; if (E.length < 3) return null;
-            const adj = NDS.map(() => []);
-            for (let i = 0; i < E.length; i++) { const e = E[i]; if (e.a === e.b) return null; adj[e.a].push(i); adj[e.b].push(i); }
-            for (let i = 0; i < NDS.length; i++) if (adj[i].length && adj[i].length !== 2) return null; // any junction/stub ⇒ not a simple ring
-            const startN = E[0].a, order = [], eth = []; let curN = startN, curE = 0, guard = E.length + 2; const seenE = new Set();
-            do { order.push(curN); eth.push(E[curE].thick || 0.24); seenE.add(curE);
-                const nextN = E[curE].a === curN ? E[curE].b : E[curE].a, cand = adj[nextN]; curN = nextN; curE = cand[0] === curE ? cand[1] : cand[0];
-            } while (curN !== startN && guard-- > 0);
-            if (seenE.size !== E.length || order.length < 3) return null; // must be a single loop over ALL walls
-            const poly = order.map((i) => ({ x: NDS[i].x, y: NDS[i].y })), k = poly.length;
-            if (polySelfIntersects(poly)) return null; // bow-tie / self-crossing ring → hand back to the raster
-            if (P.wallRef === 'inner') return { area: polyArea(poly.map((p) => [p.x, p.y])), ring: poly }; // drawn = inner face → exact
-            // Achse/Außen: inset each edge toward the interior (direction from the ring's winding), re-intersect.
-            let A2 = 0; for (let i = 0; i < k; i++) { const a = poly[i], b = poly[(i + 1) % k]; A2 += a.x * b.y - b.x * a.y; }
-            const sgn = A2 > 0 ? 1 : -1; // inward normal sign (screen y-down); deterministic, not a min() guess
-            const ln = poly.map((a, i) => { const b = poly[(i + 1) % k], dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L, d = P.wallRef === 'outer' ? eth[i] : eth[i] / 2; return { px: a.x - uy * sgn * d, py: a.y + ux * sgn * d, dx: ux, dy: uy }; });
-            const ip = ln.map((L2, i) => { const L1 = ln[(i - 1 + k) % k], den = L1.dx * L2.dy - L1.dy * L2.dx; if (Math.abs(den) < 1e-9) return { x: L2.px, y: L2.py }; const t = ((L2.px - L1.px) * L2.dy - (L2.py - L1.py) * L2.dx) / den; return { x: L1.px + L1.dx * t, y: L1.py + L1.dy * t }; });
-            return { area: polyArea(ip.map((p) => [p.x, p.y])), ring: ip };
+        // Offset a CCW ring inward by per-edge distance d[i] (inward = left normal), re-intersecting
+        // consecutive edges — with a reflex clamp so a concave corner can't spike out (C2).
+        function insetRing(poly, d) {
+            const k = poly.length;
+            const ln = poly.map((a, i) => { const b = poly[(i + 1) % k], dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L; return { px: a.x - uy * d[i], py: a.y + ux * d[i], dx: ux, dy: uy, L }; });
+            return ln.map((L2, i) => { const L1 = ln[(i - 1 + k) % k], den = L1.dx * L2.dy - L1.dy * L2.dx; if (Math.abs(den) < 1e-9) return { x: L2.px, y: L2.py };
+                let t = ((L2.px - L1.px) * L2.dy - (L2.py - L1.py) * L2.dx) / den; const lim = Math.max(L1.L, L2.L); if (t > lim) t = lim; if (t < -lim) t = -lim; return { x: L1.px + L1.dx * t, y: L1.py + L1.dy * t }; });
+        }
+        // Planar face decomposition of the wall graph → the exact interior polygon + area of EVERY
+        // enclosed room (C1). Each bounded face (signed area > 0) is a room; its edges are inset to
+        // the inner face by (edgeOffs·inward-normal + thick/2) — so the Bezug (Innen/Achse/Außen) is
+        // honoured — then re-intersected (C2) and shoelaced. Junctions/T-crossings just work.
+        function roomFaces() {
+            const N = P.walls.nodes, E = P.walls.edges; if (E.length < 3) return [];
+            const offs = edgeOffs(); const half = [];
+            E.forEach((e, ei) => { if (!N[e.a] || !N[e.b]) return; half.push({ u: e.a, v: e.b, ei }); half.push({ u: e.b, v: e.a, ei }); });
+            if (half.length < 6) return [];
+            const out = N.map(() => []);
+            half.forEach((h, hi) => { const a = N[h.u], b = N[h.v]; h.ang = Math.atan2(b.y - a.y, b.x - a.x); out[h.u].push(hi); });
+            out.forEach((l) => l.sort((p, q) => half[p].ang - half[q].ang));
+            const pos = new Map(); out.forEach((l) => l.forEach((hi, i) => pos.set(hi, i)));
+            const twin = (hi) => { const h = half[hi]; for (const j of out[h.v]) if (half[j].v === h.u && half[j].ei === h.ei) return j; return -1; };
+            const nextH = (hi) => { const t = twin(hi); if (t < 0) return -1; const l = out[half[t].u], i = pos.get(t); return l[(i - 1 + l.length) % l.length]; };
+            const seen = new Uint8Array(half.length), rooms = [];
+            for (let hi = 0; hi < half.length; hi++) { if (seen[hi]) continue; const cyc = []; let c = hi, g = half.length + 4;
+                while (c >= 0 && !seen[c] && g-- > 0) { seen[c] = 1; cyc.push(c); c = nextH(c); }
+                if (cyc.length < 3) continue;
+                const poly = cyc.map((h) => ({ x: N[half[h].u].x, y: N[half[h].u].y }));
+                if (ringAreaS(poly) <= 0.01 || polySelfIntersects(poly)) continue; // unbounded face (−) or a degenerate/stub loop → skip
+                const k = poly.length, d = [];
+                for (let i = 0; i < k; i++) { const ei = half[cyc[i]].ei, a = poly[i], b = poly[(i + 1) % k];
+                    const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1, nlx = -dy / L, nly = dx / L; // inward (left) normal — face is CCW
+                    const o = (offs && offs[ei]) || { ox: 0, oy: 0 }; d.push((o.ox * nlx + o.oy * nly) + (E[ei].thick || 0.24) / 2); }
+                const ring = insetRing(poly, d), area = Math.abs(ringAreaS(ring));
+                let cx = 0, cy = 0; ring.forEach((p) => { cx += p.x; cy += p.y; }); cx /= ring.length; cy /= ring.length;
+                rooms.push({ area, ring, cx, cy });
+            }
+            return rooms;
         }
         let _enc = null, _encKey = null;
         function enclosure() {
@@ -5358,16 +5320,22 @@
             const key = P.wallRef + '#' + wb.map((e) => e.kind + ':' + round2(e.x) + ',' + round2(e.y) + ',' + round2(e.w) + ',' + round2(e.h) + ',' + Math.round(e.rot || 0)).join('|') + '#' + JSON.stringify(P.floor);
             if (key === _encKey) return _enc;
             _encKey = key; _enc = wb.length ? computeEnclosure(wb) : null;
-            // Replace the quantised raster area with the exact loop area for a single enclosed room,
-            // then subtract interior structural islands (Stützen / free-standing wall blocks) — the
-            // raster already excludes their footprint, so the analytic ring must too (S1-A).
-            if (_enc && _enc.rooms && _enc.rooms.length === 1) {
-                const li = loopInteriorArea();
-                if (li && li.area > 0.3) {
-                    let a = li.area;
-                    for (const b of P.excl) if (isWallKind(b.kind)) { if (pointInPoly(b.x + b.w / 2, b.y + b.h / 2, li.ring)) a -= Math.abs(b.w * b.h); }
-                    a = Math.max(0.3, a); _enc.area = a; _enc.rooms[0].area = a;
+            // Replace each room's quantised raster area with the exact analytic face area (C1), matched
+            // by the raster centroid; subtract interior Stützen inside that room (S1-A). A face is only
+            // trusted when it's within ~50 % of the raster value (guards against degenerate stub faces);
+            // otherwise that room keeps its raster area.
+            if (_enc && _enc.rooms && _enc.rooms.length) {
+                const faces = roomFaces(); let tot = 0;
+                for (const rm of _enc.rooms) {
+                    const f = faces.find((ff) => pointInPoly(rm.cx, rm.cy, ff.ring));
+                    if (f && f.area > 0.3 && Math.abs(f.area - rm.area) < rm.area * 0.5 + 2) {
+                        let a = f.area;
+                        for (const b of P.excl) if (isWallKind(b.kind) && pointInPoly(b.x + b.w / 2, b.y + b.h / 2, f.ring)) a -= Math.abs(b.w * b.h);
+                        rm.area = Math.max(0.3, a);
+                    }
+                    tot += rm.area;
                 }
+                _enc.area = tot;
             }
             return _enc;
         }
@@ -6042,7 +6010,7 @@
         }
 
         // ---- mode / maximize ----
-        function setMode(m) { P.mode = m; root.dataset.mode = m; P.sel = null; P.editMode = false; P.calib = false; P.tool = null; P.chain = null; P.openStart = null; P.preview = null; P.structEdit = false; P.structSel = null; P.chainAnchor = null; P.guide = null; P.attach = null; hideLen(); hideVertMenu(); ctitle.textContent = m === 'plan' ? 'Garagenplaner' : 'Digitaler Zwilling'; rebuildSwitch(); draw(); }
+        function setMode(m) { P.mode = m; root.dataset.mode = m; P.sel = null; P.calib = false; P.tool = null; P.chain = null; P.openStart = null; P.preview = null; P.structSel = null; P.chainAnchor = null; P.guide = null; P.attach = null; hideLen(); hideVertMenu(); ctitle.textContent = m === 'plan' ? 'Garagenplaner' : 'Digitaler Zwilling'; rebuildSwitch(); draw(); }
         // Re-fit on enter AND exit so the plan fills whichever viewport we land in (entering
         // fullscreen used to keep the small windowed scale → a tiny plan marooned in a huge canvas).
         function toggleMax(force) { P.maxed = force == null ? !P.maxed : force; root.classList.toggle('maxed', P.maxed); maxBtn.textContent = P.maxed ? '⤢' : '⛶'; if (!P.maxed) { rail.style.left = ''; rail.style.top = ''; rail.style.right = ''; } setTimeout(() => { if (P.walls.edges.length) fitView(); else layout(); }, 20); }
@@ -6054,54 +6022,7 @@
         rail.addEventListener('pointerup', (e) => { if (railDrag) { railDrag = null; try { rail.releasePointerCapture(e.pointerId); } catch (er) { /* ignore */ } } });
 
         // ---- floor editing (vertices/edges) ----
-        let vdrag = null, edrag = null;
-        svg.addEventListener('pointerdown', (e) => {
-            if (spaceDown) return; // Space held → let planWrap pan
-            if (e.button !== 0 || P.mode !== 'plan' || !P.editMode || !canManageNow) return;
-            hideVertMenu(); // any canvas interaction closes an open vertex menu
-            const ad = e.target.closest('.gp-edgeadd');
-            if (ad) { const i = +ad.dataset.add, n = P.floor.length, a = P.floor[i], b = P.floor[(i + 1) % n]; P.floor.splice(i + 1, 0, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]); P.selEdge = null; hideLen(); commitGeom('Punkt eingefügt'); e.preventDefault(); return; }
-            const vh = e.target.closest('.gp-vertex');
-            if (vh) { const vi = +vh.dataset.vi; vdrag = { vi, o: P.floor[vi].slice(), sx: e.clientX, sy: e.clientY, moved: false }; P.selEdge = null; svg.setPointerCapture(e.pointerId); e.preventDefault(); draw(); return; }
-            const eg = e.target.closest('.gp-edgehit');
-            if (eg) { const i = +eg.dataset.edge; edrag = { i, sx: e.clientX, sy: e.clientY, moved: false, o0: P.floor[i].slice(), o1: P.floor[(i + 1) % P.floor.length].slice() }; svg.setPointerCapture(e.pointerId); e.preventDefault(); }
-        });
-        svg.addEventListener('pointermove', (e) => {
-            const r = planEl.getBoundingClientRect();
-            if (vdrag) {
-                if (!vdrag.moved && Math.abs(e.clientX - vdrag.sx) + Math.abs(e.clientY - vdrag.sy) < 4) return; // click, not drag
-                vdrag.moved = true;
-                let x = Math.max(0, Math.min(P.Wm, snapV((e.clientX - r.left) / P.CELL, P.gridStep))), y = Math.max(0, Math.min(P.Hm, snapV((e.clientY - r.top) / P.CELL, P.gridStep)));
-                const nn = P.floor.length, pv = P.floor[(vdrag.vi - 1 + nn) % nn], nv = P.floor[(vdrag.vi + 1) % nn];
-                if (P.ortho || e.shiftKey) { if (Math.abs(x - pv[0]) < Math.abs(y - pv[1])) x = pv[0]; else y = pv[1]; }
-                else {
-                    // Magnetic H/V snap: align x to a neighbour's x (vertical edge) or y to a
-                    // neighbour's y (horizontal edge) when within ~10px — makes clean shapes easy.
-                    const th = 10 / P.CELL, dxp = Math.abs(x - pv[0]), dxn = Math.abs(x - nv[0]), dyp = Math.abs(y - pv[1]), dyn = Math.abs(y - nv[1]);
-                    if (dxp <= th && dxp <= dxn) x = pv[0]; else if (dxn <= th) x = nv[0];
-                    if (dyp <= th && dyp <= dyn) y = pv[1]; else if (dyn <= th) y = nv[1];
-                }
-                P.floor[vdrag.vi] = [x, y]; drawFloor(); renderMetrics(); return;
-            }
-            if (edrag) { if (!edrag.moved && Math.abs(e.clientX - edrag.sx) + Math.abs(e.clientY - edrag.sy) < 4) return; edrag.moved = true;
-                let dx = snapV((e.clientX - edrag.sx) / P.CELL, P.gridStep), dy = snapV((e.clientY - edrag.sy) / P.CELL, P.gridStep);
-                dx = Math.max(-Math.min(edrag.o0[0], edrag.o1[0]), Math.min(P.Wm - Math.max(edrag.o0[0], edrag.o1[0]), dx));
-                dy = Math.max(-Math.min(edrag.o0[1], edrag.o1[1]), Math.min(P.Hm - Math.max(edrag.o0[1], edrag.o1[1]), dy));
-                const n = P.floor.length; P.floor[edrag.i] = [edrag.o0[0] + dx, edrag.o0[1] + dy]; P.floor[(edrag.i + 1) % n] = [edrag.o1[0] + dx, edrag.o1[1] + dy]; P.selEdge = edrag.i; drawFloor(); renderMetrics(); }
-        });
-        svg.addEventListener('pointerup', (e) => {
-            try { svg.releasePointerCapture(e.pointerId); } catch (er) { /* ignore */ }
-            if (vdrag) { const vi = vdrag.vi, moved = vdrag.moved; vdrag = null; if (moved) commitGeom(); else showVertMenu(vi); return; }
-            if (edrag) { P.selEdge = edrag.i; if (edrag.moved) { commitGeom('Linie verschoben'); } else { draw(); lenIn.focus(); lenIn.select(); } edrag = null; }
-        });
-        svg.addEventListener('dblclick', (e) => {
-            if (e.button !== 0 || P.mode !== 'plan' || !P.editMode || !canManageNow) return;
-            hideVertMenu();
-            // Vertex delete now lives in the click menu; keep only the edge dbl-click
-            // shortcut to insert a point (alongside the "+" handle).
-            const eg = e.target.closest('.gp-edgehit'); if (eg) { const i = +eg.dataset.edge, r = planEl.getBoundingClientRect();
-                P.floor.splice(i + 1, 0, [Math.max(0, Math.min(P.Wm, snapV((e.clientX - r.left) / P.CELL, P.gridStep))), Math.max(0, Math.min(P.Hm, snapV((e.clientY - r.top) / P.CELL, P.gridStep)))]); hideLen(); commitGeom('Punkt eingefügt'); }
-        });
+        // (legacy floor-polygon vertex/edge svg editor removed — walls define the plan now)
 
         // ---- block move / resize / select ----
         let act = null;
@@ -6178,8 +6099,7 @@
         });
 
         // ---- interactive wall drawing / node editing (overlay in plan mode) ----
-        function setTool(kind) { P.tool = kind || null; P.chain = null; P.openStart = null; P.preview = null; P.snapHint = null; P.guide = null; P.attach = null; P.chainAnchor = null; if (P.tool) { P.structEdit = false; P.structSel = null; } draw(); }
-        function setStructEdit(on) { P.structEdit = !!on; if (P.structEdit) { P.tool = null; P.chain = null; P.openStart = null; } else { P.structSel = null; } P.guide = null; P.attach = null; draw(); }
+        function setTool(kind) { P.tool = kind || null; P.chain = null; P.openStart = null; P.preview = null; P.snapHint = null; P.guide = null; P.attach = null; P.chainAnchor = null; if (P.tool) { P.structSel = null; } draw(); }
         function evWorld(ev) { const r = planEl.getBoundingClientRect(); return { x: (ev.clientX - r.left) / P.CELL, y: (ev.clientY - r.top) / P.CELL }; }
         // Snap a drawing point: existing node > point on an existing wall (Anbau, records the
         // attach split for the distance readout) > grid, with automatic orthogonal (H/V) snap
@@ -6199,7 +6119,7 @@
             }
             return { x, y };
         }
-        function endChain(msg) { P.chain = null; P.preview = null; P.snapHint = null; P.guide = null; P.attach = null; P.chainAnchor = null; pruneNodes(); refreshFloorFromWalls(); P.structEdit = true; if (msg) toast(msg, 'ok'); equalizePadding(); }
+        function endChain(msg) { P.chain = null; P.preview = null; P.snapHint = null; P.guide = null; P.attach = null; P.chainAnchor = null; pruneNodes(); refreshFloorFromWalls(); if (msg) toast(msg, 'ok'); equalizePadding(); }
         function wallClick(sp) {
             let ni, changed = false;
             if (sp.node != null) ni = sp.node;
@@ -6350,9 +6270,6 @@
         // pointercancel (touch interruption etc.): drop any in-flight drag/edit state
         // so it can't get stuck and block further interaction.
         const cancelGesture = () => {
-            // Revert an in-flight floor edit to its pre-drag geometry (no history entry).
-            if (vdrag) { P.floor[vdrag.vi] = vdrag.o; vdrag = null; drawFloor(); renderMetrics(); }
-            if (edrag) { const n = P.floor.length; P.floor[edrag.i] = edrag.o0; P.floor[(edrag.i + 1) % n] = edrag.o1; edrag = null; drawFloor(); renderMetrics(); }
             if (act) { const b = act.b; if (act.mode === 'move') { b.x = act.ox; b.y = act.oy; } else if (act.mode === 'resize') { b.w = act.ow; b.h = act.oh; } else if (act.mode === 'rotate') { b.rot = act.orot; } if (act.elm) act.elm.classList.remove('moving'); act = null; draw(); }
             railDrag = null; // don't leave a fullscreen rail-drag following the cursor
             if (drag) { if (drag.g) drag.g.remove(); drag = null; }
