@@ -4891,6 +4891,36 @@
             opts.forEach(([lab, fn]) => list.append(el('button', { class: 'gp-tbtn', style: 'justify-content:flex-start', onclick: () => { modal.remove(); fn(); } }, lab)));
             card.append(list); modal.append(card); modal.addEventListener('click', (ev) => { if (ev.target === modal) modal.remove(); }); (root || document.body).append(modal);
         }
+
+        // ---- FE3: reusable wall-layout templates (the building shape), stored client-side. ----
+        const TPL_KEY = 'parkrr.wallTemplates';
+        const loadTemplates = () => { try { const a = JSON.parse(localStorage.getItem(TPL_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } };
+        const saveTemplates = (a) => { try { localStorage.setItem(TPL_KEY, JSON.stringify(a.slice(0, 30))); } catch (e) { /* quota */ } };
+        function saveCurrentTemplate() {
+            if (!P.walls.edges.length) { toast('Keine Wände zum Speichern', 'warn'); return; }
+            const name = window.prompt('Name der Wand-Vorlage:', (P.hallName || 'Vorlage') + ' ' + (loadTemplates().length + 1)); if (!name) return;
+            const tpls = loadTemplates(); tpls.unshift({ id: Date.now(), name: String(name).slice(0, 60), walls: JSON.parse(JSON.stringify(P.walls)) }); saveTemplates(tpls); toast('Vorlage gespeichert', 'ok');
+        }
+        function applyTemplate(t) {
+            if (P.walls.edges.length && !window.confirm('Aktuelle Wände durch die Vorlage „' + t.name + '" ersetzen?')) return;
+            P.walls = normalizeWalls(t.walls); P.structSel = null; P.sel = null; refreshFloorFromWalls(); pushUndo(); markDirty(); fitView(); toast('Vorlage geladen: ' + t.name, 'ok');
+        }
+        function openTemplateMenu() {
+            const modal = el('div', { class: 'gp-help-backdrop' });
+            const card = el('div', { class: 'gp-help-card', style: 'max-width:380px' });
+            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '▤ Wand-Vorlagen'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => modal.remove() }, '✕')));
+            const body = el('div', { style: 'display:flex;flex-direction:column;gap:.45rem;padding:16px 18px' });
+            body.append(el('button', { class: 'gp-tbtn', style: 'justify-content:flex-start', onclick: () => { modal.remove(); saveCurrentTemplate(); } }, '＋ Aktuelle Wände als Vorlage speichern'));
+            const tpls = loadTemplates();
+            if (!tpls.length) body.append(el('div', { class: 'muted', style: 'font-size:.82rem;padding:.3rem 0' }, 'Noch keine Vorlagen. Zeichne Wände und speichere sie hier.'));
+            tpls.forEach((t) => {
+                const row = el('div', { style: 'display:flex;gap:.4rem;align-items:center' });
+                row.append(el('button', { class: 'gp-tbtn', style: 'flex:1;justify-content:flex-start', onclick: () => { modal.remove(); applyTemplate(t); } }, '▤ ' + t.name + ' · ' + (t.walls && t.walls.edges ? t.walls.edges.length : 0) + ' Wände'));
+                row.append(el('button', { class: 'gp-help-x', title: 'Löschen', onclick: () => { saveTemplates(loadTemplates().filter((x) => x.id !== t.id)); modal.remove(); openTemplateMenu(); } }, '🗑'));
+                body.append(row);
+            });
+            card.append(body); modal.append(card); modal.addEventListener('click', (ev) => { if (ev.target === modal) modal.remove(); }); (root || document.body).append(modal);
+        }
         window.addEventListener('keydown', keyHandler);
         window.addEventListener('keyup', keyUpHandler);
 
@@ -5787,6 +5817,7 @@
             toolbar.append(tb('+', 'Vergrößern', () => { P.zoom = Math.min(8, +(P.zoom + 0.15).toFixed(2)); layout(); }));
             toolbar.append(tb('⤢ Passen', 'Einpassen & Raster an die Wände anpassen', () => { fitView(); }));
             toolbar.append(tb('⭳ Export', 'Als PNG / PDF / SVG / DXF exportieren', () => openExportMenu()));
+            if (canManageNow) toolbar.append(tb('▤ Vorlagen', 'Wand-Layouts speichern & wiederverwenden', () => openTemplateMenu()));
             toolbar.append(tb('?', 'Tastaturkürzel (Taste ?)', () => toggleShortcutHelp()));
             if (canManageNow && P.dirty) { const sv = tb('● Speichern', 'Jetzt speichern (Auto-Save aktiv)', () => doSaveGeom(), false, 'btn-primary'); toolbar.append(sv); }
         }
