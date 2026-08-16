@@ -42,13 +42,15 @@ var personHeaderAliases = map[string]string{
 	"notiz": "notes", "notizen": "notes", "notes": "notes", "note": "notes", "bemerkung": "notes",
 }
 
-// csvUnguard reverses csvSafe: an apostrophe that guards a leading formula
-// trigger (written by our own CSV export) is stripped, so an exported file
-// re-imports to the original value. A normal leading apostrophe is left intact.
+// csvUnguard reverses csvSafe: a leading apostrophe that guards a formula
+// trigger — or that escapes another literal leading apostrophe — (both written
+// by our own CSV export) is stripped, so an exported file re-imports to the
+// original value. A lone leading apostrophe not followed by such a byte (e.g.
+// "'99" from a foreign file) is left intact.
 func csvUnguard(s string) string {
 	if len(s) >= 2 && s[0] == '\'' {
 		switch s[1] {
-		case '=', '+', '-', '@', '\t', '\r':
+		case '=', '+', '-', '@', '\t', '\r', '|', '%', '\'':
 			return s[1:]
 		}
 	}

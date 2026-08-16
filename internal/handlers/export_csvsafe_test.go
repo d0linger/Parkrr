@@ -10,6 +10,10 @@ func TestCSVSafeRoundTrip(t *testing.T) {
 		"+43 660 12345":   "'+43 660 12345",
 		"-1+2":            "'-1+2",
 		"@cmd":            "'@cmd",
+		"|calc":           "'|calc",
+		"%10":             "'%10",
+		"'|calc":          "''|calc", // literal leading apostrophe before a trigger — doubled, round-trips
+		"'%10":            "''%10",
 		"Normaler Name":   "Normaler Name",
 		"":                "",
 		"O'Brien":         "O'Brien",
