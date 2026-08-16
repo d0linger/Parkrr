@@ -4816,6 +4816,81 @@
             (root || document.body).append(modal);
             shortcutModal = modal;
         }
+
+        // ---- FE1/FE2: plan export. A dedicated, self-contained renderer (inline styles, white
+        // ground, dark-on-white) feeds PNG (raster), PDF (browser print) and SVG; DXF comes from
+        // the raw geometry. Independent of the live theme so printouts always read cleanly. ----
+        const xmlEsc = (s) => String(s == null ? '' : s).replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+        function planExportSVG() {
+            const bb = contentBBox(); if (!bb) return null;
+            const S = 40, pad = 1.0, titleH = 70; // px/m, metre margin, title-block height
+            const cw = (bb.maxX - bb.minX) + 2 * pad, ch = (bb.maxY - bb.minY) + 2 * pad;
+            const W = cw * S, H = ch * S, ox = pad - bb.minX, oy = pad - bb.minY;
+            const X = (mx) => ((mx + ox) * S).toFixed(1), Y = (my) => ((my + oy) * S).toFixed(1);
+            let s = '<rect x="0" y="0" width="' + W.toFixed(1) + '" height="' + (H + titleH).toFixed(1) + '" fill="#ffffff"/>';
+            // walls (mitre-joined polygons, split at openings) + opening marks
+            const wcs = wallCorners();
+            P.walls.edges.forEach((e, ei) => {
+                const wc = wcs[ei]; if (!wc) return;
+                const oa = { x: (wc.aL.x + wc.aR.x) / 2, y: (wc.aL.y + wc.aR.y) / 2 }, ob = { x: (wc.bL.x + wc.bR.x) / 2, y: (wc.bL.y + wc.bR.y) / 2 };
+                const vlen = Math.hypot(ob.x - oa.x, ob.y - oa.y) || 1, hw = (e.thick || 0.24) / 2, px = -(ob.y - oa.y) / vlen, py = (ob.x - oa.x) / vlen;
+                const lA = (u) => u <= 0 ? [wc.aL.x, wc.aL.y] : u >= 1 ? [wc.bL.x, wc.bL.y] : [oa.x + (ob.x - oa.x) * u + px * hw, oa.y + (ob.y - oa.y) * u + py * hw];
+                const rA = (u) => u <= 0 ? [wc.aR.x, wc.aR.y] : u >= 1 ? [wc.bR.x, wc.bR.y] : [oa.x + (ob.x - oa.x) * u - px * hw, oa.y + (ob.y - oa.y) * u - py * hw];
+                const spans = (e.ops || []).map((o) => { const hp = (o.w / vlen) / 2; return { lo: Math.max(0, o.c - hp), hi: Math.min(1, o.c + hp) }; }).sort((a, b) => a.lo - b.lo);
+                const piece = (u0, u1) => { if (u1 - u0 < 1e-4) return; const l0 = lA(u0), l1 = lA(u1), r1 = rA(u1), r0 = rA(u0); s += '<polygon points="' + X(l0[0]) + ',' + Y(l0[1]) + ' ' + X(l1[0]) + ',' + Y(l1[1]) + ' ' + X(r1[0]) + ',' + Y(r1[1]) + ' ' + X(r0[0]) + ',' + Y(r0[1]) + '" fill="#3a4656"/>'; };
+                let t0 = 0; spans.forEach((sp) => { piece(t0, sp.lo); t0 = sp.hi; }); piece(t0, 1);
+                spans.forEach((sp) => { const mc = (sp.lo + sp.hi) / 2, c = { x: oa.x + (ob.x - oa.x) * mc, y: oa.y + (ob.y - oa.y) * mc }; s += '<line x1="' + X(c.x + px * hw) + '" y1="' + Y(c.y + py * hw) + '" x2="' + X(c.x - px * hw) + '" y2="' + Y(c.y - py * hw) + '" stroke="#2b7fd0" stroke-width="2"/>'; });
+            });
+            // zones + structural blocks (columns), then vehicles, then room m²
+            P.excl.forEach((b) => { const q = quad(b).map((p) => X(p[0]) + ',' + Y(p[1])).join(' '), zone = isZoneKind(b.kind);
+                s += '<polygon points="' + q + '" fill="' + (zone ? 'rgba(47,122,90,0.14)' : '#6b7686') + '" stroke="' + (zone ? '#2f9e6b' : '#4a5666') + '" stroke-width="1"' + (zone ? ' stroke-dasharray="5 3"' : '') + '/>';
+                if (zone) s += '<text x="' + X(b.x + b.w / 2) + '" y="' + Y(b.y + b.h / 2) + '" text-anchor="middle" font-size="10" fill="#245a3f">' + xmlEsc(b.label) + '</text>'; });
+            P.spots.forEach((b) => { const q = quad(b).map((p) => X(p[0]) + ',' + Y(p[1])).join(' '), lab = b.personName || b.label || b.type || '';
+                s += '<polygon points="' + q + '" fill="rgba(70,130,180,0.26)" stroke="#2b6cb0" stroke-width="1.4"/>';
+                if (lab) s += '<text x="' + X(b.x + b.w / 2) + '" y="' + Y(b.y + b.h / 2 + 0.12) + '" text-anchor="middle" font-size="10" fill="#173a5a">' + xmlEsc(lab) + '</text>'; });
+            const enc = enclosure();
+            if (enc && enc.rooms) enc.rooms.forEach((rm, i) => { if (rm.area > 0.5) s += '<text x="' + X(rm.cx) + '" y="' + Y(rm.cy) + '" text-anchor="middle" font-size="12" font-weight="700" fill="#2f7a5a">' + (enc.rooms.length > 1 ? 'Raum ' + (i + 1) + ' · ' : '') + rm.area.toFixed(1).replace('.', ',') + ' m²</text>'; });
+            // title block: name, date, total m², and a 1 m scale bar
+            const total = enc && enc.area ? enc.area.toFixed(1).replace('.', ',') + ' m²' : '—';
+            const name = P.hallName || P.name || 'Grundriss', ty = H + 4;
+            let tb = '<g transform="translate(0,' + ty.toFixed(1) + ')">';
+            tb += '<rect x="0" y="0" width="' + W.toFixed(1) + '" height="' + titleH + '" fill="#f4f6f8" stroke="#cbd5e1"/>';
+            tb += '<text x="14" y="27" font-size="15" font-weight="700" fill="#1f2937">Parkrr · ' + xmlEsc(name) + '</text>';
+            tb += '<text x="14" y="48" font-size="11" fill="#4b5563">' + new Date().toLocaleDateString('de-DE') + ' · Parkfläche ' + total + '</text>';
+            const bx = W - 14 - S; // 1 m scale bar
+            tb += '<line x1="' + bx.toFixed(1) + '" y1="44" x2="' + (bx + S).toFixed(1) + '" y2="44" stroke="#1f2937" stroke-width="2"/>';
+            tb += '<line x1="' + bx.toFixed(1) + '" y1="40" x2="' + bx.toFixed(1) + '" y2="48" stroke="#1f2937" stroke-width="2"/><line x1="' + (bx + S).toFixed(1) + '" y1="40" x2="' + (bx + S).toFixed(1) + '" y2="48" stroke="#1f2937" stroke-width="2"/>';
+            tb += '<text x="' + (bx + S / 2).toFixed(1) + '" y="60" text-anchor="middle" font-size="10" fill="#4b5563">1 m</text></g>';
+            s += tb;
+            return { body: s, W: W, H: H + titleH, svg: '<svg xmlns="http://www.w3.org/2000/svg" width="' + W.toFixed(0) + '" height="' + (H + titleH).toFixed(0) + '" viewBox="0 0 ' + W.toFixed(1) + ' ' + (H + titleH).toFixed(1) + '" font-family="system-ui,Segoe UI,Roboto,Arial,sans-serif">' + s + '</svg>' };
+        }
+        function dlBlob(name, data, mime) { const blob = data instanceof Blob ? data : new Blob([data], { type: mime }); const u = URL.createObjectURL(blob); const a = el('a', { href: u, download: name }); document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(u), 4000); }
+        function exportPlanPNG() { const ex = planExportSVG(); if (!ex) { toast('Nichts zu exportieren', 'warn'); return; } const scale = 2, cv = el('canvas'); cv.width = Math.round(ex.W * scale); cv.height = Math.round(ex.H * scale); const cx = cv.getContext('2d'); const img = new Image();
+            img.onload = () => { cx.setTransform(scale, 0, 0, scale, 0, 0); cx.drawImage(img, 0, 0); cv.toBlob((b) => { if (b) { dlBlob('grundriss.png', b, 'image/png'); toast('PNG exportiert', 'ok'); } }, 'image/png'); };
+            img.onerror = () => toast('PNG-Export fehlgeschlagen', 'error'); img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(ex.svg); }
+        function exportPlanSVG() { const ex = planExportSVG(); if (!ex) { toast('Nichts zu exportieren', 'warn'); return; } dlBlob('grundriss.svg', ex.svg, 'image/svg+xml'); toast('SVG exportiert', 'ok'); }
+        function exportPlanPDF() { const ex = planExportSVG(); if (!ex) { toast('Nichts zu exportieren', 'warn'); return; } const w = window.open('', '_blank'); if (!w) { toast('Popup blockiert — bitte erlauben', 'warn'); return; }
+            w.document.write('<!doctype html><meta charset="utf-8"><title>Grundriss</title><style>@page{margin:12mm}html,body{margin:0}svg{width:100%;height:auto}@media print{.hint{display:none}}</style><div class="hint" style="font:13px system-ui;padding:8px;color:#555">Drucken-Dialog → „Als PDF speichern". Fenster schließt danach automatisch.</div>' + ex.svg + '<script>window.onload=function(){setTimeout(function(){window.print()},250)};window.onafterprint=function(){window.close()};<\/script>'); w.document.close(); }
+        function exportPlanDXF() {
+            if (!P.walls.edges.length && !P.spots.length && !P.excl.length) { toast('Nichts zu exportieren', 'warn'); return; }
+            const L = []; const P0 = (x, y) => x.toFixed(3) + '\n20\n' + (-y).toFixed(3); // DXF is Y-up → flip
+            const line = (a, b, layer) => L.push('0\nLINE\n8\n' + layer + '\n10\n' + P0(a.x, a.y) + '\n30\n0\n11\n' + P0(b.x, b.y) + '\n31\n0');
+            const pline = (pts, layer) => { let e = '0\nLWPOLYLINE\n8\n' + layer + '\n90\n' + pts.length + '\n70\n1'; pts.forEach((p) => { e += '\n10\n' + p[0].toFixed(3) + '\n20\n' + (-p[1]).toFixed(3); }); L.push(e); };
+            P.walls.edges.forEach((e) => { const v = edgeVec(e); if (v.len < 0.02) return; line(v.a, v.b, 'WALLS'); (e.ops || []).forEach((o) => { const hp = (o.w / v.len) / 2, a = { x: v.a.x + v.dx * (o.c - hp), y: v.a.y + v.dy * (o.c - hp) }, b = { x: v.a.x + v.dx * (o.c + hp), y: v.a.y + v.dy * (o.c + hp) }; line(a, b, 'OPENINGS'); }); });
+            P.excl.forEach((b) => pline(quad(b), isZoneKind(b.kind) ? 'ZONES' : 'STRUCT'));
+            P.spots.forEach((b) => pline(quad(b), 'VEHICLES'));
+            const dxf = '0\nSECTION\n2\nENTITIES\n' + L.join('\n') + '\n0\nENDSEC\n0\nEOF\n';
+            dlBlob('grundriss.dxf', dxf, 'application/dxf'); toast('DXF exportiert', 'ok');
+        }
+        function openExportMenu() {
+            const opts = [['🖼 PNG', exportPlanPNG], ['📄 PDF (Drucken)', exportPlanPDF], ['⬔ SVG (Vektor)', exportPlanSVG], ['📐 DXF (CAD)', exportPlanDXF]];
+            const modal = el('div', { class: 'gp-help-backdrop' });
+            const card = el('div', { class: 'gp-help-card', style: 'max-width:320px' });
+            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '⭳ Exportieren'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => modal.remove() }, '✕')));
+            const list = el('div', { style: 'display:flex;flex-direction:column;gap:.4rem;padding:16px 18px' });
+            opts.forEach(([lab, fn]) => list.append(el('button', { class: 'gp-tbtn', style: 'justify-content:flex-start', onclick: () => { modal.remove(); fn(); } }, lab)));
+            card.append(list); modal.append(card); modal.addEventListener('click', (ev) => { if (ev.target === modal) modal.remove(); }); (root || document.body).append(modal);
+        }
         window.addEventListener('keydown', keyHandler);
         window.addEventListener('keyup', keyUpHandler);
 
@@ -5711,6 +5786,7 @@
             toolbar.append(el('span', { class: 'gp-zoomlbl' }, Math.round((P.zoom || 1) * 100) + '%'));
             toolbar.append(tb('+', 'Vergrößern', () => { P.zoom = Math.min(8, +(P.zoom + 0.15).toFixed(2)); layout(); }));
             toolbar.append(tb('⤢ Passen', 'Einpassen & Raster an die Wände anpassen', () => { fitView(); }));
+            toolbar.append(tb('⭳ Export', 'Als PNG / PDF / SVG / DXF exportieren', () => openExportMenu()));
             toolbar.append(tb('?', 'Tastaturkürzel (Taste ?)', () => toggleShortcutHelp()));
             if (canManageNow && P.dirty) { const sv = tb('● Speichern', 'Jetzt speichern (Auto-Save aktiv)', () => doSaveGeom(), false, 'btn-primary'); toolbar.append(sv); }
         }
