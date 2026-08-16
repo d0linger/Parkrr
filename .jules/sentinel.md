@@ -32,3 +32,8 @@
 *Vulnerability:* CSV export formula injection protection (`csvSafe`) only checked for `=`, `+`, `-`, `@`, `\t`, and `\r`. Inputs starting with `|` (pipe, used in DDE/cmd execution payloads in older spreadsheet applications) or `%` were left unguarded.
 *Learning:* Spreadsheet formula injection (CWE-1236) triggers vary depending on the target software (Excel, LibreOffice, Calc). Sanitization functions must include all known trigger symbols (`=`, `+`, `-`, `@`, `\t`, `\r`, `|`, `%`) and maintain symmetric unguarding logic for round-trip safety.
 *Prevention:* Always include `|` and `%` alongside standard operators in CSV cell escaping routines and ensure import unguarding mirrors export escaping.
+
+## 2026-07-17 - [Per-Account Rate-Limiting Bypass on Passkey Registration]
+*Vulnerability:* `PasskeyRegisterFinish` recorded failed attestation verifications using `h.Limiter.RecordFailure(key)`, which only updated the per-IP `username|ip` rate limiter. An attacker rotating source IP addresses could bypass the throttle and attempt unlimited passkey registration verifications for an account.
+*Learning:* Post-authentication ceremonies that verify credentials or enrolment attestations (such as TOTP setup or Passkey registration) must record failures against both per-IP and per-account (`UserLimiter`) limiters.
+*Prevention:* Always use `recordReauthFailure` and `resetReauth` helpers on all secondary auth/re-auth/registration endpoints to ensure per-account limiters are updated across IP rotations.
