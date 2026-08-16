@@ -4236,6 +4236,15 @@
     };
     // Wall/column material labels (Mauertyp-Material) — display only.
     const MAT = { stahlbeton: 'Stahlbeton', ziegel: 'Ziegel', leichtbau: 'Leichtbau', kalksand: 'Kalksandstein', holz: 'Holz' };
+    // Richtwert Muster-Garagenverordnung (je Bundesland abweichend): Stellplatz ≥ 2,30 × 5,00 m.
+    // Nur weiche Warnung an der Stellfläche, nie sperrend (S4-A). Die Fahrgassen-6-m-Regel ist zu
+    // kontextabhängig (Aufstellwinkel/Ein-/Zweirichtung), um sie ohne Fehlalarme zu prüfen.
+    const GAVO = { stallW: 2.30, stallL: 5.00 };
+    const zoneSizeWarn = (b) => {
+        if (b.kind !== 'stell') return null;
+        const lo = Math.min(b.w, b.h), hi = Math.max(b.w, b.h);
+        return (lo < GAVO.stallW - 0.005 || hi < GAVO.stallL - 0.005) ? '⚠ < Mindestmaß' : null;
+    };
     const isZoneKind = (k) => !!(EXCL[k] && EXCL[k].zone);      // non-blocking marked area
     const isWallKind = (k) => !!(EXCL[k] && EXCL[k].cat === 'wall');
     const isWallDraw = (k) => !!(k && String(k).indexOf('wall_') === 0); // drawable wall segment (not column / legacy wall)
@@ -4257,7 +4266,8 @@
             a: e.a, b: e.b,
             kind: okWall(e.kind) ? e.kind : 'wall_ext',
             thick: num(e.thick, (EXCL[e.kind] && EXCL[e.kind].h) || 0.24),
-            ops: (Array.isArray(e.ops) ? e.ops : []).map((o) => ({ c: Math.max(0, Math.min(1, num(o.c, 0.5))), w: Math.max(0.1, num(o.w, 1)), kind: isOpenKind(o.kind) ? o.kind : 'door' })),
+            ops: (Array.isArray(e.ops) ? e.ops : []).map((o) => { const op = { c: Math.max(0, Math.min(1, num(o.c, 0.5))), w: Math.max(0.1, num(o.w, 1)), kind: isOpenKind(o.kind) ? o.kind : 'door' };
+                if (o.side === -1) op.side = -1; if (o.hinge === 1) op.hinge = 1; if (num(o.frame, 0) > 0) op.frame = Math.max(0, num(o.frame, 0)); return op; }), // keep Türanschlag (side/hinge) + frame across reloads
         }));
         return { nodes, edges };
     };
@@ -4515,6 +4525,20 @@
             return false;
         };
         const validVeh = (cand, selfId) => inside(cand) && !collide(cand, selfId);
+        // Door leaf sweep as a conservative quad (the w×w square on the hinge's swing side), so an
+        // aufschlagende Tür can be flagged (soft warning) where it overlaps a vehicle/Stellfläche (S3-A).
+        function doorSweepQuad(e, o) {
+            const v = edgeVec(e); if (v.len < 0.02) return null; const hp = (o.w / v.len) / 2, w = o.w;
+            const A = { x: v.a.x + v.dx * (o.c - hp), y: v.a.y + v.dy * (o.c - hp) }, B = { x: v.a.x + v.dx * (o.c + hp), y: v.a.y + v.dy * (o.c + hp) };
+            const nx = -v.dy / v.len, ny = v.dx / v.len, s = o.side || 1, hinge = o.hinge ? B : A, jamb = o.hinge ? A : B;
+            return [[hinge.x, hinge.y], [jamb.x, jamb.y], [jamb.x + nx * s * w, jamb.y + ny * s * w], [hinge.x + nx * s * w, hinge.y + ny * s * w]];
+        }
+        const sweepHitsSpot = (sw) => { if (!sw) return false; for (const b of P.spots) if (satOverlap(sw, quad(b))) return true; return false; };
+        const doorHitsSpot = (b) => { const bq = quad(b); for (const e of P.walls.edges) for (const o of (e.ops || [])) { if (o.kind !== 'door') continue; const sw = doorSweepQuad(e, o); if (sw && satOverlap(sw, bq)) return true; } return false; };
+        // Rohbau- vs. lichtes Maß: o.w is the structural wall opening; the clear passage deducts the
+        // frame/reveal per side (o.frame, default 6 cm for doors, 0 for gates/windows) (S3-B).
+        const frameOf = (o) => (o.frame != null ? o.frame : (o.kind === 'door' ? 0.06 : 0));
+        const clearWidth = (o) => Math.max(0, o.w - 2 * frameOf(o));
         // A vehicle placement has kind==='veh'; every exclusion has kind in EXCL
         // (lane/maint/wall/exit). In Garagenplaner the exclusions are editable, in
         // Stellplätze the vehicles are.
@@ -4943,7 +4967,7 @@
                 let eff = P.render || 'symbol'; if (eff === 'foto' && !b.photoUrl) eff = 'symbol'; // fallback chain: no photo → symbol
                 const d = el('div', { class: 'gp-block veh ' + b.status + (eff !== 'rect' ? ' gp-media' : '') + (eff === 'symbol' ? ' gp-symmode' : '') + (b._id === P.sel ? ' sel' : '') + (warn(b) || b._invalid ? ' invalid' : '') + (ctx ? ' dimctx' : '') });
                 d.dataset.id = b._id;
-                const warnTxt = !inside(b) ? '⚠ außerhalb' : (b._invalid ? '⚠ blockiert' : ((!heightOK(b) || !weightOK(b)) ? '⚠ Maß' : null));
+                const warnTxt = !inside(b) ? '⚠ außerhalb' : (b._invalid ? '⚠ blockiert' : ((!heightOK(b) || !weightOK(b)) ? '⚠ Maß' : (doorHitsSpot(b) ? '⚠ Türaufschlag' : null)));
                 const codeTxt = st.sym + ' ' + (b.type || 'Gefährt'), nameTxt = b.personName || b.label;
                 // media background (behind the labels); symbol rotates with the block (facing)
                 if (eff === 'symbol') {
@@ -4974,8 +4998,9 @@
                 d.dataset.id = b.id;
                 // Zones show their measured area; structures show their type label.
                 const lab = isZoneKind(b.kind) ? (b.label + ' · ' + (b.w * b.h).toFixed(1).replace('.', ',') + ' m²') : b.label;
-                if (b.rot) d.append(el('div', { class: 'gp-rlabel' }, el('span', { class: 'gp-rl-name' }, lab)));
-                else d.append(el('span', { class: 'gp-lab' }, el('span', { class: 'gp-who' }, lab)));
+                const szw = zoneSizeWarn(b); // GaVO min-size hint (soft, non-blocking)
+                if (b.rot) d.append(el('div', { class: 'gp-rlabel' }, el('span', { class: 'gp-rl-name' }, lab), szw ? el('span', { class: 'gp-rl-warn' }, szw) : null));
+                else d.append(el('span', { class: 'gp-lab' }, el('span', { class: 'gp-who' }, lab), szw ? el('span', { class: 'gp-warnb' }, szw) : null));
                 if (b.id === P.sel && interactive(b) && canManageNow) addHandles(d, b.id);
                 positionBlock(d, b); layer.append(d);
             });
@@ -5056,8 +5081,11 @@
             _eoffKey = key; const enc = computeEnclosure(axisRects()); const dir = P.wallRef === 'inner' ? 1 : -1;
             const inSide = (sx, sy) => { if (!enc || !enc.lab) return false; const gx = Math.floor((sx - enc.minX) / enc.GS), gy = Math.floor((sy - enc.minY) / enc.GSy); if (gx < 0 || gy < 0 || gx >= enc.cols || gy >= enc.rows) return false; return enc.lab[gy * enc.cols + gx] >= 0; };
             _eoff = P.walls.edges.map((e) => { const v = edgeVec(e); if (v.len < 0.02 || !enc || !enc.lab) return { ox: 0, oy: 0 };
-                const th = e.thick || 0.24, px = -v.dy / v.len, py = v.dx / v.len, mx = (v.a.x + v.b.x) / 2, my = (v.a.y + v.b.y) / 2, off = th / 2 + enc.GS * 1.3;
-                const plus = inSide(mx + px * off, my + py * off), minus = inSide(mx - px * off, my - py * off); let s = 0; if (plus && !minus) s = -1; else if (minus && !plus) s = 1; // s·perp = exterior; interior walls (both sides room) → 0
+                const th = e.thick || 0.24, px = -v.dy / v.len, py = v.dx / v.len, mx = (v.a.x + v.b.x) / 2, my = (v.a.y + v.b.y) / 2;
+                // probe both sides just past the wall face; cap the distance so a NARROW room can't
+                // sample through the opposite wall, and retry closer when the first probe is ambiguous (S2-B).
+                const probe = (d) => { const pl = inSide(mx + px * d, my + py * d), mi = inSide(mx - px * d, my - py * d); return (pl && !mi) ? -1 : (mi && !pl) ? 1 : 0; }; // s·perp = exterior; interior wall (both sides room) → 0
+                let s = probe(th / 2 + Math.min(enc.GS * 1.3, 0.14)); if (s === 0) s = probe(th / 2 + enc.GS * 0.55);
                 const mag = (th / 2) * s * dir; return { ox: px * mag, oy: py * mag }; });
             return _eoff;
         }
@@ -5124,7 +5152,7 @@
         // Node hit-test against the DISPLAYED handle position (the offset corner) so grabbing the
         // dot the user actually sees works in Innen/Außen mode; equals nodeAt in Achse mode.
         function nodeJointAt(p, r) { let bi = -1, bd = r; for (let i = 0; i < P.walls.nodes.length; i++) { const jp = nodeJoint(i); const d = Math.hypot(jp.x - p.x, jp.y - p.y); if (d < bd) { bd = d; bi = i; } } return bi; }
-        function edgeAt(p, r) { let best = null; P.walls.edges.forEach((e, i) => { const v = edgeVec(e); if (v.len < 0.02) return; let t = ((p.x - v.a.x) * v.dx + (p.y - v.a.y) * v.dy) / (v.len * v.len); t = Math.max(0, Math.min(1, t)); const x = v.a.x + t * v.dx, y = v.a.y + t * v.dy, d = Math.hypot(p.x - x, p.y - y); if (d < r && (!best || d < best.dist)) best = { i, t, x, y, dist: d }; }); return best; }
+        function edgeAt(p, r) { let best = null; const offs = edgeOffs(); P.walls.edges.forEach((e, i) => { const v = edgeVec(e); if (v.len < 0.02) return; let t = ((p.x - v.a.x) * v.dx + (p.y - v.a.y) * v.dy) / (v.len * v.len); t = Math.max(0, Math.min(1, t)); const x = v.a.x + t * v.dx, y = v.a.y + t * v.dy; let d = Math.hypot(p.x - x, p.y - y); if (offs && offs[i]) { const d2 = Math.hypot(p.x - (x + offs[i].ox), p.y - (y + offs[i].oy)); if (d2 < d) d = d2; } /* also pick the rendered (offset) wall — keep t/x/y on the drawn line for attach */ if (d < r && (!best || d < best.dist)) best = { i, t, x, y, dist: d }; }); return best; }
         function addNode(x, y) { for (let i = 0; i < P.walls.nodes.length; i++) if (Math.hypot(P.walls.nodes[i].x - x, P.walls.nodes[i].y - y) < 0.05) return i; P.walls.nodes.push({ x: round2(x), y: round2(y) }); return P.walls.nodes.length - 1; }
         function addEdge(a, b, kind) { if (a === b) return; if (P.walls.edges.some((e) => (e.a === a && e.b === b) || (e.a === b && e.b === a))) return; P.walls.edges.push({ a, b, kind, thick: P.wallThick || (EXCL[kind] && EXCL[kind].h) || 0.24, ops: [] }); }
         function setEdgeThickness(ei, cm) { const e = P.walls.edges[ei]; if (!e) return; const t = Math.max(0.05, Math.min(1, cm / 100)); e.thick = round2(t); refreshFloorFromWalls(); pushUndo(); markDirty(); equalizePadding(); toast('Wandstärke ' + Math.round(t * 100) + ' cm', 'ok'); }
@@ -5193,11 +5221,12 @@
             pushUndo(); markDirty(); layout(); toast('Öffnung ' + w.toFixed(2).replace('.', ',') + ' m', 'ok');
         }
         function openingAt(p, r) {
-            let best = null;
-            P.walls.edges.forEach((e, ei) => { const v = edgeVec(e); if (v.len < 0.02) return; (e.ops || []).forEach((o, oi) => {
+            let best = null; const offs = edgeOffs();
+            P.walls.edges.forEach((e, ei) => { const v = edgeVec(e); if (v.len < 0.02) return; const o0 = (offs && offs[ei]) || { ox: 0, oy: 0 }; (e.ops || []).forEach((o, oi) => {
                 const t = ((p.x - v.a.x) * v.dx + (p.y - v.a.y) * v.dy) / (v.len * v.len), along = t * v.len, c = o.c * v.len, half = o.w / 2;
                 if (along < c - half - r || along > c + half + r) return;
-                const px = v.a.x + t * v.dx, py = v.a.y + t * v.dy, perp = Math.hypot(p.x - px, p.y - py);
+                // measure perpendicular distance to the RENDERED (offset) opening, not the drawn line
+                const px = v.a.x + t * v.dx + o0.ox, py = v.a.y + t * v.dy + o0.oy, perp = Math.hypot(p.x - px, p.y - py);
                 if (perp > (e.thick || 0.24) / 2 + r) return;
                 if (!best || perp < best.perp) best = { ei, oi, perp };
             }); });
@@ -5290,6 +5319,15 @@
         // case): shoelace of the inner-face polygon — in Innen the drawn ring IS the inner face,
         // so 5×5 ⇒ 25,00 m² exactly, not the raster's quantised ~24,1. Junctions / multiple loops /
         // open chains return null and keep the (general) raster area.
+        // Point-in-polygon (ray cast) and simple-polygon self-intersection test — used by the exact
+        // single-room area (subtract interior columns; reject self-crossing rings).
+        const pointInPoly = (x, y, poly) => { let c = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y; if (((yi > y) !== (yj > y)) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c; } return c; };
+        const segCross = (p1, p2, p3, p4) => { const d = (a, b, c) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x); const d1 = d(p3, p4, p1), d2 = d(p3, p4, p2), d3 = d(p1, p2, p3), d4 = d(p1, p2, p4); return ((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0)); };
+        const polySelfIntersects = (poly) => { const k = poly.length; for (let i = 0; i < k; i++) { const a1 = poly[i], a2 = poly[(i + 1) % k]; for (let j = i + 1; j < k; j++) { if (j === i || (j + 1) % k === i || (i + 1) % k === j) continue; if (segCross(a1, a2, poly[j], poly[(j + 1) % k])) return true; } } return false; };
+        // Returns { area, ring } for ONE simple closed wall loop (the common single-room case), else
+        // null. Innen ⇒ the drawn ring IS the inner face (exact); Achse/Außen inset each edge to the
+        // inner face using the ring's winding, then re-intersect. `ring` is the inner-face polygon,
+        // so callers can subtract interior obstructions (columns) that fall inside it.
         function loopInteriorArea() {
             const NDS = P.walls.nodes, E = P.walls.edges; if (E.length < 3) return null;
             const adj = NDS.map(() => []);
@@ -5300,15 +5338,15 @@
                 const nextN = E[curE].a === curN ? E[curE].b : E[curE].a, cand = adj[nextN]; curN = nextN; curE = cand[0] === curE ? cand[1] : cand[0];
             } while (curN !== startN && guard-- > 0);
             if (seenE.size !== E.length || order.length < 3) return null; // must be a single loop over ALL walls
-            const poly = order.map((i) => NDS[i]), k = poly.length;
-            if (P.wallRef === 'inner') return polyArea(poly.map((p) => [p.x, p.y])); // drawn line = inner face → exact
-            // Achse/Außen: inset each edge from the drawn line to the inner face, re-intersect, shoelace.
-            const area = (sgn) => {
-                const ln = poly.map((a, i) => { const b = poly[(i + 1) % k], dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L, d = P.wallRef === 'outer' ? eth[i] : eth[i] / 2; return { px: a.x - uy * sgn * d, py: a.y + ux * sgn * d, dx: ux, dy: uy }; });
-                const ip = ln.map((L2, i) => { const L1 = ln[(i - 1 + k) % k], den = L1.dx * L2.dy - L1.dy * L2.dx; if (Math.abs(den) < 1e-9) return [L2.px, L2.py]; const t = ((L2.px - L1.px) * L2.dy - (L2.py - L1.py) * L2.dx) / den; return [L1.px + L1.dx * t, L1.py + L1.dy * t]; });
-                return polyArea(ip);
-            };
-            return Math.min(area(1), area(-1)); // the inward offset is the smaller of the two
+            const poly = order.map((i) => ({ x: NDS[i].x, y: NDS[i].y })), k = poly.length;
+            if (polySelfIntersects(poly)) return null; // bow-tie / self-crossing ring → hand back to the raster
+            if (P.wallRef === 'inner') return { area: polyArea(poly.map((p) => [p.x, p.y])), ring: poly }; // drawn = inner face → exact
+            // Achse/Außen: inset each edge toward the interior (direction from the ring's winding), re-intersect.
+            let A2 = 0; for (let i = 0; i < k; i++) { const a = poly[i], b = poly[(i + 1) % k]; A2 += a.x * b.y - b.x * a.y; }
+            const sgn = A2 > 0 ? 1 : -1; // inward normal sign (screen y-down); deterministic, not a min() guess
+            const ln = poly.map((a, i) => { const b = poly[(i + 1) % k], dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L, d = P.wallRef === 'outer' ? eth[i] : eth[i] / 2; return { px: a.x - uy * sgn * d, py: a.y + ux * sgn * d, dx: ux, dy: uy }; });
+            const ip = ln.map((L2, i) => { const L1 = ln[(i - 1 + k) % k], den = L1.dx * L2.dy - L1.dy * L2.dx; if (Math.abs(den) < 1e-9) return { x: L2.px, y: L2.py }; const t = ((L2.px - L1.px) * L2.dy - (L2.py - L1.py) * L2.dx) / den; return { x: L1.px + L1.dx * t, y: L1.py + L1.dy * t }; });
+            return { area: polyArea(ip.map((p) => [p.x, p.y])), ring: ip };
         }
         let _enc = null, _encKey = null;
         function enclosure() {
@@ -5316,8 +5354,17 @@
             const key = P.wallRef + '#' + wb.map((e) => e.kind + ':' + round2(e.x) + ',' + round2(e.y) + ',' + round2(e.w) + ',' + round2(e.h) + ',' + Math.round(e.rot || 0)).join('|') + '#' + JSON.stringify(P.floor);
             if (key === _encKey) return _enc;
             _encKey = key; _enc = wb.length ? computeEnclosure(wb) : null;
-            // Replace the quantised raster area with the exact loop area for a single enclosed room.
-            if (_enc && _enc.rooms && _enc.rooms.length === 1) { const exact = loopInteriorArea(); if (exact != null && exact > 0.3) { _enc.area = exact; _enc.rooms[0].area = exact; } }
+            // Replace the quantised raster area with the exact loop area for a single enclosed room,
+            // then subtract interior structural islands (Stützen / free-standing wall blocks) — the
+            // raster already excludes their footprint, so the analytic ring must too (S1-A).
+            if (_enc && _enc.rooms && _enc.rooms.length === 1) {
+                const li = loopInteriorArea();
+                if (li && li.area > 0.3) {
+                    let a = li.area;
+                    for (const b of P.excl) if (isWallKind(b.kind)) { if (pointInPoly(b.x + b.w / 2, b.y + b.h / 2, li.ring)) a -= Math.abs(b.w * b.h); }
+                    a = Math.max(0.3, a); _enc.area = a; _enc.rooms[0].area = a;
+                }
+            }
             return _enc;
         }
         function computeEnclosure(wb) {
@@ -5428,9 +5475,9 @@
         }
         // Draw one opening in the (already cut-out) gap: reveal jambs at both ends + a kind
         // symbol (window glass / door leaf+swing / gate bar), plus handles when selected.
-        function drawOpening(g, v, e, oi, CELL) {
-            const o = e.ops[oi], col = OPENCOL[o.kind] || '#4ea8f5', hp = (o.w / v.len) / 2;
-            const lo = Math.max(0, o.c - hp), hi = Math.min(1, o.c + hp);
+        function drawOpening(g, v, e, oi, CELL, cc) {
+            const o = e.ops[oi], col = OPENCOL[o.kind] || '#4ea8f5', hp = (o.w / v.len) / 2, oc = (cc != null ? cc : o.c); // cc = centre mapped onto the offset centre line (S3-D)
+            const lo = Math.max(0, oc - hp), hi = Math.min(1, oc + hp);
             const th = Math.max(2, (e.thick || 0.24) * CELL), h = th / 2;
             const P0 = (u) => [(v.a.x + v.dx * u) * CELL, (v.a.y + v.dy * u) * CELL];
             let nx = -v.dy, ny = v.dx; const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
@@ -5447,11 +5494,13 @@
                 // leaf hinged at one end, swinging to one side of the wall (interactive: side/hinge)
                 const side = o.side || 1, hingeAtA = !o.hinge, hinge = hingeAtA ? A : B, jamb = hingeAtA ? B : A;
                 const leaf = [hinge[0] + nx * side * w, hinge[1] + ny * side * w];
-                g.append(svgEl('line', { x1: hinge[0], y1: hinge[1], x2: leaf[0], y2: leaf[1], stroke: col, 'stroke-width': 2.4 }));
+                // the swing area colours red where it would open into a vehicle/Stellfläche (S3-A)
+                const dcol = sweepHitsSpot(doorSweepQuad(e, o)) ? '#ff6b6b' : col;
+                g.append(svgEl('line', { x1: hinge[0], y1: hinge[1], x2: leaf[0], y2: leaf[1], stroke: dcol, 'stroke-width': 2.4 }));
                 const a0 = Math.atan2(leaf[1] - hinge[1], leaf[0] - hinge[0]); let a1 = Math.atan2(jamb[1] - hinge[1], jamb[0] - hinge[0]), da = a1 - a0;
                 while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
                 let d = 'M ' + leaf[0] + ' ' + leaf[1]; for (let s = 1; s <= 10; s++) { const a = a0 + da * s / 10; d += ' L ' + (hinge[0] + Math.cos(a) * w) + ' ' + (hinge[1] + Math.sin(a) * w); }
-                g.append(svgEl('path', { d, fill: 'none', stroke: col, 'stroke-width': 1.2, 'stroke-dasharray': '2 3', opacity: 0.85 }));
+                g.append(svgEl('path', { d, fill: 'none', stroke: dcol, 'stroke-width': 1.2, 'stroke-dasharray': '2 3', opacity: 0.85 }));
             } else {
                 // gate (Sektional-/Rolltor): guide rails along both edges + lamella ticks across
                 g.append(svgEl('line', { x1: A[0] - nx * h, y1: A[1] - ny * h, x2: B[0] - nx * h, y2: B[1] - ny * h, stroke: col, 'stroke-width': 1.6, opacity: 0.9 }));
@@ -5462,6 +5511,10 @@
             if (P.structSel && P.structSel.type === 'opening' && P.structSel.ei === edgeIndex(e) && P.structSel.oi === oi) {
                 g.append(svgEl('rect', { x: Math.min(A[0], B[0]) - h - 2, y: Math.min(A[1], B[1]) - h - 2, width: Math.abs(B[0] - A[0]) + th + 4, height: Math.abs(B[1] - A[1]) + th + 4, fill: 'none', stroke: '#fff', 'stroke-width': 1, 'stroke-dasharray': '3 2', opacity: 0.85 }));
                 [A, B].forEach((Pt) => g.append(svgEl('rect', { x: Pt[0] - 4, y: Pt[1] - 4, width: 8, height: 8, class: 'gp-ohandle' })));
+                // Rohbau + lichtes Durchgangsmaß (Türen/Tore) as a small caption above the opening (S3-B).
+                if (o.kind === 'door' || o.kind === 'gate') { const mid = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2];
+                    const lab = svgEl('text', { x: mid[0] + nx * (h + 12), y: mid[1] + ny * (h + 12) + 3, 'text-anchor': 'middle', class: 'gp-walllab sub' });
+                    lab.textContent = 'lichte ' + clearWidth(o).toFixed(2).replace('.', ',') + ' m'; g.append(lab); }
             }
         }
         function edgeIndex(e) { return P.walls.edges.indexOf(e); }
@@ -5503,11 +5556,14 @@
                 const perpx = -vd.dy / vd.len, perpy = vd.dx / vd.len, hw = (e.thick || 0.24) / 2;
                 const leftAt = (u) => u <= 1e-6 ? [wc.aL.x * CELL, wc.aL.y * CELL] : u >= 1 - 1e-6 ? [wc.bL.x * CELL, wc.bL.y * CELL] : [(oa.x + vd.dx * u + perpx * hw) * CELL, (oa.y + vd.dy * u + perpy * hw) * CELL];
                 const rightAt = (u) => u <= 1e-6 ? [wc.aR.x * CELL, wc.aR.y * CELL] : u >= 1 - 1e-6 ? [wc.bR.x * CELL, wc.bR.y * CELL] : [(oa.x + vd.dx * u - perpx * hw) * CELL, (oa.y + vd.dy * u - perpy * hw) * CELL];
-                const spans = (e.ops || []).map((o, oi) => { const hp = (o.w / vd.len) / 2; return { lo: Math.max(0, o.c - hp), hi: Math.min(1, o.c + hp), oi }; }).sort((a, b) => a.lo - b.lo);
+                // o.c is stored on the DRAWN edge; map it onto the offset centre line so the gap
+                // stays under the symbol even at large corner mitres (S3-D).
+                const v0 = edgeVec(e), mapC = (oc) => { const wx = v0.a.x + v0.dx * oc, wy = v0.a.y + v0.dy * oc; return Math.max(0, Math.min(1, ((wx - oa.x) * vd.dx + (wy - oa.y) * vd.dy) / (vd.len * vd.len))); };
+                const spans = (e.ops || []).map((o, oi) => { const cc = mapC(o.c), hp = (o.w / vd.len) / 2; return { lo: Math.max(0, cc - hp), hi: Math.min(1, cc + hp), oi, cc }; }).sort((a, b) => a.lo - b.lo);
                 // filled, mitre-joined wall body — drawn in pieces so openings leave clean gaps
                 const piece = (u0, u1) => { if (u1 - u0 < 1e-4) return; const l0 = leftAt(u0), l1 = leftAt(u1), r1 = rightAt(u1), r0 = rightAt(u0); g.append(svgEl('polygon', { points: l0[0] + ',' + l0[1] + ' ' + l1[0] + ',' + l1[1] + ' ' + r1[0] + ',' + r1[1] + ' ' + r0[0] + ',' + r0[1], fill: col, class: 'gp-wallpoly' + (selE ? ' sel' : '') })); };
                 let t0 = 0; for (const sp of spans) { piece(t0, sp.lo); t0 = sp.hi; } piece(t0, 1);
-                spans.forEach((sp) => drawOpening(g, vd, e, sp.oi, CELL));
+                spans.forEach((sp) => drawOpening(g, vd, e, sp.oi, CELL, sp.cc));
                 if (P.mode === 'plan' && vd.len > 0.3) {
                     let nx = -vd.dy, ny = vd.dx; const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
                     const mid = P0(0.5), off = th / 2 + 11;
@@ -5588,7 +5644,7 @@
                 m(fw.toFixed(1).replace('.', ',') + '×' + fh.toFixed(1).replace('.', ',') + ' m', 'Halle · ' + Math.round(total) + ' m²'),
                 m(polyPerim(P.floor).toFixed(1) + ' m', 'Umfang'));
             const enc = P.autoArea ? enclosure() : null;
-            if (enc && enc.area > 0.3) { const nr = (enc.rooms || []).length; metrics.append(m(Math.round(enc.area) + ' m²', 'Parkfläche' + (nr > 1 ? ' · ' + nr + ' Räume' : ' · Wände'), 'ok')); }
+            if (enc && enc.area > 0.3) { const nr = (enc.rooms || []).length; metrics.append(m(enc.area.toFixed(1).replace('.', ',') + ' m²', 'Parkfläche' + (nr > 1 ? ' · ' + nr + ' Räume' : ' · Wände'), 'ok')); } // 1 decimal, matching the plan label (S1-D)
         }
 
         // ---- toolbar ----
@@ -5654,7 +5710,7 @@
             return b._dq;
         }
         function currentWalls() {
-            return { nodes: P.walls.nodes.map((n) => ({ x: round2(n.x), y: round2(n.y) })), edges: P.walls.edges.map((e) => ({ a: e.a, b: e.b, kind: e.kind, thick: round2(e.thick), ops: (e.ops && e.ops.length) ? e.ops.map((o) => ({ c: round2(o.c), w: round2(o.w), kind: o.kind })) : undefined })) };
+            return { nodes: P.walls.nodes.map((n) => ({ x: round2(n.x), y: round2(n.y) })), edges: P.walls.edges.map((e) => ({ a: e.a, b: e.b, kind: e.kind, thick: round2(e.thick), ops: (e.ops && e.ops.length) ? e.ops.map((o) => ({ c: round2(o.c), w: round2(o.w), kind: o.kind, side: o.side, hinge: o.hinge, frame: o.frame })) : undefined })) };
         }
         function currentGeometry() { return { floor: P.floor, Wm: P.Wm, Hm: P.Hm, tor: P.tor, load: P.load, shape: P.shape, excl: P.excl.map((e) => ({ kind: e.kind, x: round2(e.x), y: round2(e.y), w: round2(e.w), h: round2(e.h), rot: Math.round(e.rot || 0), label: e.label, mat: e.mat || undefined })), walls: (P.walls.edges.length ? currentWalls() : undefined), wallRef: P.wallRef !== 'axis' ? P.wallRef : undefined, plan: P.plan ? { href: P.plan.href, x: round2(P.plan.x), y: round2(P.plan.y), w: round2(P.plan.w), h: round2(P.plan.h), opacity: round2(P.plan.opacity), hidden: P.plan.hidden || undefined } : undefined }; }
         async function doSaveGeom(silent) {
@@ -6160,6 +6216,9 @@
             const c = (P.openStart.t + t2) / 2, w = Math.abs(t2 - P.openStart.t) * v.len;
             P.openStart = null; P.preview = null;
             if (w < 0.2) { toast('Öffnung zu schmal', 'warn'); draw(); return; }
+            // reject an opening that would overlap an existing one on the same wall (S3-C)
+            const lo = c - w / (2 * v.len), hi = c + w / (2 * v.len);
+            if ((ed.ops || []).some((x) => { const xh = x.c + x.w / (2 * v.len), xl = x.c - x.w / (2 * v.len); return lo < xh - 1e-3 && hi > xl + 1e-3; })) { toast('Öffnung überlappt eine bestehende', 'warn'); draw(); return; }
             ed.ops = ed.ops || []; ed.ops.push({ c, w, kind: P.tool }); pushUndo(); markDirty(); draw(); toast(EXCL[P.tool].label + ' eingefügt', 'ok');
         }
         function editDown(ev, p) {
