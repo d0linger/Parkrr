@@ -1335,7 +1335,6 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-wnode{fill:#0b1620;stroke:#8fe0d4;stroke-width:2;cursor:grab}
 .gp-wnode.sel{fill:#8fe0d4}
 .gp-wnode.chain{fill:#2ee6cf;stroke:none}
-.gp-openmark{}
 .gp-walllab{fill:#cfe4dd;font-size:11px;font-weight:600;paint-order:stroke;stroke:rgba(4,16,12,.78);stroke-width:3px;pointer-events:none}
 .gp-walllab.live{fill:#8ff0e0}
 .gp-wallpreview,.gp-openpreview{pointer-events:none}

@@ -15,7 +15,7 @@ Code: everything lives in `web/static/js/app.js` (`buildGP`) unless noted.
 |---|---|---|---|
 | A1 | Flexibles, config-getriebenes Objekt-Modell (Typen ohne Code erweiterbar) | ✅ | `EXCL`-Katalog + `walls`-Graph; neue Typen = Daten |
 | A2 | Sandbox-Mechaniken: verschieben/drehen/skalieren, Snap-Grid (frei·0,1·¼·½·1 m) | ✅ | `resizeBlock`, `snapPos`, `gsnap`, Grid-Seg |
-| A3 | Entkoppelte Kollisionsprüfung (rotiertes SAT) + Puffer/Clearance | 🟡 | SAT (`quad`/`satOverlap`) ✅; **Clearance-Puffer um Fahrzeuge nicht portiert** (siehe B4) |
+| A3 | Entkoppelte Kollisionsprüfung (rotiertes SAT) + Puffer/Clearance | ✅ | SAT (`quad`/`satOverlap`) ✅; Sandbox-Clearance **nicht 1:1 portiert** — äquivalente integrierte Pufferlogik umgesetzt (siehe B4) |
 | A4 | Realtime-Feedback (grün/gelb/rot) | ✅ | `statusOf`/`warn`/`collide`, `validVeh` |
 | A5 | Refactoring-Garantie: bestehende Funktionen erhalten | ✅ | Additiv; Symbole/Icons/Undo/Autosave/Spots intakt |
 
