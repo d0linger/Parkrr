@@ -4775,7 +4775,8 @@
             const m = e.ctrlKey || e.metaKey, tag = (e.target.tagName || '').toLowerCase(), typing = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable;
             if (m && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); }
             else if (m && e.key.toLowerCase() === 'y') { e.preventDefault(); doRedo(); }
-            else if (e.key === 'Escape') { if (P.tool || P.chain || P.openStart || zoneDraw) { e.preventDefault(); cancelDrawing(); } else if (P.structSel || P.sel != null) { e.preventDefault(); P.structSel = null; P.sel = null; draw(); } else if (P.maxed) { toggleMax(false); } }
+            else if (e.key === 'Escape') { if (shortcutModal) { e.preventDefault(); toggleShortcutHelp(); } else if (P.tool || P.chain || P.openStart || zoneDraw) { e.preventDefault(); cancelDrawing(); } else if (P.structSel || P.sel != null) { e.preventDefault(); P.structSel = null; P.sel = null; draw(); } else if (P.maxed) { toggleMax(false); } }
+            else if (!typing && !m && e.key === '?') { e.preventDefault(); toggleShortcutHelp(); } // ? = Tastaturkürzel-Hilfe (QW3)
             else if (!typing && (e.key === 'Delete' || e.key === 'Backspace') && P.mode === 'plan' && (P.structSel || P.sel != null)) { e.preventDefault(); deleteSel(); }
             else if (!typing && !m && e.key.toLowerCase() === 'f' && doorSel()) { e.preventDefault(); flipDoorSide(); } // F = Tür spiegeln (bei ausgewählter Tür)
             else if (!typing && !m && e.key === ' ' && doorSel()) { e.preventDefault(); swapDoorHinge(); } // Space = Anschlag wechseln (bei ausgewählter Tür)
@@ -4785,6 +4786,36 @@
             else if (!typing && !m && e.key === ' ') { e.preventDefault(); if (!spaceDown) { spaceDown = true; planWrap.style.cursor = 'grab'; } } // Space = Pan-Modus
         };
         const keyUpHandler = (e) => { if (!root.isConnected) { window.removeEventListener('keyup', keyUpHandler); return; } if (e.key === ' ') { spaceDown = false; if (!midPan) planWrap.style.cursor = ''; } };
+
+        // QW3 — discoverable keyboard-shortcut overlay (open with "?" or the toolbar button).
+        let shortcutModal = null;
+        function toggleShortcutHelp() {
+            if (shortcutModal) { shortcutModal.remove(); shortcutModal = null; return; }
+            const rows = [
+                ['Ctrl / ⌘ + Z', 'Rückgängig'],
+                ['Ctrl / ⌘ + ⇧ + Z · Ctrl + Y', 'Wiederholen'],
+                ['F', 'Einpassen (Zoom-to-fit) — bei ausgewählter Tür: spiegeln'],
+                ['Leertaste (halten) + ziehen', 'Ansicht verschieben — bei ausgewählter Tür: Anschlag wechseln'],
+                ['Mittlere Maustaste + ziehen', 'Ansicht verschieben (Pan)'],
+                ['Mausrad', 'Zoomen'],
+                ['⇧ beim Ziehen', 'Ortho-Snap (horizontal / vertikal)'],
+                ['R', 'Ausgewählte Fläche 90° drehen'],
+                ['P', 'Pufferzonen an / aus'],
+                ['Entf / ⌫', 'Auswahl löschen'],
+                ['Esc', 'Zeichnen abbrechen · Auswahl aufheben · Vollbild verlassen'],
+                ['?', 'Diese Hilfe öffnen / schließen'],
+            ];
+            const modal = el('div', { class: 'gp-help-backdrop', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Tastaturkürzel' });
+            const card = el('div', { class: 'gp-help-card' });
+            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '⌨ Tastaturkürzel'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => toggleShortcutHelp() }, '✕')));
+            const list = el('div', { class: 'gp-help-list' });
+            rows.forEach(([k, d]) => { list.append(el('kbd', { class: 'gp-help-k' }, k), el('span', { class: 'gp-help-d' }, d)); });
+            card.append(list, el('div', { class: 'gp-help-foot' }, 'Werkzeuge liegen rechts in der Leiste · „Passen" zentriert den Plan.'));
+            modal.append(card);
+            modal.addEventListener('click', (ev) => { if (ev.target === modal) toggleShortcutHelp(); });
+            (root || document.body).append(modal);
+            shortcutModal = modal;
+        }
         window.addEventListener('keydown', keyHandler);
         window.addEventListener('keyup', keyUpHandler);
 
@@ -4896,6 +4927,16 @@
             drawWalls();      // wall segments, openings and (in edit mode) node handles
             drawBuffers();    // per-side vehicle clearance bands (when enabled)
             drawWallPreview();// live chained-drawing / opening preview
+            // UX3 — onboarding hint on an empty plan (nothing drawn yet, edit-capable, not mid-draw).
+            if (P.mode === 'plan' && canManageNow && P.walls.edges.length === 0 && P.excl.length === 0 && !P.chain && !P.tool) {
+                const cx = P.Wm * CELL / 2, cy = P.Hm * CELL / 2;
+                const g = svgEl('g', { class: 'gp-emptyhint', 'text-anchor': 'middle' });
+                g.append(svgEl('path', { d: 'M' + (cx - 48) + ' ' + (cy - 46) + ' h96 v40', class: 'gp-eh-ic' }));
+                const t1 = svgEl('text', { x: cx, y: cy + 4, class: 'gp-eh-t1' }); t1.textContent = 'Zeichne die erste Außenwand';
+                const t2 = svgEl('text', { x: cx, y: cy + 26, class: 'gp-eh-t2' }); t2.textContent = 'Werkzeug „Außenwand" wählen · Klick · Klick · Startpunkt schließt den Raum';
+                const t3 = svgEl('text', { x: cx, y: cy + 44, class: 'gp-eh-t2' }); t3.textContent = 'Tastaturkürzel: ?';
+                g.append(t1, t2, t3); svg.append(g);
+            }
         }
         function positionBlock(d, b) {
             const bw = b.w * P.CELL, bh = b.h * P.CELL;
@@ -5670,6 +5711,7 @@
             toolbar.append(el('span', { class: 'gp-zoomlbl' }, Math.round((P.zoom || 1) * 100) + '%'));
             toolbar.append(tb('+', 'Vergrößern', () => { P.zoom = Math.min(8, +(P.zoom + 0.15).toFixed(2)); layout(); }));
             toolbar.append(tb('⤢ Passen', 'Einpassen & Raster an die Wände anpassen', () => { fitView(); }));
+            toolbar.append(tb('?', 'Tastaturkürzel (Taste ?)', () => toggleShortcutHelp()));
             if (canManageNow && P.dirty) { const sv = tb('● Speichern', 'Jetzt speichern (Auto-Save aktiv)', () => doSaveGeom(), false, 'btn-primary'); toolbar.append(sv); }
         }
         function rotateSel() {
