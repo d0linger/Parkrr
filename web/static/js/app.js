@@ -5222,14 +5222,26 @@
             // the offset off the flood, not the interior raster, avoids the dilation false-negative that
             // left an edge un-offset (rendered centred), and keeps genuine partitions centred.
             const isExt = (sx, sy) => { if (!enc || !enc.seen) return true; const gx = Math.floor((sx - enc.minX) / enc.GS), gy = Math.floor((sy - enc.minY) / enc.GSy); if (gx < 0 || gy < 0 || gx >= enc.cols || gy >= enc.rows) return true; return enc.seen[gy * enc.cols + gx] === 1; };
-            _eoff = P.walls.edges.map((e) => { const v = edgeVec(e); if (v.len < 0.02 || !enc || !enc.seen) return { ox: 0, oy: 0 };
+            _eoff = P.walls.edges.map((e) => { const v = edgeVec(e); if (v.len < 0.02 || !enc || !enc.seen) return { ox: 0, oy: 0, ux: 0, uy: 0 };
                 const th = e.thick || 0.24, px = -v.dy / v.len, py = v.dx / v.len, mx = (v.a.x + v.b.x) / 2, my = (v.a.y + v.b.y) / 2;
                 // Offset toward the interior of whichever side reads EXTERIOR (flood-reached). Sweep a
                 // few distances past the wall face; the first side that is clearly exterior wins. Both
                 // sides inside (a real partition, or a partition beside a shallow enclosed feature) → s=0,
                 // centred. s·perp points at the exterior, so the body sits on the exterior side (S2-B).
                 let s = 0; for (const k of [0.8, 1.4, 2.2, 3.2]) { const d = th / 2 + k * enc.GS, pe = isExt(mx + px * d, my + py * d), me = isExt(mx - px * d, my - py * d); s = (pe && !me) ? 1 : (me && !pe) ? -1 : 0; if (s) break; }
-                const mag = (th / 2) * s * dir; return { ox: px * mag, oy: py * mag }; });
+                const mag = (th / 2) * s * dir; return { ox: px * mag, oy: py * mag, ux: v.dx / v.len, uy: v.dy / v.len }; });
+            // Collinear inheritance (idea ②): a CENTRED edge (s=0, a partition) that continues a definite
+            // offset neighbour at a shared node — same line direction — adopts that neighbour's offset, so
+            // a partition prolonging a perimeter wall runs straight through (no jog; the neighbour room
+            // keeps its area). A partition that merely SPLITS a room (perpendicular) stays centred.
+            const incE = P.walls.nodes.map(() => []); P.walls.edges.forEach((e, i) => { incE[e.a].push(i); incE[e.b].push(i); });
+            for (let pass = 0; pass < 4; pass++) { let changed = false;
+                P.walls.edges.forEach((e, i) => { const o = _eoff[i]; if (Math.hypot(o.ox, o.oy) > 1e-6) return; let done = false;
+                    for (const ni of [e.a, e.b]) { if (done) break; for (const j of incE[ni]) { if (j === i) continue; const oj = _eoff[j]; if (Math.hypot(oj.ox, oj.oy) < 1e-6) continue;
+                        if (Math.abs(o.ux * oj.ux + o.uy * oj.uy) > 0.999) { o.ox = oj.ox; o.oy = oj.oy; changed = true; done = true; break; } } }
+                });
+                if (!changed) break;
+            }
             return _eoff;
         }
         function edgePts(e, ei) { const v = edgeVec(e), offs = edgeOffs(), o = offs ? offs[ei] : null; if (!o) return { a: v.a, b: v.b, dx: v.dx, dy: v.dy, len: v.len }; const a = { x: v.a.x + o.ox, y: v.a.y + o.oy }, b = { x: v.b.x + o.ox, y: v.b.y + o.oy }; return { a, b, dx: b.x - a.x, dy: b.y - a.y, len: v.len }; }

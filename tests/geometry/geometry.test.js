@@ -56,6 +56,18 @@ test('robustness — a dangling stub + T-junctions does not throw and finds the 
     rooms.forEach((r) => { assert.ok(Number.isFinite(r.area) && r.area > 0); assert.ok(Number.isFinite(r.cx) && Number.isFinite(r.cy)); });
 });
 
+test('collinear partition continuing a perimeter wall keeps the room flush (idea ②)', () => {
+    // A 10x5 room with a 4x3 room appended below its LEFT half. The shared wall (x0..4 at y=5) is a
+    // partition that CONTINUES the perimeter bottom wall (x4..10 at y=5) on the same line, so it must
+    // inherit that perimeter's inset and NOT eat into the big room — otherwise the big room reads
+    // 50 - 0.12*4 = 49.52 instead of the correct flush 50.
+    const N = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 5 }, { x: 4, y: 5 }, { x: 0, y: 5 }, { x: 0, y: 8 }, { x: 4, y: 8 }];
+    const E = [{ a: 0, b: 1 }, { a: 1, b: 2 }, { a: 2, b: 3 }, { a: 3, b: 4 }, { a: 4, b: 0 }, { a: 4, b: 5 }, { a: 5, b: 6 }, { a: 6, b: 3 }].map((e) => ({ ...e, thick: T }));
+    const rooms = PG.roomAreas(N, E, 'inner').sort((a, b) => b.area - a.area);
+    assert.equal(rooms.length, 2);
+    assert.ok(near(rooms[0].area, 50.0), 'big room stays flush (got ' + rooms[0].area.toFixed(2) + '), not reduced by the collinear partition');
+});
+
 test('insetRing — concave (reflex) corner does not spike out of bounds', () => {
     const L = [{ x: 0, y: 0 }, { x: 6, y: 0 }, { x: 6, y: 3 }, { x: 3, y: 3 }, { x: 3, y: 6 }, { x: 0, y: 6 }];
     const ring = PG.insetRing(L, L.map(() => 0.12));
