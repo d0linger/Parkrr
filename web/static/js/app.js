@@ -1045,7 +1045,8 @@
                 expLink('outstanding', 'Offene Posten'),
                 expLink('payments', 'Zahlungen'),
                 expLink('persons', 'Personen'),
-                expLink('vehicles', 'Gefährte'))));
+                expLink('vehicles', 'Gefährte'),
+                expLink('occupancy', 'Belegung'))));
     };
 
     // ================= PERSONS =================

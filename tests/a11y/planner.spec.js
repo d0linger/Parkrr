@@ -50,3 +50,11 @@ test('planner: login → seed a hall via API → Garagenplaner shell renders cle
 
   expect(errors, 'no uncaught page errors while the planner loads').toEqual([]);
 });
+
+test('export: occupancy CSV downloads with the expected header (FE2)', async ({ page }) => {
+  await login(page);
+  const res = await page.request.get('/api/export/occupancy');
+  expect(res.ok(), 'occupancy CSV status ' + res.status()).toBeTruthy();
+  expect(res.headers()['content-type'] || '').toContain('text/csv');
+  expect(await res.text()).toContain('garage;halle;stellplaetze');
+});
