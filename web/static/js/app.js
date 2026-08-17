@@ -5794,9 +5794,13 @@
         function renderMetrics() {
             metrics.innerHTML = '';
             const total = polyArea(P.floor); let zoneA = 0, colA = 0, ve = 0;
-            // Zones (Fahrstraße/Wartung/Notausgang) sit ON the parkable area but are NOT free parking;
-            // columns/walls are structural (already outside the enclosed Parkfläche).
-            P.excl.forEach((b) => { (((EXCL[b.kind] || {}).cat === 'wall') ? (colA += b.w * b.h) : (zoneA += b.w * b.h)); }); P.spots.forEach((b) => ve += b.w * b.h);
+            // Columns/walls are structural (already outside enc.area). Only the NON-parkable zones
+            // (Fahrstraße/Wartung/Notausgang) get deducted from Frei. A Stellfläche (kind 'stell') IS a
+            // parking bay → stays parkable (never deducted); openings sit on the wall (outside enc.area).
+            P.excl.forEach((b) => { const c = (EXCL[b.kind] || {}).cat;
+                if (c === 'wall') colA += b.w * b.h;
+                else if (c === 'zone' && b.kind !== 'stell') zoneA += b.w * b.h;
+            }); P.spots.forEach((b) => ve += b.w * b.h);
             // Hall dimensions = the ACTUAL floor polygon's bounding box (same source as the
             // Breite/Tiefe readout), not the P.Wm×P.Hm canvas grid — after „Form bearbeiten"
             // shrinks the polygon inside the grid the two diverge, and the bbox is the real one.
@@ -6444,13 +6448,13 @@
             if (e) { P.structSel = { type: 'edge', idx: e.i }; P.sel = null; draw(); return; }
             // rotate knob of the currently-selected zone (matches the layer's .gp-rot at top:-22px)
             if (P.sel != null) { const b = P.excl.find((x) => x.id === P.sel); if (b) { const rad = (b.rot || 0) * Math.PI / 180, off = b.h / 2 + 22 / P.CELL, cx = b.x + b.w / 2, cy = b.y + b.h / 2, kx = cx + Math.sin(rad) * off, ky = cy - Math.cos(rad) * off; if (Math.hypot(p.x - kx, p.y - ky) < R + 4 / P.CELL) { zoneDrag = { id: b.id, mode: 'rotate', cx, cy, moved: false }; cap(); return; } } }
-            // zones (excl rectangles): corner OR edge-midpoint handle → resize, body → move. The DOM
-            // draws 8 handles, so the geometric hit-test must cover all 8 — corners AND the four side
-            // midpoints (mid of consecutive quad corners) — otherwise a side handle is visual-only and
-            // can't be grabbed to stretch one edge.
-            const dirs = ['nw', 'ne', 'se', 'sw'], edirs = ['n', 'e', 's', 'w'];
-            for (let i = P.excl.length - 1; i >= 0; i--) { const b = P.excl[i], cs = quad(b);
-                const startRz = (dir) => { P.sel = b.id; P.structSel = null; zoneDrag = { id: b.id, mode: 'resize', dir, o0: { x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot || 0 }, moved: false }; cap(); draw(); };
+            // zones (excl rectangles): corner OR edge-midpoint handle → resize. Handles are only DRAWN
+            // on the SELECTED zone, so only hit-test that one (like the rotate knob above) — else a click
+            // near an UNSELECTED zone's invisible handle would grab the wrong block. The geometric test
+            // covers all 8 handles: the 4 corners + the 4 side midpoints (mid of consecutive corners).
+            const selB = P.sel != null ? P.excl.find((x) => x.id === P.sel) : null;
+            if (selB) { const dirs = ['nw', 'ne', 'se', 'sw'], edirs = ['n', 'e', 's', 'w'], cs = quad(selB);
+                const startRz = (dir) => { P.structSel = null; zoneDrag = { id: selB.id, mode: 'resize', dir, o0: { x: selB.x, y: selB.y, w: selB.w, h: selB.h, rot: selB.rot || 0 }, moved: false }; cap(); draw(); };
                 for (let c = 0; c < 4; c++) if (Math.hypot(cs[c][0] - p.x, cs[c][1] - p.y) < R) { startRz(dirs[c]); return; }
                 for (let c = 0; c < 4; c++) { const mx = (cs[c][0] + cs[(c + 1) % 4][0]) / 2, my = (cs[c][1] + cs[(c + 1) % 4][1]) / 2; if (Math.hypot(mx - p.x, my - p.y) < R) { startRz(edirs[c]); return; } }
             }
