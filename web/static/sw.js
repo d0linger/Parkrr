@@ -1,5 +1,5 @@
 /* Parkrr service worker – offline shell with fresh-first assets. */
-const CACHE = 'parkrr-v189';
+const CACHE = 'parkrr-v190';
 const SHELL = [
     '/',
     '/css/style.css',
@@ -30,8 +30,9 @@ self.addEventListener('fetch', (event) => {
     if (request.method !== 'GET') return;
     const url = new URL(request.url);
 
-    // Never cache API calls – always go to the network.
-    if (url.pathname.startsWith('/api/')) {
+    // Never cache API calls or dynamic status endpoints – always go to the network,
+    // so they never enter the cache nor use the ignoreSearch offline fallback below.
+    if (url.pathname.startsWith('/api/') || url.pathname === '/healthz' || url.pathname === '/readyz' || url.pathname === '/metrics') {
         return;
     }
 

@@ -24,6 +24,9 @@ func TestGzipStatic(t *testing.T) {
 	if w.Header().Get("Content-Encoding") != "gzip" {
 		t.Fatalf("expected Content-Encoding gzip, got %q", w.Header().Get("Content-Encoding"))
 	}
+	if !strings.Contains(w.Header().Get("Vary"), "Accept-Encoding") {
+		t.Fatalf("compressed response must Vary on Accept-Encoding, got %q", w.Header().Get("Vary"))
+	}
 	gr, err := gzip.NewReader(w.Body)
 	if err != nil {
 		t.Fatalf("gzip reader: %v", err)
