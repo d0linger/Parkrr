@@ -6057,6 +6057,27 @@
             } else { c.append(el('span', { class: 'gp-vst' }, '⠿')); }
             return c;
         }
+        // FE1: pack the placed vehicles into tidy left-to-right shelves within the floor, honouring the
+        // buffer gap when buffers are on. Tallest-first for neat rows; each spot is re-persisted.
+        async function autoArrange() {
+            const items = P.spots.slice();
+            if (!items.length) { toast('Keine platzierten Gefährte zum Anordnen', 'warn'); return; }
+            if (!(await confirmDialog('Auto-Anordnen', items.length + ' platzierte Gefährte in dichte Reihen neu anordnen? Die aktuellen Positionen werden überschrieben.', 'Anordnen'))) return;
+            const bb = floorBB(), gap = Math.max(P.buffer ? P.bufferM : 0.4, 0.4), m = 0.4;
+            items.sort((a, b) => b.h - a.h || b.w - a.w); // tallest first → even shelves
+            let x = bb.minX + m, y = bb.minY + m, rowH = 0, n = 0;
+            for (const b of items) {
+                b.rot = 0;
+                if (x > bb.minX + m + 1e-6 && x + b.w > bb.maxX - m + 1e-6) { x = bb.minX + m; y += rowH + gap; rowH = 0; } // wrap row
+                b.x = round2(Math.max(bb.minX + m, Math.min(x, bb.maxX - m - b.w)));
+                b.y = round2(Math.max(bb.minY + m, Math.min(y, bb.maxY - m - b.h)));
+                b._invalid = !inside(b); b._dirty = true;
+                x = b.x + b.w + gap; rowH = Math.max(rowH, b.h); n++;
+            }
+            items.forEach((b) => persistSpot(b));
+            markDirty(); pushUndo(); draw();
+            toast(n + ' Gefährte angeordnet' + (P.buffer ? ' · Puffer ' + P.bufferM.toFixed(1).replace('.', ',') + ' m' : ''));
+        }
         function renderManageRail() {
             rail.append(hallSwitchCard(false));
             const palCard = el('div', { class: 'gp-rcard card' }, el('h3', {}, 'Nicht platziert', el('span', { class: 'eyebrow' }, P.palette.length + ' · ziehen →')));
@@ -6072,6 +6093,7 @@
             search.addEventListener('input', () => { P.palQuery = search.value; fillPal(); });
             palCard.append(search, pal); rail.append(palCard);
             fillPal();
+            if (canManageNow && P.spots.length) rail.append(el('div', { class: 'gp-rcard card', style: 'padding:.55rem .7rem' }, el('button', { class: 'btn btn-ghost btn-block', title: 'Alle platzierten Gefährte in dichte Reihen anordnen (Puffer wird berücksichtigt, wenn aktiv)', onclick: autoArrange }, '⊞ Auto-Anordnen')));
             rail.append(renderVehDetail());
         }
         // Partial update of the Garagenplaner display attributes straight from the detail
