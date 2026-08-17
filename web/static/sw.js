@@ -1,8 +1,9 @@
 /* Parkrr service worker – offline shell with fresh-first assets. */
-const CACHE = 'parkrr-v180';
+const CACHE = 'parkrr-v190';
 const SHELL = [
     '/',
     '/css/style.css',
+    '/js/geometry.js',
     '/js/app.js',
     '/manifest.webmanifest',
     '/icons/icon.svg',
@@ -29,8 +30,9 @@ self.addEventListener('fetch', (event) => {
     if (request.method !== 'GET') return;
     const url = new URL(request.url);
 
-    // Never cache API calls – always go to the network.
-    if (url.pathname.startsWith('/api/')) {
+    // Never cache API calls or dynamic status endpoints – always go to the network,
+    // so they never enter the cache nor use the ignoreSearch offline fallback below.
+    if (url.pathname.startsWith('/api/') || url.pathname === '/healthz' || url.pathname === '/readyz' || url.pathname === '/metrics') {
         return;
     }
 
@@ -46,7 +48,9 @@ self.addEventListener('fetch', (event) => {
                 event.waitUntil(caches.open(CACHE).then((c) => c.put(request, copy)).catch(() => {}));
             }
             return res;
-        }).catch(() => caches.match(request).then((cached) => {
+            // ignoreSearch: a fingerprinted request (/js/app.js?v=hash) still matches the
+            // precached unfingerprinted entry, so offline serves the assets it precached.
+        }).catch(() => caches.match(request, { ignoreSearch: true }).then((cached) => {
             if (cached) return cached;
             // Only fall back to the app shell for navigations; a failed sub-resource
             // (image/script/API) must not receive the HTML shell.

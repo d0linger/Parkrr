@@ -1650,3 +1650,41 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 a.portal-row.link { text-decoration: none; color: inherit; }
 a.portal-row.link:hover { color: var(--accent-text); }
 .portal-foot { text-align: center; font-size: .8rem; padding-bottom: env(safe-area-inset-bottom); }
+
+/* QW4 — global reduced-motion safety net: neutralise any animation/transition not
+   already handled per-component, for vestibular-sensitive users (WCAG 2.3.3). */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: .001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .001ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* QW3 — keyboard-shortcut help overlay (theme-aware via tokens) */
+.gp-help-backdrop{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(4,10,18,.6);-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}
+.gp-help-card{background:var(--bg-elev);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow);max-width:520px;width:100%;max-height:86vh;overflow:auto;color:var(--text)}
+.gp-help-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--card-border);position:sticky;top:0;background:var(--bg-elev)}
+.gp-help-head h3{margin:0;font-size:1.05rem}
+.gp-help-x{background:none;border:0;color:var(--text-muted);font-size:1.1rem;cursor:pointer;line-height:1;padding:.2rem .4rem;border-radius:8px}
+.gp-help-x:hover{color:var(--text);background:var(--bg-elev-2)}
+.gp-help-list{display:grid;grid-template-columns:auto 1fr;gap:.55rem .9rem;padding:16px 18px;align-items:baseline}
+.gp-help-k{justify-self:start;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.75rem;background:var(--bg-elev-2);border:1px solid var(--border);border-bottom-width:2px;border-radius:7px;padding:.2rem .45rem;color:var(--text);white-space:nowrap}
+.gp-help-d{font-size:.9rem;color:var(--text-muted)}
+.gp-help-foot{padding:12px 18px;border-top:1px solid var(--card-border);font-size:.8rem;color:var(--text-muted)}
+
+/* UX3 — empty-plan onboarding hint */
+.gp-emptyhint{pointer-events:none}
+.gp-eh-ic{fill:none;stroke:var(--gpteal2,#5adcb4);stroke-width:3;stroke-linecap:round;stroke-linejoin:round;opacity:.45}
+.gp-eh-t1{fill:var(--text,#e8eef7);font-size:16px;font-weight:700;opacity:.9}
+.gp-eh-t2{fill:var(--text-muted,#93a1b8);font-size:11px}
+
+/* FE4 — marquee rubber-band + multi-selected block highlight */
+.gp-marquee{position:absolute;z-index:9;border:1.5px dashed var(--tab-active,#2dd4bf);background:rgba(45,212,191,.12);pointer-events:none;border-radius:3px}
+.gp-block.multisel{outline:2px solid var(--tab-active,#2dd4bf);outline-offset:1px;box-shadow:0 0 0 4px rgba(45,212,191,.18);z-index:6}
+
+/* UX4 — small dashboard bar chart (per-hall occupancy) */
+.dash-occrow{align-items:center;gap:.6rem}
+.dash-bar{flex:1;min-width:60px;height:8px;border-radius:6px;background:var(--bg-elev-2);overflow:hidden}
+.dash-bar-fill{height:100%;border-radius:6px;background:var(--brand-grad,linear-gradient(90deg,#0d9488,#22d3ee));min-width:3px}

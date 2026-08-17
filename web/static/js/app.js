@@ -2,6 +2,26 @@
 (() => {
     'use strict';
 
+    // ---------- client-error telemetry (AR4): report uncaught SPA errors to the
+    // server (auth-gated, rate-limited, no PII). Capped per session so a repeating
+    // error can't spam. Never throws itself. ----------
+    const APP_VERSION = ((document.querySelector('meta[name="app-version"]') || {}).content) || 'dev'; // server-injected build version
+    (function () {
+        let sent = 0;
+        const report = (message, stack) => {
+            if (sent >= 5 || !message) return; sent++;
+            try {
+                // /api/client-error is auth-gated → carry the CSRF token like every other write.
+                fetch('/api/client-error', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCookie('parkrr_csrf') }, keepalive: true,
+                    body: JSON.stringify({ message: String(message).slice(0, 500), stack: String(stack || '').slice(0, 4000), url: location.pathname, version: APP_VERSION }),
+                }).catch(() => { });
+            } catch (e) { /* never let reporting break the app */ }
+        };
+        window.addEventListener('error', (e) => report(e.message, e.error && e.error.stack));
+        window.addEventListener('unhandledrejection', (e) => { const r = e.reason; report((r && r.message) || 'unhandledrejection', r && r.stack); });
+    })();
+
     // ---------- utilities ----------
     const $ = (sel, root = document) => root.querySelector(sel);
     const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -181,26 +201,30 @@
 
     // ---------- toast ----------
     let toastTimer = null;
+    // QW2 — every toast is routed through the i18n layer t(). We use the gettext
+    // convention (the source string IS the key): today German passes straight
+    // through (t returns the key when untranslated), and a future language just
+    // adds MESSAGES.<lang>['<german phrase>'] = '<translation>' — no call-site edits.
     function toast(msg, kind = '') {
-        const t = $('#toast');
-        t.innerHTML = '';
-        t.append(document.createTextNode(msg));
-        t.className = 'toast' + (kind ? ' ' + kind : '');
-        t.hidden = false;
+        const box = $('#toast');
+        box.innerHTML = '';
+        box.append(document.createTextNode(t(msg)));
+        box.className = 'toast' + (kind ? ' ' + kind : '');
+        box.hidden = false;
         clearTimeout(toastTimer);
-        toastTimer = setTimeout(() => { t.hidden = true; }, 3200);
+        toastTimer = setTimeout(() => { box.hidden = true; }, 3200);
     }
     function toastAction(msg, actionLabel, onAction, ms = 4500) {
-        const t = $('#toast');
+        const box = $('#toast');
         clearTimeout(toastTimer);
-        t.innerHTML = '';
-        t.className = 'toast';
-        t.hidden = false;
-        t.append(document.createTextNode(msg + '  '));
-        const btn = el('button', { class: 'toast-undo', type: 'button' }, actionLabel);
-        btn.addEventListener('click', () => { t.hidden = true; onAction(); });
-        t.append(btn);
-        toastTimer = setTimeout(() => { t.hidden = true; }, ms);
+        box.innerHTML = '';
+        box.className = 'toast';
+        box.hidden = false;
+        box.append(document.createTextNode(t(msg) + '  '));
+        const btn = el('button', { class: 'toast-undo', type: 'button' }, t(actionLabel));
+        btn.addEventListener('click', () => { box.hidden = true; onAction(); });
+        box.append(btn);
+        toastTimer = setTimeout(() => { box.hidden = true; }, ms);
     }
 
     // ---------- confirm ----------
@@ -919,10 +943,14 @@
             occCard.append(el('div', { class: 'stat-grid' },
                 stat(occ.placed + ' / ' + occ.active, 'Gefährte platziert', { icon: 'warehouse', tone: 'teal' }),
                 stat(Math.max(0, occ.active - occ.placed), 'noch nicht platziert', { icon: 'car' })));
-            (occ.halls || []).filter((hh) => hh.placed > 0).forEach((hh) => {
-                occCard.append(el('div', { class: 'status-row' },
-                    el('div', { class: 'status-name' }, esc(hh.name)),
-                    el('div', { class: 'muted', style: 'font-size:.75rem' }, esc(hh.garage_name)),
+            // UX4 — per-hall occupancy as a small proportional bar chart (inline SVG-free, CSP-safe).
+            const halls = (occ.halls || []).filter((hh) => hh.placed > 0);
+            const maxP = Math.max(1, ...halls.map((hh) => hh.placed || 0));
+            halls.forEach((hh) => {
+                occCard.append(el('div', { class: 'status-row dash-occrow' },
+                    el('div', { class: 'status-name' }, esc(hh.name),
+                        el('span', { class: 'muted', style: 'font-weight:400;font-size:.72rem;margin-left:.4rem' }, esc(hh.garage_name))),
+                    el('div', { class: 'dash-bar', title: hh.placed + ' platziert' }, el('div', { class: 'dash-bar-fill', style: 'width:' + Math.round((hh.placed || 0) / maxP * 100) + '%' })),
                     el('div', { class: 'bar-val' }, String(hh.placed))));
             });
             page.append(occCard);
@@ -4187,7 +4215,6 @@
 
     // --- pure geometry (metres) ---
     const polyArea = (pts) => { let a = 0; for (let i = 0; i < pts.length; i++) { const j = (i + 1) % pts.length; a += pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1]; } return Math.abs(a) / 2; };
-    const ringAreaS = (pts) => { let a = 0; for (let i = 0; i < pts.length; i++) { const j = (i + 1) % pts.length; a += pts[i].x * pts[j].y - pts[j].x * pts[i].y; } return a / 2; }; // signed area of a {x,y} ring
     const polyPerim = (pts) => { let s = 0; for (let i = 0; i < pts.length; i++) { const a = pts[i], b = pts[(i + 1) % pts.length]; s += Math.hypot(b[0] - a[0], b[1] - a[1]); } return s; };
     const pip = (x, y, pts) => { let inside = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1]; if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) inside = !inside; } return inside; };
     const ccw = (p, q, r) => (r[1] - p[1]) * (q[0] - p[0]) > (q[1] - p[1]) * (r[0] - p[0]);
@@ -4582,6 +4609,13 @@
         // Transparent capture layer for interactive wall drawing / node editing (plan mode).
         const drawOverlay = el('div', { class: 'gp-drawoverlay' }); drawOverlay.style.display = 'none'; planEl.append(drawOverlay);
         let nodeDrag = null, opDrag = null, zoneDrag = null, zoneDraw = null;
+        // FE4 — multi-select of the CURRENT subsystem's objects only: zones in the Garagenmanager
+        // (plan), vehicles in the Stellplatzsystem (manage) — mirroring interactive(b). selSet holds
+        // their ids; a marquee drag on empty floor fills it; group move/delete act on it.
+        let selSet = [], marq = null;
+        const findBlock = (id) => P.spots.find((x) => x._id == id) || P.excl.find((x) => x.id === id);
+        const inSel = (id) => id != null && selSet.indexOf(id) >= 0;
+        const clearSelSet = () => { if (selSet.length) { selSet = []; return true; } return false; };
         // point (metres) inside a possibly-rotated block?
         function pointInBlock(b, p) { const cx = b.x + b.w / 2, cy = b.y + b.h / 2, r = -(b.rot || 0) * Math.PI / 180, cos = Math.cos(r), sin = Math.sin(r); const dx = p.x - cx, dy = p.y - cy, lx = dx * cos - dy * sin, ly = dx * sin + dy * cos; return Math.abs(lx) <= b.w / 2 && Math.abs(ly) <= b.h / 2; }
         function createZone(kind, x, y, w, h) { const b = { id: 'e' + (P.uid++), kind, x: round2(x), y: round2(y), w: round2(w), h: round2(h), rot: 0, label: EXCL[kind].label, mat: EXCL[kind].mat }; P.excl.push(b); return b; }
@@ -4756,8 +4790,9 @@
             const m = e.ctrlKey || e.metaKey, tag = (e.target.tagName || '').toLowerCase(), typing = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable;
             if (m && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); }
             else if (m && e.key.toLowerCase() === 'y') { e.preventDefault(); doRedo(); }
-            else if (e.key === 'Escape') { if (P.tool || P.chain || P.openStart || zoneDraw) { e.preventDefault(); cancelDrawing(); } else if (P.structSel || P.sel != null) { e.preventDefault(); P.structSel = null; P.sel = null; draw(); } else if (P.maxed) { toggleMax(false); } }
-            else if (!typing && (e.key === 'Delete' || e.key === 'Backspace') && P.mode === 'plan' && (P.structSel || P.sel != null)) { e.preventDefault(); deleteSel(); }
+            else if (e.key === 'Escape') { if (shortcutModal) { e.preventDefault(); toggleShortcutHelp(); } else if (P.tool || P.chain || P.openStart || zoneDraw) { e.preventDefault(); cancelDrawing(); } else if (selSet.length) { e.preventDefault(); clearSelSet(); draw(); } else if (P.structSel || P.sel != null) { e.preventDefault(); P.structSel = null; P.sel = null; draw(); } else if (P.maxed) { toggleMax(false); } }
+            else if (!typing && !m && e.key === '?') { e.preventDefault(); toggleShortcutHelp(); } // ? = Tastaturkürzel-Hilfe (QW3)
+            else if (!typing && (e.key === 'Delete' || e.key === 'Backspace') && (selSet.length || (P.mode === 'plan' && (P.structSel || P.sel != null)))) { e.preventDefault(); deleteSel(); }
             else if (!typing && !m && e.key.toLowerCase() === 'f' && doorSel()) { e.preventDefault(); flipDoorSide(); } // F = Tür spiegeln (bei ausgewählter Tür)
             else if (!typing && !m && e.key === ' ' && doorSel()) { e.preventDefault(); swapDoorHinge(); } // Space = Anschlag wechseln (bei ausgewählter Tür)
             else if (!typing && !m && e.key.toLowerCase() === 'r' && P.mode === 'plan' && P.sel != null) { const b = P.excl.find((x) => x.id === P.sel); if (b) { e.preventDefault(); b.rot = ((b.rot || 0) + 90) % 360; commitGeom('Fläche gedreht'); } } // R = Fläche 90° drehen
@@ -4766,6 +4801,147 @@
             else if (!typing && !m && e.key === ' ') { e.preventDefault(); if (!spaceDown) { spaceDown = true; planWrap.style.cursor = 'grab'; } } // Space = Pan-Modus
         };
         const keyUpHandler = (e) => { if (!root.isConnected) { window.removeEventListener('keyup', keyUpHandler); return; } if (e.key === ' ') { spaceDown = false; if (!midPan) planWrap.style.cursor = ''; } };
+
+        // QW3 — discoverable keyboard-shortcut overlay (open with "?" or the toolbar button).
+        let shortcutModal = null;
+        function toggleShortcutHelp() {
+            if (shortcutModal) { shortcutModal.remove(); shortcutModal = null; return; }
+            const rows = [
+                ['Ctrl / ⌘ + Z', 'Rückgängig'],
+                ['Ctrl / ⌘ + ⇧ + Z · Ctrl + Y', 'Wiederholen'],
+                ['F', 'Einpassen (Zoom-to-fit) — bei ausgewählter Tür: spiegeln'],
+                ['Leertaste (halten) + ziehen', 'Ansicht verschieben — bei ausgewählter Tür: Anschlag wechseln'],
+                ['Mittlere Maustaste + ziehen', 'Ansicht verschieben (Pan)'],
+                ['Mausrad', 'Zoomen'],
+                ['⇧ beim Ziehen', 'Ortho-Snap (horizontal / vertikal)'],
+                ['R', 'Ausgewählte Fläche 90° drehen'],
+                ['P', 'Pufferzonen an / aus'],
+                ['Entf / ⌫', 'Auswahl löschen'],
+                ['Esc', 'Zeichnen abbrechen · Auswahl aufheben · Vollbild verlassen'],
+                ['?', 'Diese Hilfe öffnen / schließen'],
+            ];
+            const modal = el('div', { class: 'gp-help-backdrop', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Tastaturkürzel' });
+            const card = el('div', { class: 'gp-help-card' });
+            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '⌨ Tastaturkürzel'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => toggleShortcutHelp() }, '✕')));
+            const list = el('div', { class: 'gp-help-list' });
+            rows.forEach(([k, d]) => { list.append(el('kbd', { class: 'gp-help-k' }, k), el('span', { class: 'gp-help-d' }, d)); });
+            card.append(list, el('div', { class: 'gp-help-foot' }, 'Werkzeuge liegen rechts in der Leiste · „Passen" zentriert den Plan.'));
+            modal.append(card);
+            modal.addEventListener('click', (ev) => { if (ev.target === modal) toggleShortcutHelp(); });
+            (root || document.body).append(modal);
+            shortcutModal = modal;
+        }
+
+        // ---- FE1/FE2: plan export. A dedicated, self-contained renderer (inline styles, white
+        // ground, dark-on-white) feeds PNG (raster), PDF (browser print) and SVG; DXF comes from
+        // the raw geometry. Independent of the live theme so printouts always read cleanly. ----
+        const xmlEsc = (s) => String(s == null ? '' : s).replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+        function planExportSVG() {
+            const bb = contentBBox(); if (!bb) return null;
+            const S = 40, pad = 1.0, titleH = 70; // px/m, metre margin, title-block height
+            const cw = (bb.maxX - bb.minX) + 2 * pad, ch = (bb.maxY - bb.minY) + 2 * pad;
+            const W = cw * S, H = ch * S, ox = pad - bb.minX, oy = pad - bb.minY;
+            const X = (mx) => ((mx + ox) * S).toFixed(1), Y = (my) => ((my + oy) * S).toFixed(1);
+            let s = '<rect x="0" y="0" width="' + W.toFixed(1) + '" height="' + (H + titleH).toFixed(1) + '" fill="#ffffff"/>';
+            // walls (mitre-joined polygons, split at openings) + opening marks
+            const wcs = wallCorners();
+            P.walls.edges.forEach((e, ei) => {
+                const wc = wcs[ei]; if (!wc) return;
+                const oa = { x: (wc.aL.x + wc.aR.x) / 2, y: (wc.aL.y + wc.aR.y) / 2 }, ob = { x: (wc.bL.x + wc.bR.x) / 2, y: (wc.bL.y + wc.bR.y) / 2 };
+                const vlen = Math.hypot(ob.x - oa.x, ob.y - oa.y) || 1, hw = (e.thick || 0.24) / 2, px = -(ob.y - oa.y) / vlen, py = (ob.x - oa.x) / vlen;
+                const lA = (u) => u <= 0 ? [wc.aL.x, wc.aL.y] : u >= 1 ? [wc.bL.x, wc.bL.y] : [oa.x + (ob.x - oa.x) * u + px * hw, oa.y + (ob.y - oa.y) * u + py * hw];
+                const rA = (u) => u <= 0 ? [wc.aR.x, wc.aR.y] : u >= 1 ? [wc.bR.x, wc.bR.y] : [oa.x + (ob.x - oa.x) * u - px * hw, oa.y + (ob.y - oa.y) * u - py * hw];
+                const spans = (e.ops || []).map((o) => { const hp = (o.w / vlen) / 2; return { lo: Math.max(0, o.c - hp), hi: Math.min(1, o.c + hp) }; }).sort((a, b) => a.lo - b.lo);
+                const piece = (u0, u1) => { if (u1 - u0 < 1e-4) return; const l0 = lA(u0), l1 = lA(u1), r1 = rA(u1), r0 = rA(u0); s += '<polygon points="' + X(l0[0]) + ',' + Y(l0[1]) + ' ' + X(l1[0]) + ',' + Y(l1[1]) + ' ' + X(r1[0]) + ',' + Y(r1[1]) + ' ' + X(r0[0]) + ',' + Y(r0[1]) + '" fill="#3a4656"/>'; };
+                let t0 = 0; spans.forEach((sp) => { piece(t0, sp.lo); t0 = sp.hi; }); piece(t0, 1);
+                spans.forEach((sp) => { const mc = (sp.lo + sp.hi) / 2, c = { x: oa.x + (ob.x - oa.x) * mc, y: oa.y + (ob.y - oa.y) * mc }; s += '<line x1="' + X(c.x + px * hw) + '" y1="' + Y(c.y + py * hw) + '" x2="' + X(c.x - px * hw) + '" y2="' + Y(c.y - py * hw) + '" stroke="#2b7fd0" stroke-width="2"/>'; });
+            });
+            // zones + structural blocks (columns), then vehicles, then room m²
+            P.excl.forEach((b) => { const q = quad(b).map((p) => X(p[0]) + ',' + Y(p[1])).join(' '), zone = isZoneKind(b.kind);
+                s += '<polygon points="' + q + '" fill="' + (zone ? 'rgba(47,122,90,0.14)' : '#6b7686') + '" stroke="' + (zone ? '#2f9e6b' : '#4a5666') + '" stroke-width="1"' + (zone ? ' stroke-dasharray="5 3"' : '') + '/>';
+                if (zone) s += '<text x="' + X(b.x + b.w / 2) + '" y="' + Y(b.y + b.h / 2) + '" text-anchor="middle" font-size="10" fill="#245a3f">' + xmlEsc(b.label) + '</text>'; });
+            P.spots.forEach((b) => { const q = quad(b).map((p) => X(p[0]) + ',' + Y(p[1])).join(' '), lab = b.personName || b.label || b.type || '';
+                s += '<polygon points="' + q + '" fill="rgba(70,130,180,0.26)" stroke="#2b6cb0" stroke-width="1.4"/>';
+                if (lab) s += '<text x="' + X(b.x + b.w / 2) + '" y="' + Y(b.y + b.h / 2 + 0.12) + '" text-anchor="middle" font-size="10" fill="#173a5a">' + xmlEsc(lab) + '</text>'; });
+            const enc = enclosure();
+            if (enc && enc.rooms) enc.rooms.forEach((rm, i) => { if (rm.area > 0.5) s += '<text x="' + X(rm.cx) + '" y="' + Y(rm.cy) + '" text-anchor="middle" font-size="12" font-weight="700" fill="#2f7a5a">' + (enc.rooms.length > 1 ? 'Raum ' + (i + 1) + ' · ' : '') + rm.area.toFixed(1).replace('.', ',') + ' m²</text>'; });
+            // title block: name, date, total m², and a 1 m scale bar
+            const total = enc && enc.area ? enc.area.toFixed(1).replace('.', ',') + ' m²' : '—';
+            const name = P.hallName || P.name || 'Grundriss', ty = H + 4;
+            let tb = '<g transform="translate(0,' + ty.toFixed(1) + ')">';
+            tb += '<rect x="0" y="0" width="' + W.toFixed(1) + '" height="' + titleH + '" fill="#f4f6f8" stroke="#cbd5e1"/>';
+            tb += '<text x="14" y="27" font-size="15" font-weight="700" fill="#1f2937">Parkrr · ' + xmlEsc(name) + '</text>';
+            tb += '<text x="14" y="48" font-size="11" fill="#4b5563">' + new Date().toLocaleDateString('de-DE') + ' · Parkfläche ' + total + '</text>';
+            const bx = W - 14 - S; // 1 m scale bar
+            tb += '<line x1="' + bx.toFixed(1) + '" y1="44" x2="' + (bx + S).toFixed(1) + '" y2="44" stroke="#1f2937" stroke-width="2"/>';
+            tb += '<line x1="' + bx.toFixed(1) + '" y1="40" x2="' + bx.toFixed(1) + '" y2="48" stroke="#1f2937" stroke-width="2"/><line x1="' + (bx + S).toFixed(1) + '" y1="40" x2="' + (bx + S).toFixed(1) + '" y2="48" stroke="#1f2937" stroke-width="2"/>';
+            tb += '<text x="' + (bx + S / 2).toFixed(1) + '" y="60" text-anchor="middle" font-size="10" fill="#4b5563">1 m</text></g>';
+            s += tb;
+            return { body: s, W: W, H: H + titleH, svg: '<svg xmlns="http://www.w3.org/2000/svg" width="' + W.toFixed(0) + '" height="' + (H + titleH).toFixed(0) + '" viewBox="0 0 ' + W.toFixed(1) + ' ' + (H + titleH).toFixed(1) + '" font-family="system-ui,Segoe UI,Roboto,Arial,sans-serif">' + s + '</svg>' };
+        }
+        function dlBlob(name, data, mime) { const blob = data instanceof Blob ? data : new Blob([data], { type: mime }); const u = URL.createObjectURL(blob); const a = el('a', { href: u, download: name }); document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(u), 4000); }
+        function exportPlanPNG() { const ex = planExportSVG(); if (!ex) { toast('Nichts zu exportieren', 'warn'); return; } const scale = 2, cv = el('canvas'); cv.width = Math.round(ex.W * scale); cv.height = Math.round(ex.H * scale); const cx = cv.getContext('2d'); const img = new Image();
+            img.onload = () => { cx.setTransform(scale, 0, 0, scale, 0, 0); cx.drawImage(img, 0, 0); cv.toBlob((b) => { if (b) { dlBlob('grundriss.png', b, 'image/png'); toast('PNG exportiert', 'ok'); } }, 'image/png'); };
+            img.onerror = () => toast('PNG-Export fehlgeschlagen', 'error'); img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(ex.svg); }
+        function exportPlanSVG() { const ex = planExportSVG(); if (!ex) { toast('Nichts zu exportieren', 'warn'); return; } dlBlob('grundriss.svg', ex.svg, 'image/svg+xml'); toast('SVG exportiert', 'ok'); }
+        function exportPlanPDF() { const ex = planExportSVG(); if (!ex) { toast('Nichts zu exportieren', 'warn'); return; } const w = window.open('', '_blank'); if (!w) { toast('Popup blockiert — bitte erlauben', 'warn'); return; }
+            // No inline <script> in the popup — the opener's CSP (script-src 'self') would block it.
+            // We drive print/close from here after the document is written.
+            w.document.write('<!doctype html><meta charset="utf-8"><title>Grundriss</title><style>@page{margin:12mm}html,body{margin:0}svg{width:100%;height:auto}@media print{.hint{display:none}}</style><div class="hint" style="font:13px system-ui;padding:8px;color:#555">Drucken-Dialog → „Als PDF speichern".</div>' + ex.svg);
+            w.document.close();
+            try { w.onafterprint = () => { try { w.close(); } catch (e) { /* ignore */ } }; } catch (e) { /* ignore */ }
+            setTimeout(() => { try { w.focus(); w.print(); } catch (e) { /* ignore */ } }, 300); }
+        function exportPlanDXF() {
+            if (!P.walls.edges.length && !P.spots.length && !P.excl.length) { toast('Nichts zu exportieren', 'warn'); return; }
+            const L = []; const P0 = (x, y) => x.toFixed(3) + '\n20\n' + (-y).toFixed(3); // DXF is Y-up → flip
+            const line = (a, b, layer) => L.push('0\nLINE\n8\n' + layer + '\n10\n' + P0(a.x, a.y) + '\n30\n0\n11\n' + P0(b.x, b.y) + '\n31\n0');
+            const pline = (pts, layer) => { let e = '0\nLWPOLYLINE\n8\n' + layer + '\n90\n' + pts.length + '\n70\n1'; pts.forEach((p) => { e += '\n10\n' + p[0].toFixed(3) + '\n20\n' + (-p[1]).toFixed(3); }); L.push(e); };
+            P.walls.edges.forEach((e) => { const v = edgeVec(e); if (v.len < 0.02) return; line(v.a, v.b, 'WALLS'); (e.ops || []).forEach((o) => { const hp = (o.w / v.len) / 2, a = { x: v.a.x + v.dx * (o.c - hp), y: v.a.y + v.dy * (o.c - hp) }, b = { x: v.a.x + v.dx * (o.c + hp), y: v.a.y + v.dy * (o.c + hp) }; line(a, b, 'OPENINGS'); }); });
+            P.excl.forEach((b) => pline(quad(b), isZoneKind(b.kind) ? 'ZONES' : 'STRUCT'));
+            P.spots.forEach((b) => pline(quad(b), 'VEHICLES'));
+            const dxf = '0\nSECTION\n2\nENTITIES\n' + L.join('\n') + '\n0\nENDSEC\n0\nEOF\n';
+            dlBlob('grundriss.dxf', dxf, 'application/dxf'); toast('DXF exportiert', 'ok');
+        }
+        function openExportMenu() {
+            const opts = [['🖼 PNG', exportPlanPNG], ['📄 PDF (Drucken)', exportPlanPDF], ['⬔ SVG (Vektor)', exportPlanSVG], ['📐 DXF (CAD)', exportPlanDXF]];
+            const modal = el('div', { class: 'gp-help-backdrop' });
+            const card = el('div', { class: 'gp-help-card', style: 'max-width:320px' });
+            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '⭳ Exportieren'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => modal.remove() }, '✕')));
+            const list = el('div', { style: 'display:flex;flex-direction:column;gap:.4rem;padding:16px 18px' });
+            opts.forEach(([lab, fn]) => list.append(el('button', { class: 'gp-tbtn', style: 'justify-content:flex-start', onclick: () => { modal.remove(); fn(); } }, lab)));
+            card.append(list); modal.append(card); modal.addEventListener('click', (ev) => { if (ev.target === modal) modal.remove(); }); (root || document.body).append(modal);
+        }
+
+        // ---- FE3: reusable wall-layout templates (the building shape), stored client-side. ----
+        const TPL_KEY = 'parkrr.wallTemplates';
+        const loadTemplates = () => { try { const a = JSON.parse(localStorage.getItem(TPL_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } };
+        const saveTemplates = (a) => { try { localStorage.setItem(TPL_KEY, JSON.stringify(a.slice(0, 30))); } catch (e) { /* quota */ } };
+        async function saveCurrentTemplate() {
+            if (!P.walls.edges.length) { toast('Keine Wände zum Speichern', 'warn'); return; }
+            const data = await formModal({ title: 'Wand-Vorlage speichern', submitLabel: 'Speichern', fields: [{ name: 'name', label: 'Name der Vorlage', type: 'text', required: true, value: (P.hallName || 'Vorlage') + ' ' + (loadTemplates().length + 1) }] });
+            if (!data || !data.name) return;
+            const tpls = loadTemplates(); tpls.unshift({ id: Date.now(), name: String(data.name).slice(0, 60), walls: JSON.parse(JSON.stringify(P.walls)) }); saveTemplates(tpls); toast('Vorlage gespeichert', 'ok');
+        }
+        async function applyTemplate(t) {
+            if (P.walls.edges.length && !(await confirmDialog('Vorlage laden', 'Aktuelle Wände durch die Vorlage „' + t.name + '" ersetzen?', 'Ersetzen'))) return;
+            P.walls = normalizeWalls(t.walls); P.structSel = null; P.sel = null; refreshFloorFromWalls(); pushUndo(); markDirty(); fitView(); toast('Vorlage geladen: ' + t.name, 'ok');
+        }
+        function openTemplateMenu() {
+            const modal = el('div', { class: 'gp-help-backdrop' });
+            const card = el('div', { class: 'gp-help-card', style: 'max-width:380px' });
+            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '▤ Wand-Vorlagen'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => modal.remove() }, '✕')));
+            const body = el('div', { style: 'display:flex;flex-direction:column;gap:.45rem;padding:16px 18px' });
+            body.append(el('button', { class: 'gp-tbtn', style: 'justify-content:flex-start', onclick: () => { modal.remove(); saveCurrentTemplate(); } }, '＋ Aktuelle Wände als Vorlage speichern'));
+            const tpls = loadTemplates();
+            if (!tpls.length) body.append(el('div', { class: 'muted', style: 'font-size:.82rem;padding:.3rem 0' }, 'Noch keine Vorlagen. Zeichne Wände und speichere sie hier.'));
+            tpls.forEach((t) => {
+                const row = el('div', { style: 'display:flex;gap:.4rem;align-items:center' });
+                row.append(el('button', { class: 'gp-tbtn', style: 'flex:1;justify-content:flex-start', onclick: () => { modal.remove(); applyTemplate(t); } }, '▤ ' + t.name + ' · ' + (t.walls && t.walls.edges ? t.walls.edges.length : 0) + ' Wände'));
+                row.append(el('button', { class: 'gp-help-x', title: 'Löschen', onclick: () => { saveTemplates(loadTemplates().filter((x) => x.id !== t.id)); modal.remove(); openTemplateMenu(); } }, '🗑'));
+                body.append(row);
+            });
+            card.append(body); modal.append(card); modal.addEventListener('click', (ev) => { if (ev.target === modal) modal.remove(); }); (root || document.body).append(modal);
+        }
         window.addEventListener('keydown', keyHandler);
         window.addEventListener('keyup', keyUpHandler);
 
@@ -4877,6 +5053,16 @@
             drawWalls();      // wall segments, openings and (in edit mode) node handles
             drawBuffers();    // per-side vehicle clearance bands (when enabled)
             drawWallPreview();// live chained-drawing / opening preview
+            // UX3 — onboarding hint on an empty plan (nothing drawn yet, edit-capable, not mid-draw).
+            if (P.mode === 'plan' && canManageNow && P.walls.edges.length === 0 && P.excl.length === 0 && !P.chain && !P.tool) {
+                const cx = P.Wm * CELL / 2, cy = P.Hm * CELL / 2;
+                const g = svgEl('g', { class: 'gp-emptyhint', 'text-anchor': 'middle' });
+                g.append(svgEl('path', { d: 'M' + (cx - 48) + ' ' + (cy - 46) + ' h96 v40', class: 'gp-eh-ic' }));
+                const t1 = svgEl('text', { x: cx, y: cy + 4, class: 'gp-eh-t1' }); t1.textContent = 'Zeichne die erste Außenwand';
+                const t2 = svgEl('text', { x: cx, y: cy + 26, class: 'gp-eh-t2' }); t2.textContent = 'Werkzeug „Außenwand" wählen · Klick · Klick · Startpunkt schließt den Raum';
+                const t3 = svgEl('text', { x: cx, y: cy + 44, class: 'gp-eh-t2' }); t3.textContent = 'Tastaturkürzel: ?';
+                g.append(t1, t2, t3); svg.append(g);
+            }
         }
         function positionBlock(d, b) {
             const bw = b.w * P.CELL, bh = b.h * P.CELL;
@@ -4908,7 +5094,7 @@
             P.spots.forEach((b) => {
                 const ctx = !interactive(b), st = GPSTAT[b.status] || GPSTAT.busy;
                 let eff = P.render || 'symbol'; if (eff === 'foto' && !b.photoUrl) eff = 'symbol'; // fallback chain: no photo → symbol
-                const d = el('div', { class: 'gp-block veh ' + b.status + (eff !== 'rect' ? ' gp-media' : '') + (eff === 'symbol' ? ' gp-symmode' : '') + (b._id === P.sel ? ' sel' : '') + (warn(b) || b._invalid ? ' invalid' : '') + (ctx ? ' dimctx' : '') });
+                const d = el('div', { class: 'gp-block veh ' + b.status + (eff !== 'rect' ? ' gp-media' : '') + (eff === 'symbol' ? ' gp-symmode' : '') + (b._id === P.sel ? ' sel' : '') + (inSel(b._id) ? ' multisel' : '') + (warn(b) || b._invalid ? ' invalid' : '') + (ctx ? ' dimctx' : '') });
                 d.dataset.id = b._id;
                 const warnTxt = !inside(b) ? '⚠ außerhalb' : (b._invalid ? '⚠ blockiert' : ((!heightOK(b) || !weightOK(b)) ? '⚠ Maß' : (doorHitsSpot(b) ? '⚠ Türaufschlag' : null)));
                 const codeTxt = st.sym + ' ' + (b.type || 'Gefährt'), nameTxt = b.personName || b.label;
@@ -4937,7 +5123,7 @@
             P.excl.forEach((b) => {
                 const ctx = !interactive(b);
                 const cat = (EXCL[b.kind] && EXCL[b.kind].cat) || 'zone';
-                const d = el('div', { class: 'gp-block excl gp-' + cat + ' ' + b.kind + (b.id === P.sel ? ' sel' : '') + (ctx ? ' dimctx' : '') });
+                const d = el('div', { class: 'gp-block excl gp-' + cat + ' ' + b.kind + (b.id === P.sel ? ' sel' : '') + (inSel(b.id) ? ' multisel' : '') + (ctx ? ' dimctx' : '') });
                 d.dataset.id = b.id;
                 // Zones show their measured area; structures show their type label.
                 const lab = isZoneKind(b.kind) ? (b.label + ' · ' + (b.w * b.h).toFixed(1).replace('.', ',') + ' m²') : b.label;
@@ -5270,50 +5456,11 @@
         // traces that enclosure's OUTER face and adopts it as the hall floor polygon.
         // Enclosure boundary = drawn wall segments (graph) + any legacy excl walls/openings.
         function wallBlocks() { return wallRects().concat(P.excl.filter((e) => isWallKind(e.kind) || isOpenKind(e.kind))); }
-        // Point-in-polygon (ray cast) + simple-polygon self-intersection test — used by the exact
-        // per-room area (match rooms, subtract interior columns, reject degenerate faces).
-        const pointInPoly = (x, y, poly) => { let c = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y; if (((yi > y) !== (yj > y)) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c; } return c; };
-        const segCross = (p1, p2, p3, p4) => { const d = (a, b, c) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x); const d1 = d(p3, p4, p1), d2 = d(p3, p4, p2), d3 = d(p1, p2, p3), d4 = d(p1, p2, p4); return ((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0)); };
-        const polySelfIntersects = (poly) => { const k = poly.length; for (let i = 0; i < k; i++) { const a1 = poly[i], a2 = poly[(i + 1) % k]; for (let j = i + 1; j < k; j++) { if (j === i || (j + 1) % k === i || (i + 1) % k === j) continue; if (segCross(a1, a2, poly[j], poly[(j + 1) % k])) return true; } } return false; };
-        // Offset a CCW ring inward by per-edge distance d[i] (inward = left normal), re-intersecting
-        // consecutive edges — with a reflex clamp so a concave corner can't spike out (C2).
-        function insetRing(poly, d) {
-            const k = poly.length;
-            const ln = poly.map((a, i) => { const b = poly[(i + 1) % k], dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L; return { px: a.x - uy * d[i], py: a.y + ux * d[i], dx: ux, dy: uy, L }; });
-            return ln.map((L2, i) => { const L1 = ln[(i - 1 + k) % k], den = L1.dx * L2.dy - L1.dy * L2.dx; if (Math.abs(den) < 1e-9) return { x: L2.px, y: L2.py };
-                let t = ((L2.px - L1.px) * L2.dy - (L2.py - L1.py) * L2.dx) / den; const lim = Math.max(L1.L, L2.L); if (t > lim) t = lim; if (t < -lim) t = -lim; return { x: L1.px + L1.dx * t, y: L1.py + L1.dy * t }; });
-        }
-        // Planar face decomposition of the wall graph → the exact interior polygon + area of EVERY
-        // enclosed room (C1). Each bounded face (signed area > 0) is a room; its edges are inset to
-        // the inner face by (edgeOffs·inward-normal + thick/2) — so the Bezug (Innen/Achse/Außen) is
-        // honoured — then re-intersected (C2) and shoelaced. Junctions/T-crossings just work.
-        function roomFaces() {
-            const N = P.walls.nodes, E = P.walls.edges; if (E.length < 3) return [];
-            const offs = edgeOffs(); const half = [];
-            E.forEach((e, ei) => { if (!N[e.a] || !N[e.b]) return; half.push({ u: e.a, v: e.b, ei }); half.push({ u: e.b, v: e.a, ei }); });
-            if (half.length < 6) return [];
-            const out = N.map(() => []);
-            half.forEach((h, hi) => { const a = N[h.u], b = N[h.v]; h.ang = Math.atan2(b.y - a.y, b.x - a.x); out[h.u].push(hi); });
-            out.forEach((l) => l.sort((p, q) => half[p].ang - half[q].ang));
-            const pos = new Map(); out.forEach((l) => l.forEach((hi, i) => pos.set(hi, i)));
-            const twin = (hi) => { const h = half[hi]; for (const j of out[h.v]) if (half[j].v === h.u && half[j].ei === h.ei) return j; return -1; };
-            const nextH = (hi) => { const t = twin(hi); if (t < 0) return -1; const l = out[half[t].u], i = pos.get(t); return l[(i - 1 + l.length) % l.length]; };
-            const seen = new Uint8Array(half.length), rooms = [];
-            for (let hi = 0; hi < half.length; hi++) { if (seen[hi]) continue; const cyc = []; let c = hi, g = half.length + 4;
-                while (c >= 0 && !seen[c] && g-- > 0) { seen[c] = 1; cyc.push(c); c = nextH(c); }
-                if (cyc.length < 3) continue;
-                const poly = cyc.map((h) => ({ x: N[half[h].u].x, y: N[half[h].u].y }));
-                if (ringAreaS(poly) <= 0.01 || polySelfIntersects(poly)) continue; // unbounded face (−) or a degenerate/stub loop → skip
-                const k = poly.length, d = [];
-                for (let i = 0; i < k; i++) { const ei = half[cyc[i]].ei, a = poly[i], b = poly[(i + 1) % k];
-                    const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1, nlx = -dy / L, nly = dx / L; // inward (left) normal — face is CCW
-                    const o = (offs && offs[ei]) || { ox: 0, oy: 0 }; d.push((o.ox * nlx + o.oy * nly) + (E[ei].thick || 0.24) / 2); }
-                const ring = insetRing(poly, d), area = Math.abs(ringAreaS(ring));
-                let cx = 0, cy = 0; ring.forEach((p) => { cx += p.x; cy += p.y; }); cx /= ring.length; cy /= ring.length;
-                rooms.push({ area, ring, cx, cy });
-            }
-            return rooms;
-        }
+        // Pure geometry lives in geometry.js (window.PG) so it is unit-tested directly (AR2).
+        const pointInPoly = PG.pointInPoly;
+        // Planar face decomposition → exact interior polygon + area of EVERY enclosed room, honouring
+        // the Bezug via edgeOffs; delegated to the tested PG.roomAreas.
+        function roomFaces() { return PG.roomAreas(P.walls.nodes, P.walls.edges, P.wallRef); }
         let _enc = null, _encKey = null;
         function enclosure() {
             const wb = wallBlocks();
@@ -5651,6 +5798,9 @@
             toolbar.append(el('span', { class: 'gp-zoomlbl' }, Math.round((P.zoom || 1) * 100) + '%'));
             toolbar.append(tb('+', 'Vergrößern', () => { P.zoom = Math.min(8, +(P.zoom + 0.15).toFixed(2)); layout(); }));
             toolbar.append(tb('⤢ Passen', 'Einpassen & Raster an die Wände anpassen', () => { fitView(); }));
+            toolbar.append(tb('⭳ Export', 'Als PNG / PDF / SVG / DXF exportieren', () => openExportMenu()));
+            if (canManageNow) toolbar.append(tb('▤ Vorlagen', 'Wand-Layouts speichern & wiederverwenden', () => openTemplateMenu()));
+            toolbar.append(tb('?', 'Tastaturkürzel (Taste ?)', () => toggleShortcutHelp()));
             if (canManageNow && P.dirty) { const sv = tb('● Speichern', 'Jetzt speichern (Auto-Save aktiv)', () => doSaveGeom(), false, 'btn-primary'); toolbar.append(sv); }
         }
         function rotateSel() {
@@ -6010,7 +6160,7 @@
         }
 
         // ---- mode / maximize ----
-        function setMode(m) { P.mode = m; root.dataset.mode = m; P.sel = null; P.calib = false; P.tool = null; P.chain = null; P.openStart = null; P.preview = null; P.structSel = null; P.chainAnchor = null; P.guide = null; P.attach = null; hideLen(); hideVertMenu(); ctitle.textContent = m === 'plan' ? 'Garagenplaner' : 'Digitaler Zwilling'; rebuildSwitch(); draw(); }
+        function setMode(m) { P.mode = m; root.dataset.mode = m; P.sel = null; selSet = []; P.calib = false; P.tool = null; P.chain = null; P.openStart = null; P.preview = null; P.structSel = null; P.chainAnchor = null; P.guide = null; P.attach = null; hideLen(); hideVertMenu(); ctitle.textContent = m === 'plan' ? 'Garagenplaner' : 'Digitaler Zwilling'; rebuildSwitch(); draw(); }
         // Re-fit on enter AND exit so the plan fills whichever viewport we land in (entering
         // fullscreen used to keep the small windowed scale → a tiny plan marooned in a huge canvas).
         function toggleMax(force) { P.maxed = force == null ? !P.maxed : force; root.classList.toggle('maxed', P.maxed); maxBtn.textContent = P.maxed ? '⤢' : '⛶'; if (!P.maxed) { rail.style.left = ''; rail.style.top = ''; rail.style.right = ''; } setTimeout(() => { if (P.walls.edges.length) fitView(); else layout(); }, 20); }
@@ -6034,14 +6184,35 @@
             const rz = e.target.closest('.gp-rz');
             if (rz && canManageNow) { const id = rz.dataset.rz; const bb = P.spots.find((x) => x._id == id) || P.excl.find((x) => x.id === id); if (bb) { act = { mode: 'resize', b: bb, elm: e.target.closest('.gp-block'), dir: rz.dataset.dir, o0: { x: bb.x, y: bb.y, w: bb.w, h: bb.h, rot: bb.rot || 0 } }; e.target.setPointerCapture(e.pointerId); } return; }
             const elm = e.target.closest('.gp-block');
-            if (!elm) { const r = planEl.getBoundingClientRect(); showRoom({ x: (e.clientX - r.left) / P.CELL, y: (e.clientY - r.top) / P.CELL }); draw(); return; } // empty floor → room m²
+            if (!elm) { // empty floor: begin a marquee (rubber-band multi-select) — resolves to a click if it doesn't drag
+                const r = planEl.getBoundingClientRect();
+                marq = { sx: e.clientX, sy: e.clientY, x0: (e.clientX - r.left) / P.CELL, y0: (e.clientY - r.top) / P.CELL, add: e.shiftKey || e.ctrlKey || e.metaKey, moved: false, el: null };
+                layer.setPointerCapture(e.pointerId); return;
+            }
             const id = elm.dataset.id; const b = P.spots.find((x) => x._id == id) || P.excl.find((x) => x.id === id); if (!b) return;
-            if (!interactive(b) || !canManageNow) { P.sel = b._id || b.id; draw(); return; }
-            const r = planEl.getBoundingClientRect();
-            act = { mode: 'move', b, elm, sx: e.clientX, sy: e.clientY, gx: e.clientX - r.left - b.x * P.CELL, gy: e.clientY - r.top - b.y * P.CELL, moved: false, ox: b.x, oy: b.y };
+            if (!interactive(b) || !canManageNow) { P.sel = b._id || b.id; if (!inSel(b._id || b.id)) clearSelSet(); draw(); return; }
+            const r = planEl.getBoundingClientRect(), myId = b._id || b.id;
+            // grabbing one of several selected objects → move the whole group; otherwise single (and drop any group)
+            if (inSel(myId) && selSet.length > 1) {
+                const members = selSet.map(findBlock).filter((x) => x && interactive(x)).map((x) => ({ b: x, ox: x.x, oy: x.y }));
+                act = { mode: 'move', group: members, b, elm, sx: e.clientX, sy: e.clientY, gx: e.clientX - r.left - b.x * P.CELL, gy: e.clientY - r.top - b.y * P.CELL, moved: false, ox: b.x, oy: b.y };
+            } else {
+                if (clearSelSet()) draw();
+                act = { mode: 'move', b, elm, sx: e.clientX, sy: e.clientY, gx: e.clientX - r.left - b.x * P.CELL, gy: e.clientY - r.top - b.y * P.CELL, moved: false, ox: b.x, oy: b.y };
+            }
             elm.setPointerCapture(e.pointerId);
         });
         layer.addEventListener('pointermove', (e) => {
+            if (marq) {
+                if (!marq.moved && Math.abs(e.clientX - marq.sx) + Math.abs(e.clientY - marq.sy) < 4) return;
+                marq.moved = true; const r = planEl.getBoundingClientRect();
+                if (!marq.el) { marq.el = el('div', { class: 'gp-marquee' }); planEl.append(marq.el); }
+                const x1 = (e.clientX - r.left) / P.CELL, y1 = (e.clientY - r.top) / P.CELL;
+                const lo = { x: Math.min(marq.x0, x1), y: Math.min(marq.y0, y1) }, hi = { x: Math.max(marq.x0, x1), y: Math.max(marq.y0, y1) };
+                marq.el.style.left = (lo.x * P.CELL) + 'px'; marq.el.style.top = (lo.y * P.CELL) + 'px';
+                marq.el.style.width = ((hi.x - lo.x) * P.CELL) + 'px'; marq.el.style.height = ((hi.y - lo.y) * P.CELL) + 'px';
+                marq.box = { lo, hi }; return;
+            }
             if (!act) return; const r = planEl.getBoundingClientRect(), b = act.b;
             if (act.mode === 'rotate') {
                 const wx = (e.clientX - r.left) / P.CELL, wy = (e.clientY - r.top) / P.CELL;
@@ -6063,9 +6234,21 @@
             if (!act.moved && Math.abs(e.clientX - act.sx) + Math.abs(e.clientY - act.sy) < 4) return; act.moved = true; act.elm.classList.add('moving');
             let nx = (e.clientX - r.left - act.gx) / P.CELL, ny = (e.clientY - r.top - act.gy) / P.CELL; nx = gsnap(nx); ny = gsnap(ny);
             const cl = snapPos(b, nx, ny); nx = cl.x; ny = cl.y; b.x = nx; b.y = ny; act.elm.style.left = (nx * P.CELL) + 'px'; act.elm.style.top = (ny * P.CELL) + 'px';
+            if (act.group) { const dx = nx - act.ox, dy = ny - act.oy; // rigid group move: shift every member by the same (snapped) delta
+                act.group.forEach((m) => { if (m.b === b) return; m.b.x = m.ox + dx; m.b.y = m.oy + dy; const me = layer.querySelector('.gp-block[data-id="' + (m.b._id || m.b.id) + '"]'); if (me) { me.style.left = (m.b.x * P.CELL) + 'px'; me.style.top = (m.b.y * P.CELL) + 'px'; } }); }
             const isVeh = !!b._id && b.kind !== 'excl'; const bad = isVeh ? !validVeh({ kind: 'veh', x: nx, y: ny, w: b.w, h: b.h, rot: b.rot }, b._id) : (isZoneKind(b.kind) ? false : collide({ kind: 'excl', x: nx, y: ny, w: b.w, h: b.h }, b.id)); act.elm.classList.toggle('invalid', bad);
         });
         layer.addEventListener('pointerup', (e) => {
+            if (marq) {
+                const m = marq; marq = null; try { layer.releasePointerCapture(e.pointerId); } catch (er) { /* ignore */ } if (m.el) m.el.remove();
+                if (!m.moved) { const changed = clearSelSet(); P.roomSel = null; showRoom({ x: m.x0, y: m.y0 }); draw(); return; } // plain click → deselect + room m²
+                const box = m.box || { lo: { x: m.x0, y: m.y0 }, hi: { x: m.x0, y: m.y0 } }, hits = [];
+                const consider = (arr) => arr.forEach((bl) => { if (!interactive(bl)) return; const cx = bl.x + bl.w / 2, cy = bl.y + bl.h / 2; if (cx >= box.lo.x && cx <= box.hi.x && cy >= box.lo.y && cy <= box.hi.y) hits.push(bl._id || bl.id); });
+                consider(P.spots); consider(P.excl); // interactive() already scopes to zones (plan) OR vehicles (manage)
+                if (!m.add) selSet = []; hits.forEach((id) => { if (selSet.indexOf(id) < 0) selSet.push(id); });
+                P.sel = null; P.roomSel = null; draw(); if (selSet.length) toast(selSet.length + ' ausgewählt · ziehen zum Verschieben · Entf zum Löschen', 'ok');
+                return;
+            }
             if (!act) return; const b = act.b, d = act; act = null;
             try { d.elm.releasePointerCapture(e.pointerId); } catch (er) { /* ignore */ }
             const isVeh = !!b._id && b.kind !== 'excl';
@@ -6085,6 +6268,14 @@
                 draw(); toast('Größe geändert' + (isVeh ? ' · ' + dimText(b).replace(/^.*· /, '') : '')); return;
             }
             if (!d.moved) { P.sel = b._id || b.id; draw(); return; }
+            if (d.group) { // group move commit — rigid shift keeps inter-member validity, so evaluate each like a single move
+                d.elm.classList.remove('moving');
+                const res = d.group.map((m) => { const mb = m.b, mv = !!mb._id && mb.kind !== 'excl'; const bd = mv ? !validVeh({ kind: 'veh', x: mb.x, y: mb.y, w: mb.w, h: mb.h, rot: mb.rot }, mb._id) : (isZoneKind(mb.kind) ? false : collide({ kind: 'excl', x: mb.x, y: mb.y, w: mb.w, h: mb.h }, mb.id)); return { mv, bd }; });
+                if (res.some((x) => !x.mv && x.bd)) { d.group.forEach((m) => { m.b.x = m.ox; m.b.y = m.oy; }); draw(); toast('Gruppe: Kollision/außerhalb — zurück', 'error'); return; }
+                res.forEach((x, i) => { if (x.mv) { d.group[i].b._invalid = x.bd; d.group[i].b._dirty = true; } });
+                markDirty(); pushUndo(); draw(); const bad = res.some((x) => x.bd);
+                toast(d.group.length + ' verschoben' + (bad ? ' · einige ungültig, Speichern erst wenn frei' : ''), bad ? 'warn' : 'ok'); return;
+            }
             d.elm.classList.remove('moving');
             const bad = isVeh ? !validVeh({ kind: 'veh', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b._id) : (isZoneKind(b.kind) ? false : collide({ kind: 'excl', x: b.x, y: b.y, w: b.w, h: b.h }, b.id));
             P.sel = b._id || b.id;
@@ -6170,7 +6361,21 @@
             // empty click → deselect only (NEVER delete); on an enclosed room, show its m²
             P.structSel = null; P.sel = null; showRoom(p); draw();
         }
-        function deleteSel() {
+        async function deleteSel() {
+            if (selSet.length) { // group delete (FE4): zones removed from geometry (undoable); vehicles unpositioned via API (confirmed)
+                if (!canManageNow) { clearSelSet(); draw(); return; }
+                const blocks = selSet.map(findBlock).filter(Boolean);
+                const vehs = blocks.filter((b) => b._id && b.kind !== 'excl'), excls = blocks.filter((b) => !(b._id && b.kind !== 'excl'));
+                if (vehs.length && !(await confirmDialog('Gefährte entfernen', vehs.length + ' Gefährt(e) aus dem Plan entfernen?', 'Entfernen'))) return;
+                selSet = [];
+                if (excls.length) { excls.forEach((b) => { P.excl = P.excl.filter((x) => x !== b); if (P.sel === b.id) P.sel = null; }); pushUndo(); markDirty(); }
+                if (vehs.length) {
+                    // Count failures and report the REAL result after the API calls — don't claim
+                    // every vehicle was removed when some api.del() rejected.
+                    (async () => { let ok = 0, fail = 0; for (const v of vehs) { try { await api.del('/spots/' + v._id); P.spots = P.spots.filter((x) => x !== v); if (v.vehId) P.palette.push({ id: v.vehId, label: v.label, type: v.type, person_id: v.personId, person_name: v.personName, length_m: v.L, width_m: v.W, height_m: v.H, weight_t: v.t }); if (P.sel === v._id) P.sel = null; ok++; } catch (er) { fail++; } } draw(); toast(fail ? ok + ' entfernt · ' + fail + ' fehlgeschlagen' : ok + ' entfernt', fail ? 'warn' : 'ok'); })();
+                } else { draw(); toast(excls.length + ' entfernt', 'ok'); }
+                return;
+            }
             if (!P.structSel) { if (P.sel != null) { const b = P.excl.find((x) => x.id === P.sel); if (b) removeExcl(b); } return; }
             if (P.structSel.type === 'opening') { const e = P.walls.edges[P.structSel.ei]; if (e && e.ops) e.ops.splice(P.structSel.oi, 1); P.structSel = null; pushUndo(); markDirty(); draw(); toast('Öffnung entfernt — Wand geschlossen'); return; }
             const isNode = P.structSel.type === 'node';
@@ -6270,7 +6475,8 @@
         // pointercancel (touch interruption etc.): drop any in-flight drag/edit state
         // so it can't get stuck and block further interaction.
         const cancelGesture = () => {
-            if (act) { const b = act.b; if (act.mode === 'move') { b.x = act.ox; b.y = act.oy; } else if (act.mode === 'resize') { b.w = act.ow; b.h = act.oh; } else if (act.mode === 'rotate') { b.rot = act.orot; } if (act.elm) act.elm.classList.remove('moving'); act = null; draw(); }
+            if (marq) { if (marq.el) marq.el.remove(); marq = null; } // FE4: don't leave a stuck rubber-band
+            if (act) { const b = act.b; if (act.mode === 'move') { b.x = act.ox; b.y = act.oy; if (act.group) act.group.forEach((m) => { m.b.x = m.ox; m.b.y = m.oy; }); } else if (act.mode === 'resize' && act.o0) { b.x = act.o0.x; b.y = act.o0.y; b.w = act.o0.w; b.h = act.o0.h; b.rot = act.o0.rot; } else if (act.mode === 'rotate') { b.rot = act.orot; } if (act.elm) act.elm.classList.remove('moving'); act = null; draw(); }
             railDrag = null; // don't leave a fullscreen rail-drag following the cursor
             if (drag) { if (drag.g) drag.g.remove(); drag = null; }
             if (prev) { prev.remove(); prev = null; }
