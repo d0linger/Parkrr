@@ -5818,7 +5818,10 @@
             toolbar.append(tb('⭳ Export', 'Als PNG / PDF / SVG / DXF exportieren', () => openExportMenu()));
             if (canManageNow) toolbar.append(tb('▤ Vorlagen', 'Wand-Layouts speichern & wiederverwenden', () => openTemplateMenu()));
             toolbar.append(tb('?', 'Tastaturkürzel (Taste ?)', () => toggleShortcutHelp()));
-            if (canManageNow && P.dirty) { const sv = tb('● Speichern', 'Jetzt speichern (Auto-Save aktiv)', () => doSaveGeom(), false, 'btn-primary'); toolbar.append(sv); }
+            // Always render the save control (fixed width, centred) so it never appears/disappears
+            // and reflows the wrapping toolbar mid-edit — that shift caused mis-clicks. Dirty → an
+            // active "● Speichern"; clean → a disabled "✓ Gespeichert" status in the same slot.
+            if (canManageNow) { const sv = tb(P.dirty ? '● Speichern' : '✓ Gespeichert', P.dirty ? 'Jetzt speichern (Auto-Save aktiv)' : 'Alle Änderungen gespeichert', () => { if (P.dirty) doSaveGeom(); }, false, P.dirty ? 'btn-primary' : ''); sv.disabled = !P.dirty; sv.style.minWidth = '7.5rem'; sv.style.textAlign = 'center'; toolbar.append(sv); }
         }
         function rotateSel() {
             const b = P.spots.find((s) => s._id === P.sel); if (!b) return;
