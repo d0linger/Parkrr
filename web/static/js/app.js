@@ -5030,7 +5030,7 @@
             // edit walls + zones otherwise). Manage mode leaves it off so the vehicle layer works.
             const drawActive = P.mode === 'plan' && !P.calib && canManageNow;
             drawOverlay.style.display = drawActive ? 'block' : 'none';
-            drawOverlay.classList.toggle('edit', !P.tool);
+            drawOverlay.classList.toggle('edit', !P.tool); drawOverlay.style.cursor = ''; // reset; the hover handler re-applies a resize cursor over zone handles
             positionWallPop(); positionRoomBadge();
             const used = P.spots.length;
             occN.textContent = used + ' Gefährte';
@@ -6522,6 +6522,23 @@
                 if (P.openStart) { const ed = P.walls.edges[P.openStart.ei]; if (ed) { const v = edgeVec(ed); let t2 = ((p.x - v.a.x) * v.dx + (p.y - v.a.y) * v.dy) / (v.len * v.len); t2 = Math.max(0, Math.min(1, t2)); P.preview = { x: v.a.x + v.dx * t2, y: v.a.y + v.dy * t2, t: t2 }; P.attach = { ei: P.openStart.ei, t: t2, x: P.preview.x, y: P.preview.y }; } }
                 else { const e0 = edgeAt(p, 14 / P.CELL); P.attach = e0 ? { ei: e0.i, t: e0.t, x: e0.x, y: e0.y } : null; P.snapHint = e0 ? { x: e0.x, y: e0.y } : null; }
                 drawFloor();
+            }
+            // Idle hover feedback (no tool, no drag): the overlay owns the cursor, so mirror the
+            // editDown hit-test here and switch to the matching resize/move/rotate cursor over the
+            // selected zone's handles — you can now SEE when you've hit a handle before clicking.
+            if (!P.tool && !zoneDrag && !opDrag && !nodeDrag && !zoneDraw && !P.chain) {
+                const R = 12 / P.CELL; let cur = '';
+                const b = P.sel != null ? P.excl.find((x) => x.id === P.sel) : null;
+                if (b) {
+                    const cs = quad(b), rad = (b.rot || 0) * Math.PI / 180, cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+                    const kx = cx + Math.sin(rad) * (b.h / 2 + 22 / P.CELL), ky = cy - Math.cos(rad) * (b.h / 2 + 22 / P.CELL);
+                    const ccur = ['nwse-resize', 'nesw-resize', 'nwse-resize', 'nesw-resize'], ecur = ['ns-resize', 'ew-resize', 'ns-resize', 'ew-resize'];
+                    if (Math.hypot(p.x - kx, p.y - ky) < R + 4 / P.CELL) cur = 'grab'; // rotate knob
+                    if (!cur) for (let c = 0; c < 4; c++) if (Math.hypot(cs[c][0] - p.x, cs[c][1] - p.y) < R) { cur = ccur[c]; break; }
+                    if (!cur) for (let c = 0; c < 4; c++) { const mx = (cs[c][0] + cs[(c + 1) % 4][0]) / 2, my = (cs[c][1] + cs[(c + 1) % 4][1]) / 2; if (Math.hypot(mx - p.x, my - p.y) < R) { cur = ecur[c]; break; } }
+                    if (!cur && pointInBlock(b, p)) cur = 'move';
+                }
+                drawOverlay.style.cursor = cur;
             }
         });
         drawOverlay.addEventListener('pointerup', (ev) => {
