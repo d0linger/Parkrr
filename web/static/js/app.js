@@ -5647,6 +5647,7 @@
         // Vehicle buffer visualisation: a HALF-buffer band only on the side(s) where another
         // vehicle actually sits within the clearance — never toward walls/lanes/maint/empty.
         function drawBuffers() {
+            const prev = svg.querySelector('g.gp-bufg'); if (prev) prev.remove(); // idempotent: safe to re-run live during a drag
             if (!P.buffer) return;
             const CELL = P.CELL, half = P.bufferM / 2, g = svgEl('g', { class: 'gp-bufg' });
             const vs = P.spots.filter((s) => !s.noBuf);
@@ -6261,7 +6262,7 @@
                 ang = ((ang % 360) + 360) % 360; b.rot = ang;
                 act.elm.style.transform = 'rotate(' + ang + 'deg)';
                 act.elm.querySelectorAll('.gp-code,.gp-lab,.gp-warnb').forEach((t) => { t.style.transform = 'rotate(' + (-ang) + 'deg)'; }); // keep labels upright while dragging
-                act.elm.classList.toggle('invalid', b._id ? !validVeh(b, b._id) : (isZoneKind(b.kind) ? false : collide(b, b.id))); return;
+                act.elm.classList.toggle('invalid', b._id ? !validVeh(b, b._id) : (isZoneKind(b.kind) ? false : collide(b, b.id))); if (P.buffer) drawBuffers(); return;
             }
             if (act.mode === 'resize') {
                 const px = (e.clientX - r.left) / P.CELL, py = (e.clientY - r.top) / P.CELL;
@@ -6270,13 +6271,14 @@
                 const isVeh = !!b._id && b.kind !== 'excl';
                 if (isVeh) { b.L = b.w; b.W = b.h; act.elm.querySelectorAll('.gp-dim,.gp-rl-dim').forEach((t) => { t.textContent = dimText(b); }); } // live L×B
                 const bad = isVeh ? !validVeh({ kind: 'veh', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b._id) : (isZoneKind(b.kind) ? false : collide({ kind: 'excl', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b.id));
-                act.elm.classList.toggle('invalid', bad); renderMetrics(); return; }
+                act.elm.classList.toggle('invalid', bad); renderMetrics(); if (P.buffer) drawBuffers(); return; }
             if (!act.moved && Math.abs(e.clientX - act.sx) + Math.abs(e.clientY - act.sy) < 4) return; act.moved = true; act.elm.classList.add('moving');
             let nx = (e.clientX - r.left - act.gx) / P.CELL, ny = (e.clientY - r.top - act.gy) / P.CELL; nx = gsnap(nx); ny = gsnap(ny);
             const cl = snapPos(b, nx, ny); nx = cl.x; ny = cl.y; b.x = nx; b.y = ny; act.elm.style.left = (nx * P.CELL) + 'px'; act.elm.style.top = (ny * P.CELL) + 'px';
             if (act.group) { const dx = nx - act.ox, dy = ny - act.oy; // rigid group move: shift every member by the same (snapped) delta
                 act.group.forEach((m) => { if (m.b === b) return; m.b.x = m.ox + dx; m.b.y = m.oy + dy; const me = layer.querySelector('.gp-block[data-id="' + (m.b._id || m.b.id) + '"]'); if (me) { me.style.left = (m.b.x * P.CELL) + 'px'; me.style.top = (m.b.y * P.CELL) + 'px'; } }); }
             const isVeh = !!b._id && b.kind !== 'excl'; const bad = isVeh ? !validVeh({ kind: 'veh', x: nx, y: ny, w: b.w, h: b.h, rot: b.rot }, b._id) : (isZoneKind(b.kind) ? false : collide({ kind: 'excl', x: nx, y: ny, w: b.w, h: b.h }, b.id)); act.elm.classList.toggle('invalid', bad);
+            if (P.buffer) drawBuffers(); // keep the clearance bands under the block while it moves
         });
         layer.addEventListener('pointerup', (e) => {
             if (marq) {
