@@ -1679,3 +1679,7 @@ a.portal-row.link:hover { color: var(--accent-text); }
 .gp-eh-ic{fill:none;stroke:var(--gpteal2,#5adcb4);stroke-width:3;stroke-linecap:round;stroke-linejoin:round;opacity:.45}
 .gp-eh-t1{fill:var(--text,#e8eef7);font-size:16px;font-weight:700;opacity:.9}
 .gp-eh-t2{fill:var(--text-muted,#93a1b8);font-size:11px}
+
+/* FE4 — marquee rubber-band + multi-selected block highlight */
+.gp-marquee{position:absolute;z-index:9;border:1.5px dashed var(--tab-active,#2dd4bf);background:rgba(45,212,191,.12);pointer-events:none;border-radius:3px}
+.gp-block.multisel{outline:2px solid var(--tab-active,#2dd4bf);outline-offset:1px;box-shadow:0 0 0 4px rgba(45,212,191,.18);z-index:6}

@@ -4601,6 +4601,13 @@
         // Transparent capture layer for interactive wall drawing / node editing (plan mode).
         const drawOverlay = el('div', { class: 'gp-drawoverlay' }); drawOverlay.style.display = 'none'; planEl.append(drawOverlay);
         let nodeDrag = null, opDrag = null, zoneDrag = null, zoneDraw = null;
+        // FE4 — multi-select of the CURRENT subsystem's objects only: zones in the Garagenmanager
+        // (plan), vehicles in the Stellplatzsystem (manage) — mirroring interactive(b). selSet holds
+        // their ids; a marquee drag on empty floor fills it; group move/delete act on it.
+        let selSet = [], marq = null;
+        const findBlock = (id) => P.spots.find((x) => x._id == id) || P.excl.find((x) => x.id === id);
+        const inSel = (id) => id != null && selSet.indexOf(id) >= 0;
+        const clearSelSet = () => { if (selSet.length) { selSet = []; return true; } return false; };
         // point (metres) inside a possibly-rotated block?
         function pointInBlock(b, p) { const cx = b.x + b.w / 2, cy = b.y + b.h / 2, r = -(b.rot || 0) * Math.PI / 180, cos = Math.cos(r), sin = Math.sin(r); const dx = p.x - cx, dy = p.y - cy, lx = dx * cos - dy * sin, ly = dx * sin + dy * cos; return Math.abs(lx) <= b.w / 2 && Math.abs(ly) <= b.h / 2; }
         function createZone(kind, x, y, w, h) { const b = { id: 'e' + (P.uid++), kind, x: round2(x), y: round2(y), w: round2(w), h: round2(h), rot: 0, label: EXCL[kind].label, mat: EXCL[kind].mat }; P.excl.push(b); return b; }
@@ -4775,9 +4782,9 @@
             const m = e.ctrlKey || e.metaKey, tag = (e.target.tagName || '').toLowerCase(), typing = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable;
             if (m && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); }
             else if (m && e.key.toLowerCase() === 'y') { e.preventDefault(); doRedo(); }
-            else if (e.key === 'Escape') { if (shortcutModal) { e.preventDefault(); toggleShortcutHelp(); } else if (P.tool || P.chain || P.openStart || zoneDraw) { e.preventDefault(); cancelDrawing(); } else if (P.structSel || P.sel != null) { e.preventDefault(); P.structSel = null; P.sel = null; draw(); } else if (P.maxed) { toggleMax(false); } }
+            else if (e.key === 'Escape') { if (shortcutModal) { e.preventDefault(); toggleShortcutHelp(); } else if (P.tool || P.chain || P.openStart || zoneDraw) { e.preventDefault(); cancelDrawing(); } else if (selSet.length) { e.preventDefault(); clearSelSet(); draw(); } else if (P.structSel || P.sel != null) { e.preventDefault(); P.structSel = null; P.sel = null; draw(); } else if (P.maxed) { toggleMax(false); } }
             else if (!typing && !m && e.key === '?') { e.preventDefault(); toggleShortcutHelp(); } // ? = Tastaturkürzel-Hilfe (QW3)
-            else if (!typing && (e.key === 'Delete' || e.key === 'Backspace') && P.mode === 'plan' && (P.structSel || P.sel != null)) { e.preventDefault(); deleteSel(); }
+            else if (!typing && (e.key === 'Delete' || e.key === 'Backspace') && (selSet.length || (P.mode === 'plan' && (P.structSel || P.sel != null)))) { e.preventDefault(); deleteSel(); }
             else if (!typing && !m && e.key.toLowerCase() === 'f' && doorSel()) { e.preventDefault(); flipDoorSide(); } // F = Tür spiegeln (bei ausgewählter Tür)
             else if (!typing && !m && e.key === ' ' && doorSel()) { e.preventDefault(); swapDoorHinge(); } // Space = Anschlag wechseln (bei ausgewählter Tür)
             else if (!typing && !m && e.key.toLowerCase() === 'r' && P.mode === 'plan' && P.sel != null) { const b = P.excl.find((x) => x.id === P.sel); if (b) { e.preventDefault(); b.rot = ((b.rot || 0) + 90) % 360; commitGeom('Fläche gedreht'); } } // R = Fläche 90° drehen
@@ -5073,7 +5080,7 @@
             P.spots.forEach((b) => {
                 const ctx = !interactive(b), st = GPSTAT[b.status] || GPSTAT.busy;
                 let eff = P.render || 'symbol'; if (eff === 'foto' && !b.photoUrl) eff = 'symbol'; // fallback chain: no photo → symbol
-                const d = el('div', { class: 'gp-block veh ' + b.status + (eff !== 'rect' ? ' gp-media' : '') + (eff === 'symbol' ? ' gp-symmode' : '') + (b._id === P.sel ? ' sel' : '') + (warn(b) || b._invalid ? ' invalid' : '') + (ctx ? ' dimctx' : '') });
+                const d = el('div', { class: 'gp-block veh ' + b.status + (eff !== 'rect' ? ' gp-media' : '') + (eff === 'symbol' ? ' gp-symmode' : '') + (b._id === P.sel ? ' sel' : '') + (inSel(b._id) ? ' multisel' : '') + (warn(b) || b._invalid ? ' invalid' : '') + (ctx ? ' dimctx' : '') });
                 d.dataset.id = b._id;
                 const warnTxt = !inside(b) ? '⚠ außerhalb' : (b._invalid ? '⚠ blockiert' : ((!heightOK(b) || !weightOK(b)) ? '⚠ Maß' : (doorHitsSpot(b) ? '⚠ Türaufschlag' : null)));
                 const codeTxt = st.sym + ' ' + (b.type || 'Gefährt'), nameTxt = b.personName || b.label;
@@ -5102,7 +5109,7 @@
             P.excl.forEach((b) => {
                 const ctx = !interactive(b);
                 const cat = (EXCL[b.kind] && EXCL[b.kind].cat) || 'zone';
-                const d = el('div', { class: 'gp-block excl gp-' + cat + ' ' + b.kind + (b.id === P.sel ? ' sel' : '') + (ctx ? ' dimctx' : '') });
+                const d = el('div', { class: 'gp-block excl gp-' + cat + ' ' + b.kind + (b.id === P.sel ? ' sel' : '') + (inSel(b.id) ? ' multisel' : '') + (ctx ? ' dimctx' : '') });
                 d.dataset.id = b.id;
                 // Zones show their measured area; structures show their type label.
                 const lab = isZoneKind(b.kind) ? (b.label + ' · ' + (b.w * b.h).toFixed(1).replace('.', ',') + ' m²') : b.label;
@@ -6178,7 +6185,7 @@
         }
 
         // ---- mode / maximize ----
-        function setMode(m) { P.mode = m; root.dataset.mode = m; P.sel = null; P.calib = false; P.tool = null; P.chain = null; P.openStart = null; P.preview = null; P.structSel = null; P.chainAnchor = null; P.guide = null; P.attach = null; hideLen(); hideVertMenu(); ctitle.textContent = m === 'plan' ? 'Garagenplaner' : 'Digitaler Zwilling'; rebuildSwitch(); draw(); }
+        function setMode(m) { P.mode = m; root.dataset.mode = m; P.sel = null; selSet = []; P.calib = false; P.tool = null; P.chain = null; P.openStart = null; P.preview = null; P.structSel = null; P.chainAnchor = null; P.guide = null; P.attach = null; hideLen(); hideVertMenu(); ctitle.textContent = m === 'plan' ? 'Garagenplaner' : 'Digitaler Zwilling'; rebuildSwitch(); draw(); }
         // Re-fit on enter AND exit so the plan fills whichever viewport we land in (entering
         // fullscreen used to keep the small windowed scale → a tiny plan marooned in a huge canvas).
         function toggleMax(force) { P.maxed = force == null ? !P.maxed : force; root.classList.toggle('maxed', P.maxed); maxBtn.textContent = P.maxed ? '⤢' : '⛶'; if (!P.maxed) { rail.style.left = ''; rail.style.top = ''; rail.style.right = ''; } setTimeout(() => { if (P.walls.edges.length) fitView(); else layout(); }, 20); }
@@ -6202,14 +6209,35 @@
             const rz = e.target.closest('.gp-rz');
             if (rz && canManageNow) { const id = rz.dataset.rz; const bb = P.spots.find((x) => x._id == id) || P.excl.find((x) => x.id === id); if (bb) { act = { mode: 'resize', b: bb, elm: e.target.closest('.gp-block'), dir: rz.dataset.dir, o0: { x: bb.x, y: bb.y, w: bb.w, h: bb.h, rot: bb.rot || 0 } }; e.target.setPointerCapture(e.pointerId); } return; }
             const elm = e.target.closest('.gp-block');
-            if (!elm) { const r = planEl.getBoundingClientRect(); showRoom({ x: (e.clientX - r.left) / P.CELL, y: (e.clientY - r.top) / P.CELL }); draw(); return; } // empty floor → room m²
+            if (!elm) { // empty floor: begin a marquee (rubber-band multi-select) — resolves to a click if it doesn't drag
+                const r = planEl.getBoundingClientRect();
+                marq = { sx: e.clientX, sy: e.clientY, x0: (e.clientX - r.left) / P.CELL, y0: (e.clientY - r.top) / P.CELL, add: e.shiftKey || e.ctrlKey || e.metaKey, moved: false, el: null };
+                layer.setPointerCapture(e.pointerId); return;
+            }
             const id = elm.dataset.id; const b = P.spots.find((x) => x._id == id) || P.excl.find((x) => x.id === id); if (!b) return;
-            if (!interactive(b) || !canManageNow) { P.sel = b._id || b.id; draw(); return; }
-            const r = planEl.getBoundingClientRect();
-            act = { mode: 'move', b, elm, sx: e.clientX, sy: e.clientY, gx: e.clientX - r.left - b.x * P.CELL, gy: e.clientY - r.top - b.y * P.CELL, moved: false, ox: b.x, oy: b.y };
+            if (!interactive(b) || !canManageNow) { P.sel = b._id || b.id; if (!inSel(b._id || b.id)) clearSelSet(); draw(); return; }
+            const r = planEl.getBoundingClientRect(), myId = b._id || b.id;
+            // grabbing one of several selected objects → move the whole group; otherwise single (and drop any group)
+            if (inSel(myId) && selSet.length > 1) {
+                const members = selSet.map(findBlock).filter((x) => x && interactive(x)).map((x) => ({ b: x, ox: x.x, oy: x.y }));
+                act = { mode: 'move', group: members, b, elm, sx: e.clientX, sy: e.clientY, gx: e.clientX - r.left - b.x * P.CELL, gy: e.clientY - r.top - b.y * P.CELL, moved: false, ox: b.x, oy: b.y };
+            } else {
+                if (clearSelSet()) draw();
+                act = { mode: 'move', b, elm, sx: e.clientX, sy: e.clientY, gx: e.clientX - r.left - b.x * P.CELL, gy: e.clientY - r.top - b.y * P.CELL, moved: false, ox: b.x, oy: b.y };
+            }
             elm.setPointerCapture(e.pointerId);
         });
         layer.addEventListener('pointermove', (e) => {
+            if (marq) {
+                if (!marq.moved && Math.abs(e.clientX - marq.sx) + Math.abs(e.clientY - marq.sy) < 4) return;
+                marq.moved = true; const r = planEl.getBoundingClientRect();
+                if (!marq.el) { marq.el = el('div', { class: 'gp-marquee' }); planEl.append(marq.el); }
+                const x1 = (e.clientX - r.left) / P.CELL, y1 = (e.clientY - r.top) / P.CELL;
+                const lo = { x: Math.min(marq.x0, x1), y: Math.min(marq.y0, y1) }, hi = { x: Math.max(marq.x0, x1), y: Math.max(marq.y0, y1) };
+                marq.el.style.left = (lo.x * P.CELL) + 'px'; marq.el.style.top = (lo.y * P.CELL) + 'px';
+                marq.el.style.width = ((hi.x - lo.x) * P.CELL) + 'px'; marq.el.style.height = ((hi.y - lo.y) * P.CELL) + 'px';
+                marq.box = { lo, hi }; return;
+            }
             if (!act) return; const r = planEl.getBoundingClientRect(), b = act.b;
             if (act.mode === 'rotate') {
                 const wx = (e.clientX - r.left) / P.CELL, wy = (e.clientY - r.top) / P.CELL;
@@ -6231,9 +6259,21 @@
             if (!act.moved && Math.abs(e.clientX - act.sx) + Math.abs(e.clientY - act.sy) < 4) return; act.moved = true; act.elm.classList.add('moving');
             let nx = (e.clientX - r.left - act.gx) / P.CELL, ny = (e.clientY - r.top - act.gy) / P.CELL; nx = gsnap(nx); ny = gsnap(ny);
             const cl = snapPos(b, nx, ny); nx = cl.x; ny = cl.y; b.x = nx; b.y = ny; act.elm.style.left = (nx * P.CELL) + 'px'; act.elm.style.top = (ny * P.CELL) + 'px';
+            if (act.group) { const dx = nx - act.ox, dy = ny - act.oy; // rigid group move: shift every member by the same (snapped) delta
+                act.group.forEach((m) => { if (m.b === b) return; m.b.x = m.ox + dx; m.b.y = m.oy + dy; const me = layer.querySelector('.gp-block[data-id="' + (m.b._id || m.b.id) + '"]'); if (me) { me.style.left = (m.b.x * P.CELL) + 'px'; me.style.top = (m.b.y * P.CELL) + 'px'; } }); }
             const isVeh = !!b._id && b.kind !== 'excl'; const bad = isVeh ? !validVeh({ kind: 'veh', x: nx, y: ny, w: b.w, h: b.h, rot: b.rot }, b._id) : (isZoneKind(b.kind) ? false : collide({ kind: 'excl', x: nx, y: ny, w: b.w, h: b.h }, b.id)); act.elm.classList.toggle('invalid', bad);
         });
         layer.addEventListener('pointerup', (e) => {
+            if (marq) {
+                const m = marq; marq = null; try { layer.releasePointerCapture(e.pointerId); } catch (er) { /* ignore */ } if (m.el) m.el.remove();
+                if (!m.moved) { const changed = clearSelSet(); P.roomSel = null; showRoom({ x: m.x0, y: m.y0 }); draw(); return; } // plain click → deselect + room m²
+                const box = m.box || { lo: { x: m.x0, y: m.y0 }, hi: { x: m.x0, y: m.y0 } }, hits = [];
+                const consider = (arr) => arr.forEach((bl) => { if (!interactive(bl)) return; const cx = bl.x + bl.w / 2, cy = bl.y + bl.h / 2; if (cx >= box.lo.x && cx <= box.hi.x && cy >= box.lo.y && cy <= box.hi.y) hits.push(bl._id || bl.id); });
+                consider(P.spots); consider(P.excl); // interactive() already scopes to zones (plan) OR vehicles (manage)
+                if (!m.add) selSet = []; hits.forEach((id) => { if (selSet.indexOf(id) < 0) selSet.push(id); });
+                P.sel = null; P.roomSel = null; draw(); if (selSet.length) toast(selSet.length + ' ausgewählt · ziehen zum Verschieben · Entf zum Löschen', 'ok');
+                return;
+            }
             if (!act) return; const b = act.b, d = act; act = null;
             try { d.elm.releasePointerCapture(e.pointerId); } catch (er) { /* ignore */ }
             const isVeh = !!b._id && b.kind !== 'excl';
@@ -6253,6 +6293,14 @@
                 draw(); toast('Größe geändert' + (isVeh ? ' · ' + dimText(b).replace(/^.*· /, '') : '')); return;
             }
             if (!d.moved) { P.sel = b._id || b.id; draw(); return; }
+            if (d.group) { // group move commit — rigid shift keeps inter-member validity, so evaluate each like a single move
+                d.elm.classList.remove('moving');
+                const res = d.group.map((m) => { const mb = m.b, mv = !!mb._id && mb.kind !== 'excl'; const bd = mv ? !validVeh({ kind: 'veh', x: mb.x, y: mb.y, w: mb.w, h: mb.h, rot: mb.rot }, mb._id) : (isZoneKind(mb.kind) ? false : collide({ kind: 'excl', x: mb.x, y: mb.y, w: mb.w, h: mb.h }, mb.id)); return { mv, bd }; });
+                if (res.some((x) => !x.mv && x.bd)) { d.group.forEach((m) => { m.b.x = m.ox; m.b.y = m.oy; }); draw(); toast('Gruppe: Kollision/außerhalb — zurück', 'error'); return; }
+                res.forEach((x, i) => { if (x.mv) { d.group[i].b._invalid = x.bd; d.group[i].b._dirty = true; } });
+                markDirty(); pushUndo(); draw(); const bad = res.some((x) => x.bd);
+                toast(d.group.length + ' verschoben' + (bad ? ' · einige ungültig, Speichern erst wenn frei' : ''), bad ? 'warn' : 'ok'); return;
+            }
             d.elm.classList.remove('moving');
             const bad = isVeh ? !validVeh({ kind: 'veh', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b._id) : (isZoneKind(b.kind) ? false : collide({ kind: 'excl', x: b.x, y: b.y, w: b.w, h: b.h }, b.id));
             P.sel = b._id || b.id;
@@ -6339,6 +6387,16 @@
             P.structSel = null; P.sel = null; showRoom(p); draw();
         }
         function deleteSel() {
+            if (selSet.length) { // group delete (FE4): zones removed from geometry (undoable); vehicles unpositioned via API (confirmed)
+                if (!canManageNow) { clearSelSet(); draw(); return; }
+                const blocks = selSet.map(findBlock).filter(Boolean);
+                const vehs = blocks.filter((b) => b._id && b.kind !== 'excl'), excls = blocks.filter((b) => !(b._id && b.kind !== 'excl'));
+                if (vehs.length && !window.confirm(vehs.length + ' Gefährt(e) aus dem Plan entfernen?')) return;
+                selSet = [];
+                if (excls.length) { excls.forEach((b) => { P.excl = P.excl.filter((x) => x !== b); if (P.sel === b.id) P.sel = null; }); pushUndo(); markDirty(); }
+                if (vehs.length) (async () => { for (const v of vehs) { try { await api.del('/spots/' + v._id); P.spots = P.spots.filter((x) => x !== v); if (v.vehId) P.palette.push({ id: v.vehId, label: v.label, type: v.type, person_id: v.personId, person_name: v.personName, length_m: v.L, width_m: v.W, height_m: v.H, weight_t: v.t }); if (P.sel === v._id) P.sel = null; } catch (er) { /* keep going */ } } draw(); })();
+                draw(); toast((excls.length + vehs.length) + ' entfernt', 'ok'); return;
+            }
             if (!P.structSel) { if (P.sel != null) { const b = P.excl.find((x) => x.id === P.sel); if (b) removeExcl(b); } return; }
             if (P.structSel.type === 'opening') { const e = P.walls.edges[P.structSel.ei]; if (e && e.ops) e.ops.splice(P.structSel.oi, 1); P.structSel = null; pushUndo(); markDirty(); draw(); toast('Öffnung entfernt — Wand geschlossen'); return; }
             const isNode = P.structSel.type === 'node';
@@ -6438,7 +6496,8 @@
         // pointercancel (touch interruption etc.): drop any in-flight drag/edit state
         // so it can't get stuck and block further interaction.
         const cancelGesture = () => {
-            if (act) { const b = act.b; if (act.mode === 'move') { b.x = act.ox; b.y = act.oy; } else if (act.mode === 'resize') { b.w = act.ow; b.h = act.oh; } else if (act.mode === 'rotate') { b.rot = act.orot; } if (act.elm) act.elm.classList.remove('moving'); act = null; draw(); }
+            if (marq) { if (marq.el) marq.el.remove(); marq = null; } // FE4: don't leave a stuck rubber-band
+            if (act) { const b = act.b; if (act.mode === 'move') { b.x = act.ox; b.y = act.oy; if (act.group) act.group.forEach((m) => { m.b.x = m.ox; m.b.y = m.oy; }); } else if (act.mode === 'resize') { b.w = act.ow; b.h = act.oh; } else if (act.mode === 'rotate') { b.rot = act.orot; } if (act.elm) act.elm.classList.remove('moving'); act = null; draw(); }
             railDrag = null; // don't leave a fullscreen rail-drag following the cursor
             if (drag) { if (drag.g) drag.g.remove(); drag = null; }
             if (prev) { prev.remove(); prev = null; }
