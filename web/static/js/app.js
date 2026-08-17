@@ -205,27 +205,26 @@
     // convention (the source string IS the key): today German passes straight
     // through (t returns the key when untranslated), and a future language just
     // adds MESSAGES.<lang>['<german phrase>'] = '<translation>' — no call-site edits.
-    function toast(msg, kind = '') {
-        const box = $('#toast');
-        box.innerHTML = '';
-        box.append(document.createTextNode(t(msg)));
-        box.className = 'toast' + (kind ? ' ' + kind : '');
-        box.hidden = false;
-        clearTimeout(toastTimer);
-        toastTimer = setTimeout(() => { box.hidden = true; }, 3200);
+    // Toasts run through a small FIFO queue so several messages in quick succession are shown one
+    // after another instead of the last one clobbering the rest. Rapid repeats of the same plain
+    // message are deduped, and the backlog is capped so it can never flood (QW3).
+    let toastQ = [], toastCur = null;
+    function hideToast() { $('#toast').hidden = true; toastCur = null; clearTimeout(toastTimer); setTimeout(pumpToast, 150); }
+    function pumpToast() {
+        if (toastCur || !toastQ.length) return;
+        const it = toastQ.shift(); toastCur = it; const box = $('#toast');
+        box.innerHTML = ''; box.className = 'toast' + (it.kind ? ' ' + it.kind : ''); box.hidden = false;
+        box.append(document.createTextNode(it.text + (it.action ? '  ' : '')));
+        if (it.action) { const btn = el('button', { class: 'toast-undo', type: 'button' }, it.actionLabel); btn.addEventListener('click', () => { it.action(); hideToast(); }); box.append(btn); }
+        clearTimeout(toastTimer); toastTimer = setTimeout(hideToast, it.ms);
     }
-    function toastAction(msg, actionLabel, onAction, ms = 4500) {
-        const box = $('#toast');
-        clearTimeout(toastTimer);
-        box.innerHTML = '';
-        box.className = 'toast';
-        box.hidden = false;
-        box.append(document.createTextNode(t(msg) + '  '));
-        const btn = el('button', { class: 'toast-undo', type: 'button' }, t(actionLabel));
-        btn.addEventListener('click', () => { box.hidden = true; onAction(); });
-        box.append(btn);
-        toastTimer = setTimeout(() => { box.hidden = true; }, ms);
+    function enqueueToast(it) {
+        const last = toastQ.length ? toastQ[toastQ.length - 1] : toastCur;
+        if (!it.action && last && last.text === it.text && !last.action) return; // skip an immediate repeat
+        toastQ.push(it); if (toastQ.length > 4) toastQ.splice(0, toastQ.length - 4); pumpToast();
     }
+    function toast(msg, kind = '') { enqueueToast({ text: t(msg), kind, ms: 3000 }); }
+    function toastAction(msg, actionLabel, onAction, ms = 4500) { enqueueToast({ text: t(msg), action: onAction, actionLabel: t(actionLabel), ms }); }
 
     // ---------- confirm ----------
     function confirmDialog(title, message, okLabel = 'Löschen') {
