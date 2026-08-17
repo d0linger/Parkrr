@@ -200,26 +200,30 @@
 
     // ---------- toast ----------
     let toastTimer = null;
+    // QW2 — every toast is routed through the i18n layer t(). We use the gettext
+    // convention (the source string IS the key): today German passes straight
+    // through (t returns the key when untranslated), and a future language just
+    // adds MESSAGES.<lang>['<german phrase>'] = '<translation>' — no call-site edits.
     function toast(msg, kind = '') {
-        const t = $('#toast');
-        t.innerHTML = '';
-        t.append(document.createTextNode(msg));
-        t.className = 'toast' + (kind ? ' ' + kind : '');
-        t.hidden = false;
+        const box = $('#toast');
+        box.innerHTML = '';
+        box.append(document.createTextNode(t(msg)));
+        box.className = 'toast' + (kind ? ' ' + kind : '');
+        box.hidden = false;
         clearTimeout(toastTimer);
-        toastTimer = setTimeout(() => { t.hidden = true; }, 3200);
+        toastTimer = setTimeout(() => { box.hidden = true; }, 3200);
     }
     function toastAction(msg, actionLabel, onAction, ms = 4500) {
-        const t = $('#toast');
+        const box = $('#toast');
         clearTimeout(toastTimer);
-        t.innerHTML = '';
-        t.className = 'toast';
-        t.hidden = false;
-        t.append(document.createTextNode(msg + '  '));
-        const btn = el('button', { class: 'toast-undo', type: 'button' }, actionLabel);
-        btn.addEventListener('click', () => { t.hidden = true; onAction(); });
-        t.append(btn);
-        toastTimer = setTimeout(() => { t.hidden = true; }, ms);
+        box.innerHTML = '';
+        box.className = 'toast';
+        box.hidden = false;
+        box.append(document.createTextNode(t(msg) + '  '));
+        const btn = el('button', { class: 'toast-undo', type: 'button' }, t(actionLabel));
+        btn.addEventListener('click', () => { box.hidden = true; onAction(); });
+        box.append(btn);
+        toastTimer = setTimeout(() => { box.hidden = true; }, ms);
     }
 
     // ---------- confirm ----------
@@ -938,10 +942,14 @@
             occCard.append(el('div', { class: 'stat-grid' },
                 stat(occ.placed + ' / ' + occ.active, 'Gefährte platziert', { icon: 'warehouse', tone: 'teal' }),
                 stat(Math.max(0, occ.active - occ.placed), 'noch nicht platziert', { icon: 'car' })));
-            (occ.halls || []).filter((hh) => hh.placed > 0).forEach((hh) => {
-                occCard.append(el('div', { class: 'status-row' },
-                    el('div', { class: 'status-name' }, esc(hh.name)),
-                    el('div', { class: 'muted', style: 'font-size:.75rem' }, esc(hh.garage_name)),
+            // UX4 — per-hall occupancy as a small proportional bar chart (inline SVG-free, CSP-safe).
+            const halls = (occ.halls || []).filter((hh) => hh.placed > 0);
+            const maxP = Math.max(1, ...halls.map((hh) => hh.placed || 0));
+            halls.forEach((hh) => {
+                occCard.append(el('div', { class: 'status-row dash-occrow' },
+                    el('div', { class: 'status-name' }, esc(hh.name),
+                        el('span', { class: 'muted', style: 'font-weight:400;font-size:.72rem;margin-left:.4rem' }, esc(hh.garage_name))),
+                    el('div', { class: 'dash-bar', title: hh.placed + ' platziert' }, el('div', { class: 'dash-bar-fill', style: 'width:' + Math.round((hh.placed || 0) / maxP * 100) + '%' })),
                     el('div', { class: 'bar-val' }, String(hh.placed))));
             });
             page.append(occCard);

@@ -1683,3 +1683,8 @@ a.portal-row.link:hover { color: var(--accent-text); }
 /* FE4 — marquee rubber-band + multi-selected block highlight */
 .gp-marquee{position:absolute;z-index:9;border:1.5px dashed var(--tab-active,#2dd4bf);background:rgba(45,212,191,.12);pointer-events:none;border-radius:3px}
 .gp-block.multisel{outline:2px solid var(--tab-active,#2dd4bf);outline-offset:1px;box-shadow:0 0 0 4px rgba(45,212,191,.18);z-index:6}
+
+/* UX4 — small dashboard bar chart (per-hall occupancy) */
+.dash-occrow{align-items:center;gap:.6rem}
+.dash-bar{flex:1;min-width:60px;height:8px;border-radius:6px;background:var(--bg-elev-2);overflow:hidden}
+.dash-bar-fill{height:100%;border-radius:6px;background:var(--brand-grad,linear-gradient(90deg,#0d9488,#22d3ee));min-width:3px}
