@@ -70,7 +70,10 @@
         // th − inset. So a partition prolonging a perimeter wall keeps that room flush to the node line
         // (no area handed to the neighbour room), while a partition that merely SPLITS a room
         // (perpendicular to the perimeter) has no collinear solid neighbour and stays centred.
-        for (let pass = 0; pass < 6; pass++) {
+        // Bound = worst case: a chain listed opposite to its propagation direction advances one hop per
+        // pass, so a chain of N half-edges needs N passes. half.length is a safe cap; the no-change
+        // break below stops as soon as a fixed point is reached (usually 1–2 passes).
+        for (let pass = 0; pass < half.length; pass++) {
             let changed = false;
             for (let hi = 0; hi < half.length; hi++) {
                 if (solid[hi]) continue; const tw = twinOf[hi]; if (tw < 0 || !isRoomFace(faceOf[tw])) continue; const th = E[half[hi].ei].thick || 0.24;

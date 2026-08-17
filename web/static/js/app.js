@@ -5235,7 +5235,7 @@
             // a partition prolonging a perimeter wall runs straight through (no jog; the neighbour room
             // keeps its area). A partition that merely SPLITS a room (perpendicular) stays centred.
             const incE = P.walls.nodes.map(() => []); P.walls.edges.forEach((e, i) => { incE[e.a].push(i); incE[e.b].push(i); });
-            for (let pass = 0; pass < 4; pass++) { let changed = false;
+            for (let pass = 0; pass < P.walls.edges.length; pass++) { let changed = false; // bound = worst case (a reversed chain advances one hop/pass); no-change break below stops early
                 P.walls.edges.forEach((e, i) => { const o = _eoff[i]; if (Math.hypot(o.ox, o.oy) > 1e-6) return; let done = false;
                     for (const ni of [e.a, e.b]) { if (done) break; for (const j of incE[ni]) { if (j === i) continue; const oj = _eoff[j]; if (Math.hypot(oj.ox, oj.oy) < 1e-6) continue;
                         if (Math.abs(o.ux * oj.ux + o.uy * oj.uy) > 0.999) { o.ox = oj.ox; o.oy = oj.oy; changed = true; done = true; break; } } }
