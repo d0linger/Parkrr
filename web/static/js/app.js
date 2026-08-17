@@ -5694,9 +5694,15 @@
                     let nx = -vd.dy, ny = vd.dx; const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
                     const mid = P0(0.5), off = th / 2 + 11;
                     const tl = svgEl('text', { x: mid[0] + nx * off, y: mid[1] + ny * off + 3, 'text-anchor': 'middle', class: 'gp-walllab' }); tl.textContent = labelLen(ei).toFixed(2).replace('.', ',') + ' m'; g.append(tl); // dimension per Bezug (Innen/Achse/Außen)
-                    if (spans.length) { // clear sub-segment lengths on the opposite side
-                        const segs = []; let s0 = 0; for (const sp of spans) { if (sp.lo - s0 > 0.002) segs.push([s0, sp.lo]); s0 = sp.hi; } if (1 - s0 > 0.002) segs.push([s0, 1]);
-                        for (const [u0, u1] of segs) { const wm = (u1 - u0) * vd.len; if (wm * CELL < 26) continue; const m2 = P0((u0 + u1) / 2); const st = svgEl('text', { x: m2[0] - nx * (th / 2 + 9), y: m2[1] - ny * (th / 2 + 9) + 3, 'text-anchor': 'middle', class: 'gp-walllab sub' }); st.textContent = wm.toFixed(2).replace('.', ',') + ' m'; g.append(st); }
+                    if (spans.length) { // clear sub-segment lengths — measured on the DRAWN edge (v0)
+                        // and trimmed to the SAME Bezug reference as the total (labelLen), so the pieces
+                        // plus the opening widths add up to the displayed length instead of overshooting
+                        // by the mitre/offset the rendered body gains at the corners. (Innen: full v.len;
+                        // Achse/Außen deduct the neighbour-wall thickness at each corner end.)
+                        const inset = (ni) => P.wallRef === 'inner' ? 0 : nodePerpHalf(ni, ei) * (P.wallRef === 'outer' ? 2 : 1);
+                        const dsp = (e.ops || []).map((o) => { const hp2 = (o.w / v0.len) / 2; return [Math.max(0, o.c - hp2), Math.min(1, o.c + hp2)]; }).sort((a, b) => a[0] - b[0]);
+                        const segs = []; let s0 = 0; for (const [lo, hi] of dsp) { if (lo - s0 > 0.002) segs.push([s0, lo]); s0 = hi; } if (1 - s0 > 0.002) segs.push([s0, 1]);
+                        for (const [u0, u1] of segs) { let wm = (u1 - u0) * v0.len; if (u0 < 0.002) wm -= inset(e.a); if (u1 > 0.998) wm -= inset(e.b); if (wm < 0.01 || wm * CELL < 26) continue; const m2 = P0((u0 + u1) / 2); const st = svgEl('text', { x: m2[0] - nx * (th / 2 + 9), y: m2[1] - ny * (th / 2 + 9) + 3, 'text-anchor': 'middle', class: 'gp-walllab sub' }); st.textContent = wm.toFixed(2).replace('.', ',') + ' m'; g.append(st); }
                     }
                 }
             });
