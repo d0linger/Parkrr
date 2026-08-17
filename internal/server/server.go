@@ -453,7 +453,7 @@ func (g *gzipResponseWriter) Close() {
 }
 
 // acceptsGzip reports whether the client accepts gzip per Accept-Encoding,
-// honouring quality values — "gzip;q=0" (and a "*;q=0" with no gzip token) means
+// honoring quality values — "gzip;q=0" (and a "*;q=0" with no gzip token) means
 // NOT acceptable, so plain strings.Contains would be wrong.
 func acceptsGzip(header string) bool {
 	gzipQ, starQ := -1.0, -1.0
