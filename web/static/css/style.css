@@ -1425,7 +1425,8 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-block.invalid{outline:2px solid var(--gpbusy);outline-offset:-1px}
 /* 8 resize handles (4 corners + 4 edges); opposite side stays anchored. Shown on the
    selected block (which is overflow:visible), rotate with the block when it is turned. */
-.gp-rz{position:absolute;width:12px;height:12px;border-radius:3px;background:#eaf6ff;border:1px solid #0a141e;z-index:7}
+.gp-rz{position:absolute;width:12px;height:12px;border-radius:3px;background:#eaf6ff;border:1px solid #0a141e;z-index:7;box-shadow:0 1px 4px rgba(0,0,0,.55)}
+.gp-rz::before{content:"";position:absolute;inset:-8px} /* invisible, enlarges the grab target to ~28px so edge/corner handles are easy to hit even under a dimension label */
 .gp-rz-nw{left:-6px;top:-6px;cursor:nwse-resize}
 .gp-rz-ne{right:-6px;top:-6px;cursor:nesw-resize}
 .gp-rz-se{right:-6px;bottom:-6px;cursor:nwse-resize}

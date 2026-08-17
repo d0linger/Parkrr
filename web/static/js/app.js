@@ -5030,7 +5030,7 @@
             // edit walls + zones otherwise). Manage mode leaves it off so the vehicle layer works.
             const drawActive = P.mode === 'plan' && !P.calib && canManageNow;
             drawOverlay.style.display = drawActive ? 'block' : 'none';
-            drawOverlay.classList.toggle('edit', !P.tool);
+            drawOverlay.classList.toggle('edit', !P.tool); drawOverlay.style.cursor = ''; // reset; the hover handler re-applies a resize cursor over zone handles
             positionWallPop(); positionRoomBadge();
             const used = P.spots.length;
             occN.textContent = used + ' Gefährte';
@@ -5793,25 +5793,40 @@
         }
         function renderMetrics() {
             metrics.innerHTML = '';
-            const total = polyArea(P.floor); let ex = 0, ve = 0; P.excl.forEach((b) => { if (!isZoneKind(b.kind)) ex += b.w * b.h; }); P.spots.forEach((b) => ve += b.w * b.h);
+            const total = polyArea(P.floor), enc = P.autoArea ? enclosure() : null;
+            let zoneA = 0, colA = 0, ve = 0;
+            // Columns/walls are structural (already outside enc.area). Only the NON-parkable zones
+            // (Fahrstraße/Wartung/Notausgang) reduce Frei — and only the part that lies WITHIN the
+            // enclosed Parkfläche, so a zone drawn partly/fully outside the rooms doesn't over-subtract.
+            // A Stellfläche ('stell') stays parkable (never deducted); openings sit on the wall.
+            const inEnc = (enc && enc.lab) ? ((wx, wy) => { const gx = Math.floor((wx - enc.minX) / enc.GS), gy = Math.floor((wy - enc.minY) / enc.GSy); return gx >= 0 && gy >= 0 && gx < enc.cols && gy < enc.rows && enc.lab[gy * enc.cols + gx] >= 0; }) : null;
+            const zoneEncArea = (b) => { if (!inEnc) return b.w * b.h; // no enclosure → count full (matches the polygon fallback)
+                const rad = (b.rot || 0) * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad), cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+                const sx = Math.max(2, Math.min(40, Math.round(b.w / 0.3))), sy = Math.max(2, Math.min(40, Math.round(b.h / 0.3))); let hit = 0;
+                for (let iy = 0; iy < sy; iy++) for (let ix = 0; ix < sx; ix++) { const lx = ((ix + 0.5) / sx - 0.5) * b.w, ly = ((iy + 0.5) / sy - 0.5) * b.h; if (inEnc(cx + lx * cos - ly * sin, cy + lx * sin + ly * cos)) hit++; }
+                return b.w * b.h * hit / (sx * sy); };
+            P.excl.forEach((b) => { const c = (EXCL[b.kind] || {}).cat;
+                if (c === 'wall') colA += b.w * b.h;
+                else if (c === 'zone' && b.kind !== 'stell') zoneA += zoneEncArea(b);
+            }); P.spots.forEach((b) => ve += b.w * b.h);
             // Hall dimensions = the ACTUAL floor polygon's bounding box (same source as the
             // Breite/Tiefe readout), not the P.Wm×P.Hm canvas grid — after „Form bearbeiten"
             // shrinks the polygon inside the grid the two diverge, and the bbox is the real one.
             const bb = floorBB(), fw = bb.maxX - bb.minX, fh = bb.maxY - bb.minY;
-            const enc = P.autoArea ? enclosure() : null;
             // "Frei" is free PARKABLE space = the wall-enclosed usable area (the Parkfläche) minus what
             // is occupied/excluded — NOT the gross floor polygon, which also counts the wall footprint.
             // Using the gross area made Frei read LARGER than the Parkfläche it sits inside. Fall back to
             // the polygon area when there is no wall enclosure.
             const usable = (enc && enc.area > 0.3) ? enc.area : total;
-            // enc.area already omits wall AND column (Stützen) footprints, so subtracting `ex` on top
-            // would deduct columns twice. Only the no-enclosure polygon fallback needs `ex` removed.
-            const free = (enc && enc.area > 0.3) ? (usable - ve) : (total - ex - ve);
+            // "Frei" = free PARKABLE = the enclosed usable area minus the marked zones (Fahrstraße/
+            // Wartung/Notausgang) AND the vehicles on it. Columns are already out of enc.area (structural);
+            // the no-enclosure polygon fallback removes zones + columns explicitly.
+            const free = (enc && enc.area > 0.3) ? (usable - zoneA - ve) : (total - zoneA - colA - ve);
             const m = (val, label, cls) => el('div', { class: 'gp-metric' }, el('div', { class: 'gp-mv ' + (cls || '') }, val), el('div', { class: 'gp-ml' }, label));
             metrics.append(
                 m(Math.round(Math.max(0, free)) + ' m²', 'Frei', 'ok'),
                 m(Math.round(ve) + ' m²', 'Belegt · ' + P.spots.length, 'busy'),
-                m(Math.round(ex) + ' m²', 'Ausgenommen', 'excl'),
+                m(Math.round(zoneA + colA) + ' m²', 'Ausgenommen', 'excl'),
                 m(fw.toFixed(1).replace('.', ',') + '×' + fh.toFixed(1).replace('.', ',') + ' m', 'Halle · ' + Math.round(total) + ' m²'),
                 m(polyPerim(P.floor).toFixed(1) + ' m', 'Umfang'));
             if (enc && enc.area > 0.3) { const nr = (enc.rooms || []).length; metrics.append(m(enc.area.toFixed(1).replace('.', ',') + ' m²', 'Parkfläche' + (nr > 1 ? ' · ' + nr + ' Räume' : ' · Wände'), 'ok')); } // 1 decimal, matching the plan label (S1-D)
@@ -6440,10 +6455,16 @@
             if (e) { P.structSel = { type: 'edge', idx: e.i }; P.sel = null; draw(); return; }
             // rotate knob of the currently-selected zone (matches the layer's .gp-rot at top:-22px)
             if (P.sel != null) { const b = P.excl.find((x) => x.id === P.sel); if (b) { const rad = (b.rot || 0) * Math.PI / 180, off = b.h / 2 + 22 / P.CELL, cx = b.x + b.w / 2, cy = b.y + b.h / 2, kx = cx + Math.sin(rad) * off, ky = cy - Math.cos(rad) * off; if (Math.hypot(p.x - kx, p.y - ky) < R + 4 / P.CELL) { zoneDrag = { id: b.id, mode: 'rotate', cx, cy, moved: false }; cap(); return; } } }
-            // zones (excl rectangles): corner handle → resize, body → move
-            const dirs = ['nw', 'ne', 'se', 'sw'];
-            for (let i = P.excl.length - 1; i >= 0; i--) { const b = P.excl[i], cs = quad(b);
-                for (let c = 0; c < 4; c++) if (Math.hypot(cs[c][0] - p.x, cs[c][1] - p.y) < R) { P.sel = b.id; P.structSel = null; zoneDrag = { id: b.id, mode: 'resize', dir: dirs[c], o0: { x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot || 0 }, moved: false }; cap(); draw(); return; } }
+            // zones (excl rectangles): corner OR edge-midpoint handle → resize. Handles are only DRAWN
+            // on the SELECTED zone, so only hit-test that one (like the rotate knob above) — else a click
+            // near an UNSELECTED zone's invisible handle would grab the wrong block. The geometric test
+            // covers all 8 handles: the 4 corners + the 4 side midpoints (mid of consecutive corners).
+            const selB = P.sel != null ? P.excl.find((x) => x.id === P.sel) : null;
+            if (selB) { const dirs = ['nw', 'ne', 'se', 'sw'], edirs = ['n', 'e', 's', 'w'], cs = quad(selB);
+                const startRz = (dir) => { P.structSel = null; zoneDrag = { id: selB.id, mode: 'resize', dir, o0: { x: selB.x, y: selB.y, w: selB.w, h: selB.h, rot: selB.rot || 0 }, moved: false }; cap(); draw(); };
+                for (let c = 0; c < 4; c++) if (Math.hypot(cs[c][0] - p.x, cs[c][1] - p.y) < R) { startRz(dirs[c]); return; }
+                for (let c = 0; c < 4; c++) { const mx = (cs[c][0] + cs[(c + 1) % 4][0]) / 2, my = (cs[c][1] + cs[(c + 1) % 4][1]) / 2; if (Math.hypot(mx - p.x, my - p.y) < R) { startRz(edirs[c]); return; } }
+            }
             for (let i = P.excl.length - 1; i >= 0; i--) { const b = P.excl[i]; if (pointInBlock(b, p)) { P.sel = b.id; P.structSel = null; zoneDrag = { id: b.id, mode: 'move', gx: p.x - b.x, gy: p.y - b.y, moved: false }; cap(); draw(); return; } }
             // empty click → deselect only (NEVER delete); on an enclosed room, show its m²
             P.structSel = null; P.sel = null; showRoom(p); draw();
@@ -6512,6 +6533,27 @@
                 if (P.openStart) { const ed = P.walls.edges[P.openStart.ei]; if (ed) { const v = edgeVec(ed); let t2 = ((p.x - v.a.x) * v.dx + (p.y - v.a.y) * v.dy) / (v.len * v.len); t2 = Math.max(0, Math.min(1, t2)); P.preview = { x: v.a.x + v.dx * t2, y: v.a.y + v.dy * t2, t: t2 }; P.attach = { ei: P.openStart.ei, t: t2, x: P.preview.x, y: P.preview.y }; } }
                 else { const e0 = edgeAt(p, 14 / P.CELL); P.attach = e0 ? { ei: e0.i, t: e0.t, x: e0.x, y: e0.y } : null; P.snapHint = e0 ? { x: e0.x, y: e0.y } : null; }
                 drawFloor();
+            }
+            // Idle hover feedback (no tool, no drag): the overlay owns the cursor, so mirror the
+            // editDown hit-test here and switch to the matching resize/move/rotate cursor over the
+            // selected zone's handles — you can now SEE when you've hit a handle before clicking.
+            if (!P.tool && !zoneDrag && !opDrag && !nodeDrag && !zoneDraw && !P.chain) {
+                const R = 12 / P.CELL; let cur = '';
+                const b = P.sel != null ? P.excl.find((x) => x.id === P.sel) : null;
+                if (b) {
+                    const cs = quad(b), rad = (b.rot || 0) * Math.PI / 180, cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+                    const kx = cx + Math.sin(rad) * (b.h / 2 + 22 / P.CELL), ky = cy - Math.cos(rad) * (b.h / 2 + 22 / P.CELL);
+                    // Resize cursor = the handle's local axis (corner = diagonal, side = normal) rotated by
+                    // the zone's rotation, then snapped to the nearest of the 4 CSS resize cursors — so a
+                    // rotated zone shows the right ↕/↔/⤡/⤢ direction. Unrotated → same mapping as before.
+                    const cur4 = (a) => { a = ((a % 180) + 180) % 180; return (a < 22.5 || a >= 157.5) ? 'ew-resize' : a < 67.5 ? 'nwse-resize' : a < 112.5 ? 'ns-resize' : 'nesw-resize'; };
+                    const rd = b.rot || 0, cbase = [45, 135, 45, 135], ebase = [90, 0, 90, 0]; // nw ne se sw · n e s w
+                    if (Math.hypot(p.x - kx, p.y - ky) < R + 4 / P.CELL) cur = 'grab'; // rotate knob
+                    if (!cur) for (let c = 0; c < 4; c++) if (Math.hypot(cs[c][0] - p.x, cs[c][1] - p.y) < R) { cur = cur4(cbase[c] + rd); break; }
+                    if (!cur) for (let c = 0; c < 4; c++) { const mx = (cs[c][0] + cs[(c + 1) % 4][0]) / 2, my = (cs[c][1] + cs[(c + 1) % 4][1]) / 2; if (Math.hypot(mx - p.x, my - p.y) < R) { cur = cur4(ebase[c] + rd); break; } }
+                    if (!cur && pointInBlock(b, p)) cur = 'move';
+                }
+                drawOverlay.style.cursor = cur;
             }
         });
         drawOverlay.addEventListener('pointerup', (ev) => {
