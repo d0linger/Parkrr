@@ -5775,14 +5775,19 @@
             // Breite/Tiefe readout), not the P.Wm×P.Hm canvas grid — after „Form bearbeiten"
             // shrinks the polygon inside the grid the two diverge, and the bbox is the real one.
             const bb = floorBB(), fw = bb.maxX - bb.minX, fh = bb.maxY - bb.minY;
+            const enc = P.autoArea ? enclosure() : null;
+            // "Frei" is free PARKABLE space = the wall-enclosed usable area (the Parkfläche) minus what
+            // is occupied/excluded — NOT the gross floor polygon, which also counts the wall footprint.
+            // Using the gross area made Frei read LARGER than the Parkfläche it sits inside. Fall back to
+            // the polygon area when there is no wall enclosure.
+            const usable = (enc && enc.area > 0.3) ? enc.area : total;
             const m = (val, label, cls) => el('div', { class: 'gp-metric' }, el('div', { class: 'gp-mv ' + (cls || '') }, val), el('div', { class: 'gp-ml' }, label));
             metrics.append(
-                m(Math.round(Math.max(0, total - ex - ve)) + ' m²', 'Frei', 'ok'),
+                m(Math.round(Math.max(0, usable - ex - ve)) + ' m²', 'Frei', 'ok'),
                 m(Math.round(ve) + ' m²', 'Belegt · ' + P.spots.length, 'busy'),
                 m(Math.round(ex) + ' m²', 'Ausgenommen', 'excl'),
                 m(fw.toFixed(1).replace('.', ',') + '×' + fh.toFixed(1).replace('.', ',') + ' m', 'Halle · ' + Math.round(total) + ' m²'),
                 m(polyPerim(P.floor).toFixed(1) + ' m', 'Umfang'));
-            const enc = P.autoArea ? enclosure() : null;
             if (enc && enc.area > 0.3) { const nr = (enc.rooms || []).length; metrics.append(m(enc.area.toFixed(1).replace('.', ',') + ' m²', 'Parkfläche' + (nr > 1 ? ' · ' + nr + ' Räume' : ' · Wände'), 'ok')); } // 1 decimal, matching the plan label (S1-D)
         }
 
@@ -5803,6 +5808,15 @@
             // Auto-Snap: objects fang flush against each other (in addition to the floor line).
             if (canManageNow) toolbar.append(tb('🧲', 'Auto-Snap: Objekte fangen aneinander', () => { P.autoSnap = !P.autoSnap; renderToolbar(); toast(P.autoSnap ? 'Auto-Snap an' : 'Auto-Snap aus'); }, P.autoSnap));
             if (canManageNow) toolbar.append(tb('🛡', 'Pufferzonen zwischen Fahrzeugen (Taste P)', () => { P.buffer = !P.buffer; renderToolbar(); draw(); toast(P.buffer ? 'Pufferzonen an · ' + P.bufferM.toFixed(1).replace('.', ',') + ' m' : 'Pufferzonen aus'); }, P.buffer));
+            // Adjustable buffer distance (vehicle↔vehicle), shown only while buffers are on. 0.5 m steps,
+            // 0–5 m. draw() re-runs the bands + collision uses P.bufferM live. Session-only, like the toggle.
+            if (canManageNow && P.buffer) { const bseg = el('div', { class: 'gp-seg', title: 'Pufferdistanz zwischen Fahrzeugen' });
+                const setBuf = (d) => { P.bufferM = Math.max(0, Math.min(5, +(P.bufferM + d).toFixed(1))); renderToolbar(); draw(); };
+                bseg.append(
+                    el('button', { title: 'Weniger Puffer', onclick: () => setBuf(-0.5) }, '−'),
+                    el('span', { style: 'padding:0 .4rem;min-width:3rem;text-align:center;color:var(--gpink);font-size:.76rem;font-weight:600', 'aria-live': 'polite' }, P.bufferM.toFixed(1).replace('.', ',') + ' m'),
+                    el('button', { title: 'Mehr Puffer', onclick: () => setBuf(0.5) }, '+'));
+                toolbar.append(bseg); }
             // Vehicle display mode (client-side preference, remembered): symbol / photo / rectangle.
             if (P.mode === 'manage') { const dseg = el('div', { class: 'gp-seg', title: 'Fahrzeug-Darstellung' });
                 [['◈', 'symbol', 'Symbol'], ['▣', 'foto', 'Foto'], ['▭', 'rect', 'Rechteck']].forEach(([ic, key, t]) => dseg.append(el('button', { class: P.render === key ? 'on' : '', title: t, onclick: () => { P.render = key; try { localStorage.setItem('gp.render', key); } catch (e) { /* private mode */ } renderToolbar(); draw(); } }, ic)));
