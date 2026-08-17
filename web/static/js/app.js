@@ -5252,6 +5252,37 @@
             rd.onerror = () => toast('Datei konnte nicht gelesen werden', 'error');
             rd.readAsDataURL(file);
         }
+        // Load a DXF vector drawing (FE3): parse LINE/POLYLINE/CIRCLE entities, rasterise them
+        // to a crisp PNG and reuse the Bauplan underlay pipeline (placement, calibration,
+        // opacity, hide, persistence) so a CAD floor plan can be traced over exactly.
+        function loadDxf(file) {
+            if (!file) return;
+            const rd = new FileReader();
+            rd.onerror = () => toast('Datei konnte nicht gelesen werden', 'error');
+            rd.onload = () => {
+                let dxf; try { dxf = PG.parseDXF(String(rd.result)); } catch (e) { toast('DXF konnte nicht gelesen werden', 'error'); return; }
+                if (!dxf.polylines.length) { toast('Keine Linien/Polylinien im DXF gefunden', 'error'); return; }
+                const { minX, minY, maxX, maxY } = dxf.bbox, dw = maxX - minX, dh = maxY - minY;
+                if (!(dw > 0 && dh > 0)) { toast('DXF hat keine gültige Ausdehnung', 'error'); return; }
+                const MAXPX = 1600, sc = MAXPX / Math.max(dw, dh);
+                const cw = Math.max(2, Math.round(dw * sc)), ch = Math.max(2, Math.round(dh * sc));
+                const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
+                const cx = cv.getContext('2d'); cx.strokeStyle = '#12233f'; cx.lineWidth = 1.5; cx.lineJoin = 'round'; cx.lineCap = 'round'; cx.beginPath();
+                for (const pl of dxf.polylines) for (let i = 0; i < pl.length; i++) {
+                    const px = (pl[i][0] - minX) * sc, py = ch - (pl[i][1] - minY) * sc; // flip DXF y-up → canvas y-down
+                    if (i === 0) cx.moveTo(px, py); else cx.lineTo(px, py);
+                }
+                cx.stroke();
+                const href = cv.toDataURL('image/png');
+                if (href.length > 230000) { toast('DXF zu detailliert — bitte eine einfachere Zeichnung verwenden', 'error'); return; }
+                // Fit the drawing into the floor bounding box, aspect-preserving (letterbox), then calibrate.
+                const bb = floorBB(), fw = bb.maxX - bb.minX, fh = bb.maxY - bb.minY, fit = Math.min(fw / dw, fh / dh);
+                const pw = Math.max(1, dw * fit), ph = Math.max(1, dh * fit);
+                P.plan = { href, x: bb.minX + (fw - pw) / 2, y: bb.minY + (fh - ph) / 2, w: pw, h: ph, opacity: 0.6, hidden: false };
+                P.calib = true; markDirty(); draw(); renderRail(); toast('DXF geladen — jetzt an einem bekannten Maß kalibrieren (ziehen / Ecke)', 'ok');
+            };
+            rd.readAsText(file);
+        }
         // ---- wall node-graph geometry ----
         function edgeVec(e) { const a = P.walls.nodes[e.a], b = P.walls.nodes[e.b]; const dx = b.x - a.x, dy = b.y - a.y; return { a, b, dx, dy, len: Math.hypot(dx, dy) }; }
         // Bezug (reference): the drawn line is the wall AXIS (centred, default), the INNER face
@@ -6261,7 +6292,10 @@
             // ---- Bauplan (Unterlage) ----
             const planCard = el('div', { class: 'gp-rcard card' }, el('h3', {}, 'Bauplan', el('span', { class: 'eyebrow' }, 'Unterlage')));
             const fileIn = el('input', { type: 'file', accept: 'image/*', style: 'display:none', onchange: (e) => { loadBauplan(e.target.files && e.target.files[0]); e.target.value = ''; } });
-            planCard.append(fileIn, el('div', { class: 'gp-addrow' }, el('button', { class: 'btn btn-sm', onclick: () => fileIn.click() }, P.plan ? '↻ Bild ersetzen' : '⤒ Bauplan laden')));
+            const dxfIn = el('input', { type: 'file', accept: '.dxf', style: 'display:none', onchange: (e) => { loadDxf(e.target.files && e.target.files[0]); e.target.value = ''; } });
+            planCard.append(fileIn, dxfIn, el('div', { class: 'gp-addrow' },
+                el('button', { class: 'btn btn-sm', onclick: () => fileIn.click() }, P.plan ? '↻ Bild ersetzen' : '⤒ Bauplan laden'),
+                el('button', { class: 'btn btn-sm', title: 'CAD-Grundriss (DXF) als Unterlage laden', onclick: () => dxfIn.click() }, '⧉ DXF laden')));
             if (P.plan) {
                 const showBtn = el('button', { class: 'btn btn-sm gp-toggle' + (!P.plan.hidden ? ' on' : ''), onclick: () => { P.plan.hidden = !P.plan.hidden; markDirty(); draw(); renderRail(); } }, P.plan.hidden ? '⦸ Ausgeblendet' : '👁 Sichtbar');
                 const calBtn = el('button', { class: 'btn btn-sm gp-toggle' + (P.calib ? ' on' : ''), onclick: () => { P.calib = !P.calib; draw(); renderRail(); } }, '⤡ Kalibrieren');

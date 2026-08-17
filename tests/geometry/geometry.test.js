@@ -99,3 +99,43 @@ test('pointInPoly + ringAreaS basics', () => {
     assert.equal(PG.pointInPoly(-1, 2.5, rect5.N), false);
     assert.ok(near(Math.abs(PG.ringAreaS(rect5.N)), 25.0));
 });
+
+// FE3 — minimal ASCII-DXF reader: LINE, LWPOLYLINE (open/closed), legacy
+// POLYLINE/VERTEX and CIRCLE become polylines; bbox spans every point; unknown
+// entities (TEXT/INSERT) are ignored.
+const dxf = (body) => '0\nSECTION\n2\nENTITIES\n' + body + '0\nENDSEC\n0\nEOF\n';
+
+test('parseDXF — LINE entity → one 2-point segment + bbox', () => {
+    const r = PG.parseDXF(dxf('0\nLINE\n8\n0\n10\n1\n20\n2\n11\n4\n21\n6\n'));
+    assert.equal(r.polylines.length, 1);
+    assert.deepEqual(r.polylines[0], [[1, 2], [4, 6]]);
+    assert.deepEqual(r.bbox, { minX: 1, minY: 2, maxX: 4, maxY: 6 });
+});
+
+test('parseDXF — closed LWPOLYLINE repeats first vertex; open does not', () => {
+    const verts = '10\n0\n20\n0\n10\n10\n20\n0\n10\n10\n20\n5\n';
+    const open = PG.parseDXF(dxf('0\nLWPOLYLINE\n90\n3\n70\n0\n' + verts));
+    assert.equal(open.polylines[0].length, 3);
+    const shut = PG.parseDXF(dxf('0\nLWPOLYLINE\n90\n3\n70\n1\n' + verts));
+    assert.equal(shut.polylines[0].length, 4);
+    assert.deepEqual(shut.polylines[0][3], shut.polylines[0][0]);
+    assert.deepEqual(shut.bbox, { minX: 0, minY: 0, maxX: 10, maxY: 5 });
+});
+
+test('parseDXF — legacy POLYLINE/VERTEX/SEQEND collected; TEXT ignored', () => {
+    const body = '0\nTEXT\n10\n99\n20\n99\n1\nHELLO\n'
+        + '0\nPOLYLINE\n70\n0\n0\nVERTEX\n10\n0\n20\n0\n0\nVERTEX\n10\n3\n20\n4\n0\nSEQEND\n';
+    const r = PG.parseDXF(dxf(body));
+    assert.equal(r.polylines.length, 1);
+    assert.deepEqual(r.polylines[0], [[0, 0], [3, 4]]);
+    assert.deepEqual(r.bbox, { minX: 0, minY: 0, maxX: 3, maxY: 4 }); // TEXT's 99/99 excluded
+});
+
+test('parseDXF — CIRCLE becomes a closed-ish ring within radius bounds; empty stays empty', () => {
+    const r = PG.parseDXF(dxf('0\nCIRCLE\n10\n5\n20\n5\n40\n2\n'));
+    assert.ok(r.polylines[0].length > 8, 'circle sampled into a ring');
+    assert.ok(r.polylines[0].every((p) => Math.hypot(p[0] - 5, p[1] - 5) <= 2 + 1e-6), 'points on radius');
+    assert.ok(near(r.bbox.minX, 3) && near(r.bbox.maxX, 7), 'bbox = centre ± r');
+    const empty = PG.parseDXF(dxf(''));
+    assert.equal(empty.polylines.length, 0);
+});

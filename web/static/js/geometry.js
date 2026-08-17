@@ -95,7 +95,63 @@
         return rooms;
     }
 
-    const PG = { ringAreaS, pointInPoly, segCross, polySelfIntersects, insetRing, roomAreas };
+    // Sample an arc/circle (degrees, CCW, DXF y-up convention) into a polyline of ~6° steps.
+    function arcPts(cx, cy, r, a0, a1) {
+        let s = a0, e = a1; if (e <= s) e += 360; const pts = [];
+        for (let a = s; a < e - 1e-6; a += 6) { const t = a * Math.PI / 180; pts.push([cx + r * Math.cos(t), cy + r * Math.sin(t)]); }
+        const te = e * Math.PI / 180; pts.push([cx + r * Math.cos(te), cy + r * Math.sin(te)]);
+        return pts;
+    }
+
+    // Minimal ASCII-DXF reader (FE3): extract LINE, LWPOLYLINE, legacy POLYLINE/VERTEX,
+    // CIRCLE and ARC entities as polylines ([[x,y],…]). Returns { polylines, bbox } in the
+    // DXF's own units and y-up orientation; the caller rasterises + calibrates it as a
+    // Bauplan underlay. Other entity types (TEXT, INSERT, HATCH, splines…) are ignored.
+    function parseDXF(text) {
+        const L = String(text).replace(/^﻿/, '').split(/\r\n|\r|\n/);
+        const polys = [];
+        let type = null, sx = null, sy = null, ex = null, ey = null, cx = null, cy = null, r = null, a0 = null, a1 = null;
+        let verts = [], pendX = null, closed = false, vx = null, vy = null;
+        let poly = null, polyClosed = false; // legacy POLYLINE/VERTEX accumulator
+        const flush = () => {
+            if (type === 'LINE') { if (sx != null && sy != null && ex != null && ey != null) polys.push([[sx, sy], [ex, ey]]); }
+            else if (type === 'LWPOLYLINE') { if (verts.length > 1) { const p = verts.slice(); if (closed) p.push(p[0].slice()); polys.push(p); } }
+            else if (type === 'CIRCLE') { if (cx != null && cy != null && r > 0) polys.push(arcPts(cx, cy, r, 0, 360)); }
+            else if (type === 'ARC') { if (cx != null && cy != null && r > 0) polys.push(arcPts(cx, cy, r, a0 == null ? 0 : a0, a1 == null ? 360 : a1)); }
+            else if (type === 'VERTEX') { if (poly && vx != null && vy != null) poly.push([vx, vy]); }
+            type = null; sx = sy = ex = ey = cx = cy = r = a0 = a1 = vx = vy = null; verts = []; pendX = null; closed = false;
+        };
+        for (let i = 0; i + 1 < L.length; i += 2) {
+            const code = parseInt(L[i].trim(), 10); if (Number.isNaN(code)) continue;
+            const val = (L[i + 1] == null ? '' : L[i + 1].trim());
+            if (code === 0) {
+                flush();
+                if (val === 'POLYLINE') { poly = []; polyClosed = false; type = 'POLYLINE'; }
+                else if (val === 'SEQEND') { if (poly && poly.length > 1) { const p = poly.slice(); if (polyClosed) p.push(p[0].slice()); polys.push(p); } poly = null; type = null; }
+                else if (val === 'VERTEX') { type = 'VERTEX'; }
+                else if (val === 'LINE' || val === 'LWPOLYLINE' || val === 'CIRCLE' || val === 'ARC') { type = val; }
+                else { type = null; }
+                continue;
+            }
+            const n = parseFloat(val);
+            switch (code) {
+                case 10: if (type === 'LINE') sx = n; else if (type === 'LWPOLYLINE') pendX = n; else if (type === 'VERTEX') vx = n; else if (type === 'CIRCLE' || type === 'ARC') cx = n; break;
+                case 20: if (type === 'LINE') sy = n; else if (type === 'LWPOLYLINE') { if (pendX != null) { verts.push([pendX, n]); pendX = null; } } else if (type === 'VERTEX') vy = n; else if (type === 'CIRCLE' || type === 'ARC') cy = n; break;
+                case 11: if (type === 'LINE') ex = n; break;
+                case 21: if (type === 'LINE') ey = n; break;
+                case 40: if (type === 'CIRCLE' || type === 'ARC') r = n; break;
+                case 50: if (type === 'ARC') a0 = n; break;
+                case 51: if (type === 'ARC') a1 = n; break;
+                case 70: if (type === 'LWPOLYLINE') closed = (n & 1) === 1; else if (type === 'POLYLINE') polyClosed = (n & 1) === 1; break;
+            }
+        }
+        flush();
+        let mnx = Infinity, mny = Infinity, mxx = -Infinity, mxy = -Infinity;
+        for (const pl of polys) for (const p of pl) { if (p[0] < mnx) mnx = p[0]; if (p[0] > mxx) mxx = p[0]; if (p[1] < mny) mny = p[1]; if (p[1] > mxy) mxy = p[1]; }
+        return { polylines: polys, bbox: polys.length ? { minX: mnx, minY: mny, maxX: mxx, maxY: mxy } : { minX: 0, minY: 0, maxX: 0, maxY: 0 } };
+    }
+
+    const PG = { ringAreaS, pointInPoly, segCross, polySelfIntersects, insetRing, roomAreas, arcPts, parseDXF };
     if (typeof module !== 'undefined' && module.exports) module.exports = PG;
     if (root) root.PG = PG;
 })(typeof window !== 'undefined' ? window : null);

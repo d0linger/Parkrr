@@ -67,6 +67,15 @@ test('occupancy: response carries a daily trend array (FE4)', async ({ page }) =
   expect(Array.isArray(j.trend), 'occupancy.trend is an array').toBeTruthy();
 });
 
+test('dxf import: PG.parseDXF reads a LINE entity in the browser (FE3)', async ({ page }) => {
+  await login(page);
+  const n = await page.evaluate(() => {
+    const dxf = '0\nSECTION\n2\nENTITIES\n0\nLINE\n10\n0\n20\n0\n11\n5\n21\n0\n0\nENDSEC\n0\nEOF\n';
+    return window.PG && window.PG.parseDXF ? window.PG.parseDXF(dxf).polylines.length : -1;
+  });
+  expect(n, 'parseDXF returns one polyline for a single LINE').toBe(1);
+});
+
 test('wall templates: create → list → delete round-trip (AR3)', async ({ page, context }) => {
   await login(page);
   const cookies = await context.cookies();
