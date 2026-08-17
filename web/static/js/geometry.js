@@ -53,18 +53,42 @@
             const poly = cyc.map((h) => ({ x: N[half[h].u].x, y: N[half[h].u].y }));
             faces.push({ cyc, poly, signed: ringAreaS(poly) });
         }
-        // 2) each bounded (signed > 0), simple face is a room — inset by topology + Bezug.
+        // 2) per half-edge inset from the node line: perimeter (twin borders exterior) → Bezug-based;
+        // a shared wall (twin borders another room) → centred (th/2) by default.
+        const isRoomFace = (f) => f >= 0 && faces[f] && faces[f].signed > 0.01;
+        const dirH = half.map((h) => { const a = N[h.u], b = N[h.v], L = Math.hypot(b.x - a.x, b.y - a.y) || 1; return { x: (b.x - a.x) / L, y: (b.y - a.y) / L }; });
+        const prevH = new Int32Array(half.length).fill(-1);
+        for (let hi = 0; hi < half.length; hi++) { const n = nextH(hi); if (n >= 0) prevH[n] = hi; }
+        const insetH = new Float64Array(half.length), solid = new Uint8Array(half.length);
+        for (let hi = 0; hi < half.length; hi++) {
+            const th = E[half[hi].ei].thick || 0.24, tw = twinOf[hi], part = tw >= 0 && isRoomFace(faceOf[tw]);
+            if (part) insetH[hi] = th / 2;
+            else { insetH[hi] = (bezug === 'inner' ? 0 : bezug === 'outer' ? th : th / 2); solid[hi] = 1; } // perimeter: definite
+        }
+        // Collinear inheritance: a partition half-edge that CONTINUES a solid (perimeter/derived) half-edge
+        // along the same line — the two are consecutive around a room — adopts its inset; the twin takes
+        // th − inset. So a partition prolonging a perimeter wall keeps that room flush to the node line
+        // (no area handed to the neighbour room), while a partition that merely SPLITS a room
+        // (perpendicular to the perimeter) has no collinear solid neighbour and stays centred.
+        // Bound = worst case: a chain listed opposite to its propagation direction advances one hop per
+        // pass, so a chain of N half-edges needs N passes. half.length is a safe cap; the no-change
+        // break below stops as soon as a fixed point is reached (usually 1–2 passes).
+        for (let pass = 0; pass < half.length; pass++) {
+            let changed = false;
+            for (let hi = 0; hi < half.length; hi++) {
+                if (solid[hi]) continue; const tw = twinOf[hi]; if (tw < 0 || !isRoomFace(faceOf[tw])) continue; const th = E[half[hi].ei].thick || 0.24;
+                for (const nb of [nextH(hi), prevH[hi]]) {
+                    if (nb < 0 || !solid[nb]) continue; if (Math.abs(dirH[hi].x * dirH[nb].x + dirH[hi].y * dirH[nb].y) < 0.999) continue;
+                    insetH[hi] = insetH[nb]; insetH[tw] = th - insetH[hi]; solid[hi] = 1; solid[tw] = 1; changed = true; break;
+                }
+            }
+            if (!changed) break;
+        }
+        // 3) each bounded (signed > 0), simple face is a room — inset per the (possibly inherited) insets.
         const rooms = [];
         for (const face of faces) {
             if (face.signed <= 0.01 || face.poly.length < 3 || polySelfIntersects(face.poly)) continue; // unbounded / degenerate / stub
-            const cyc = face.cyc, poly = face.poly, k = poly.length, d = [];
-            for (let i = 0; i < k; i++) {
-                const hi = cyc[i], ei = half[hi].ei, tw = twinOf[hi], tf = tw >= 0 ? faceOf[tw] : -1;
-                const interior = tf >= 0 && faces[tf] && faces[tf].signed > 0.01; // twin borders another room ⇒ shared wall
-                const th = E[ei].thick || 0.24;
-                d.push(interior ? th / 2 : (bezug === 'inner' ? 0 : bezug === 'outer' ? th : th / 2));
-            }
-            const ring = insetRing(poly, d), area = Math.abs(ringAreaS(ring));
+            const ring = insetRing(face.poly, face.cyc.map((hi) => insetH[hi])), area = Math.abs(ringAreaS(ring));
             let cx = 0, cy = 0; ring.forEach((p) => { cx += p.x; cy += p.y; }); cx /= ring.length; cy /= ring.length;
             rooms.push({ area, ring, cx, cy });
         }

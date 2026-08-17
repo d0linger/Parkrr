@@ -56,6 +56,38 @@ test('robustness — a dangling stub + T-junctions does not throw and finds the 
     rooms.forEach((r) => { assert.ok(Number.isFinite(r.area) && r.area > 0); assert.ok(Number.isFinite(r.cx) && Number.isFinite(r.cy)); });
 });
 
+test('collinear partition continuing a perimeter wall keeps the room flush (idea ②)', () => {
+    // A 10x5 room with a 4x3 room appended below its LEFT half. The shared wall (x0..4 at y=5) is a
+    // partition that CONTINUES the perimeter bottom wall (x4..10 at y=5) on the same line, so it must
+    // inherit that perimeter's inset and NOT eat into the big room — otherwise the big room reads
+    // 50 - 0.12*4 = 49.52 instead of the correct flush 50.
+    const N = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 5 }, { x: 4, y: 5 }, { x: 0, y: 5 }, { x: 0, y: 8 }, { x: 4, y: 8 }];
+    const E = [{ a: 0, b: 1 }, { a: 1, b: 2 }, { a: 2, b: 3 }, { a: 3, b: 4 }, { a: 4, b: 0 }, { a: 4, b: 5 }, { a: 5, b: 6 }, { a: 6, b: 3 }].map((e) => ({ ...e, thick: T }));
+    const rooms = PG.roomAreas(N, E, 'inner').sort((a, b) => b.area - a.area);
+    assert.equal(rooms.length, 2);
+    assert.ok(near(rooms[0].area, 50.0), 'big room stays flush (got ' + rooms[0].area.toFixed(2) + '), not reduced by the collinear partition');
+});
+
+test('collinear inheritance propagates along a long, reversed chain of >6 partitions', () => {
+    // Big room (16x3) above a below-room (14x3). The shared bottom wall = a perimeter piece (x14..16,
+    // exterior below) + a chain of 7 collinear partition pieces (x0..14). The chain is LISTED far→near,
+    // so propagation needs one pass per hop (7 passes) — a fixed 6-pass cap would leave the far piece
+    // centred and shrink the big room. The big-room area must not depend on how many pieces the wall is
+    // cut into, in every Bezug — compare against the same layout with a single partition piece.
+    const Ns = [{ x: 0, y: 0 }, { x: 16, y: 0 }, { x: 16, y: 3 }, { x: 14, y: 3 }, { x: 0, y: 3 }, { x: 0, y: 6 }, { x: 14, y: 6 }];
+    const Es = [{ a: 0, b: 1 }, { a: 1, b: 2 }, { a: 2, b: 3 }, { a: 3, b: 4 }, { a: 4, b: 0 }, { a: 4, b: 5 }, { a: 5, b: 6 }, { a: 6, b: 3 }].map((e) => ({ ...e, thick: T }));
+    const Nl = [{ x: 0, y: 0 }, { x: 16, y: 0 }, { x: 16, y: 3 }, { x: 14, y: 3 }, { x: 12, y: 3 }, { x: 10, y: 3 }, { x: 8, y: 3 }, { x: 6, y: 3 }, { x: 4, y: 3 }, { x: 2, y: 3 }, { x: 0, y: 3 }, { x: 0, y: 6 }, { x: 14, y: 6 }];
+    const El = [{ a: 0, b: 1 }, { a: 1, b: 2 }, { a: 2, b: 3 }, // top, right, perimeter (x14..16)
+        { a: 9, b: 10 }, { a: 8, b: 9 }, { a: 7, b: 8 }, { a: 6, b: 7 }, { a: 5, b: 6 }, { a: 4, b: 5 }, { a: 3, b: 4 }, // 7 partitions, far→near
+        { a: 10, b: 0 }, { a: 10, b: 11 }, { a: 11, b: 12 }, { a: 12, b: 3 }].map((e) => ({ ...e, thick: T }));
+    const bigArea = (N, E, bez) => PG.roomAreas(N, E, bez).sort((a, b) => b.area - a.area)[0].area;
+    for (const bez of ['inner', 'axis', 'outer']) {
+        const s = bigArea(Ns, Es, bez), l = bigArea(Nl, El, bez);
+        assert.ok(near(l, s, 1e-2), bez + ': long-chain big room (' + l.toFixed(3) + ') must match the single-piece layout (' + s.toFixed(3) + ')');
+    }
+    assert.ok(near(bigArea(Nl, El, 'inner'), 48.0), 'inner: big room stays fully flush (48) across the long chain');
+});
+
 test('insetRing — concave (reflex) corner does not spike out of bounds', () => {
     const L = [{ x: 0, y: 0 }, { x: 6, y: 0 }, { x: 6, y: 3 }, { x: 3, y: 3 }, { x: 3, y: 6 }, { x: 0, y: 6 }];
     const ring = PG.insetRing(L, L.map(() => 0.12));
