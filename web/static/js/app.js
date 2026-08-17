@@ -6371,7 +6371,21 @@
         function snapDraw(p, shift) {
             const R = 12 / P.CELL, tol = 8 / P.CELL; P.snapHint = null; P.guide = null; P.attach = null;
             const ni = nodeAt(p, R); if (ni >= 0) { const n = P.walls.nodes[ni]; P.snapHint = { x: n.x, y: n.y }; return { x: n.x, y: n.y, node: ni }; }
-            const e = edgeAt(p, R); if (e) { P.snapHint = { x: e.x, y: e.y }; P.attach = { ei: e.i, t: e.t, x: e.x, y: e.y }; return { x: e.x, y: e.y, edge: e.i, t: e.t }; }
+            const e = edgeAt(p, R);
+            if (e) { let ax = e.x, ay = e.y, at = e.t;
+                // Ortho-snap the CLOSING segment onto the wall: while chaining, slide the attach point
+                // along the edge onto the exact vertical/horizontal line from the last node, so closing
+                // onto a wall lands square instead of slightly diagonal. Hard with ⊾90°/Shift, soft (only
+                // when already near-ortho) with the magnet on.
+                if ((P.ortho || shift || P.autoSnap) && P.chain && P.chain.length) {
+                    const last = P.walls.nodes[P.chain[P.chain.length - 1]], ev = edgeVec(P.walls.edges[e.i]);
+                    if (last && ev.len > 0.02) { const dX = Math.abs(ax - last.x), dY = Math.abs(ay - last.y), hard = P.ortho || shift;
+                        if (hard || Math.min(dX, dY) <= Math.max(dX, dY) * 0.3) { const vert = dX <= dY, den = vert ? ev.dx : ev.dy;
+                            if (Math.abs(den) > 1e-6) { let t = ((vert ? last.x : last.y) - (vert ? ev.a.x : ev.a.y)) / den;
+                                if (t >= -0.02 && t <= 1.02) { t = Math.max(0, Math.min(1, t)); ax = ev.a.x + t * ev.dx; ay = ev.a.y + t * ev.dy; at = t; P.guide = vert ? { kind: 'v', x: last.x } : { kind: 'h', y: last.y }; } } } }
+                }
+                P.snapHint = { x: ax, y: ay }; P.attach = { ei: e.i, t: at, x: ax, y: ay }; return { x: ax, y: ay, edge: e.i, t: at };
+            }
             let x = gsnap(p.x), y = gsnap(p.y);
             if (P.chain && P.chain.length) {
                 const last = P.walls.nodes[P.chain[P.chain.length - 1]];
