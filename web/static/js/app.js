@@ -5218,7 +5218,11 @@
                 // probe both sides just past the wall face; cap the distance so a NARROW room can't
                 // sample through the opposite wall, and retry closer when the first probe is ambiguous (S2-B).
                 const probe = (d) => { const pl = inSide(mx + px * d, my + py * d), mi = inSide(mx - px * d, my - py * d); return (pl && !mi) ? -1 : (mi && !pl) ? 1 : 0; }; // s·perp = exterior; interior wall (both sides room) → 0
-                let s = probe(th / 2 + Math.min(enc.GS * 1.3, 0.14)); if (s === 0) s = probe(th / 2 + enc.GS * 0.55);
+                // Sweep several distances outward: the conservative dilation can block the interior
+                // cell right next to the wall on ONE side (a grid-alignment artefact that left an edge
+                // with s=0 → the wall rendered CENTRED instead of Innen/Außen). Take the first definite
+                // sign; a true interior partition (room on both sides) stays 0 at every distance.
+                let s = 0; for (const k of [0.55, 1.1, 1.7, 2.5, 3.5]) { s = probe(th / 2 + k * enc.GS); if (s) break; }
                 const mag = (th / 2) * s * dir; return { ox: px * mag, oy: py * mag }; });
             return _eoff;
         }
@@ -5728,7 +5732,7 @@
                 else svg.append(svgEl('line', { x1: P.guide.x * CELL, y1: 0, x2: P.guide.x * CELL, y2: P.Hm * CELL, class: 'gp-guide' }));
             }
             // dynamic distance readout: attach/hover point → both ends of the existing wall
-            if (P.attach && (P.chain || isOpenKind(P.tool))) { const ed = P.walls.edges[P.attach.ei]; if (ed) { const v = edgeVec(ed);
+            if (P.attach && (P.chain || isOpenKind(P.tool) || isWallDraw(P.tool))) { const ed = P.walls.edges[P.attach.ei]; if (ed) { const v = edgeVec(ed);
                 const dA = P.attach.t * v.len, dB = (1 - P.attach.t) * v.len;
                 const lab = (nx, ny, txt) => { const tt = svgEl('text', { x: (nx + P.attach.x) / 2 * CELL, y: (ny + P.attach.y) / 2 * CELL - 4, 'text-anchor': 'middle', class: 'gp-distlab' }); tt.textContent = txt; svg.append(tt); };
                 if (dA > 0.05) lab(v.a.x, v.a.y, dA.toFixed(2).replace('.', ',') + ' m');
