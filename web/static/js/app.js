@@ -6142,7 +6142,13 @@
             const nv = Math.max(0.2, Math.min(dim === 'w' ? P.Wm : P.Hm, Math.round(v * 100) / 100));
             const cand = { kind: 'excl', x: b.x, y: b.y, w: dim === 'w' ? nv : b.w, h: dim === 'h' ? nv : b.h };
             if (b.x + cand.w > P.Wm || b.y + cand.h > P.Hm || (!isZoneKind(b.kind) && collide(cand, b.id))) { toast('Passt nicht (Rand/Kollision)', 'error'); draw(); return; }
-            b[dim] = nv; commitGeom();
+            b[dim] = nv;
+            // Clip flush to a nearby wall the same way dragging does: typing a size that lands within
+            // snap reach of a wall face (e.g. a depth that leaves a half-thickness gap at a gate) now
+            // snaps to the true inner surface instead of stopping short. Re-clamp to stay in bounds.
+            snapZoneFaces(b);
+            b.x = Math.max(0, Math.min(P.Wm - b.w, b.x)); b.y = Math.max(0, Math.min(P.Hm - b.h, b.y));
+            commitGeom();
         }
         function setShape(k) { P.shape = k; P.floor = gpShape(k, P.Wm, P.Hm); hideLen(); const out = P.spots.filter((s) => !inside(s)).length; commitGeom('Form: ' + k + (out ? ' · ' + out + ' außerhalb' : ''), out ? 'warn' : ''); }
         function setDim(which, d) {
