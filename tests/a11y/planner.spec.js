@@ -59,6 +59,14 @@ test('export: occupancy CSV downloads with the expected header (FE2)', async ({ 
   expect(await res.text()).toContain('garage;halle;stellplaetze');
 });
 
+test('occupancy: response carries a daily trend array (FE4)', async ({ page }) => {
+  await login(page);
+  const res = await page.request.get('/api/occupancy');
+  expect(res.ok(), 'occupancy status ' + res.status()).toBeTruthy();
+  const j = await res.json();
+  expect(Array.isArray(j.trend), 'occupancy.trend is an array').toBeTruthy();
+});
+
 test('wall templates: create → list → delete round-trip (AR3)', async ({ page, context }) => {
   await login(page);
   const cookies = await context.cookies();

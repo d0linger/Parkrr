@@ -1693,3 +1693,7 @@ a.portal-row.link:hover { color: var(--accent-text); }
 .dash-occrow{align-items:center;gap:.6rem}
 .dash-bar{flex:1;min-width:60px;height:8px;border-radius:6px;background:var(--bg-elev-2);overflow:hidden}
 .dash-bar-fill{height:100%;border-radius:6px;background:var(--brand-grad,linear-gradient(90deg,#0d9488,#22d3ee));min-width:3px}
+.dash-spark-wrap{margin-top:.5rem}
+.dash-spark{display:block;overflow:visible}
+.dash-spark-line{fill:none;stroke:var(--gpteal2,#22d3ee);stroke-width:1.8;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}
+.dash-spark-dot{fill:var(--gpteal2,#22d3ee)}

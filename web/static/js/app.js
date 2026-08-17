@@ -942,6 +942,17 @@
             occCard.append(el('div', { class: 'stat-grid' },
                 stat(occ.placed + ' / ' + occ.active, 'Gefährte platziert', { icon: 'warehouse', tone: 'teal' }),
                 stat(Math.max(0, occ.active - occ.placed), 'noch nicht platziert', { icon: 'car' })));
+            // FE4 — placement trend sparkline over the daily snapshots (last ~30 days).
+            const tr = (occ.trend || []).filter((d) => d && Number.isFinite(d.placed));
+            if (tr.length >= 2) {
+                const W = 260, H = 46, pad = 4, n = tr.length, mx = Math.max(1, ...tr.map((d) => d.placed));
+                const px = (i) => pad + i / (n - 1) * (W - 2 * pad), py = (v) => H - pad - (v / mx) * (H - 2 * pad);
+                const spark = svgEl('svg', { class: 'dash-spark', viewBox: '0 0 ' + W + ' ' + H, width: '100%', height: String(H), preserveAspectRatio: 'none' });
+                spark.append(svgEl('polyline', { points: tr.map((d, i) => px(i).toFixed(1) + ',' + py(d.placed).toFixed(1)).join(' '), fill: 'none', class: 'dash-spark-line' }));
+                spark.append(svgEl('circle', { cx: String(px(n - 1)), cy: String(py(tr[n - 1].placed)), r: '2.6', class: 'dash-spark-dot' }));
+                occCard.append(el('div', { class: 'dash-spark-wrap' },
+                    el('div', { class: 'muted', style: 'font-size:.72rem;margin:.4rem 0 .12rem' }, 'Trend · platziert (letzte ' + n + ' Tage, max ' + mx + ')'), spark));
+            }
             // UX4 — per-hall occupancy as a small proportional bar chart (inline SVG-free, CSP-safe).
             const halls = (occ.halls || []).filter((hh) => hh.placed > 0);
             const maxP = Math.max(1, ...halls.map((hh) => hh.placed || 0));
