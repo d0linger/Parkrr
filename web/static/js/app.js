@@ -4596,7 +4596,10 @@
         const metrics = el('div', { class: 'gp-metrics' });
         const svg = svgEl('svg', { class: 'gp-floor', xmlns: SVGNS });
         const layer = el('div', { class: 'gp-layer' });
-        const planEl = el('div', { class: 'gp-plan' }, svg, layer);
+        // Dimension/distance text overlay: an SVG ABOVE the zone/vehicle DOM layer, so labels are
+        // never hidden behind a Fahrstraße/Wartung/Stütze block (which paint over the base SVG).
+        const labelSvg = svgEl('svg', { class: 'gp-labels' });
+        const planEl = el('div', { class: 'gp-plan' }, svg, layer, labelSvg);
         const planWrap = el('div', { class: 'gp-planwrap' }, planEl);
         const canvas = el('div', { class: 'gp-canvas card' },
             el('div', { class: 'gp-canvas-top' }, ctitle, el('span', { class: 'gp-spacer' }), toolbar), metrics, planWrap);
@@ -4969,6 +4972,7 @@
             const pw = P.Wm * P.CELL, ph = P.Hm * P.CELL;
             planEl.style.width = pw + 'px'; planEl.style.height = ph + 'px';
             svg.setAttribute('width', pw); svg.setAttribute('height', ph); svg.setAttribute('viewBox', '0 0 ' + pw + ' ' + ph);
+            labelSvg.setAttribute('width', pw); labelSvg.setAttribute('height', ph); labelSvg.setAttribute('viewBox', '0 0 ' + pw + ' ' + ph);
             // Fullscreen: fill the budget (big canvas). Normal: wrap the plan tightly
             // (+margins) up to the budget, so a short hall isn't marooned in a tall box.
             const boxH = P.maxed ? maxBudget : Math.min(maxBudget, ph + 2 * M + 2); // +2 = the wrapper's 1px borders (border-box), else a 2px scrollbar shows
@@ -5035,6 +5039,7 @@
         }
         function drawFloor() {
             svg.innerHTML = '';
+            labelSvg.innerHTML = ''; // cleared in lockstep with the base SVG each redraw
             svg.style.zIndex = '0'; // the SVG stays below the interaction overlay (walls define the plan)
             const CELL = P.CELL, s = ptsAttr();
             // grid pattern
@@ -5601,7 +5606,7 @@
             svg.append(g);
             // One m² label PER enclosed room (single room → "Parkfläche", mehrere → "Raum N").
             const rooms = (enc.rooms && enc.rooms.length) ? enc.rooms : [{ area: enc.area, cx: enc.cx, cy: enc.cy }];
-            rooms.forEach((rm, i) => { const t = svgEl('text', { x: rm.cx * CELL, y: rm.cy * CELL, 'text-anchor': 'middle', class: 'gp-parklab' }); t.textContent = (rooms.length > 1 ? 'Raum ' + (i + 1) + ' · ' : 'Parkfläche ') + rm.area.toFixed(1).replace('.', ',') + ' m²'; svg.append(t); });
+            rooms.forEach((rm, i) => { const t = svgEl('text', { x: rm.cx * CELL, y: rm.cy * CELL, 'text-anchor': 'middle', class: 'gp-parklab' }); t.textContent = (rooms.length > 1 ? 'Raum ' + (i + 1) + ' · ' : 'Parkfläche ') + rm.area.toFixed(1).replace('.', ',') + ' m²'; labelSvg.append(t); });
         }
         // Draw one opening in the (already cut-out) gap: reveal jambs at both ends + a kind
         // symbol (window glass / door leaf+swing / gate bar), plus handles when selected.
@@ -5644,7 +5649,7 @@
                 // Rohbau + lichtes Durchgangsmaß (Türen/Tore) as a small caption above the opening (S3-B).
                 if (o.kind === 'door' || o.kind === 'gate') { const mid = [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2];
                     const lab = svgEl('text', { x: mid[0] + nx * (h + 12), y: mid[1] + ny * (h + 12) + 3, 'text-anchor': 'middle', class: 'gp-walllab sub' });
-                    lab.textContent = 'lichte ' + clearWidth(o).toFixed(2).replace('.', ',') + ' m'; g.append(lab); }
+                    lab.textContent = 'lichte ' + clearWidth(o).toFixed(2).replace('.', ',') + ' m'; labelSvg.append(lab); }
             }
         }
         function edgeIndex(e) { return P.walls.edges.indexOf(e); }
@@ -5705,7 +5710,7 @@
                     // mid-wall position sits between the two segment labels, so they don't clash. No
                     // openings → keep the inner side as before (no regression on plain walls).
                     const tsg = spans.length ? -1 : 1;
-                    const tl = svgEl('text', { x: mid[0] + tsg * nx * off, y: mid[1] + tsg * ny * off + 3, 'text-anchor': 'middle', class: 'gp-walllab' }); tl.textContent = labelLen(ei).toFixed(2).replace('.', ',') + ' m'; g.append(tl); // dimension per Bezug (Innen/Achse/Außen)
+                    const tl = svgEl('text', { x: mid[0] + tsg * nx * off, y: mid[1] + tsg * ny * off + 3, 'text-anchor': 'middle', class: 'gp-walllab' }); tl.textContent = labelLen(ei).toFixed(2).replace('.', ',') + ' m'; labelSvg.append(tl); // dimension per Bezug (Innen/Achse/Außen)
                     if (spans.length) { // clear sub-segment lengths — measured on the DRAWN edge (v0)
                         // and trimmed to the SAME Bezug reference as the total (labelLen), so the pieces
                         // plus the opening widths add up to the displayed length instead of overshooting
@@ -5714,7 +5719,7 @@
                         const inset = (ni) => P.wallRef === 'inner' ? 0 : nodePerpHalf(ni, ei) * (P.wallRef === 'outer' ? 2 : 1);
                         const dsp = (e.ops || []).map((o) => { const hp2 = (o.w / v0.len) / 2; return [Math.max(0, o.c - hp2), Math.min(1, o.c + hp2)]; }).sort((a, b) => a[0] - b[0]);
                         const segs = []; let s0 = 0; for (const [lo, hi] of dsp) { if (lo - s0 > 0.002) segs.push([s0, lo]); s0 = hi; } if (1 - s0 > 0.002) segs.push([s0, 1]);
-                        for (const [u0, u1] of segs) { let wm = (u1 - u0) * v0.len; if (u0 < 0.002) wm -= inset(e.a); if (u1 > 0.998) wm -= inset(e.b); if (wm < 0.01 || wm * CELL < 26) continue; const m2 = P0((u0 + u1) / 2); const st = svgEl('text', { x: m2[0] - nx * (th / 2 + 9), y: m2[1] - ny * (th / 2 + 9) + 3, 'text-anchor': 'middle', class: 'gp-walllab sub' }); st.textContent = wm.toFixed(2).replace('.', ',') + ' m'; g.append(st); }
+                        for (const [u0, u1] of segs) { let wm = (u1 - u0) * v0.len; if (u0 < 0.002) wm -= inset(e.a); if (u1 > 0.998) wm -= inset(e.b); if (wm < 0.01 || wm * CELL < 26) continue; const m2 = P0((u0 + u1) / 2); const st = svgEl('text', { x: m2[0] - nx * (th / 2 + 9), y: m2[1] - ny * (th / 2 + 9) + 3, 'text-anchor': 'middle', class: 'gp-walllab sub' }); st.textContent = wm.toFixed(2).replace('.', ',') + ' m'; labelSvg.append(st); }
                     }
                 }
             });
@@ -5734,7 +5739,7 @@
             // dynamic distance readout: attach/hover point → both ends of the existing wall
             if (P.attach && (P.chain || isOpenKind(P.tool) || isWallDraw(P.tool))) { const ed = P.walls.edges[P.attach.ei]; if (ed) { const v = edgeVec(ed);
                 const dA = P.attach.t * v.len, dB = (1 - P.attach.t) * v.len;
-                const lab = (nx, ny, txt) => { const tt = svgEl('text', { x: (nx + P.attach.x) / 2 * CELL, y: (ny + P.attach.y) / 2 * CELL - 4, 'text-anchor': 'middle', class: 'gp-distlab' }); tt.textContent = txt; svg.append(tt); };
+                const lab = (nx, ny, txt) => { const tt = svgEl('text', { x: (nx + P.attach.x) / 2 * CELL, y: (ny + P.attach.y) / 2 * CELL - 4, 'text-anchor': 'middle', class: 'gp-distlab' }); tt.textContent = txt; labelSvg.append(tt); };
                 if (dA > 0.05) lab(v.a.x, v.a.y, dA.toFixed(2).replace('.', ',') + ' m');
                 if (dB > 0.05) lab(v.b.x, v.b.y, dB.toFixed(2).replace('.', ',') + ' m');
             } }
@@ -5742,7 +5747,7 @@
             // ends throughout the whole chain, so 90° branches can be placed precisely.
             if (P.chainAnchor && P.chain) { const an = P.chainAnchor;
                 const dA = Math.hypot(an.x - an.aEnd.x, an.y - an.aEnd.y), dB = Math.hypot(an.x - an.bEnd.x, an.y - an.bEnd.y);
-                const lab2 = (ex, ey, d) => { if (d < 0.05) return; const tt = svgEl('text', { x: (an.x + ex) / 2 * CELL, y: (an.y + ey) / 2 * CELL - 4, 'text-anchor': 'middle', class: 'gp-distlab' }); tt.textContent = d.toFixed(2).replace('.', ',') + ' m'; svg.append(tt); };
+                const lab2 = (ex, ey, d) => { if (d < 0.05) return; const tt = svgEl('text', { x: (an.x + ex) / 2 * CELL, y: (an.y + ey) / 2 * CELL - 4, 'text-anchor': 'middle', class: 'gp-distlab' }); tt.textContent = d.toFixed(2).replace('.', ',') + ' m'; labelSvg.append(tt); };
                 lab2(an.aEnd.x, an.aEnd.y, dA); lab2(an.bEnd.x, an.bEnd.y, dB);
                 svg.append(svgEl('circle', { cx: an.x * CELL, cy: an.y * CELL, r: 4, class: 'gp-anchor' }));
             }
@@ -5755,7 +5760,7 @@
                     const len = Math.hypot(P.preview.x - last.x, P.preview.y - last.y);
                     const drawTh = P.wallThick || (EXCL[P.tool] && EXCL[P.tool].h) || 0.24, ph = nodePerpHalf(P.chain[P.chain.length - 1], -1);
                     const clr = P.wallRef === 'inner' ? len : P.wallRef === 'outer' ? Math.max(0, len - 2 * ph - drawTh) : Math.max(0, len - ph - drawTh / 2); // live dim per Bezug
-                    const tl = svgEl('text', { x: (ax + bx) / 2, y: (ay + by) / 2 - 6, 'text-anchor': 'middle', class: 'gp-walllab live' }); tl.textContent = clr.toFixed(2).replace('.', ',') + ' m'; svg.append(tl);
+                    const tl = svgEl('text', { x: (ax + bx) / 2, y: (ay + by) / 2 - 6, 'text-anchor': 'middle', class: 'gp-walllab live' }); tl.textContent = clr.toFixed(2).replace('.', ',') + ' m'; labelSvg.append(tl);
                 }
                 for (const idx of P.chain) { const n = P.walls.nodes[idx]; if (n) svg.append(svgEl('circle', { cx: n.x * CELL, cy: n.y * CELL, r: 4, class: 'gp-wnode chain' })); }
             }
@@ -5764,12 +5769,12 @@
                 if (e) { const v = edgeVec(e), t2 = P.preview.t != null ? P.preview.t : P.openStart.t;
                     const x1 = (v.a.x + v.dx * P.openStart.t) * CELL, y1 = (v.a.y + v.dy * P.openStart.t) * CELL, x2 = (v.a.x + v.dx * t2) * CELL, y2 = (v.a.y + v.dy * t2) * CELL;
                     svg.append(svgEl('line', { x1, y1, x2, y2, stroke: OPENCOL[P.tool] || '#4ea8f5', 'stroke-width': Math.max(3, (e.thick || 0.24) * CELL * 0.7), 'stroke-linecap': 'butt', opacity: 0.9, class: 'gp-openpreview' }));
-                    const w = Math.abs(t2 - P.openStart.t) * v.len; const tl = svgEl('text', { x: (x1 + x2) / 2, y: (y1 + y2) / 2 - 6, 'text-anchor': 'middle', class: 'gp-walllab live' }); tl.textContent = w.toFixed(2).replace('.', ',') + ' m'; svg.append(tl); }
+                    const w = Math.abs(t2 - P.openStart.t) * v.len; const tl = svgEl('text', { x: (x1 + x2) / 2, y: (y1 + y2) / 2 - 6, 'text-anchor': 'middle', class: 'gp-walllab live' }); tl.textContent = w.toFixed(2).replace('.', ',') + ' m'; labelSvg.append(tl); }
             }
             if (zoneDraw) {
                 const x = Math.min(zoneDraw.x0, zoneDraw.x1), y = Math.min(zoneDraw.y0, zoneDraw.y1), w = Math.abs(zoneDraw.x1 - zoneDraw.x0), h = Math.abs(zoneDraw.y1 - zoneDraw.y0), col = ZONECOL[P.tool] || '#e0b452';
                 svg.append(svgEl('rect', { x: x * CELL, y: y * CELL, width: w * CELL, height: h * CELL, fill: col, 'fill-opacity': 0.14, stroke: col, 'stroke-width': 1.5, 'stroke-dasharray': '5 3' }));
-                const tl = svgEl('text', { x: (x + w / 2) * CELL, y: (y + h / 2) * CELL + 4, 'text-anchor': 'middle', class: 'gp-walllab live' }); tl.textContent = w.toFixed(1).replace('.', ',') + ' × ' + h.toFixed(1).replace('.', ',') + ' m'; svg.append(tl);
+                const tl = svgEl('text', { x: (x + w / 2) * CELL, y: (y + h / 2) * CELL + 4, 'text-anchor': 'middle', class: 'gp-walllab live' }); tl.textContent = w.toFixed(1).replace('.', ',') + ' × ' + h.toFixed(1).replace('.', ',') + ' m'; labelSvg.append(tl);
             }
             if (P.snapHint) svg.append(svgEl('circle', { cx: P.snapHint.x * CELL, cy: P.snapHint.y * CELL, r: 6, class: 'gp-snaphint' }));
         }
