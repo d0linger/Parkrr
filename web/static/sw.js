@@ -1,5 +1,5 @@
 /* Parkrr service worker – offline shell with fresh-first assets. */
-const CACHE = 'parkrr-v188';
+const CACHE = 'parkrr-v189';
 const SHELL = [
     '/',
     '/css/style.css',
@@ -47,7 +47,9 @@ self.addEventListener('fetch', (event) => {
                 event.waitUntil(caches.open(CACHE).then((c) => c.put(request, copy)).catch(() => {}));
             }
             return res;
-        }).catch(() => caches.match(request).then((cached) => {
+            // ignoreSearch: a fingerprinted request (/js/app.js?v=hash) still matches the
+            // precached unfingerprinted entry, so offline serves the assets it precached.
+        }).catch(() => caches.match(request, { ignoreSearch: true }).then((cached) => {
             if (cached) return cached;
             // Only fall back to the app shell for navigations; a failed sub-resource
             // (image/script/API) must not receive the HTML shell.

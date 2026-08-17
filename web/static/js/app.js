@@ -5,14 +5,15 @@
     // ---------- client-error telemetry (AR4): report uncaught SPA errors to the
     // server (auth-gated, rate-limited, no PII). Capped per session so a repeating
     // error can't spam. Never throws itself. ----------
-    const APP_VERSION = 'v181';
+    const APP_VERSION = ((document.querySelector('meta[name="app-version"]') || {}).content) || 'dev'; // server-injected build version
     (function () {
         let sent = 0;
         const report = (message, stack) => {
             if (sent >= 5 || !message) return; sent++;
             try {
+                // /api/client-error is auth-gated → carry the CSRF token like every other write.
                 fetch('/api/client-error', {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+                    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCookie('parkrr_csrf') }, keepalive: true,
                     body: JSON.stringify({ message: String(message).slice(0, 500), stack: String(stack || '').slice(0, 4000), url: location.pathname, version: APP_VERSION }),
                 }).catch(() => { });
             } catch (e) { /* never let reporting break the app */ }
@@ -4884,7 +4885,12 @@
             img.onerror = () => toast('PNG-Export fehlgeschlagen', 'error'); img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(ex.svg); }
         function exportPlanSVG() { const ex = planExportSVG(); if (!ex) { toast('Nichts zu exportieren', 'warn'); return; } dlBlob('grundriss.svg', ex.svg, 'image/svg+xml'); toast('SVG exportiert', 'ok'); }
         function exportPlanPDF() { const ex = planExportSVG(); if (!ex) { toast('Nichts zu exportieren', 'warn'); return; } const w = window.open('', '_blank'); if (!w) { toast('Popup blockiert — bitte erlauben', 'warn'); return; }
-            w.document.write('<!doctype html><meta charset="utf-8"><title>Grundriss</title><style>@page{margin:12mm}html,body{margin:0}svg{width:100%;height:auto}@media print{.hint{display:none}}</style><div class="hint" style="font:13px system-ui;padding:8px;color:#555">Drucken-Dialog → „Als PDF speichern". Fenster schließt danach automatisch.</div>' + ex.svg + '<script>window.onload=function(){setTimeout(function(){window.print()},250)};window.onafterprint=function(){window.close()};<\/script>'); w.document.close(); }
+            // No inline <script> in the popup — the opener's CSP (script-src 'self') would block it.
+            // We drive print/close from here after the document is written.
+            w.document.write('<!doctype html><meta charset="utf-8"><title>Grundriss</title><style>@page{margin:12mm}html,body{margin:0}svg{width:100%;height:auto}@media print{.hint{display:none}}</style><div class="hint" style="font:13px system-ui;padding:8px;color:#555">Drucken-Dialog → „Als PDF speichern".</div>' + ex.svg);
+            w.document.close();
+            try { w.onafterprint = () => { try { w.close(); } catch (e) { /* ignore */ } }; } catch (e) { /* ignore */ }
+            setTimeout(() => { try { w.focus(); w.print(); } catch (e) { /* ignore */ } }, 300); }
         function exportPlanDXF() {
             if (!P.walls.edges.length && !P.spots.length && !P.excl.length) { toast('Nichts zu exportieren', 'warn'); return; }
             const L = []; const P0 = (x, y) => x.toFixed(3) + '\n20\n' + (-y).toFixed(3); // DXF is Y-up → flip
@@ -4910,13 +4916,14 @@
         const TPL_KEY = 'parkrr.wallTemplates';
         const loadTemplates = () => { try { const a = JSON.parse(localStorage.getItem(TPL_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } };
         const saveTemplates = (a) => { try { localStorage.setItem(TPL_KEY, JSON.stringify(a.slice(0, 30))); } catch (e) { /* quota */ } };
-        function saveCurrentTemplate() {
+        async function saveCurrentTemplate() {
             if (!P.walls.edges.length) { toast('Keine Wände zum Speichern', 'warn'); return; }
-            const name = window.prompt('Name der Wand-Vorlage:', (P.hallName || 'Vorlage') + ' ' + (loadTemplates().length + 1)); if (!name) return;
-            const tpls = loadTemplates(); tpls.unshift({ id: Date.now(), name: String(name).slice(0, 60), walls: JSON.parse(JSON.stringify(P.walls)) }); saveTemplates(tpls); toast('Vorlage gespeichert', 'ok');
+            const data = await formModal({ title: 'Wand-Vorlage speichern', submitLabel: 'Speichern', fields: [{ name: 'name', label: 'Name der Vorlage', type: 'text', required: true, value: (P.hallName || 'Vorlage') + ' ' + (loadTemplates().length + 1) }] });
+            if (!data || !data.name) return;
+            const tpls = loadTemplates(); tpls.unshift({ id: Date.now(), name: String(data.name).slice(0, 60), walls: JSON.parse(JSON.stringify(P.walls)) }); saveTemplates(tpls); toast('Vorlage gespeichert', 'ok');
         }
-        function applyTemplate(t) {
-            if (P.walls.edges.length && !window.confirm('Aktuelle Wände durch die Vorlage „' + t.name + '" ersetzen?')) return;
+        async function applyTemplate(t) {
+            if (P.walls.edges.length && !(await confirmDialog('Vorlage laden', 'Aktuelle Wände durch die Vorlage „' + t.name + '" ersetzen?', 'Ersetzen'))) return;
             P.walls = normalizeWalls(t.walls); P.structSel = null; P.sel = null; refreshFloorFromWalls(); pushUndo(); markDirty(); fitView(); toast('Vorlage geladen: ' + t.name, 'ok');
         }
         function openTemplateMenu() {
@@ -6354,16 +6361,20 @@
             // empty click → deselect only (NEVER delete); on an enclosed room, show its m²
             P.structSel = null; P.sel = null; showRoom(p); draw();
         }
-        function deleteSel() {
+        async function deleteSel() {
             if (selSet.length) { // group delete (FE4): zones removed from geometry (undoable); vehicles unpositioned via API (confirmed)
                 if (!canManageNow) { clearSelSet(); draw(); return; }
                 const blocks = selSet.map(findBlock).filter(Boolean);
                 const vehs = blocks.filter((b) => b._id && b.kind !== 'excl'), excls = blocks.filter((b) => !(b._id && b.kind !== 'excl'));
-                if (vehs.length && !window.confirm(vehs.length + ' Gefährt(e) aus dem Plan entfernen?')) return;
+                if (vehs.length && !(await confirmDialog('Gefährte entfernen', vehs.length + ' Gefährt(e) aus dem Plan entfernen?', 'Entfernen'))) return;
                 selSet = [];
                 if (excls.length) { excls.forEach((b) => { P.excl = P.excl.filter((x) => x !== b); if (P.sel === b.id) P.sel = null; }); pushUndo(); markDirty(); }
-                if (vehs.length) (async () => { for (const v of vehs) { try { await api.del('/spots/' + v._id); P.spots = P.spots.filter((x) => x !== v); if (v.vehId) P.palette.push({ id: v.vehId, label: v.label, type: v.type, person_id: v.personId, person_name: v.personName, length_m: v.L, width_m: v.W, height_m: v.H, weight_t: v.t }); if (P.sel === v._id) P.sel = null; } catch (er) { /* keep going */ } } draw(); })();
-                draw(); toast((excls.length + vehs.length) + ' entfernt', 'ok'); return;
+                if (vehs.length) {
+                    // Count failures and report the REAL result after the API calls — don't claim
+                    // every vehicle was removed when some api.del() rejected.
+                    (async () => { let ok = 0, fail = 0; for (const v of vehs) { try { await api.del('/spots/' + v._id); P.spots = P.spots.filter((x) => x !== v); if (v.vehId) P.palette.push({ id: v.vehId, label: v.label, type: v.type, person_id: v.personId, person_name: v.personName, length_m: v.L, width_m: v.W, height_m: v.H, weight_t: v.t }); if (P.sel === v._id) P.sel = null; ok++; } catch (er) { fail++; } } draw(); toast(fail ? ok + ' entfernt · ' + fail + ' fehlgeschlagen' : ok + ' entfernt', fail ? 'warn' : 'ok'); })();
+                } else { draw(); toast(excls.length + ' entfernt', 'ok'); }
+                return;
             }
             if (!P.structSel) { if (P.sel != null) { const b = P.excl.find((x) => x.id === P.sel); if (b) removeExcl(b); } return; }
             if (P.structSel.type === 'opening') { const e = P.walls.edges[P.structSel.ei]; if (e && e.ops) e.ops.splice(P.structSel.oi, 1); P.structSel = null; pushUndo(); markDirty(); draw(); toast('Öffnung entfernt — Wand geschlossen'); return; }
@@ -6465,7 +6476,7 @@
         // so it can't get stuck and block further interaction.
         const cancelGesture = () => {
             if (marq) { if (marq.el) marq.el.remove(); marq = null; } // FE4: don't leave a stuck rubber-band
-            if (act) { const b = act.b; if (act.mode === 'move') { b.x = act.ox; b.y = act.oy; if (act.group) act.group.forEach((m) => { m.b.x = m.ox; m.b.y = m.oy; }); } else if (act.mode === 'resize') { b.w = act.ow; b.h = act.oh; } else if (act.mode === 'rotate') { b.rot = act.orot; } if (act.elm) act.elm.classList.remove('moving'); act = null; draw(); }
+            if (act) { const b = act.b; if (act.mode === 'move') { b.x = act.ox; b.y = act.oy; if (act.group) act.group.forEach((m) => { m.b.x = m.ox; m.b.y = m.oy; }); } else if (act.mode === 'resize' && act.o0) { b.x = act.o0.x; b.y = act.o0.y; b.w = act.o0.w; b.h = act.o0.h; b.rot = act.o0.rot; } else if (act.mode === 'rotate') { b.rot = act.orot; } if (act.elm) act.elm.classList.remove('moving'); act = null; draw(); }
             railDrag = null; // don't leave a fullscreen rail-drag following the cursor
             if (drag) { if (drag.g) drag.g.remove(); drag = null; }
             if (prev) { prev.remove(); prev = null; }

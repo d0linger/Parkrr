@@ -43,6 +43,18 @@ func TestGzipStatic(t *testing.T) {
 		t.Fatal("passthrough body corrupted")
 	}
 
+	// "gzip;q=0" explicitly refuses gzip → must not compress, but still Vary.
+	r = httptest.NewRequest("GET", "/js/app.js", nil)
+	r.Header.Set("Accept-Encoding", "gzip;q=0")
+	w = httptest.NewRecorder()
+	js.ServeHTTP(w, r)
+	if w.Header().Get("Content-Encoding") == "gzip" {
+		t.Fatal("gzip;q=0 must not be compressed")
+	}
+	if !strings.Contains(w.Header().Get("Vary"), "Accept-Encoding") {
+		t.Fatal("uncompressed gzippable response must still Vary on Accept-Encoding")
+	}
+
 	// non-compressible type (woff2) → never gzipped
 	font := gzipStatic(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "font/woff2")
@@ -54,5 +66,25 @@ func TestGzipStatic(t *testing.T) {
 	font.ServeHTTP(w, r)
 	if w.Header().Get("Content-Encoding") == "gzip" {
 		t.Fatal("woff2 must not be gzipped")
+	}
+}
+
+func TestAcceptsGzip(t *testing.T) {
+	cases := map[string]bool{
+		"gzip":                true,
+		"gzip, deflate, br":   true,
+		"deflate, gzip;q=0.8": true,
+		"gzip;q=0":            false,
+		"gzip;q=0.0":          false,
+		"identity":            false,
+		"":                    false,
+		"*":                   true,
+		"deflate, *;q=0":      false,
+		"br, gzip ; q=0 , *":  false, // gzip explicitly q=0 wins over the trailing *
+	}
+	for h, want := range cases {
+		if got := acceptsGzip(h); got != want {
+			t.Errorf("acceptsGzip(%q) = %v, want %v", h, got, want)
+		}
 	}
 }

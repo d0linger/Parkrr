@@ -24,8 +24,12 @@ func TestClientError(t *testing.T) {
 	if got := call(`not json`); got != http.StatusBadRequest {
 		t.Errorf("garbage: got %d, want 400", got)
 	}
-	// oversized message is truncated, not rejected (still 204).
+	// an over-limit MESSAGE (but sub-8KiB body) is truncated, not rejected (still 204).
 	if got := call(`{"message":"` + strings.Repeat("A", 5000) + `"}`); got != http.StatusNoContent {
 		t.Errorf("long message: got %d, want 204", got)
+	}
+	// a request BODY exceeding the 8 KiB MaxBytesReader is rejected with 400.
+	if got := call(`{"message":"` + strings.Repeat("A", 9000) + `"}`); got != http.StatusBadRequest {
+		t.Errorf("oversized body: got %d, want 400", got)
 	}
 }
