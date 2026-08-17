@@ -4622,8 +4622,10 @@
         // Snap a zone/area's edges flush to the nearest axis-aligned wall FACE (inner surface).
         function snapZoneFaces(b) {
             if (!P.autoSnap) return; const SNAP = (P.snap ? (P.gridStep || 0.5) : 0.25) + 0.05, xs = [], ys = [];
-            for (const e of P.walls.edges) { const v = edgeVec(e); if (v.len < 0.02) continue; const t2 = (e.thick || 0.24) / 2;
-                if (Math.abs(v.dy) < 0.02) { const cy = (v.a.y + v.b.y) / 2; ys.push(cy - t2, cy + t2); } else if (Math.abs(v.dx) < 0.02) { const cx = (v.a.x + v.b.x) / 2; xs.push(cx - t2, cx + t2); } }
+            // edgePts = the Bezug-offset centreline as rendered, so faces = real inner/outer surface
+            // for Innen/Außen too (raw node line ± t/2 was only correct for Achse).
+            P.walls.edges.forEach((e, ei) => { const vp = edgePts(e, ei); if (vp.len < 0.02) return; const t2 = (e.thick || 0.24) / 2;
+                if (Math.abs(vp.dy) < 0.02) { const cy = (vp.a.y + vp.b.y) / 2; ys.push(cy - t2, cy + t2); } else if (Math.abs(vp.dx) < 0.02) { const cx = (vp.a.x + vp.b.x) / 2; xs.push(cx - t2, cx + t2); } });
             const snap1 = (lo, hi, coords) => { let best = 0, bd = SNAP + 1e-9; for (const c of coords) { const dl = Math.abs(lo - c); if (dl < bd) { bd = dl; best = c - lo; } const dh = Math.abs(hi - c); if (dh < bd) { bd = dh; best = c - hi; } } return bd <= SNAP ? best : 0; };
             b.x += snap1(b.x, b.x + b.w, xs); b.y += snap1(b.y, b.y + b.h, ys);
         }
@@ -4720,11 +4722,13 @@
                 }
                 // Snap to the FACES of axis-aligned walls (both faces added; the near one is the
                 // inner face for a block sitting inside the room) → vehicles/zones line up flush
-                // to the inner wall surface.
-                for (const e of P.walls.edges) { const v = edgeVec(e); if (v.len < 0.02) continue; const t2 = (e.thick || 0.24) / 2;
-                    if (Math.abs(v.dy) < 0.02) { const cy = (v.a.y + v.b.y) / 2; ys.push(cy - t2, cy + t2); }
-                    else if (Math.abs(v.dx) < 0.02) { const cx = (v.a.x + v.b.x) / 2; xs.push(cx - t2, cx + t2); }
-                }
+                // to the inner wall surface. Use edgePts (the Bezug-offset centreline, exactly as
+                // rendered) — NOT the raw node line — so faces land on the real inner surface for
+                // Innen/Außen too, not half a wall-thickness off (which left a gap at openings).
+                P.walls.edges.forEach((e, ei) => { const vp = edgePts(e, ei); if (vp.len < 0.02) return; const t2 = (e.thick || 0.24) / 2;
+                    if (Math.abs(vp.dy) < 0.02) { const cy = (vp.a.y + vp.b.y) / 2; ys.push(cy - t2, cy + t2); }
+                    else if (Math.abs(vp.dx) < 0.02) { const cx = (vp.a.x + vp.b.x) / 2; xs.push(cx - t2, cx + t2); }
+                });
             }
             // Snap whichever AABB edge (lo/hi) is closest to a floor coordinate within reach.
             const snapAxis = (lo, hi, coords) => { let best = 0, bd = SNAP + 1e-9; for (const co of coords) { const dl = Math.abs(lo - co); if (dl < bd) { bd = dl; best = co - lo; } const dh = Math.abs(hi - co); if (dh < bd) { bd = dh; best = co - hi; } } return bd <= SNAP ? best : 0; };

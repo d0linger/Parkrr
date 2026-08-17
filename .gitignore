@@ -59,3 +59,6 @@ cover.out
 
 # graphify knowledge graph output
 graphify-out/
+
+# Claude Code local worktrees (agent isolation)
+.claude/worktrees/
