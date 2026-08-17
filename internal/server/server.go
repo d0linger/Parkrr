@@ -203,6 +203,9 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/planner-icons/{id}", authed(hf(h.GetPlannerIcon)))
 	mux.Handle("PUT /api/planner-icons/{id}", editor(hf(h.UpdatePlannerIcon)))
 	mux.Handle("DELETE /api/planner-icons/{id}", editor(hf(h.DeletePlannerIcon)))
+	mux.Handle("GET /api/wall-templates", authed(hf(h.ListWallTemplates)))
+	mux.Handle("POST /api/wall-templates", editor(hf(h.CreateWallTemplate)))
+	mux.Handle("DELETE /api/wall-templates/{id}", editor(hf(h.DeleteWallTemplate)))
 
 	// --- Service catalog ---
 	mux.Handle("GET /api/services", authed(hf(h.ListServiceTypes)))

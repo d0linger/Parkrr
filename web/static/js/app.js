@@ -4943,20 +4943,36 @@
         }
 
         // ---- FE3: reusable wall-layout templates (the building shape), stored client-side. ----
+        // Wall templates: server-backed (AR3) with a localStorage mirror as offline fallback. Same
+        // {id, name, walls} shape either way — a numeric id means it lives in the DB.
         const TPL_KEY = 'parkrr.wallTemplates';
-        const loadTemplates = () => { try { const a = JSON.parse(localStorage.getItem(TPL_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } };
-        const saveTemplates = (a) => { try { localStorage.setItem(TPL_KEY, JSON.stringify(a.slice(0, 30))); } catch (e) { /* quota */ } };
+        const lsLoad = () => { try { const a = JSON.parse(localStorage.getItem(TPL_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } };
+        const lsSave = (a) => { try { localStorage.setItem(TPL_KEY, JSON.stringify(a.slice(0, 30))); } catch (e) { /* quota */ } };
+        let tplCache = null;
+        async function fetchTemplates() {
+            try { const a = await api.get('/wall-templates'); if (Array.isArray(a)) { tplCache = a.map((t) => ({ id: t.id, name: t.name, walls: t.walls })); lsSave(tplCache); return tplCache; } }
+            catch (e) { /* offline / no server → local mirror */ }
+            tplCache = lsLoad(); return tplCache;
+        }
+        const loadTemplates = () => tplCache || lsLoad();
         async function saveCurrentTemplate() {
             if (!P.walls.edges.length) { toast('Keine Wände zum Speichern', 'warn'); return; }
             const data = await formModal({ title: 'Wand-Vorlage speichern', submitLabel: 'Speichern', fields: [{ name: 'name', label: 'Name der Vorlage', type: 'text', required: true, value: (P.hallName || 'Vorlage') + ' ' + (loadTemplates().length + 1) }] });
             if (!data || !data.name) return;
-            const tpls = loadTemplates(); tpls.unshift({ id: Date.now(), name: String(data.name).slice(0, 60), walls: JSON.parse(JSON.stringify(P.walls)) }); saveTemplates(tpls); toast('Vorlage gespeichert', 'ok');
+            const name = String(data.name).slice(0, 60), walls = JSON.parse(JSON.stringify(P.walls));
+            try { await api.post('/wall-templates', { name, walls }); await fetchTemplates(); toast('Vorlage gespeichert', 'ok'); }
+            catch (e) { const tpls = lsLoad(); tpls.unshift({ id: Date.now(), name, walls }); lsSave(tpls); tplCache = tpls; toast('Vorlage lokal gespeichert (offline)', 'warn'); }
+        }
+        async function deleteTemplate(t) {
+            try { if (typeof t.id === 'number') await api.del('/wall-templates/' + t.id); await fetchTemplates(); }
+            catch (e) { const tpls = lsLoad().filter((x) => x.id !== t.id); lsSave(tpls); tplCache = tpls; }
         }
         async function applyTemplate(t) {
             if (P.walls.edges.length && !(await confirmDialog('Vorlage laden', 'Aktuelle Wände durch die Vorlage „' + t.name + '" ersetzen?', 'Ersetzen'))) return;
             P.walls = normalizeWalls(t.walls); P.structSel = null; P.sel = null; refreshFloorFromWalls(); pushUndo(); markDirty(); fitView(); toast('Vorlage geladen: ' + t.name, 'ok');
         }
-        function openTemplateMenu() {
+        async function openTemplateMenu() {
+            await fetchTemplates();
             const modal = el('div', { class: 'gp-help-backdrop' });
             const card = el('div', { class: 'gp-help-card', style: 'max-width:380px' });
             card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '▤ Wand-Vorlagen'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => modal.remove() }, '✕')));
@@ -4967,7 +4983,7 @@
             tpls.forEach((t) => {
                 const row = el('div', { style: 'display:flex;gap:.4rem;align-items:center' });
                 row.append(el('button', { class: 'gp-tbtn', style: 'flex:1;justify-content:flex-start', onclick: () => { modal.remove(); applyTemplate(t); } }, '▤ ' + t.name + ' · ' + (t.walls && t.walls.edges ? t.walls.edges.length : 0) + ' Wände'));
-                row.append(el('button', { class: 'gp-help-x', title: 'Löschen', onclick: () => { saveTemplates(loadTemplates().filter((x) => x.id !== t.id)); modal.remove(); openTemplateMenu(); } }, '🗑'));
+                row.append(el('button', { class: 'gp-help-x', title: 'Löschen', onclick: async () => { await deleteTemplate(t); modal.remove(); openTemplateMenu(); } }, '🗑'));
                 body.append(row);
             });
             card.append(body); modal.append(card); modal.addEventListener('click', (ev) => { if (ev.target === modal) modal.remove(); }); (root || document.body).append(modal);

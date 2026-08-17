@@ -58,3 +58,17 @@ test('export: occupancy CSV downloads with the expected header (FE2)', async ({ 
   expect(res.headers()['content-type'] || '').toContain('text/csv');
   expect(await res.text()).toContain('garage;halle;stellplaetze');
 });
+
+test('wall templates: create → list → delete round-trip (AR3)', async ({ page, context }) => {
+  await login(page);
+  const cookies = await context.cookies();
+  const hdr = { 'X-CSRF-Token': (cookies.find((c) => c.name === 'parkrr_csrf') || {}).value, 'Content-Type': 'application/json' };
+  const name = 'E2E TPL ' + Date.now();
+  const cr = await page.request.post('/api/wall-templates', { headers: hdr, data: { name, walls: { nodes: [{ x: 0, y: 0 }], edges: [] } } });
+  expect(cr.ok(), 'create template ' + cr.status()).toBeTruthy();
+  const tpl = await cr.json();
+  const list = await (await page.request.get('/api/wall-templates')).json();
+  expect(list.some((t) => t.id === tpl.id && t.name === name), 'template appears in the list').toBeTruthy();
+  const del = await page.request.delete('/api/wall-templates/' + tpl.id, { headers: hdr });
+  expect(del.ok(), 'delete template ' + del.status()).toBeTruthy();
+});
