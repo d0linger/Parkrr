@@ -5217,17 +5217,18 @@
             const key = P.wallRef + '#' + P.walls.nodes.map((n) => round2(n.x) + ',' + round2(n.y)).join(';') + '#' + P.walls.edges.map((e) => e.a + '-' + e.b + ':' + round2(e.thick || 0.24)).join(';');
             if (key === _eoffKey) return _eoff;
             _eoffKey = key; const enc = computeEnclosure(axisRects()); const dir = P.wallRef === 'inner' ? 1 : -1;
-            const inSide = (sx, sy) => { if (!enc || !enc.lab) return false; const gx = Math.floor((sx - enc.minX) / enc.GS), gy = Math.floor((sy - enc.minY) / enc.GSy); if (gx < 0 || gy < 0 || gx >= enc.cols || gy >= enc.rows) return false; return enc.lab[gy * enc.cols + gx] >= 0; };
-            _eoff = P.walls.edges.map((e) => { const v = edgeVec(e); if (v.len < 0.02 || !enc || !enc.lab) return { ox: 0, oy: 0 };
+            // A cell the EXTERIOR flood reached (enc.seen) is definitively outside; anything it did NOT
+            // reach — interior OR a dilation-blocked cell right next to a wall — counts as inside. Keying
+            // the offset off the flood, not the interior raster, avoids the dilation false-negative that
+            // left an edge un-offset (rendered centred), and keeps genuine partitions centred.
+            const isExt = (sx, sy) => { if (!enc || !enc.seen) return true; const gx = Math.floor((sx - enc.minX) / enc.GS), gy = Math.floor((sy - enc.minY) / enc.GSy); if (gx < 0 || gy < 0 || gx >= enc.cols || gy >= enc.rows) return true; return enc.seen[gy * enc.cols + gx] === 1; };
+            _eoff = P.walls.edges.map((e) => { const v = edgeVec(e); if (v.len < 0.02 || !enc || !enc.seen) return { ox: 0, oy: 0 };
                 const th = e.thick || 0.24, px = -v.dy / v.len, py = v.dx / v.len, mx = (v.a.x + v.b.x) / 2, my = (v.a.y + v.b.y) / 2;
-                // probe both sides just past the wall face; cap the distance so a NARROW room can't
-                // sample through the opposite wall, and retry closer when the first probe is ambiguous (S2-B).
-                const probe = (d) => { const pl = inSide(mx + px * d, my + py * d), mi = inSide(mx - px * d, my - py * d); return (pl && !mi) ? -1 : (mi && !pl) ? 1 : 0; }; // s·perp = exterior; interior wall (both sides room) → 0
-                // Sweep several distances outward: the conservative dilation can block the interior
-                // cell right next to the wall on ONE side (a grid-alignment artefact that left an edge
-                // with s=0 → the wall rendered CENTRED instead of Innen/Außen). Take the first definite
-                // sign; a true interior partition (room on both sides) stays 0 at every distance.
-                let s = 0; for (const k of [0.55, 1.1, 1.7, 2.5, 3.5]) { s = probe(th / 2 + k * enc.GS); if (s) break; }
+                // Offset toward the interior of whichever side reads EXTERIOR (flood-reached). Sweep a
+                // few distances past the wall face; the first side that is clearly exterior wins. Both
+                // sides inside (a real partition, or a partition beside a shallow enclosed feature) → s=0,
+                // centred. s·perp points at the exterior, so the body sits on the exterior side (S2-B).
+                let s = 0; for (const k of [0.8, 1.4, 2.2, 3.2]) { const d = th / 2 + k * enc.GS, pe = isExt(mx + px * d, my + py * d), me = isExt(mx - px * d, my - py * d); s = (pe && !me) ? 1 : (me && !pe) ? -1 : 0; if (s) break; }
                 const mag = (th / 2) * s * dir; return { ox: px * mag, oy: py * mag }; });
             return _eoff;
         }
@@ -5791,9 +5792,12 @@
             // Using the gross area made Frei read LARGER than the Parkfläche it sits inside. Fall back to
             // the polygon area when there is no wall enclosure.
             const usable = (enc && enc.area > 0.3) ? enc.area : total;
+            // enc.area already omits wall AND column (Stützen) footprints, so subtracting `ex` on top
+            // would deduct columns twice. Only the no-enclosure polygon fallback needs `ex` removed.
+            const free = (enc && enc.area > 0.3) ? (usable - ve) : (total - ex - ve);
             const m = (val, label, cls) => el('div', { class: 'gp-metric' }, el('div', { class: 'gp-mv ' + (cls || '') }, val), el('div', { class: 'gp-ml' }, label));
             metrics.append(
-                m(Math.round(Math.max(0, usable - ex - ve)) + ' m²', 'Frei', 'ok'),
+                m(Math.round(Math.max(0, free)) + ' m²', 'Frei', 'ok'),
                 m(Math.round(ve) + ' m²', 'Belegt · ' + P.spots.length, 'busy'),
                 m(Math.round(ex) + ' m²', 'Ausgenommen', 'excl'),
                 m(fw.toFixed(1).replace('.', ',') + '×' + fh.toFixed(1).replace('.', ',') + ' m', 'Halle · ' + Math.round(total) + ' m²'),
@@ -5821,7 +5825,9 @@
             // Adjustable buffer distance (vehicle↔vehicle), shown only while buffers are on. 0.5 m steps,
             // 0–5 m. draw() re-runs the bands + collision uses P.bufferM live. Session-only, like the toggle.
             if (canManageNow && P.buffer) { const bseg = el('div', { class: 'gp-seg', title: 'Pufferdistanz zwischen Fahrzeugen' });
-                const setBuf = (d) => { P.bufferM = Math.max(0, Math.min(5, +(P.bufferM + d).toFixed(1))); renderToolbar(); draw(); };
+                const setBuf = (d) => { P.bufferM = Math.max(0, Math.min(5, +(P.bufferM + d).toFixed(1)));
+                    P.spots.forEach((s) => { s._invalid = !validVeh(s, s._id); }); // re-flag vehicles now too close under the new clearance
+                    draw(); toast('Puffer ' + P.bufferM.toFixed(1).replace('.', ',') + ' m'); }; // draw() re-renders the toolbar; toast announces the value (a11y)
                 bseg.append(
                     el('button', { title: 'Weniger Puffer', onclick: () => setBuf(-0.5) }, '−'),
                     el('span', { style: 'padding:0 .4rem;min-width:3rem;text-align:center;color:var(--gpink);font-size:.76rem;font-weight:600', 'aria-live': 'polite' }, P.bufferM.toFixed(1).replace('.', ',') + ' m'),
@@ -6180,8 +6186,12 @@
             // Clip flush to a nearby wall the same way dragging does: typing a size that lands within
             // snap reach of a wall face (e.g. a depth that leaves a half-thickness gap at a gate) now
             // snaps to the true inner surface instead of stopping short. Re-clamp to stay in bounds.
+            const px0 = b.x, py0 = b.y;
             snapZoneFaces(b);
             b.x = Math.max(0, Math.min(P.Wm - b.w, b.x)); b.y = Math.max(0, Math.min(P.Hm - b.h, b.y));
+            // A blocking structure (column/wall) must not be snapped INTO an overlap — the pre-snap
+            // collision check ran on the old coords, so undo the snap if it now collides.
+            if (!isZoneKind(b.kind) && collide({ kind: 'excl', x: b.x, y: b.y, w: b.w, h: b.h }, b.id)) { b.x = px0; b.y = py0; }
             commitGeom();
         }
         function setShape(k) { P.shape = k; P.floor = gpShape(k, P.Wm, P.Hm); hideLen(); const out = P.spots.filter((s) => !inside(s)).length; commitGeom('Form: ' + k + (out ? ' · ' + out + ' außerhalb' : ''), out ? 'warn' : ''); }
