@@ -26,13 +26,16 @@
             let t = ((L2.px - L1.px) * L2.dy - (L2.py - L1.py) * L2.dx) / den; const lim = Math.max(L1.L, L2.L); if (t > lim) t = lim; if (t < -lim) t = -lim; return { x: L1.px + L1.dx * t, y: L1.py + L1.dy * t }; });
     }
 
-    // Planar face decomposition of a wall graph → exact interior polygon + area of
-    // every enclosed room. Each bounded face (signed area > 0) is a room; its edges
-    // are inset to the inner face by (offset·inward-normal + thick/2), honouring the
-    // Bezug via `offsets` ({ox,oy} per edge, or null for axis). Returns [{area, ring, cx, cy}].
-    function roomAreas(N, E, offsets) {
+    // Planar face decomposition of a wall graph → exact interior polygon + area of every
+    // enclosed room. Each bounded face (signed area > 0) is a room; each of its edges is
+    // inset to the inner face by a distance derived from TOPOLOGY + the Bezug (not from a
+    // fragile raster probe): a wall shared with another room is centred → inset thick/2 on
+    // each side; a perimeter wall (its twin borders the exterior) is inset per Bezug —
+    // inner 0 (drawn line = inner face), axis thick/2, outer thick. This makes the area
+    // exact AND invariant to collinear helper points. bezug ∈ 'inner'|'axis'|'outer'.
+    function roomAreas(N, E, bezug) {
         if (!E || E.length < 3) return [];
-        const offs = offsets || null, half = [];
+        const half = [];
         E.forEach((e, ei) => { if (!N[e.a] || !N[e.b]) return; half.push({ u: e.a, v: e.b, ei }); half.push({ u: e.b, v: e.a, ei }); });
         if (half.length < 6) return [];
         const out = N.map(() => []);
@@ -40,18 +43,27 @@
         out.forEach((l) => l.sort((p, q) => half[p].ang - half[q].ang));
         const pos = new Map(); out.forEach((l) => l.forEach((hi, i) => pos.set(hi, i)));
         const twin = (hi) => { const h = half[hi]; for (const j of out[h.v]) if (half[j].v === h.u && half[j].ei === h.ei) return j; return -1; };
-        const nextH = (hi) => { const t = twin(hi); if (t < 0) return -1; const l = out[half[t].u], i = pos.get(t); return l[(i - 1 + l.length) % l.length]; };
-        const seen = new Uint8Array(half.length), rooms = [];
+        const twinOf = half.map((_, hi) => twin(hi));
+        const nextH = (hi) => { const t = twinOf[hi]; if (t < 0) return -1; const l = out[half[t].u], i = pos.get(t); return l[(i - 1 + l.length) % l.length]; };
+        // 1) label every half-edge with its face; record each face's signed area.
+        const faceOf = new Int32Array(half.length).fill(-1), faces = [], seen = new Uint8Array(half.length);
         for (let hi = 0; hi < half.length; hi++) {
             if (seen[hi]) continue; const cyc = []; let c = hi, g = half.length + 4;
-            while (c >= 0 && !seen[c] && g-- > 0) { seen[c] = 1; cyc.push(c); c = nextH(c); }
-            if (cyc.length < 3) continue;
+            while (c >= 0 && !seen[c] && g-- > 0) { seen[c] = 1; cyc.push(c); faceOf[c] = faces.length; c = nextH(c); }
             const poly = cyc.map((h) => ({ x: N[half[h].u].x, y: N[half[h].u].y }));
-            if (ringAreaS(poly) <= 0.01 || polySelfIntersects(poly)) continue; // unbounded face (−) or degenerate/stub loop
-            const k = poly.length, d = [];
-            for (let i = 0; i < k; i++) { const ei = half[cyc[i]].ei, a = poly[i], b = poly[(i + 1) % k];
-                const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1, nlx = -dy / L, nly = dx / L;
-                const o = (offs && offs[ei]) || { ox: 0, oy: 0 }; d.push((o.ox * nlx + o.oy * nly) + (E[ei].thick || 0.24) / 2); }
+            faces.push({ cyc, poly, signed: ringAreaS(poly) });
+        }
+        // 2) each bounded (signed > 0), simple face is a room — inset by topology + Bezug.
+        const rooms = [];
+        for (const face of faces) {
+            if (face.signed <= 0.01 || face.poly.length < 3 || polySelfIntersects(face.poly)) continue; // unbounded / degenerate / stub
+            const cyc = face.cyc, poly = face.poly, k = poly.length, d = [];
+            for (let i = 0; i < k; i++) {
+                const hi = cyc[i], ei = half[hi].ei, tw = twinOf[hi], tf = tw >= 0 ? faceOf[tw] : -1;
+                const interior = tf >= 0 && faces[tf] && faces[tf].signed > 0.01; // twin borders another room ⇒ shared wall
+                const th = E[ei].thick || 0.24;
+                d.push(interior ? th / 2 : (bezug === 'inner' ? 0 : bezug === 'outer' ? th : th / 2));
+            }
             const ring = insetRing(poly, d), area = Math.abs(ringAreaS(ring));
             let cx = 0, cy = 0; ring.forEach((p) => { cx += p.x; cy += p.y; }); cx /= ring.length; cy /= ring.length;
             rooms.push({ area, ring, cx, cy });

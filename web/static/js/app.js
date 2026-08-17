@@ -5453,7 +5453,7 @@
         const pointInPoly = PG.pointInPoly;
         // Planar face decomposition → exact interior polygon + area of EVERY enclosed room, honouring
         // the Bezug via edgeOffs; delegated to the tested PG.roomAreas.
-        function roomFaces() { return PG.roomAreas(P.walls.nodes, P.walls.edges, edgeOffs()); }
+        function roomFaces() { return PG.roomAreas(P.walls.nodes, P.walls.edges, P.wallRef); }
         let _enc = null, _encKey = null;
         function enclosure() {
             const wb = wallBlocks();
