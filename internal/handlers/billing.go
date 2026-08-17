@@ -84,6 +84,34 @@ func (h *Handler) SaveBillingSettings(w http.ResponseWriter, r *http.Request) {
 	in.IBAN = trim(in.IBAN)
 	in.BIC = trim(in.BIC)
 	in.FooterNote = trim(in.FooterNote)
+	if !validNameLength(in.SellerName) {
+		writeError(w, http.StatusBadRequest, "seller_name is too long")
+		return
+	}
+	if !validAddressLength(in.SellerAddress) {
+		writeError(w, http.StatusBadRequest, "seller_address is too long")
+		return
+	}
+	if !validNameLength(in.SellerUID) {
+		writeError(w, http.StatusBadRequest, "seller_uid is too long")
+		return
+	}
+	if !validNameLength(in.InvoicePrefix) {
+		writeError(w, http.StatusBadRequest, "invoice_prefix is too long")
+		return
+	}
+	if !validNameLength(in.IBAN) {
+		writeError(w, http.StatusBadRequest, "iban is too long")
+		return
+	}
+	if !validNameLength(in.BIC) {
+		writeError(w, http.StatusBadRequest, "bic is too long")
+		return
+	}
+	if !validNoteLength(in.FooterNote) {
+		writeError(w, http.StatusBadRequest, "footer_note is too long")
+		return
+	}
 	if !in.Kleinunternehmer && !austrianRates[in.UStRate] {
 		writeError(w, http.StatusBadRequest, "USt-Satz muss 20, 13 oder 10 sein")
 		return
