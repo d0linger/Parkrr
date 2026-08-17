@@ -1342,6 +1342,9 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 /* orthogonal snap guide-line + dynamic distance labels */
 .gp-guide{stroke:#5adcb4;stroke-width:1;stroke-dasharray:2 4;opacity:.75;pointer-events:none}
 .gp-distlab{fill:#ffd98a;font-size:11px;font-weight:700;paint-order:stroke;stroke:rgba(4,16,12,.82);stroke-width:3px;pointer-events:none}
+.gp-measure{stroke:#e0b452;stroke-width:1.6;stroke-dasharray:5 3;pointer-events:none}
+.gp-measure-pt{fill:#e0b452;stroke:#04140c;stroke-width:1;pointer-events:none}
+.gp-measurelab{fill:#f4d894;font-size:11.5px;font-weight:800;paint-order:stroke;stroke:rgba(4,16,12,.85);stroke-width:3px;pointer-events:none}
 .gp-anchor{fill:#ffd98a;stroke:rgba(4,16,12,.7);stroke-width:1.5;pointer-events:none}
 /* opening elements: reveal jambs, glass line, resize handles; sub-segment clear lengths */
 .gp-walljoint{stroke:none}

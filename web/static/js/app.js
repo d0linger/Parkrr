@@ -4614,13 +4614,33 @@
         // FE4 — multi-select of the CURRENT subsystem's objects only: zones in the Garagenmanager
         // (plan), vehicles in the Stellplatzsystem (manage) — mirroring interactive(b). selSet holds
         // their ids; a marquee drag on empty floor fills it; group move/delete act on it.
-        let selSet = [], marq = null;
+        let selSet = [], marq = null, measure = null; // measure = {a,{b|hover}} ruler (UX2)
         const findBlock = (id) => P.spots.find((x) => x._id == id) || P.excl.find((x) => x.id === id);
         const inSel = (id) => id != null && selSet.indexOf(id) >= 0;
         const clearSelSet = () => { if (selSet.length) { selSet = []; return true; } return false; };
         // point (metres) inside a possibly-rotated block?
         function pointInBlock(b, p) { const cx = b.x + b.w / 2, cy = b.y + b.h / 2, r = -(b.rot || 0) * Math.PI / 180, cos = Math.cos(r), sin = Math.sin(r); const dx = p.x - cx, dy = p.y - cy, lx = dx * cos - dy * sin, ly = dx * sin + dy * cos; return Math.abs(lx) <= b.w / 2 && Math.abs(ly) <= b.h / 2; }
         function createZone(kind, x, y, w, h) { const b = { id: 'e' + (P.uid++), kind, x: round2(x), y: round2(y), w: round2(w), h: round2(h), rot: 0, label: EXCL[kind].label, mat: EXCL[kind].mat }; P.excl.push(b); return b; }
+        // Copy/paste of the current zone/structure selection (Strg+C/V). Vehicles are backend-bound
+        // placements, so this covers P.excl blocks only. Paste keeps the group's shape, nudged by 0.5 m,
+        // and cascades on repeat (UX1).
+        let gpClip = null;
+        function copySel() {
+            const ids = selSet.length ? selSet : (P.sel != null ? [P.sel] : []);
+            const items = P.excl.filter((b) => ids.indexOf(b.id) >= 0);
+            if (!items.length) return;
+            const ox = Math.min(...items.map((b) => b.x)), oy = Math.min(...items.map((b) => b.y));
+            gpClip = { ox, oy, items: items.map((b) => ({ kind: b.kind, w: b.w, h: b.h, rot: b.rot || 0, dx: b.x - ox, dy: b.y - oy })) };
+            toast(items.length + (items.length === 1 ? ' Objekt kopiert' : ' Objekte kopiert'));
+        }
+        function pasteSel() {
+            if (!gpClip || !gpClip.items.length || P.mode !== 'plan' || !canManageNow) return;
+            const off = 0.5, bx = gpClip.ox + off, by = gpClip.oy + off, ids = [];
+            gpClip.items.forEach((it) => { const x = Math.max(0, Math.min(P.Wm - it.w, bx + it.dx)), y = Math.max(0, Math.min(P.Hm - it.h, by + it.dy)); const nb = createZone(it.kind, x, y, it.w, it.h); nb.rot = it.rot; ids.push(nb.id); });
+            gpClip.ox = bx; gpClip.oy = by; // cascade so a repeated paste doesn't land exactly on the last
+            selSet = ids.length > 1 ? ids : []; P.sel = ids.length === 1 ? ids[0] : null;
+            commitGeom('Eingefügt · ' + ids.length + (ids.length === 1 ? ' Objekt' : ' Objekte'));
+        }
         // Snap a zone/area's edges flush to the nearest axis-aligned wall FACE (inner surface).
         function snapZoneFaces(b) {
             if (!P.autoSnap) return; const SNAP = (P.snap ? (P.gridStep || 0.5) : 0.25) + 0.05, xs = [], ys = [];
@@ -4632,7 +4652,7 @@
             b.x += snap1(b.x, b.x + b.w, xs); b.y += snap1(b.y, b.y + b.h, ys);
         }
         // Cancel any in-progress drawing and drop back to the selection cursor (never deletes).
-        function cancelDrawing() { const had = P.chain; P.tool = null; P.chain = null; P.openStart = null; P.preview = null; P.chainAnchor = null; P.snapHint = null; P.guide = null; P.attach = null; zoneDraw = null; if (had) pruneNodes(); refreshFloorFromWalls(); fitView(); }
+        function cancelDrawing() { const had = P.chain; P.tool = null; P.chain = null; P.openStart = null; P.preview = null; P.chainAnchor = null; P.snapHint = null; P.guide = null; P.attach = null; zoneDraw = null; measure = null; if (had) pruneNodes(); refreshFloorFromWalls(); fitView(); }
         // Inline quick-edit popover for a selected wall segment OR opening: length/width + delete.
         const wallPopLabel = el('span', { class: 'gp-wallpop-lab' }, 'Länge');
         const wallLenIn = el('input', { type: 'number', step: '0.01', min: '0.1', class: 'gp-lenin' });
@@ -4796,6 +4816,8 @@
             const m = e.ctrlKey || e.metaKey, tag = (e.target.tagName || '').toLowerCase(), typing = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable;
             if (m && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); }
             else if (m && e.key.toLowerCase() === 'y') { e.preventDefault(); doRedo(); }
+            else if (m && !typing && e.key.toLowerCase() === 'c' && P.mode === 'plan' && canManageNow && (selSet.length || P.sel != null)) { e.preventDefault(); copySel(); } // Strg+C = Auswahl kopieren
+            else if (m && !typing && e.key.toLowerCase() === 'v' && P.mode === 'plan' && canManageNow && gpClip && gpClip.items.length) { e.preventDefault(); pasteSel(); } // Strg+V = einfügen
             else if (e.key === 'Escape') { if (shortcutModal) { e.preventDefault(); toggleShortcutHelp(); } else if (P.tool || P.chain || P.openStart || zoneDraw) { e.preventDefault(); cancelDrawing(); } else if (selSet.length) { e.preventDefault(); clearSelSet(); draw(); } else if (P.structSel || P.sel != null) { e.preventDefault(); P.structSel = null; P.sel = null; draw(); } else if (P.maxed) { toggleMax(false); } }
             else if (!typing && !m && e.key === '?') { e.preventDefault(); toggleShortcutHelp(); } // ? = Tastaturkürzel-Hilfe (QW3)
             else if (!typing && (e.key === 'Delete' || e.key === 'Backspace') && (selSet.length || (P.mode === 'plan' && (P.structSel || P.sel != null)))) { e.preventDefault(); deleteSel(); }
@@ -4815,6 +4837,7 @@
             const rows = [
                 ['Ctrl / ⌘ + Z', 'Rückgängig'],
                 ['Ctrl / ⌘ + ⇧ + Z · Ctrl + Y', 'Wiederholen'],
+                ['Ctrl / ⌘ + C · V', 'Auswahl (Flächen/Bauteile) kopieren / einfügen'],
                 ['F', 'Einpassen (Zoom-to-fit) — bei ausgewählter Tür: spiegeln'],
                 ['Leertaste (halten) + ziehen', 'Ansicht verschieben — bei ausgewählter Tür: Anschlag wechseln'],
                 ['Mittlere Maustaste + ziehen', 'Ansicht verschieben (Pan)'],
@@ -5743,6 +5766,15 @@
         function drawWallPreview() {
             if (P.mode !== 'plan') return;
             const CELL = P.CELL;
+            // ruler (UX2): line + distance + angle between the two measured points (or A → cursor)
+            if (measure && measure.a) { const b2 = measure.b || measure.hover;
+                if (b2) { const ax = measure.a.x * CELL, ay = measure.a.y * CELL, bx = b2.x * CELL, by = b2.y * CELL;
+                    svg.append(svgEl('line', { x1: ax, y1: ay, x2: bx, y2: by, class: 'gp-measure' }));
+                    svg.append(svgEl('circle', { cx: ax, cy: ay, r: 4, class: 'gp-measure-pt' }));
+                    svg.append(svgEl('circle', { cx: bx, cy: by, r: 4, class: 'gp-measure-pt' }));
+                    const d = Math.hypot(b2.x - measure.a.x, b2.y - measure.a.y), ang = ((Math.atan2(b2.y - measure.a.y, b2.x - measure.a.x) * 180 / Math.PI) % 180 + 180) % 180;
+                    const tl = svgEl('text', { x: (ax + bx) / 2, y: (ay + by) / 2 - 9, 'text-anchor': 'middle', class: 'gp-measurelab' });
+                    tl.textContent = d.toFixed(2).replace('.', ',') + ' m · ' + Math.min(ang, 180 - ang).toFixed(0) + '°'; labelSvg.append(tl); } }
             // orthogonal snap guide-line (spans the canvas)
             if (P.guide && (P.chain || nodeDrag)) {
                 if (P.guide.kind === 'h') svg.append(svgEl('line', { x1: 0, y1: P.guide.y * CELL, x2: P.Wm * CELL, y2: P.guide.y * CELL, class: 'gp-guide' }));
@@ -5848,6 +5880,7 @@
             // Auto-Snap: objects fang flush against each other (in addition to the floor line).
             if (canManageNow) toolbar.append(tb('🧲', 'Auto-Snap: Objekte fangen aneinander', () => { P.autoSnap = !P.autoSnap; renderToolbar(); toast(P.autoSnap ? 'Auto-Snap an' : 'Auto-Snap aus'); }, P.autoSnap));
             if (canManageNow) toolbar.append(tb('🛡', 'Pufferzonen zwischen Fahrzeugen (Taste P)', () => { P.buffer = !P.buffer; renderToolbar(); draw(); toast(P.buffer ? 'Pufferzonen an · ' + P.bufferM.toFixed(1).replace('.', ',') + ' m' : 'Pufferzonen aus'); }, P.buffer));
+            if (canManageNow && P.mode === 'plan') toolbar.append(tb('📏', 'Messen: Punkt A klicken, Punkt B klicken (Distanz + Winkel). Nochmal klicken = neu.', () => setTool(P.tool === 'measure' ? null : 'measure'), P.tool === 'measure'));
             // Adjustable buffer distance (vehicle↔vehicle), shown only while buffers are on. 0.5 m steps,
             // 0–5 m. draw() re-runs the bands + collision uses P.bufferM live. Session-only, like the toggle.
             if (canManageNow && P.buffer) { const bseg = el('div', { class: 'gp-seg', title: 'Pufferdistanz zwischen Fahrzeugen' });
@@ -6377,7 +6410,7 @@
         });
 
         // ---- interactive wall drawing / node editing (overlay in plan mode) ----
-        function setTool(kind) { P.tool = kind || null; P.chain = null; P.openStart = null; P.preview = null; P.snapHint = null; P.guide = null; P.attach = null; P.chainAnchor = null; if (P.tool) { P.structSel = null; } draw(); }
+        function setTool(kind) { P.tool = kind || null; P.chain = null; P.openStart = null; P.preview = null; P.snapHint = null; P.guide = null; P.attach = null; P.chainAnchor = null; measure = null; if (P.tool) { P.structSel = null; } draw(); }
         function evWorld(ev) { const r = planEl.getBoundingClientRect(); return { x: (ev.clientX - r.left) / P.CELL, y: (ev.clientY - r.top) / P.CELL }; }
         // Snap a drawing point: existing node > point on an existing wall (Anbau, records the
         // attach split for the distance readout) > grid, with automatic orthogonal (H/V) snap
@@ -6492,6 +6525,7 @@
         drawOverlay.addEventListener('pointerdown', (ev) => {
             if (ev.button !== 0 || spaceDown || P.mode !== 'plan' || P.calib || !canManageNow) return;
             ev.preventDefault(); const p = evWorld(ev);
+            if (P.tool === 'measure') { if (!measure || measure.b) measure = { a: { x: p.x, y: p.y } }; else measure.b = { x: p.x, y: p.y }; drawFloor(); return; } // ruler: click A, click B, click again = restart
             if (isWallDraw(P.tool)) { wallClick(snapDraw(p, ev.shiftKey)); return; }
             if (isOpenKind(P.tool)) { openClick(p); return; }
             if (isZoneTool(P.tool) || P.tool === 'column') { const x = gsnap(p.x), y = gsnap(p.y); zoneDraw = { x0: x, y0: y, x1: x, y1: y }; try { drawOverlay.setPointerCapture(ev.pointerId); } catch (er) { /* ignore */ } return; }
@@ -6500,6 +6534,7 @@
         drawOverlay.addEventListener('pointermove', (ev) => {
             let p = evWorld(ev);
             if ((P.chain || nodeDrag || zoneDraw || zoneDrag) && maybeExpand(p)) p = evWorld(ev); // auto-expand while drawing/dragging
+            if (P.tool === 'measure') { if (measure && measure.a && !measure.b) { measure.hover = { x: p.x, y: p.y }; drawFloor(); } return; }
             if (zoneDraw) { zoneDraw.x1 = gsnap(p.x); zoneDraw.y1 = gsnap(p.y); drawFloor(); return; }
             if (zoneDrag) {
                 const b = P.excl.find((x) => x.id === zoneDrag.id); if (!b) { zoneDrag = null; return; }
