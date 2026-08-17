@@ -6444,10 +6444,16 @@
             if (e) { P.structSel = { type: 'edge', idx: e.i }; P.sel = null; draw(); return; }
             // rotate knob of the currently-selected zone (matches the layer's .gp-rot at top:-22px)
             if (P.sel != null) { const b = P.excl.find((x) => x.id === P.sel); if (b) { const rad = (b.rot || 0) * Math.PI / 180, off = b.h / 2 + 22 / P.CELL, cx = b.x + b.w / 2, cy = b.y + b.h / 2, kx = cx + Math.sin(rad) * off, ky = cy - Math.cos(rad) * off; if (Math.hypot(p.x - kx, p.y - ky) < R + 4 / P.CELL) { zoneDrag = { id: b.id, mode: 'rotate', cx, cy, moved: false }; cap(); return; } } }
-            // zones (excl rectangles): corner handle → resize, body → move
-            const dirs = ['nw', 'ne', 'se', 'sw'];
+            // zones (excl rectangles): corner OR edge-midpoint handle → resize, body → move. The DOM
+            // draws 8 handles, so the geometric hit-test must cover all 8 — corners AND the four side
+            // midpoints (mid of consecutive quad corners) — otherwise a side handle is visual-only and
+            // can't be grabbed to stretch one edge.
+            const dirs = ['nw', 'ne', 'se', 'sw'], edirs = ['n', 'e', 's', 'w'];
             for (let i = P.excl.length - 1; i >= 0; i--) { const b = P.excl[i], cs = quad(b);
-                for (let c = 0; c < 4; c++) if (Math.hypot(cs[c][0] - p.x, cs[c][1] - p.y) < R) { P.sel = b.id; P.structSel = null; zoneDrag = { id: b.id, mode: 'resize', dir: dirs[c], o0: { x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot || 0 }, moved: false }; cap(); draw(); return; } }
+                const startRz = (dir) => { P.sel = b.id; P.structSel = null; zoneDrag = { id: b.id, mode: 'resize', dir, o0: { x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot || 0 }, moved: false }; cap(); draw(); };
+                for (let c = 0; c < 4; c++) if (Math.hypot(cs[c][0] - p.x, cs[c][1] - p.y) < R) { startRz(dirs[c]); return; }
+                for (let c = 0; c < 4; c++) { const mx = (cs[c][0] + cs[(c + 1) % 4][0]) / 2, my = (cs[c][1] + cs[(c + 1) % 4][1]) / 2; if (Math.hypot(mx - p.x, my - p.y) < R) { startRz(edirs[c]); return; } }
+            }
             for (let i = P.excl.length - 1; i >= 0; i--) { const b = P.excl[i]; if (pointInBlock(b, p)) { P.sel = b.id; P.structSel = null; zoneDrag = { id: b.id, mode: 'move', gx: p.x - b.x, gy: p.y - b.y, moved: false }; cap(); draw(); return; } }
             // empty click → deselect only (NEVER delete); on an enclosed room, show its m²
             P.structSel = null; P.sel = null; showRoom(p); draw();
