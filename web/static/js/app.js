@@ -5793,7 +5793,10 @@
         }
         function renderMetrics() {
             metrics.innerHTML = '';
-            const total = polyArea(P.floor); let ex = 0, ve = 0; P.excl.forEach((b) => { if (!isZoneKind(b.kind)) ex += b.w * b.h; }); P.spots.forEach((b) => ve += b.w * b.h);
+            const total = polyArea(P.floor); let zoneA = 0, colA = 0, ve = 0;
+            // Zones (Fahrstraße/Wartung/Notausgang) sit ON the parkable area but are NOT free parking;
+            // columns/walls are structural (already outside the enclosed Parkfläche).
+            P.excl.forEach((b) => { (((EXCL[b.kind] || {}).cat === 'wall') ? (colA += b.w * b.h) : (zoneA += b.w * b.h)); }); P.spots.forEach((b) => ve += b.w * b.h);
             // Hall dimensions = the ACTUAL floor polygon's bounding box (same source as the
             // Breite/Tiefe readout), not the P.Wm×P.Hm canvas grid — after „Form bearbeiten"
             // shrinks the polygon inside the grid the two diverge, and the bbox is the real one.
@@ -5804,14 +5807,15 @@
             // Using the gross area made Frei read LARGER than the Parkfläche it sits inside. Fall back to
             // the polygon area when there is no wall enclosure.
             const usable = (enc && enc.area > 0.3) ? enc.area : total;
-            // enc.area already omits wall AND column (Stützen) footprints, so subtracting `ex` on top
-            // would deduct columns twice. Only the no-enclosure polygon fallback needs `ex` removed.
-            const free = (enc && enc.area > 0.3) ? (usable - ve) : (total - ex - ve);
+            // "Frei" = free PARKABLE = the enclosed usable area minus the marked zones (Fahrstraße/
+            // Wartung/Notausgang) AND the vehicles on it. Columns are already out of enc.area (structural);
+            // the no-enclosure polygon fallback removes zones + columns explicitly.
+            const free = (enc && enc.area > 0.3) ? (usable - zoneA - ve) : (total - zoneA - colA - ve);
             const m = (val, label, cls) => el('div', { class: 'gp-metric' }, el('div', { class: 'gp-mv ' + (cls || '') }, val), el('div', { class: 'gp-ml' }, label));
             metrics.append(
                 m(Math.round(Math.max(0, free)) + ' m²', 'Frei', 'ok'),
                 m(Math.round(ve) + ' m²', 'Belegt · ' + P.spots.length, 'busy'),
-                m(Math.round(ex) + ' m²', 'Ausgenommen', 'excl'),
+                m(Math.round(zoneA + colA) + ' m²', 'Ausgenommen', 'excl'),
                 m(fw.toFixed(1).replace('.', ',') + '×' + fh.toFixed(1).replace('.', ',') + ' m', 'Halle · ' + Math.round(total) + ' m²'),
                 m(polyPerim(P.floor).toFixed(1) + ' m', 'Umfang'));
             if (enc && enc.area > 0.3) { const nr = (enc.rooms || []).length; metrics.append(m(enc.area.toFixed(1).replace('.', ',') + ' m²', 'Parkfläche' + (nr > 1 ? ' · ' + nr + ' Räume' : ' · Wände'), 'ok')); } // 1 decimal, matching the plan label (S1-D)
