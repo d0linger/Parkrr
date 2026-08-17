@@ -268,6 +268,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	// Asset fingerprinting: append a content hash to the JS/CSS references so a
 	// changed asset gets a new URL (cache-bust) while unchanged assets stay
 	// cacheable forever. Hashes are computed once from the embedded files.
+	indexHTML = fingerprintAsset(indexHTML, staticFS, "/js/geometry.js", "js/geometry.js")
 	indexHTML = fingerprintAsset(indexHTML, staticFS, "/js/app.js", "js/app.js")
 	indexHTML = fingerprintAsset(indexHTML, staticFS, "/css/style.css", "css/style.css")
 

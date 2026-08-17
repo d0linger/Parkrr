@@ -1,8 +1,9 @@
 /* Parkrr service worker – offline shell with fresh-first assets. */
-const CACHE = 'parkrr-v185';
+const CACHE = 'parkrr-v186';
 const SHELL = [
     '/',
     '/css/style.css',
+    '/js/geometry.js',
     '/js/app.js',
     '/manifest.webmanifest',
     '/icons/icon.svg',
