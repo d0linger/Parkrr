@@ -6127,7 +6127,7 @@
         //   2) pack the "Nicht platziert" staging vehicles into the space that's left — those that fit
         //      become real spots, the rest simply stay in staging (no error, no collision).
         async function autoArrange(padding) {
-            const pad = padding != null ? padding : (P.buffer ? P.bufferM : 0); // allowZeroMargin: 0 ⇒ flush
+            const pad = (typeof padding === 'number') ? padding : (P.buffer ? P.bufferM : 0); // allowZeroMargin: 0 ⇒ flush (ignore a stray event arg)
             const spots = P.spots.slice(), pals = P.palette.slice();
             if (!spots.length && !pals.length) { toast('Keine Gefährte zum Anordnen', 'warn'); return; }
             const msg = spots.length + ' platzierte' + (pals.length ? ' + ' + pals.length + ' aus „Nicht platziert"' : '') + ' anordnen (größte zuerst, mit Drehung, Abstand ' + pad.toFixed(2).replace('.', ',') + ' m)?';
@@ -6194,7 +6194,7 @@
             search.addEventListener('input', () => { P.palQuery = search.value; fillPal(); });
             palCard.append(search, pal); rail.append(palCard);
             fillPal();
-            if (canManageNow && P.spots.length) rail.append(el('div', { class: 'gp-rcard card', style: 'padding:.55rem .7rem' }, el('button', { class: 'btn btn-ghost btn-block', title: 'Alle platzierten Gefährte in dichte Reihen anordnen (Puffer wird berücksichtigt, wenn aktiv)', onclick: autoArrange }, '⊞ Auto-Anordnen')));
+            if (canManageNow && (P.spots.length || P.palette.length)) rail.append(el('div', { class: 'gp-rcard card', style: 'padding:.55rem .7rem' }, el('button', { class: 'btn btn-ghost btn-block', title: 'Platzierte + „Nicht platzierte" Gefährte anordnen (Abstand = Puffer, wenn aktiv; sonst bündig)', onclick: () => autoArrange() }, '⊞ Auto-Anordnen')));
             rail.append(renderVehDetail());
         }
         // Partial update of the Garagenplaner display attributes straight from the detail

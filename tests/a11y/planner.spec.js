@@ -109,6 +109,29 @@ test('dxf import: PG.parseDXF reads a LINE entity in the browser (FE3)', async (
   expect(n, 'parseDXF returns one polyline for a single LINE').toBe(1);
 });
 
+test('auto-arrange: the button opens the confirm dialog (regression: event passed as padding arg)', async ({ page, context }) => {
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  await login(page);
+  const cookies = await context.cookies();
+  const csrf = (cookies.find((c) => c.name === 'parkrr_csrf') || {}).value;
+  const post = (url, data) =>
+    page.request.post(url, { headers: { 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' }, data });
+  const g = await (await post('/api/garages', { name: 'E2E AG ' + Date.now() })).json();
+  const h = await (await post(`/api/garages/${g.id}/halls`, { name: 'E2E AHalle' })).json();
+  const per = await (await post('/api/persons', { first_name: 'E2E', last_name: 'Auto' })).json();
+  const cat = await (await post('/api/categories', { name: 'PKW E2E ' + Date.now(), default_monthly_cost: 10, default_yearly_cost: 100 })).json();
+  const vRes = await post('/api/vehicles', { person_id: per.id, category_id: cat.id, billing_period: 'monthly', status: 'stored', start_date: '2026-01-01' });
+  expect(vRes.ok(), 'seed vehicle ' + vRes.status()).toBeTruthy();
+
+  await page.goto('/#/hall/' + h.id); // opens in "Stellplätze" (manage) mode; the unassigned vehicle populates the palette
+  const btn = page.locator('button', { hasText: 'Auto-Anordnen' });
+  await expect(btn).toBeVisible({ timeout: 15000 });
+  await btn.click();
+  await expect(page.locator('#confirm-title')).toHaveText('Auto-Anordnen', { timeout: 5000 });
+  expect(errors, 'no uncaught error clicking Auto-Anordnen').toEqual([]);
+});
+
 test('auto-arrange: PG.packRects runs in-browser and packs overlap-free (FE1)', async ({ page }) => {
   await login(page);
   const r = await page.evaluate(() => {
