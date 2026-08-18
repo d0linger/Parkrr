@@ -217,14 +217,18 @@
         box.append(document.createTextNode(it.text + (it.action ? '  ' : '')));
         if (it.action) { const btn = el('button', { class: 'toast-undo', type: 'button' }, it.actionLabel); btn.addEventListener('click', () => { it.action(); hideToast(); }); box.append(btn); }
         clearTimeout(toastTimer); toastTimer = setTimeout(hideToast, it.ms);
+        if (it.onShow) { const f = it.onShow; it.onShow = null; f(); } // fire once, when the toast is actually visible
     }
     function enqueueToast(it) {
         const last = toastQ.length ? toastQ[toastQ.length - 1] : toastCur;
         if (!it.action && last && last.text === it.text && !last.action) return; // skip an immediate repeat
-        toastQ.push(it); if (toastQ.length > 4) toastQ.splice(0, toastQ.length - 4); pumpToast();
+        // Action (undo) toasts jump ahead of plain toasts so the undo window isn't buried behind a
+        // queue; plain toasts append and the queue is capped at 4 (dropping the oldest).
+        if (it.action) toastQ.unshift(it); else { toastQ.push(it); if (toastQ.length > 4) toastQ.splice(0, toastQ.length - 4); }
+        pumpToast();
     }
     function toast(msg, kind = '') { enqueueToast({ text: t(msg), kind, ms: 3000 }); }
-    function toastAction(msg, actionLabel, onAction, ms = 4500) { enqueueToast({ text: t(msg), action: onAction, actionLabel: t(actionLabel), ms }); }
+    function toastAction(msg, actionLabel, onAction, ms = 4500, onShow = null) { enqueueToast({ text: t(msg), action: onAction, actionLabel: t(actionLabel), ms, onShow }); }
 
     // ---------- confirm ----------
     function confirmDialog(title, message, okLabel = 'Löschen') {
@@ -286,12 +290,16 @@
         // Optimistic: the entry disappears immediately; the API call only runs
         // once the undo window has passed. Undo (or a failure) brings it back.
         if (node) node.hidden = true;
-        const timer = setTimeout(async () => {
+        // Start the 4500ms commit timer only once the undo toast is actually VISIBLE (onShow), so a
+        // queued/delayed undo can never appear after the delete already fired — the undo window and
+        // the commit are always aligned.
+        let timer = null;
+        const start = () => { if (cancelled) return; timer = setTimeout(async () => {
             if (cancelled) return;
             try { await doDelete(); toast('Gelöscht', 'success'); onDone && onDone(); }
             catch (e) { toast(e.message, 'error'); if (node) node.hidden = false; onDone && onDone(); }
-        }, 4500);
-        toastAction('Wird gelöscht …', 'Rückgängig', () => { cancelled = true; clearTimeout(timer); if (node) node.hidden = false; toast('Abgebrochen'); });
+        }, 4500); };
+        toastAction('Wird gelöscht …', 'Rückgängig', () => { cancelled = true; clearTimeout(timer); if (node) node.hidden = false; toast('Abgebrochen'); }, 4500, start);
     }
 
     // ---------- form modal ----------
@@ -951,7 +959,7 @@
                 spark.append(svgEl('polyline', { points: tr.map((d, i) => px(i).toFixed(1) + ',' + py(d.placed).toFixed(1)).join(' '), fill: 'none', class: 'dash-spark-line' }));
                 spark.append(svgEl('circle', { cx: String(px(n - 1)), cy: String(py(tr[n - 1].placed)), r: '2.6', class: 'dash-spark-dot' }));
                 occCard.append(el('div', { class: 'dash-spark-wrap' },
-                    el('div', { class: 'muted', style: 'font-size:.72rem;margin:.4rem 0 .12rem' }, 'Trend · platziert (letzte ' + n + ' Tage, max ' + mx + ')'), spark));
+                    el('div', { class: 'muted', style: 'font-size:.72rem;margin:.4rem 0 .12rem' }, 'Trend · platziert (letzte ' + n + ' Aufnahmen, max ' + mx + ')'), spark));
             }
             // UX4 — per-hall occupancy as a small proportional bar chart (inline SVG-free, CSP-safe).
             const halls = (occ.halls || []).filter((hh) => hh.placed > 0);
@@ -6112,32 +6120,37 @@
             const items = P.spots.slice();
             if (!items.length) { toast('Keine platzierten Gefährte zum Anordnen', 'warn'); return; }
             if (!(await confirmDialog('Auto-Anordnen', items.length + ' platzierte Gefährte in dichte Reihen neu anordnen? Die aktuellen Positionen werden überschrieben.', 'Anordnen'))) return;
-            const bb = floorBB(), gap = Math.max(P.buffer ? P.bufferM : 0.4, 0.4), m = 0.4, step = 0.2;
+            const bb = floorBB(), m = 0.3, step = 0.2;
             // Lanes/maintenance/exits are markings a vehicle may legally sit on, but auto-parking
             // INTO a driving lane is undesirable — treat them as soft obstacles (Stellflächen stay ok).
             const laneQ = P.excl.filter((e) => isZoneKind(e.kind) && e.kind !== 'stell').map((e) => quad(e));
             const hitsLane = (b) => { const q = quad(b); return laneQ.some((z) => satOverlap(q, z)); };
+            const orig = items.map((b) => ({ b, x: b.x, y: b.y, rot: b.rot || 0 })); // restore any that don't fit
             // Park every item far outside first, so an unplaced item never blocks a candidate slot;
             // as each is placed it becomes an obstacle (via validVeh→collide) for the rest.
-            const park = bb.maxX + 500;
-            items.forEach((b, i) => { b.rot = 0; b.x = park; b.y = round2(bb.minY + i * 0.05); });
-            items.sort((a, b) => b.h - a.h || b.w - a.w); // tallest first → even shelves
-            let x = bb.minX + m, y = bb.minY + m, rowH = 0, placed = 0, failed = 0;
+            const park = bb.maxX + 1000;
+            items.forEach((b, i) => { b.rot = 0; b.x = round2(park + i * 0.02); b.y = round2(bb.minY); });
+            items.sort((a, b) => b.h - a.h || b.w - a.w); // tallest first → even rows
+            let placed = 0, failed = 0;
             for (const b of items) {
+                // Each vehicle scans the whole floor INDEPENDENTLY from the top-left for the first free
+                // slot (validVeh = inside + no wall/column/vehicle overlap; buffer honoured when on). A
+                // shared cursor was the bug: one un-placeable item ran the scan to the bottom and left the
+                // cursor there, so every later item failed and got dumped on the same corner (a heap).
                 let put = false;
-                while (y + b.h <= bb.maxY - m + 1e-6) {
-                    if (x + b.w > bb.maxX - m + 1e-6) { x = bb.minX + m; y += (rowH || b.h) + gap; rowH = 0; continue; } // wrap row
-                    b.x = round2(x); b.y = round2(y);
-                    if (validVeh(b, b._id) && !hitsLane(b)) { put = true; rowH = Math.max(rowH, b.h); x = b.x + b.w + gap; break; }
-                    x += step; // slide past a wall / column / lane and retry
+                for (let y = bb.minY + m; y + b.h <= bb.maxY - m + 1e-6 && !put; y += step) {
+                    for (let x = bb.minX + m; x + b.w <= bb.maxX - m + 1e-6; x += step) {
+                        b.x = round2(x); b.y = round2(y);
+                        if (validVeh(b, b._id) && !hitsLane(b)) { put = true; break; }
+                    }
                 }
                 if (put) { b._invalid = false; placed++; }
-                else { b.x = round2(bb.minX + m); b.y = round2(bb.minY + m); b._invalid = !validVeh(b, b._id); failed++; } // no free slot
+                else { const o = orig.find((z) => z.b === b); b.x = o.x; b.y = o.y; b.rot = o.rot; b._invalid = !validVeh(b, b._id); failed++; } // no slot → leave where it was
                 b._dirty = true;
             }
             items.forEach((b) => persistSpot(b));
             markDirty(); pushUndo(); draw();
-            toast(placed + ' angeordnet' + (failed ? ' · ' + failed + ' ohne Platz' : '') + (P.buffer ? ' · Puffer ' + P.bufferM.toFixed(1).replace('.', ',') + ' m' : ''), failed ? 'warn' : '');
+            toast(placed + ' angeordnet' + (failed ? ' · ' + failed + ' unverändert (kein Platz)' : '') + (P.buffer ? ' · Puffer ' + P.bufferM.toFixed(1).replace('.', ',') + ' m' : ''), failed ? 'warn' : '');
         }
         function renderManageRail() {
             rail.append(hallSwitchCard(false));
@@ -6382,7 +6395,7 @@
         }
 
         // ---- mode / maximize ----
-        function setMode(m) { P.mode = m; root.dataset.mode = m; P.sel = null; selSet = []; P.calib = false; P.tool = null; P.chain = null; P.openStart = null; P.preview = null; P.structSel = null; P.chainAnchor = null; P.guide = null; P.attach = null; hideLen(); hideVertMenu(); ctitle.textContent = m === 'plan' ? 'Garagenplaner' : 'Digitaler Zwilling'; rebuildSwitch(); draw(); }
+        function setMode(m) { P.mode = m; root.dataset.mode = m; P.sel = null; selSet = []; P.calib = false; P.tool = null; P.chain = null; P.openStart = null; P.preview = null; P.structSel = null; P.chainAnchor = null; P.guide = null; P.attach = null; measure = null; measurePre = null; hideLen(); hideVertMenu(); ctitle.textContent = m === 'plan' ? 'Garagenplaner' : 'Digitaler Zwilling'; rebuildSwitch(); draw(); }
         // Re-fit on enter AND exit so the plan fills whichever viewport we land in (entering
         // fullscreen used to keep the small windowed scale → a tiny plan marooned in a huge canvas).
         function toggleMax(force) { P.maxed = force == null ? !P.maxed : force; root.classList.toggle('maxed', P.maxed); maxBtn.textContent = P.maxed ? '⤢' : '⛶'; if (!P.maxed) { rail.style.left = ''; rail.style.top = ''; rail.style.right = ''; } setTimeout(() => { if (P.walls.edges.length) fitView(); else layout(); }, 20); }

@@ -71,6 +71,10 @@ func (h *Handler) CreateWallTemplate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "walls payload is required")
 		return
 	}
+	if len(req.Walls) > maxGeometryLen { // same cap the hall/spot geometry endpoints enforce
+		writeError(w, http.StatusBadRequest, "walls payload is too large")
+		return
+	}
 	var t wallTemplate
 	if err := h.Pool.QueryRow(r.Context(),
 		`INSERT INTO wall_templates (name, walls) VALUES ($1,$2) RETURNING id, name, walls, created_at`,
