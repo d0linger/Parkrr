@@ -109,6 +109,28 @@ test('dxf import: PG.parseDXF reads a LINE entity in the browser (FE3)', async (
   expect(n, 'parseDXF returns one polyline for a single LINE').toBe(1);
 });
 
+test('dxf import: uploading a .dxf renders a vector underlay (FE3 vector)', async ({ page, context }) => {
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  await login(page);
+  const cookies = await context.cookies();
+  const csrf = (cookies.find((c) => c.name === 'parkrr_csrf') || {}).value;
+  const post = (url, data) =>
+    page.request.post(url, { headers: { 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' }, data });
+  const g = await (await post('/api/garages', { name: 'E2E DG ' + Date.now() })).json();
+  const h = await (await post(`/api/garages/${g.id}/halls`, { name: 'E2E DHalle' })).json();
+  await page.goto('/#/hall/' + h.id);
+  await page.getByRole('button', { name: 'Garagenplaner' }).click();
+
+  const dxf = '0\nSECTION\n2\nENTITIES\n'
+    + '0\nLINE\n10\n0\n20\n0\n11\n10\n21\n0\n'
+    + '0\nLINE\n10\n10\n20\n0\n11\n10\n21\n10\n'
+    + '0\nENDSEC\n0\nEOF\n';
+  await page.locator('input[accept=".dxf"]').setInputFiles({ name: 'floor.dxf', mimeType: 'application/dxf', buffer: Buffer.from(dxf) });
+  await expect(page.locator('.gp-planvec')).toHaveCount(1, { timeout: 5000 }); // vector group rendered
+  expect(errors, 'no uncaught errors while importing DXF').toEqual([]);
+});
+
 test('wall templates: create → list → delete round-trip (AR3)', async ({ page, context }) => {
   await login(page);
   const cookies = await context.cookies();

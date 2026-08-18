@@ -4528,7 +4528,7 @@
             floor, Wm, Hm, tor: num(geo.tor, 3), load: num(geo.load, 5), shape: geo.shape || 'rect',
             excl: (Array.isArray(geo.excl) ? geo.excl : []).map((e, i) => ({ id: 'x' + i, kind: e.kind || 'wall', x: num(e.x, 0), y: num(e.y, 0), w: num(e.w, 1), h: num(e.h, 1), rot: num(e.rot, 0), label: e.label || (EXCL[e.kind] ? EXCL[e.kind].label : 'Fläche'), mat: e.mat || (EXCL[e.kind] ? EXCL[e.kind].mat : undefined) })),
             // Optional Bauplan underlay: a downscaled image (data-URL) placed in metre space.
-            plan: (geo.plan && geo.plan.href) ? { href: geo.plan.href, x: num(geo.plan.x, 0), y: num(geo.plan.y, 0), w: num(geo.plan.w, Wm), h: num(geo.plan.h, Hm), opacity: num(geo.plan.opacity, 0.55), hidden: !!geo.plan.hidden } : null,
+            plan: (geo.plan && (geo.plan.href || geo.plan.dxf)) ? { href: geo.plan.href, dxf: geo.plan.dxf || undefined, x: num(geo.plan.x, 0), y: num(geo.plan.y, 0), w: num(geo.plan.w, Wm), h: num(geo.plan.h, Hm), opacity: num(geo.plan.opacity, 0.55), hidden: !!geo.plan.hidden } : null,
             // Wall node-graph (primary building structure — drawn interactively).
             walls: normalizeWalls(geo.walls),
             spots: (data.spots || []).map((s) => { const g = asObj(s.geometry); return {
@@ -5115,6 +5115,18 @@
                 if (!P.calib) im.setAttribute('clip-path', 'url(#gpclip)');
                 im.setAttribute('href', P.plan.href); im.setAttribute('preserveAspectRatio', 'none');
                 svg.append(im);
+            } else if (P.plan && !P.plan.hidden && P.plan.dxf) {
+                // DXF vector underlay: re-rendered from the parsed polylines each draw, so it stays
+                // crisp at any zoom. Mapped from the DXF bbox into the placement box (x,y,w,h) with the
+                // y-flip (DXF y-up → screen y-down); the same calibration frame moves/scales it.
+                const d = P.plan.dxf, sx = P.plan.w / (d.dw || 1), sy = P.plan.h / (d.dh || 1);
+                const gv = svgEl('g', { class: 'gp-planvec', opacity: P.calib ? Math.max(0.75, P.plan.opacity) : P.plan.opacity });
+                if (!P.calib) gv.setAttribute('clip-path', 'url(#gpclip)');
+                for (const pl of d.pl) {
+                    const pts = pl.map((pt) => ((P.plan.x + (pt[0] - d.minX) * sx) * CELL).toFixed(1) + ',' + ((P.plan.y + (d.dh - (pt[1] - d.minY)) * sy) * CELL).toFixed(1)).join(' ');
+                    gv.append(svgEl('polyline', { points: pts, fill: 'none', class: 'gp-planvec-l' }));
+                }
+                svg.append(gv);
             }
             if (P.grid !== false) svg.append(svgEl('rect', { width: P.Wm * CELL, height: P.Hm * CELL, fill: 'url(#gpgrid)' }));
             drawEnclosure(); // shade the wall-enclosed parking area (+ m² label)
@@ -5261,9 +5273,9 @@
             rd.onerror = () => toast('Datei konnte nicht gelesen werden', 'error');
             rd.readAsDataURL(file);
         }
-        // Load a DXF vector drawing (FE3): parse LINE/POLYLINE/CIRCLE entities, rasterise them
-        // to a crisp PNG and reuse the Bauplan underlay pipeline (placement, calibration,
-        // opacity, hide, persistence) so a CAD floor plan can be traced over exactly.
+        // Load a DXF vector drawing (FE3): parse LINE/POLYLINE/CIRCLE entities and keep them as
+        // VECTOR polylines in the Bauplan underlay (placement, calibration, opacity, hide,
+        // persistence reused), so the CAD floor plan stays crisp at any zoom while it's traced over.
         function loadDxf(file) {
             if (!file) return;
             const rd = new FileReader();
@@ -5273,22 +5285,15 @@
                 if (!dxf.polylines.length) { toast('Keine Linien/Polylinien im DXF gefunden', 'error'); return; }
                 const { minX, minY, maxX, maxY } = dxf.bbox, dw = maxX - minX, dh = maxY - minY;
                 if (!(dw > 0 && dh > 0)) { toast('DXF hat keine gültige Ausdehnung', 'error'); return; }
-                const MAXPX = 1600, sc = MAXPX / Math.max(dw, dh);
-                const cw = Math.max(2, Math.round(dw * sc)), ch = Math.max(2, Math.round(dh * sc));
-                const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
-                const cx = cv.getContext('2d'); cx.strokeStyle = '#12233f'; cx.lineWidth = 1.5; cx.lineJoin = 'round'; cx.lineCap = 'round'; cx.beginPath();
-                for (const pl of dxf.polylines) for (let i = 0; i < pl.length; i++) {
-                    const px = (pl[i][0] - minX) * sc, py = ch - (pl[i][1] - minY) * sc; // flip DXF y-up → canvas y-down
-                    if (i === 0) cx.moveTo(px, py); else cx.lineTo(px, py);
-                }
-                cx.stroke();
-                const href = cv.toDataURL('image/png');
-                if (href.length > 230000) { toast('DXF zu detailliert — bitte eine einfachere Zeichnung verwenden', 'error'); return; }
+                const ptCount = dxf.polylines.reduce((s, pl) => s + pl.length, 0);
+                if (ptCount > 12000) { toast('DXF zu detailliert (' + ptCount + ' Punkte) — bitte vereinfachen', 'error'); return; } // keep the geometry blob under its size cap
+                // Store the polylines (2-dp) + bbox; the renderer maps them into the placement box.
+                const vec = { pl: dxf.polylines.map((pl) => pl.map((p) => [round2(p[0]), round2(p[1])])), minX: round2(minX), minY: round2(minY), dw: round2(dw), dh: round2(dh) };
                 // Fit the drawing into the floor bounding box, aspect-preserving (letterbox), then calibrate.
                 const bb = floorBB(), fw = bb.maxX - bb.minX, fh = bb.maxY - bb.minY, fit = Math.min(fw / dw, fh / dh);
                 const pw = Math.max(1, dw * fit), ph = Math.max(1, dh * fit);
-                P.plan = { href, x: bb.minX + (fw - pw) / 2, y: bb.minY + (fh - ph) / 2, w: pw, h: ph, opacity: 0.6, hidden: false };
-                P.calib = true; markDirty(); draw(); renderRail(); toast('DXF geladen — jetzt an einem bekannten Maß kalibrieren (ziehen / Ecke)', 'ok');
+                P.plan = { dxf: vec, x: bb.minX + (fw - pw) / 2, y: bb.minY + (fh - ph) / 2, w: pw, h: ph, opacity: 0.7, hidden: false };
+                P.calib = true; markDirty(); draw(); renderRail(); toast('DXF geladen (Vektor) — jetzt an einem bekannten Maß kalibrieren (ziehen / Ecke)', 'ok');
             };
             rd.readAsText(file);
         }
@@ -6020,7 +6025,7 @@
         function currentWalls() {
             return { nodes: P.walls.nodes.map((n) => ({ x: round2(n.x), y: round2(n.y) })), edges: P.walls.edges.map((e) => ({ a: e.a, b: e.b, kind: e.kind, thick: round2(e.thick), ops: (e.ops && e.ops.length) ? e.ops.map((o) => ({ c: round2(o.c), w: round2(o.w), kind: o.kind, side: o.side, hinge: o.hinge, frame: o.frame })) : undefined })) };
         }
-        function currentGeometry() { return { floor: P.floor, Wm: P.Wm, Hm: P.Hm, tor: P.tor, load: P.load, shape: P.shape, excl: P.excl.map((e) => ({ kind: e.kind, x: round2(e.x), y: round2(e.y), w: round2(e.w), h: round2(e.h), rot: Math.round(e.rot || 0), label: e.label, mat: e.mat || undefined })), walls: (P.walls.edges.length ? currentWalls() : undefined), wallRef: P.wallRef !== 'axis' ? P.wallRef : undefined, plan: P.plan ? { href: P.plan.href, x: round2(P.plan.x), y: round2(P.plan.y), w: round2(P.plan.w), h: round2(P.plan.h), opacity: round2(P.plan.opacity), hidden: P.plan.hidden || undefined } : undefined }; }
+        function currentGeometry() { return { floor: P.floor, Wm: P.Wm, Hm: P.Hm, tor: P.tor, load: P.load, shape: P.shape, excl: P.excl.map((e) => ({ kind: e.kind, x: round2(e.x), y: round2(e.y), w: round2(e.w), h: round2(e.h), rot: Math.round(e.rot || 0), label: e.label, mat: e.mat || undefined })), walls: (P.walls.edges.length ? currentWalls() : undefined), wallRef: P.wallRef !== 'axis' ? P.wallRef : undefined, plan: P.plan ? { href: P.plan.href, dxf: P.plan.dxf, x: round2(P.plan.x), y: round2(P.plan.y), w: round2(P.plan.w), h: round2(P.plan.h), opacity: round2(P.plan.opacity), hidden: P.plan.hidden || undefined } : undefined }; }
         async function doSaveGeom(silent) {
             P.dirty = false; renderToolbar(); // optimistic; a change during the save re-flags it
             try {
@@ -6125,6 +6130,10 @@
             // INTO a driving lane is undesirable — treat them as soft obstacles (Stellflächen stay ok).
             const laneQ = P.excl.filter((e) => isZoneKind(e.kind) && e.kind !== 'stell').map((e) => quad(e));
             const hitsLane = (b) => { const q = quad(b); return laneQ.some((z) => satOverlap(q, z)); };
+            // Small breathing gap between vehicles even when the buffer is off (the buffer already
+            // spaces them). Enforced against OTHER vehicles only, so a vehicle may still sit flush to a wall.
+            const gap = P.buffer ? 0 : 0.2;
+            const tooCloseVeh = (b) => { if (gap <= 0) return false; const eb = quad({ x: b.x - gap, y: b.y - gap, w: b.w + 2 * gap, h: b.h + 2 * gap, rot: b.rot || 0 }); return P.spots.some((o) => o._id !== b._id && satOverlap(eb, quad(o))); };
             const orig = items.map((b) => ({ b, x: b.x, y: b.y, rot: b.rot || 0 })); // restore any that don't fit
             // Park every item far outside first, so an unplaced item never blocks a candidate slot;
             // as each is placed it becomes an obstacle (via validVeh→collide) for the rest.
@@ -6141,7 +6150,7 @@
                 for (let y = bb.minY + m; y + b.h <= bb.maxY - m + 1e-6 && !put; y += step) {
                     for (let x = bb.minX + m; x + b.w <= bb.maxX - m + 1e-6; x += step) {
                         b.x = round2(x); b.y = round2(y);
-                        if (validVeh(b, b._id) && !hitsLane(b)) { put = true; break; }
+                        if (validVeh(b, b._id) && !hitsLane(b) && !tooCloseVeh(b)) { put = true; break; }
                     }
                 }
                 if (put) { b._invalid = false; placed++; }
@@ -6644,7 +6653,7 @@
         // fixed point A, lock to horizontal/vertical (hard with Shift, soft magnet within ~17° of an
         // axis). Free points otherwise stay exact so arbitrary distances remain measurable.
         function snapMeasure(p, from, shift) {
-            const TH = 0.35;
+            const TH = Math.max(0.1, Math.min(1.0, 14 / P.CELL)); // ~14 px on screen at any zoom (CELL = px/m)
             const rects = P.walls.edges.length ? wallRects() : [];
             let best = null, bd = TH;
             const corner = (x, y) => { const d = Math.hypot(x - p.x, y - p.y); if (d < bd) { bd = d; best = { x, y }; } };
