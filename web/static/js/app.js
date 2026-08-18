@@ -5832,7 +5832,7 @@
                     svg.append(svgEl('line', { x1: ax, y1: ay, x2: bx, y2: by, class: 'gp-measure' }));
                     svg.append(svgEl('circle', { cx: ax, cy: ay, r: 4, class: 'gp-measure-pt' }));
                     svg.append(svgEl('circle', { cx: bx, cy: by, r: 4, class: 'gp-measure-pt' }));
-                    if (b2.snap === 'node') svg.append(svgEl('circle', { cx: bx, cy: by, r: 8, fill: 'none', class: 'gp-measure-snap' })); // magnet caught a wall corner
+                    if (b2.snap === 'node' || b2.snap === 'edge') svg.append(svgEl('circle', { cx: bx, cy: by, r: 8, fill: 'none', class: 'gp-measure-snap' })); // magnet caught a wall corner / edge
                     const d = Math.hypot(b2.x - measure.a.x, b2.y - measure.a.y), ang = ((Math.atan2(b2.y - measure.a.y, b2.x - measure.a.x) * 180 / Math.PI) % 180 + 180) % 180;
                     const tl = svgEl('text', { x: (ax + bx) / 2, y: (ay + by) / 2 - 9, 'text-anchor': 'middle', class: 'gp-measurelab' });
                     tl.textContent = d.toFixed(2).replace('.', ',') + ' m · ' + Math.min(ang, 180 - ang).toFixed(0) + '°'; labelSvg.append(tl); } }
@@ -5941,7 +5941,7 @@
             // Auto-Snap: objects fang flush against each other (in addition to the floor line).
             if (canManageNow) toolbar.append(tb('🧲', 'Auto-Snap: Objekte fangen aneinander', () => { P.autoSnap = !P.autoSnap; renderToolbar(); toast(P.autoSnap ? 'Auto-Snap an' : 'Auto-Snap aus'); }, P.autoSnap));
             if (canManageNow) toolbar.append(tb('🛡', 'Pufferzonen zwischen Fahrzeugen (Taste P)', () => { P.buffer = !P.buffer; renderToolbar(); draw(); toast(P.buffer ? 'Pufferzonen an · ' + P.bufferM.toFixed(1).replace('.', ',') + ' m' : 'Pufferzonen aus'); }, P.buffer));
-            if (canManageNow && P.mode === 'plan') toolbar.append(tb('📏', 'Messen: Punkt A klicken, Punkt B klicken (Distanz + Winkel). Fängt an Wand-Ecken; ⇧ oder achsennah = waagrecht/senkrecht. Nochmal klicken = neu.', () => setTool(P.tool === 'measure' ? null : 'measure'), P.tool === 'measure'));
+            if (canManageNow && P.mode === 'plan') toolbar.append(tb('📏', 'Messen: Punkt A klicken, Punkt B klicken (Distanz + Winkel). Fängt an Wand-Ecken und -Kanten (Rand); ⇧ oder achsennah = waagrecht/senkrecht. Nochmal klicken = neu.', () => setTool(P.tool === 'measure' ? null : 'measure'), P.tool === 'measure'));
             // Adjustable buffer distance (vehicle↔vehicle), shown only while buffers are on. 0.5 m steps,
             // 0–5 m. draw() re-runs the bands + collision uses P.bufferM live. Session-only, like the toggle.
             if (canManageNow && P.buffer) { const bseg = el('div', { class: 'gp-seg', title: 'Pufferdistanz zwischen Fahrzeugen' });
@@ -6620,13 +6620,23 @@
             if (isNode) deleteNode(P.structSel.idx); else deleteEdge(P.structSel.idx);
             P.structSel = null; refreshFloorFromWalls(); pushUndo(); markDirty(); equalizePadding(); toast(isNode ? 'Punkt aufgelöst' : 'Segment entfernt');
         }
-        // Snap a measure endpoint: magnet to the nearest wall node (autosnap), else — relative to the
-        // fixed point A — lock to horizontal/vertical (hard with Shift, soft magnet within ~17° of an
+        // Snap a measure endpoint. Priority: (1) magnet to a corner — a wall graph node OR a visible
+        // wall-rectangle corner (Wandanfang/-ende at the drawn face); (2) project onto the nearest
+        // visible wall edge (the "Rand"), so you can start anywhere along a wall; (3) relative to the
+        // fixed point A, lock to horizontal/vertical (hard with Shift, soft magnet within ~17° of an
         // axis). Free points otherwise stay exact so arbitrary distances remain measurable.
         function snapMeasure(p, from, shift) {
-            let best = null, bd = 0.35;
-            for (const nd of P.walls.nodes) { const d = Math.hypot(nd.x - p.x, nd.y - p.y); if (d < bd) { bd = d; best = nd; } }
+            const TH = 0.35;
+            const rects = P.walls.edges.length ? wallRects() : [];
+            let best = null, bd = TH;
+            const corner = (x, y) => { const d = Math.hypot(x - p.x, y - p.y); if (d < bd) { bd = d; best = { x, y }; } };
+            for (const nd of P.walls.nodes) corner(nd.x, nd.y);
+            for (const r of rects) for (const c of quad(r)) corner(c[0], c[1]);
             if (best) return { x: round2(best.x), y: round2(best.y), snap: 'node' };
+            const proj = (ax, ay, bx, by) => { const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy; let t = L ? ((p.x - ax) * dx + (p.y - ay) * dy) / L : 0; t = Math.max(0, Math.min(1, t)); return { x: ax + t * dx, y: ay + t * dy }; };
+            let ep = null, ed = TH;
+            for (const r of rects) { const q = quad(r); for (let i = 0; i < 4; i++) { const a = q[i], b = q[(i + 1) % 4], pr = proj(a[0], a[1], b[0], b[1]), d = Math.hypot(pr.x - p.x, pr.y - p.y); if (d < ed) { ed = d; ep = pr; } } }
+            if (ep) return { x: round2(ep.x), y: round2(ep.y), snap: 'edge' };
             let x = p.x, y = p.y, snap = null;
             if (from) {
                 const dx = x - from.x, dy = y - from.y, ang = Math.atan2(Math.abs(dy), Math.abs(dx)) * 180 / Math.PI;
