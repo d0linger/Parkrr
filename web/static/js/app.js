@@ -5798,13 +5798,12 @@
                 if (P.mode === 'plan' && vd.len > 0.3) {
                     let nx = -vd.dy, ny = vd.dx; const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
                     const mid = P0(0.5), off = th / 2 + 11;
-                    // With openings, place the total on the SAME outer side as the sub-segment labels,
-                    // not the inner side: zone/vehicle DOM blocks paint ABOVE this SVG text, so a total
-                    // sitting at the mid-wall opening was hidden behind the lane (verified against real
-                    // data: lane y6.4–10.4, x→38.1 covered the inner-side total at the y8.4 gate). Its
-                    // mid-wall position sits between the two segment labels, so they don't clash. No
-                    // openings → keep the inner side as before (no regression on plain walls).
-                    const tsg = spans.length ? -1 : 1;
+                    // Total always on the INNER side; sub-segment labels go on the OUTER side (see below),
+                    // so the two never collide — with two openings a solid piece can sit AT the wall
+                    // midpoint (u≈0.5), and an outer-side total would overlap that piece's caption. Both
+                    // labels live on the labelSvg overlay (z above the zone/vehicle DOM), so the inner
+                    // total is no longer hidden behind a lane — the reason the old code forced it outward.
+                    const tsg = 1;
                     const tl = svgEl('text', { x: mid[0] + tsg * nx * off, y: mid[1] + tsg * ny * off + 3, 'text-anchor': 'middle', class: 'gp-walllab' }); tl.textContent = labelLen(ei).toFixed(2).replace('.', ',') + ' m'; labelSvg.append(tl); // dimension per Bezug (Innen/Achse/Außen)
                     if (spans.length) { // clear sub-segment lengths — measured on the DRAWN edge (v0)
                         // and trimmed to the SAME Bezug reference as the total (labelLen), so the pieces
