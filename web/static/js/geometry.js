@@ -174,43 +174,83 @@
     // True if two blocks {x,y,w,h,rot} overlap (SAT, ≤2 cm touch = separate). Public for tests/reuse.
     const rectsCollide = (a, b) => _sat(_quad(a), _quad(b));
 
+    // ---- MaxRects free-rectangle helpers (Jylänki 2010) ----
+    const _EPS = 1e-4;
+    // AABB of a (possibly rotated) block → {x,y,w,h}.
+    function _aabb(b) { const q = _quad(b); let mnx = Infinity, mny = Infinity, mxx = -Infinity, mxy = -Infinity; for (const [x, y] of q) { if (x < mnx) mnx = x; if (x > mxx) mxx = x; if (y < mny) mny = y; if (y > mxy) mxy = y; } return { x: mnx, y: mny, w: mxx - mnx, h: mxy - mny }; }
+    const _rIntersect = (a, b) => a.x < b.x + b.w - _EPS && a.x + a.w > b.x + _EPS && a.y < b.y + b.h - _EPS && a.y + a.h > b.y + _EPS;
+    const _rContains = (a, b) => a.x <= b.x + _EPS && a.y <= b.y + _EPS && a.x + a.w >= b.x + b.w - _EPS && a.y + a.h >= b.y + b.h - _EPS; // a ⊇ b
+    // Drop free rects that are degenerate or fully contained in another (non-maximal).
+    function _prune(list) {
+        const out = [];
+        for (let i = 0; i < list.length; i++) {
+            if (list[i].w < _EPS || list[i].h < _EPS) continue;
+            let dead = false;
+            for (let j = 0; j < list.length && !dead; j++) if (i !== j && _rContains(list[j], list[i]) && !(_rContains(list[i], list[j]) && j > i)) dead = true;
+            if (!dead) out.push(list[i]);
+        }
+        return out;
+    }
+    // Carve `used` out of every free rect it overlaps → up to 4 border slabs; then prune to maximal set.
+    function _carve(list, used) {
+        const out = [];
+        for (const F of list) {
+            if (!_rIntersect(F, used)) { out.push(F); continue; }
+            if (used.x > F.x + _EPS) out.push({ x: F.x, y: F.y, w: used.x - F.x, h: F.h });
+            if (used.x + used.w < F.x + F.w - _EPS) out.push({ x: used.x + used.w, y: F.y, w: F.x + F.w - (used.x + used.w), h: F.h });
+            if (used.y > F.y + _EPS) out.push({ x: F.x, y: F.y, w: F.w, h: used.y - F.y });
+            if (used.y + used.h < F.y + F.h - _EPS) out.push({ x: F.x, y: used.y + used.h, w: F.w, h: F.y + F.h - (used.y + used.h) });
+        }
+        return _prune(out);
+    }
+
     // packRects(items, obstacles, bounds, floor?, opts?) → { placements:[{id,x,y,rot,ok}], placed, failed }.
-    //   items     [{ id, w, h }]              vehicle footprints (metres)
-    //   obstacles [{ x,y,w,h,rot }]           HARD no-go blocks: walls, columns, lanes, maintenance
-    //   bounds    { minX,minY,maxX,maxY }     scan window (usually the floor bbox)
-    //   floor     [[x,y],…] | null            polygon a placement must lie fully inside (optional)
-    //   opts      { step, margin, gap }        grid step, wall margin, vehicle↔vehicle clearance
-    // Best-Fit-Decreasing (largest footprint first) so big vehicles claim big contiguous areas; each
-    // item tries 0°/90° (a rectangle's footprint repeats every 180°) and takes the top-left-most valid
-    // slot (dense pack, large free area kept toward the far corner). Feasibility is an exact SAT gate:
-    // no overlap with obstacles or already-placed vehicles, and the quad fully inside the floor.
+    //   items     [{ id, w, h }]           vehicle footprints (metres)
+    //   obstacles [{ x,y,w,h,rot }]        HARD no-go blocks: walls, columns, lanes, maintenance
+    //   bounds    { minX,minY,maxX,maxY }  outer window (usually the floor bbox)
+    //   floor     [[x,y],…] | null         polygon a placement must lie fully inside (handles concave/L floors)
+    //   opts      { margin, gap }          wall margin, vehicle↔vehicle clearance
+    // MaxRects-BSSF: free space is an explicit set of maximal rectangles, initialised to the margin-shrunk
+    // bounds with every obstacle AABB carved out — so a placement can NEVER land on a wall/column/lane, and
+    // never on another object's coordinates. Vehicles are placed Best-Fit-Decreasing (largest first, keeping
+    // big contiguous rects for big vehicles), each tries 0°/90°, and is anchored to a free-rect CORNER
+    // (Best-Short-Side-Fit) so it hugs a wall or a neighbour instead of floating mid-room. Every candidate
+    // still passes an exact gate: fully inside the floor polygon AND SAT-clear of every obstacle. After a
+    // placement the used rect (inflated by `gap`) is carved out and the free set re-maximalised.
     function packRects(items, obstacles, bounds, floor, opts) {
-        const o = opts || {}, step = o.step > 0 ? o.step : 0.25, m = o.margin != null ? o.margin : 0.2, gap = o.gap > 0 ? o.gap : 0;
-        const obsQ = (obstacles || []).map(_quad);
+        const o = opts || {}, m = o.margin != null ? o.margin : 0.2, gap = o.gap > 0 ? o.gap : 0;
         const useFloor = floor && floor.length >= 3;
+        const obsQ = (obstacles || []).map(_quad);
+        const feasible = (cand) => (!useFloor || _quadInPoly(_quad(cand), floor)) && !obsQ.some((ob) => _sat(_quad(cand), ob));
+        // Free set = shrunk bounds minus every obstacle's AABB (conservative: never offers occupied space).
+        const B = { x: bounds.minX + m, y: bounds.minY + m, w: (bounds.maxX - m) - (bounds.minX + m), h: (bounds.maxY - m) - (bounds.minY + m) };
+        let free = (B.w > _EPS && B.h > _EPS) ? [B] : [];
+        for (const ob of obstacles || []) free = _carve(free, _aabb(ob));
+
         const order = items.map((it, i) => ({ it, i })).sort((a, b) =>
             (b.it.w * b.it.h) - (a.it.w * a.it.h) || Math.max(b.it.w, b.it.h) - Math.max(a.it.w, a.it.h) || a.i - b.i);
-        const placedQ = [], placements = []; let placed = 0, failed = 0;
+        const placements = []; let placed = 0, failed = 0;
         for (const { it } of order) {
             const oris = Math.abs(it.w - it.h) < 1e-3 ? [0] : [0, 90]; // 180°/270° share a rectangle's footprint
-            let best = null;
+            let best = null, bestShort = Infinity, bestLong = Infinity;
             for (const rot of oris) {
-                const ww = rot === 90 ? it.h : it.w, hh = rot === 90 ? it.w : it.h;
-                let found = null;
-                for (let y = bounds.minY + m; y + hh <= bounds.maxY - m + 1e-6 && !found; y += step) {
-                    for (let x = bounds.minX + m; x + ww <= bounds.maxX - m + 1e-6; x += step) {
-                        const cand = { x: Math.round(x * 100) / 100, y: Math.round(y * 100) / 100, w: it.w, h: it.h, rot };
-                        if (useFloor && !_quadInPoly(_quad(cand), floor)) continue;
-                        const q = _quad(cand);
-                        if (obsQ.some((ob) => _sat(q, ob))) continue; // exact — a vehicle may sit flush to a wall
-                        if (gap > 0) { if (placedQ.some((pq) => _sat(_quad({ x: cand.x - gap, y: cand.y - gap, w: it.w + 2 * gap, h: it.h + 2 * gap, rot }), pq))) continue; }
-                        else if (placedQ.some((pq) => _sat(q, pq))) continue;
-                        found = { x: cand.x, y: cand.y, rot }; break; // first (left-most) valid in the top-most row
+                const ww = rot === 90 ? it.h : it.w, hh = rot === 90 ? it.w : it.h;      // footprint (AABB) dims
+                const off = { x: (ww - it.w) / 2, y: (hh - it.h) / 2 };                   // anchor→block: keep the footprint's top-left on the anchor
+                for (const F of free) {
+                    if (F.w + _EPS < ww || F.h + _EPS < hh) continue;
+                    const shortSide = Math.min(F.w - ww, F.h - hh), longSide = Math.max(F.w - ww, F.h - hh);
+                    const better = shortSide < bestShort - _EPS || (Math.abs(shortSide - bestShort) < _EPS && longSide < bestLong - _EPS);
+                    if (!better) continue; // strictly tighter fit only → first-best wins ties (deterministic)
+                    // Four corner anchors of F → hug whichever wall/neighbour bounds this rect (never floats).
+                    for (const [ax, ay] of [[F.x, F.y], [F.x + F.w - ww, F.y], [F.x, F.y + F.h - hh], [F.x + F.w - ww, F.y + F.h - hh]]) {
+                        const cand = { x: Math.round((ax + off.x) * 100) / 100, y: Math.round((ay + off.y) * 100) / 100, w: it.w, h: it.h, rot };
+                        if (!feasible(cand)) continue;
+                        best = cand; bestShort = shortSide; bestLong = longSide; break; // corners of one F tie on score; first (top-left) wins
                     }
                 }
-                if (found && (!best || found.y < best.y - 1e-6 || (Math.abs(found.y - best.y) < 1e-6 && found.x < best.x - 1e-6))) best = found;
             }
-            if (best) { placements.push({ id: it.id, x: best.x, y: best.y, rot: best.rot, ok: true }); placedQ.push(_quad({ x: best.x, y: best.y, w: it.w, h: it.h, rot: best.rot })); placed++; }
+            if (best) { placements.push({ id: it.id, x: best.x, y: best.y, rot: best.rot, ok: true });
+                const fp = _aabb(best); free = _carve(free, { x: fp.x - gap, y: fp.y - gap, w: fp.w + 2 * gap, h: fp.h + 2 * gap }); placed++; }
             else { placements.push({ id: it.id, ok: false }); failed++; }
         }
         return { placements, placed, failed };

@@ -188,3 +188,35 @@ test('packRects — big item is placed (BFD keeps the big area for the big vehic
     const r = PG.packRects(items, [], { minX: 0, minY: 0, maxX: 10, maxY: 6 }, null, { step: 0.5, margin: 0, gap: 0 });
     assert.ok(r.placements.find((p) => p.id === 'strip').ok, 'the big strip gets placed');
 });
+
+// FE1 — MaxRects specifics: placements hug an edge/neighbour (never float), and never land on an
+// obstacle's or another vehicle's coordinates.
+test('packRects (MaxRects) — first item hugs the top-left corner, does not float', () => {
+    const r = PG.packRects([{ id: 'a', w: 3, h: 2 }], [], { minX: 0, minY: 0, maxX: 20, maxY: 20 }, null, { margin: 0.2, gap: 0 });
+    const p = r.placements[0];
+    assert.ok(p.ok);
+    assert.ok(near(p.x, 0.2, 0.01) && near(p.y, 0.2, 0.01), 'placed flush to the margin corner, not mid-room: ' + p.x + ',' + p.y);
+});
+
+test('packRects (MaxRects) — second item sits flush against the first, not on its coordinates', () => {
+    const items = [{ id: 'a', w: 4, h: 3 }, { id: 'b', w: 4, h: 3 }];
+    const r = PG.packRects(items, [], { minX: 0, minY: 0, maxX: 20, maxY: 20 }, null, { margin: 0, gap: 0 });
+    const A = r.placements.find((p) => p.id === 'a'), Bp = r.placements.find((p) => p.id === 'b');
+    assert.ok(A.ok && Bp.ok);
+    assert.ok(!(near(A.x, Bp.x) && near(A.y, Bp.y)), 'B not stacked on A\'s coordinates');
+    assert.ok(!PG.rectsCollide({ x: A.x, y: A.y, w: 4, h: 3, rot: A.rot }, { x: Bp.x, y: Bp.y, w: 4, h: 3, rot: Bp.rot }), 'no overlap');
+    // flush: they share an edge (touching within a couple cm) on some axis
+    const touchX = near(A.x + 4, Bp.x, 0.05) || near(Bp.x + 4, A.x, 0.05);
+    const touchY = near(A.y + 3, Bp.y, 0.05) || near(Bp.y + 3, A.y, 0.05);
+    assert.ok(touchX || touchY, 'B is flush against A');
+});
+
+test('packRects (MaxRects) — a large item still fits after obstacles split the space', () => {
+    // 20×10 with a central pillar 8..12 × full height: two 6-wide bays remain either side.
+    const pillar = { x: 8, y: 0, w: 4, h: 10, rot: 0 };
+    const items = [{ id: 'big', w: 5, h: 8 }, { id: 'm1', w: 2, h: 2 }, { id: 'm2', w: 2, h: 2 }];
+    const r = PG.packRects(items, [pillar], { minX: 0, minY: 0, maxX: 20, maxY: 10 }, null, { margin: 0.1, gap: 0 });
+    const big = r.placements.find((p) => p.id === 'big');
+    assert.ok(big.ok, 'the big item finds a bay');
+    assert.ok(!PG.rectsCollide({ x: big.x, y: big.y, w: 5, h: 8, rot: big.rot }, pillar), 'big item clears the pillar');
+});
