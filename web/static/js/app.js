@@ -958,8 +958,9 @@
             const maxP = Math.max(1, ...halls.map((hh) => hh.placed || 0));
             halls.forEach((hh) => {
                 occCard.append(el('div', { class: 'status-row dash-occrow' },
-                    el('div', { class: 'status-name' }, esc(hh.name),
-                        el('span', { class: 'muted', style: 'font-weight:400;font-size:.72rem;margin-left:.4rem' }, esc(hh.garage_name))),
+                    el('div', { class: 'status-name' },
+                        el('span', { class: 'occ-hallnm' }, esc(hh.name)),
+                        el('span', { class: 'muted occ-garnm', style: 'font-weight:400;font-size:.72rem;margin-left:.4rem' }, esc(hh.garage_name))),
                     el('div', { class: 'dash-bar', title: hh.placed + ' platziert' }, el('div', { class: 'dash-bar-fill', style: 'width:' + Math.round((hh.placed || 0) / maxP * 100) + '%' })),
                     el('div', { class: 'bar-val' }, String(hh.placed))));
             });
@@ -5831,6 +5832,7 @@
                     svg.append(svgEl('line', { x1: ax, y1: ay, x2: bx, y2: by, class: 'gp-measure' }));
                     svg.append(svgEl('circle', { cx: ax, cy: ay, r: 4, class: 'gp-measure-pt' }));
                     svg.append(svgEl('circle', { cx: bx, cy: by, r: 4, class: 'gp-measure-pt' }));
+                    if (b2.snap === 'node') svg.append(svgEl('circle', { cx: bx, cy: by, r: 8, fill: 'none', class: 'gp-measure-snap' })); // magnet caught a wall corner
                     const d = Math.hypot(b2.x - measure.a.x, b2.y - measure.a.y), ang = ((Math.atan2(b2.y - measure.a.y, b2.x - measure.a.x) * 180 / Math.PI) % 180 + 180) % 180;
                     const tl = svgEl('text', { x: (ax + bx) / 2, y: (ay + by) / 2 - 9, 'text-anchor': 'middle', class: 'gp-measurelab' });
                     tl.textContent = d.toFixed(2).replace('.', ',') + ' m · ' + Math.min(ang, 180 - ang).toFixed(0) + '°'; labelSvg.append(tl); } }
@@ -5939,7 +5941,7 @@
             // Auto-Snap: objects fang flush against each other (in addition to the floor line).
             if (canManageNow) toolbar.append(tb('🧲', 'Auto-Snap: Objekte fangen aneinander', () => { P.autoSnap = !P.autoSnap; renderToolbar(); toast(P.autoSnap ? 'Auto-Snap an' : 'Auto-Snap aus'); }, P.autoSnap));
             if (canManageNow) toolbar.append(tb('🛡', 'Pufferzonen zwischen Fahrzeugen (Taste P)', () => { P.buffer = !P.buffer; renderToolbar(); draw(); toast(P.buffer ? 'Pufferzonen an · ' + P.bufferM.toFixed(1).replace('.', ',') + ' m' : 'Pufferzonen aus'); }, P.buffer));
-            if (canManageNow && P.mode === 'plan') toolbar.append(tb('📏', 'Messen: Punkt A klicken, Punkt B klicken (Distanz + Winkel). Nochmal klicken = neu.', () => setTool(P.tool === 'measure' ? null : 'measure'), P.tool === 'measure'));
+            if (canManageNow && P.mode === 'plan') toolbar.append(tb('📏', 'Messen: Punkt A klicken, Punkt B klicken (Distanz + Winkel). Fängt an Wand-Ecken; ⇧ oder achsennah = waagrecht/senkrecht. Nochmal klicken = neu.', () => setTool(P.tool === 'measure' ? null : 'measure'), P.tool === 'measure'));
             // Adjustable buffer distance (vehicle↔vehicle), shown only while buffers are on. 0.5 m steps,
             // 0–5 m. draw() re-runs the bands + collision uses P.bufferM live. Session-only, like the toggle.
             if (canManageNow && P.buffer) { const bseg = el('div', { class: 'gp-seg', title: 'Pufferdistanz zwischen Fahrzeugen' });
@@ -6105,20 +6107,32 @@
             const items = P.spots.slice();
             if (!items.length) { toast('Keine platzierten Gefährte zum Anordnen', 'warn'); return; }
             if (!(await confirmDialog('Auto-Anordnen', items.length + ' platzierte Gefährte in dichte Reihen neu anordnen? Die aktuellen Positionen werden überschrieben.', 'Anordnen'))) return;
-            const bb = floorBB(), gap = Math.max(P.buffer ? P.bufferM : 0.4, 0.4), m = 0.4;
+            const bb = floorBB(), gap = Math.max(P.buffer ? P.bufferM : 0.4, 0.4), m = 0.4, step = 0.2;
+            // Lanes/maintenance/exits are markings a vehicle may legally sit on, but auto-parking
+            // INTO a driving lane is undesirable — treat them as soft obstacles (Stellflächen stay ok).
+            const laneQ = P.excl.filter((e) => isZoneKind(e.kind) && e.kind !== 'stell').map((e) => quad(e));
+            const hitsLane = (b) => { const q = quad(b); return laneQ.some((z) => satOverlap(q, z)); };
+            // Park every item far outside first, so an unplaced item never blocks a candidate slot;
+            // as each is placed it becomes an obstacle (via validVeh→collide) for the rest.
+            const park = bb.maxX + 500;
+            items.forEach((b, i) => { b.rot = 0; b.x = park; b.y = round2(bb.minY + i * 0.05); });
             items.sort((a, b) => b.h - a.h || b.w - a.w); // tallest first → even shelves
-            let x = bb.minX + m, y = bb.minY + m, rowH = 0, n = 0;
+            let x = bb.minX + m, y = bb.minY + m, rowH = 0, placed = 0, failed = 0;
             for (const b of items) {
-                b.rot = 0;
-                if (x > bb.minX + m + 1e-6 && x + b.w > bb.maxX - m + 1e-6) { x = bb.minX + m; y += rowH + gap; rowH = 0; } // wrap row
-                b.x = round2(Math.max(bb.minX + m, Math.min(x, bb.maxX - m - b.w)));
-                b.y = round2(Math.max(bb.minY + m, Math.min(y, bb.maxY - m - b.h)));
-                b._invalid = !inside(b); b._dirty = true;
-                x = b.x + b.w + gap; rowH = Math.max(rowH, b.h); n++;
+                let put = false;
+                while (y + b.h <= bb.maxY - m + 1e-6) {
+                    if (x + b.w > bb.maxX - m + 1e-6) { x = bb.minX + m; y += (rowH || b.h) + gap; rowH = 0; continue; } // wrap row
+                    b.x = round2(x); b.y = round2(y);
+                    if (validVeh(b, b._id) && !hitsLane(b)) { put = true; rowH = Math.max(rowH, b.h); x = b.x + b.w + gap; break; }
+                    x += step; // slide past a wall / column / lane and retry
+                }
+                if (put) { b._invalid = false; placed++; }
+                else { b.x = round2(bb.minX + m); b.y = round2(bb.minY + m); b._invalid = !validVeh(b, b._id); failed++; } // no free slot
+                b._dirty = true;
             }
             items.forEach((b) => persistSpot(b));
             markDirty(); pushUndo(); draw();
-            toast(n + ' Gefährte angeordnet' + (P.buffer ? ' · Puffer ' + P.bufferM.toFixed(1).replace('.', ',') + ' m' : ''));
+            toast(placed + ' angeordnet' + (failed ? ' · ' + failed + ' ohne Platz' : '') + (P.buffer ? ' · Puffer ' + P.bufferM.toFixed(1).replace('.', ',') + ' m' : ''), failed ? 'warn' : '');
         }
         function renderManageRail() {
             rail.append(hallSwitchCard(false));
@@ -6606,10 +6620,24 @@
             if (isNode) deleteNode(P.structSel.idx); else deleteEdge(P.structSel.idx);
             P.structSel = null; refreshFloorFromWalls(); pushUndo(); markDirty(); equalizePadding(); toast(isNode ? 'Punkt aufgelöst' : 'Segment entfernt');
         }
+        // Snap a measure endpoint: magnet to the nearest wall node (autosnap), else — relative to the
+        // fixed point A — lock to horizontal/vertical (hard with Shift, soft magnet within ~17° of an
+        // axis). Free points otherwise stay exact so arbitrary distances remain measurable.
+        function snapMeasure(p, from, shift) {
+            let best = null, bd = 0.35;
+            for (const nd of P.walls.nodes) { const d = Math.hypot(nd.x - p.x, nd.y - p.y); if (d < bd) { bd = d; best = nd; } }
+            if (best) return { x: round2(best.x), y: round2(best.y), snap: 'node' };
+            let x = p.x, y = p.y, snap = null;
+            if (from) {
+                const dx = x - from.x, dy = y - from.y, ang = Math.atan2(Math.abs(dy), Math.abs(dx)) * 180 / Math.PI;
+                if (shift || ang < 17 || ang > 73) { if (Math.abs(dx) >= Math.abs(dy)) { y = from.y; } else { x = from.x; } snap = 'ortho'; }
+            }
+            return { x, y, snap };
+        }
         drawOverlay.addEventListener('pointerdown', (ev) => {
             if (ev.button !== 0 || spaceDown || P.mode !== 'plan' || P.calib || !canManageNow) return;
             ev.preventDefault(); const p = evWorld(ev);
-            if (P.tool === 'measure') { if (!measure || measure.b) measure = { a: { x: p.x, y: p.y } }; else measure.b = { x: p.x, y: p.y }; drawFloor(); return; } // ruler: click A, click B, click again = restart
+            if (P.tool === 'measure') { const s = snapMeasure(p, (measure && measure.a && !measure.b) ? measure.a : null, ev.shiftKey); if (!measure || measure.b) measure = { a: { x: s.x, y: s.y } }; else measure.b = { x: s.x, y: s.y }; drawFloor(); return; } // ruler: click A, click B, click again = restart
             if (isWallDraw(P.tool)) { wallClick(snapDraw(p, ev.shiftKey)); return; }
             if (isOpenKind(P.tool)) { openClick(p); return; }
             if (isZoneTool(P.tool) || P.tool === 'column') { const x = gsnap(p.x), y = gsnap(p.y); zoneDraw = { x0: x, y0: y, x1: x, y1: y }; try { drawOverlay.setPointerCapture(ev.pointerId); } catch (er) { /* ignore */ } return; }
@@ -6618,7 +6646,7 @@
         drawOverlay.addEventListener('pointermove', (ev) => {
             let p = evWorld(ev);
             if ((P.chain || nodeDrag || zoneDraw || zoneDrag) && maybeExpand(p)) p = evWorld(ev); // auto-expand while drawing/dragging
-            if (P.tool === 'measure') { if (measure && measure.a && !measure.b) { measure.hover = { x: p.x, y: p.y }; drawFloor(); } return; }
+            if (P.tool === 'measure') { if (measure && measure.a && !measure.b) { const s = snapMeasure(p, measure.a, ev.shiftKey); measure.hover = { x: s.x, y: s.y, snap: s.snap }; drawFloor(); } return; }
             if (zoneDraw) { zoneDraw.x1 = gsnap(p.x); zoneDraw.y1 = gsnap(p.y); drawFloor(); return; }
             if (zoneDrag) {
                 const b = P.excl.find((x) => x.id === zoneDrag.id); if (!b) { zoneDrag = null; return; }

@@ -1353,6 +1353,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-distlab{fill:#ffd98a;font-size:11px;font-weight:700;paint-order:stroke;stroke:rgba(4,16,12,.82);stroke-width:3px;pointer-events:none}
 .gp-measure{stroke:#e0b452;stroke-width:1.6;stroke-dasharray:5 3;pointer-events:none}
 .gp-measure-pt{fill:#e0b452;stroke:#04140c;stroke-width:1;pointer-events:none}
+.gp-measure-snap{stroke:#e0b452;stroke-width:1.6;opacity:.9;pointer-events:none}
 .gp-measurelab{fill:#f4d894;font-size:11.5px;font-weight:800;paint-order:stroke;stroke:rgba(4,16,12,.85);stroke-width:3px;pointer-events:none}
 .gp-anchor{fill:#ffd98a;stroke:rgba(4,16,12,.7);stroke-width:1.5;pointer-events:none}
 /* opening elements: reveal jambs, glass line, resize handles; sub-segment clear lengths */
@@ -1699,7 +1700,10 @@ a.portal-row.link:hover { color: var(--accent-text); }
 .gp-block.multisel{outline:2px solid var(--tab-active,#2dd4bf);outline-offset:1px;box-shadow:0 0 0 4px rgba(45,212,191,.18);z-index:6}
 
 /* UX4 — small dashboard bar chart (per-hall occupancy) */
-.dash-occrow{align-items:center;gap:.6rem}
+.dash-occrow{align-items:center;gap:.6rem;grid-template-columns:9.5rem 1fr auto}
+.dash-occrow .status-name{min-width:0}
+.dash-occrow .occ-hallnm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.dash-occrow .occ-garnm{flex:none}
 .dash-bar{flex:1;min-width:60px;height:8px;border-radius:6px;background:var(--bg-elev-2);overflow:hidden}
 .dash-bar-fill{height:100%;border-radius:6px;background:var(--brand-grad,linear-gradient(90deg,#0d9488,#22d3ee));min-width:3px}
 .dash-spark-wrap{margin-top:.5rem}
