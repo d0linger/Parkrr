@@ -109,6 +109,23 @@ test('dxf import: PG.parseDXF reads a LINE entity in the browser (FE3)', async (
   expect(n, 'parseDXF returns one polyline for a single LINE').toBe(1);
 });
 
+test('auto-arrange: PG.packRects runs in-browser and packs overlap-free (FE1)', async ({ page }) => {
+  await login(page);
+  const r = await page.evaluate(() => {
+    if (!window.PG || !window.PG.packRects) return { err: 'no packRects' };
+    const dims = { 1: { w: 5, h: 2 }, 2: { w: 4, h: 2 }, 3: { w: 2, h: 1 }, 4: { w: 3, h: 2 } };
+    const items = Object.entries(dims).map(([id, d]) => ({ id: +id, w: d.w, h: d.h }));
+    const out = window.PG.packRects(items, [], { minX: 0, minY: 0, maxX: 14, maxY: 8 }, null, { step: 0.5, margin: 0.2, gap: 0.15 });
+    const ok = out.placements.filter((p) => p.ok).map((p) => ({ ...p, ...dims[p.id] }));
+    let overlap = false;
+    for (let i = 0; i < ok.length; i++) for (let j = i + 1; j < ok.length; j++) if (window.PG.rectsCollide(ok[i], ok[j])) overlap = true;
+    return { placed: out.placed, overlap };
+  });
+  expect(r.err, r.err).toBeUndefined();
+  expect(r.placed, 'all four packed').toBe(4);
+  expect(r.overlap, 'no two placements overlap').toBe(false);
+});
+
 test('dxf import: uploading a .dxf renders a vector underlay (FE3 vector)', async ({ page, context }) => {
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));

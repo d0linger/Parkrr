@@ -6119,47 +6119,32 @@
             } else { c.append(el('span', { class: 'gp-vst' }, '⠿')); }
             return c;
         }
-        // FE1: pack the placed vehicles into tidy left-to-right shelves within the floor, honouring the
-        // buffer gap when buffers are on. Tallest-first for neat rows; each spot is re-persisted.
+        // FE1: Auto-Arrange via the tested best-fit-decreasing packer (PG.packRects) — largest
+        // vehicles first (keeps big contiguous areas for them), 0°/90° rotation to fill niches, and an
+        // exact SAT gate so nothing overlaps a wall, column, lane or another vehicle. Anything that
+        // can't fit is left where it was and flagged, never overlapped.
         async function autoArrange() {
             const items = P.spots.slice();
             if (!items.length) { toast('Keine platzierten Gefährte zum Anordnen', 'warn'); return; }
-            if (!(await confirmDialog('Auto-Anordnen', items.length + ' platzierte Gefährte in dichte Reihen neu anordnen? Die aktuellen Positionen werden überschrieben.', 'Anordnen'))) return;
-            const bb = floorBB(), m = 0.3, step = 0.2;
-            // Lanes/maintenance/exits are markings a vehicle may legally sit on, but auto-parking
-            // INTO a driving lane is undesirable — treat them as soft obstacles (Stellflächen stay ok).
-            const laneQ = P.excl.filter((e) => isZoneKind(e.kind) && e.kind !== 'stell').map((e) => quad(e));
-            const hitsLane = (b) => { const q = quad(b); return laneQ.some((z) => satOverlap(q, z)); };
-            // Small breathing gap between vehicles even when the buffer is off (the buffer already
-            // spaces them). Enforced against OTHER vehicles only, so a vehicle may still sit flush to a wall.
-            const gap = P.buffer ? 0 : 0.2;
-            const tooCloseVeh = (b) => { if (gap <= 0) return false; const eb = quad({ x: b.x - gap, y: b.y - gap, w: b.w + 2 * gap, h: b.h + 2 * gap, rot: b.rot || 0 }); return P.spots.some((o) => o._id !== b._id && satOverlap(eb, quad(o))); };
-            const orig = items.map((b) => ({ b, x: b.x, y: b.y, rot: b.rot || 0 })); // restore any that don't fit
-            // Park every item far outside first, so an unplaced item never blocks a candidate slot;
-            // as each is placed it becomes an obstacle (via validVeh→collide) for the rest.
-            const park = bb.maxX + 1000;
-            items.forEach((b, i) => { b.rot = 0; b.x = round2(park + i * 0.02); b.y = round2(bb.minY); });
-            items.sort((a, b) => b.h - a.h || b.w - a.w); // tallest first → even rows
-            let placed = 0, failed = 0;
+            if (!(await confirmDialog('Auto-Anordnen', items.length + ' platzierte Gefährte neu anordnen (größte zuerst, mit Drehung)? Die aktuellen Positionen werden überschrieben.', 'Anordnen'))) return;
+            // Hard obstacles: walls, blocking structures (columns/Stützen) and driving lanes /
+            // maintenance / exits. Stellflächen are parkable markings → NOT obstacles.
+            const obstacles = wallRects()
+                .concat(P.excl.filter((e) => !isZoneKind(e.kind)))
+                .concat(P.excl.filter((e) => isZoneKind(e.kind) && e.kind !== 'stell'));
+            const gap = P.buffer ? P.bufferM : 0.15; // vehicle↔vehicle clearance (walls stay flush)
+            const orig = new Map(items.map((b) => [b._id, { x: b.x, y: b.y, rot: b.rot || 0 }]));
+            const res = PG.packRects(items.map((b) => ({ id: b._id, w: b.w, h: b.h })), obstacles, floorBB(), P.floor, { step: 0.25, margin: 0.2, gap });
+            const byId = new Map(res.placements.map((p) => [p.id, p]));
             for (const b of items) {
-                // Each vehicle scans the whole floor INDEPENDENTLY from the top-left for the first free
-                // slot (validVeh = inside + no wall/column/vehicle overlap; buffer honoured when on). A
-                // shared cursor was the bug: one un-placeable item ran the scan to the bottom and left the
-                // cursor there, so every later item failed and got dumped on the same corner (a heap).
-                let put = false;
-                for (let y = bb.minY + m; y + b.h <= bb.maxY - m + 1e-6 && !put; y += step) {
-                    for (let x = bb.minX + m; x + b.w <= bb.maxX - m + 1e-6; x += step) {
-                        b.x = round2(x); b.y = round2(y);
-                        if (validVeh(b, b._id) && !hitsLane(b) && !tooCloseVeh(b)) { put = true; break; }
-                    }
-                }
-                if (put) { b._invalid = false; placed++; }
-                else { const o = orig.find((z) => z.b === b); b.x = o.x; b.y = o.y; b.rot = o.rot; b._invalid = !validVeh(b, b._id); failed++; } // no slot → leave where it was
+                const p = byId.get(b._id);
+                if (p && p.ok) { b.x = p.x; b.y = p.y; b.rot = p.rot; b._invalid = false; }
+                else { const o = orig.get(b._id); b.x = o.x; b.y = o.y; b.rot = o.rot; b._invalid = !validVeh(b, b._id); } // unplaceable → leave in place, flag
                 b._dirty = true;
             }
             items.forEach((b) => persistSpot(b));
             markDirty(); pushUndo(); draw();
-            toast(placed + ' angeordnet' + (failed ? ' · ' + failed + ' unverändert (kein Platz)' : '') + (P.buffer ? ' · Puffer ' + P.bufferM.toFixed(1).replace('.', ',') + ' m' : ''), failed ? 'warn' : '');
+            toast(res.placed + ' angeordnet' + (res.failed ? ' · ' + res.failed + ' unverändert (kein Platz)' : '') + (P.buffer ? ' · Puffer ' + P.bufferM.toFixed(1).replace('.', ',') + ' m' : ''), res.failed ? 'warn' : '');
         }
         function renderManageRail() {
             rail.append(hallSwitchCard(false));

@@ -151,7 +151,72 @@
         return { polylines: polys, bbox: polys.length ? { minX: mnx, minY: mny, maxX: mxx, maxY: mxy } : { minX: 0, minY: 0, maxX: 0, maxY: 0 } };
     }
 
-    const PG = { ringAreaS, pointInPoly, segCross, polySelfIntersects, insetRing, roomAreas, arcPts, parseDXF };
+    // ---- 2D bin-packing for Auto-Arrange (FE1) ----
+    // Pure best-fit-decreasing rectangle packer with 90° rotation and SAT collision. All
+    // rectangles use the SAME convention/epsilons as the SPA renderer ({x,y}=top-left, w×h,
+    // rot° about the centre; SAT treats a ≤2 cm touch as separated; inside = 4 corners in the
+    // floor polygon AND no edge crossing) so a packed placement is valid exactly like a drag.
+    const _quad = (b) => { const cx = b.x + b.w / 2, cy = b.y + b.h / 2, r = (b.rot || 0) * Math.PI / 180, c = Math.cos(r), s = Math.sin(r);
+        return [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]].map(([px, py]) => { const dx = px - cx, dy = py - cy; return [cx + dx * c - dy * s, cy + dx * s + dy * c]; }); };
+    const _sat = (A, B) => { const EPS = 0.02; for (const poly of [A, B]) { for (let i = 0; i < poly.length; i++) { const [x1, y1] = poly[i], [x2, y2] = poly[(i + 1) % poly.length];
+        let ax = -(y2 - y1), ay = x2 - x1; const L = Math.hypot(ax, ay) || 1; ax /= L; ay /= L; let mnA = Infinity, mxA = -Infinity, mnB = Infinity, mxB = -Infinity;
+        for (const [px, py] of A) { const d = px * ax + py * ay; if (d < mnA) mnA = d; if (d > mxA) mxA = d; }
+        for (const [px, py] of B) { const d = px * ax + py * ay; if (d < mnB) mnB = d; if (d > mxB) mxB = d; }
+        if (Math.min(mxA, mxB) - Math.max(mnA, mnB) < EPS) return false; } } return true; };
+    const _pip = (x, y, pts) => { let c = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1]; if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) c = !c; } return c; };
+    const _segX = (p1, p2, p3, p4) => { const d = (a, b, c) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]); const d1 = d(p3, p4, p1), d2 = d(p3, p4, p2), d3 = d(p1, p2, p3), d4 = d(p1, p2, p4); return ((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0)); };
+    const _quadInPoly = (q, floor) => { const cx = (q[0][0] + q[1][0] + q[2][0] + q[3][0]) / 4, cy = (q[0][1] + q[1][1] + q[2][1] + q[3][1]) / 4, e = 0.02;
+        const qs = q.map(([x, y]) => [x + (cx > x ? e : -e), y + (cy > y ? e : -e)]);
+        for (const [x, y] of qs) if (!_pip(x, y, floor)) return false;
+        for (let i = 0; i < floor.length; i++) { const p1 = floor[i], p2 = floor[(i + 1) % floor.length]; for (let c = 0; c < 4; c++) if (_segX(p1, p2, qs[c], qs[(c + 1) % 4])) return false; }
+        return true; };
+
+    // True if two blocks {x,y,w,h,rot} overlap (SAT, ≤2 cm touch = separate). Public for tests/reuse.
+    const rectsCollide = (a, b) => _sat(_quad(a), _quad(b));
+
+    // packRects(items, obstacles, bounds, floor?, opts?) → { placements:[{id,x,y,rot,ok}], placed, failed }.
+    //   items     [{ id, w, h }]              vehicle footprints (metres)
+    //   obstacles [{ x,y,w,h,rot }]           HARD no-go blocks: walls, columns, lanes, maintenance
+    //   bounds    { minX,minY,maxX,maxY }     scan window (usually the floor bbox)
+    //   floor     [[x,y],…] | null            polygon a placement must lie fully inside (optional)
+    //   opts      { step, margin, gap }        grid step, wall margin, vehicle↔vehicle clearance
+    // Best-Fit-Decreasing (largest footprint first) so big vehicles claim big contiguous areas; each
+    // item tries 0°/90° (a rectangle's footprint repeats every 180°) and takes the top-left-most valid
+    // slot (dense pack, large free area kept toward the far corner). Feasibility is an exact SAT gate:
+    // no overlap with obstacles or already-placed vehicles, and the quad fully inside the floor.
+    function packRects(items, obstacles, bounds, floor, opts) {
+        const o = opts || {}, step = o.step > 0 ? o.step : 0.25, m = o.margin != null ? o.margin : 0.2, gap = o.gap > 0 ? o.gap : 0;
+        const obsQ = (obstacles || []).map(_quad);
+        const useFloor = floor && floor.length >= 3;
+        const order = items.map((it, i) => ({ it, i })).sort((a, b) =>
+            (b.it.w * b.it.h) - (a.it.w * a.it.h) || Math.max(b.it.w, b.it.h) - Math.max(a.it.w, a.it.h) || a.i - b.i);
+        const placedQ = [], placements = []; let placed = 0, failed = 0;
+        for (const { it } of order) {
+            const oris = Math.abs(it.w - it.h) < 1e-3 ? [0] : [0, 90]; // 180°/270° share a rectangle's footprint
+            let best = null;
+            for (const rot of oris) {
+                const ww = rot === 90 ? it.h : it.w, hh = rot === 90 ? it.w : it.h;
+                let found = null;
+                for (let y = bounds.minY + m; y + hh <= bounds.maxY - m + 1e-6 && !found; y += step) {
+                    for (let x = bounds.minX + m; x + ww <= bounds.maxX - m + 1e-6; x += step) {
+                        const cand = { x: Math.round(x * 100) / 100, y: Math.round(y * 100) / 100, w: it.w, h: it.h, rot };
+                        if (useFloor && !_quadInPoly(_quad(cand), floor)) continue;
+                        const q = _quad(cand);
+                        if (obsQ.some((ob) => _sat(q, ob))) continue; // exact — a vehicle may sit flush to a wall
+                        if (gap > 0) { if (placedQ.some((pq) => _sat(_quad({ x: cand.x - gap, y: cand.y - gap, w: it.w + 2 * gap, h: it.h + 2 * gap, rot }), pq))) continue; }
+                        else if (placedQ.some((pq) => _sat(q, pq))) continue;
+                        found = { x: cand.x, y: cand.y, rot }; break; // first (left-most) valid in the top-most row
+                    }
+                }
+                if (found && (!best || found.y < best.y - 1e-6 || (Math.abs(found.y - best.y) < 1e-6 && found.x < best.x - 1e-6))) best = found;
+            }
+            if (best) { placements.push({ id: it.id, x: best.x, y: best.y, rot: best.rot, ok: true }); placedQ.push(_quad({ x: best.x, y: best.y, w: it.w, h: it.h, rot: best.rot })); placed++; }
+            else { placements.push({ id: it.id, ok: false }); failed++; }
+        }
+        return { placements, placed, failed };
+    }
+
+    const PG = { ringAreaS, pointInPoly, segCross, polySelfIntersects, insetRing, roomAreas, arcPts, parseDXF, rectsCollide, packRects };
     if (typeof module !== 'undefined' && module.exports) module.exports = PG;
     if (root) root.PG = PG;
 })(typeof window !== 'undefined' ? window : null);

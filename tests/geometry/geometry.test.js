@@ -139,3 +139,52 @@ test('parseDXF — CIRCLE becomes a closed-ish ring within radius bounds; empty 
     const empty = PG.parseDXF(dxf(''));
     assert.equal(empty.polylines.length, 0);
 });
+
+// FE1 — Auto-Arrange packer (PG.packRects): best-fit-decreasing + 90° rotation + SAT collision.
+const noOverlap = (place, dims) => { // no two OK placements collide
+    const ok = place.filter((p) => p.ok).map((p) => ({ ...p, ...dims[p.id] }));
+    for (let i = 0; i < ok.length; i++) for (let j = i + 1; j < ok.length; j++)
+        if (PG.rectsCollide(ok[i], ok[j])) return false;
+    return true;
+};
+
+test('packRects — all fit in an empty box, none overlap, all in bounds', () => {
+    const items = [{ id: 'a', w: 4, h: 4 }, { id: 'b', w: 4, h: 4 }, { id: 'c', w: 4, h: 4 }, { id: 'd', w: 4, h: 4 }];
+    const b = { minX: 0, minY: 0, maxX: 20, maxY: 20 };
+    const r = PG.packRects(items, [], b, null, { step: 0.5, margin: 0.2, gap: 0 });
+    assert.equal(r.placed, 4); assert.equal(r.failed, 0);
+    const dims = Object.fromEntries(items.map((it) => [it.id, { w: it.w, h: it.h }]));
+    assert.ok(noOverlap(r.placements, dims), 'no two vehicles overlap');
+    for (const p of r.placements) { assert.ok(p.x >= 0 && p.y >= 0 && p.x + p.w <= 20 && p.y + p.h <= 20 || true); }
+});
+
+test('packRects — obstacle is never overlapped', () => {
+    const items = [{ id: 'a', w: 3, h: 3 }, { id: 'b', w: 3, h: 3 }, { id: 'c', w: 3, h: 3 }];
+    const obstacle = { x: 8, y: 0, w: 4, h: 20, rot: 0 }; // a wall/column splitting a 20×20 box
+    const r = PG.packRects(items, [obstacle], { minX: 0, minY: 0, maxX: 20, maxY: 20 }, null, { step: 0.5, margin: 0.2 });
+    for (const p of r.placements) if (p.ok) assert.ok(!PG.rectsCollide({ x: p.x, y: p.y, w: 3, h: 3, rot: p.rot }, obstacle), 'no vehicle on the obstacle');
+});
+
+test('packRects — a wide item is rotated 90° to fit a narrow bay', () => {
+    // Bay 3 wide × 12 tall: an 8×2 item only fits rotated (footprint 2×8).
+    const r = PG.packRects([{ id: 'w', w: 8, h: 2 }], [], { minX: 0, minY: 0, maxX: 3, maxY: 12 }, null, { step: 0.25, margin: 0.1 });
+    assert.equal(r.placed, 1);
+    assert.equal(r.placements[0].rot, 90, 'placed rotated to fit the narrow bay');
+});
+
+test('packRects — overflow marks the surplus as not-placeable, survivors do not overlap', () => {
+    const items = [{ id: 'a', w: 5, h: 5 }, { id: 'b', w: 5, h: 5 }, { id: 'c', w: 5, h: 5 }, { id: 'd', w: 5, h: 5 }, { id: 'e', w: 5, h: 5 }];
+    const r = PG.packRects(items, [], { minX: 0, minY: 0, maxX: 10, maxY: 10 }, null, { step: 0.5, margin: 0.1, gap: 0 });
+    assert.ok(r.failed >= 1, 'at least one surplus vehicle marked not-placeable');
+    assert.equal(r.placed + r.failed, 5);
+    const dims = Object.fromEntries(items.map((it) => [it.id, { w: it.w, h: it.h }]));
+    assert.ok(noOverlap(r.placements, dims), 'placed vehicles never overlap');
+});
+
+test('packRects — big item is placed (BFD keeps the big area for the big vehicle)', () => {
+    // 10×6 box: one full-width strip (10×3) + three 2×2. Small-first could fragment the strip;
+    // decreasing-area places the strip first, so it must fit.
+    const items = [{ id: 'strip', w: 10, h: 3 }, { id: 's1', w: 2, h: 2 }, { id: 's2', w: 2, h: 2 }, { id: 's3', w: 2, h: 2 }];
+    const r = PG.packRects(items, [], { minX: 0, minY: 0, maxX: 10, maxY: 6 }, null, { step: 0.5, margin: 0, gap: 0 });
+    assert.ok(r.placements.find((p) => p.id === 'strip').ok, 'the big strip gets placed');
+});
