@@ -67,6 +67,39 @@ test('occupancy: response carries a daily trend array (FE4)', async ({ page }) =
   expect(Array.isArray(j.trend), 'occupancy.trend is an array').toBeTruthy();
 });
 
+test('measure tool: arm + two canvas clicks render a ruler with no errors (UX2 + snap)', async ({ page, context }) => {
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  await login(page);
+  const cookies = await context.cookies();
+  const csrf = (cookies.find((c) => c.name === 'parkrr_csrf') || {}).value;
+  const post = (url, data) =>
+    page.request.post(url, { headers: { 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' }, data });
+  const g = await (await post('/api/garages', { name: 'E2E MG ' + Date.now() })).json();
+  const h = await (await post(`/api/garages/${g.id}/halls`, { name: 'E2E MHalle' })).json();
+  await page.goto('/#/hall/' + h.id);
+  await expect(page.locator('svg.gp-floor')).toBeVisible({ timeout: 15000 });
+
+  // The planner opens in "Stellplätze" (manage) mode; switch to Garagenplaner (plan) so the
+  // drawing toolbar — including the ruler — is shown.
+  await page.getByRole('button', { name: 'Garagenplaner' }).click();
+
+  // Arm the ruler via its toolbar button, then click two points on the plan overlay.
+  const measureBtn = page.locator('.gp-toolbar button[title^="Messen"]');
+  await measureBtn.click();
+  await expect(measureBtn).toHaveClass(/\bon\b/); // tool is armed
+
+  const box = await page.locator('svg.gp-floor').boundingBox();
+  const ax = box.x + box.width * 0.35, ay = box.y + box.height * 0.5;
+  const bx = box.x + box.width * 0.65, by = box.y + box.height * 0.5;
+  await page.mouse.move(ax, ay); await page.mouse.click(ax, ay); // point A (runs snapMeasure)
+  await page.mouse.move(bx, by); await page.mouse.click(bx, by); // point B → ruler renders
+  // A flat horizontal SVG <line> has a 0-height box (Playwright reads it "hidden"), so assert
+  // presence, not visibility: the ruler line existing proves snapMeasure + the render path ran.
+  await expect(page.locator('.gp-measure')).toHaveCount(1, { timeout: 5000 });
+  expect(errors, 'no uncaught errors while measuring').toEqual([]);
+});
+
 test('dxf import: PG.parseDXF reads a LINE entity in the browser (FE3)', async ({ page }) => {
   await login(page);
   const n = await page.evaluate(() => {
