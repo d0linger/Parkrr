@@ -223,8 +223,14 @@
         const last = toastQ.length ? toastQ[toastQ.length - 1] : toastCur;
         if (!it.action && last && last.text === it.text && !last.action) return; // skip an immediate repeat
         // Action (undo) toasts jump ahead of plain toasts so the undo window isn't buried behind a
-        // queue; plain toasts append and the queue is capped at 4 (dropping the oldest).
-        if (it.action) toastQ.unshift(it); else { toastQ.push(it); if (toastQ.length > 4) toastQ.splice(0, toastQ.length - 4); }
+        // queue; plain toasts append. The 4-item cap trims only the OLDEST PLAIN toasts — never an
+        // action toast (they sit at the front, so a plain splice-from-front must skip them).
+        if (it.action) { toastQ.unshift(it); }
+        else {
+            toastQ.push(it);
+            let plain = toastQ.filter((t) => !t.action).length;
+            for (let i = 0; i < toastQ.length && plain > 4;) { if (!toastQ[i].action) { toastQ.splice(i, 1); plain--; } else i++; }
+        }
         pumpToast();
     }
     function toast(msg, kind = '') { enqueueToast({ text: t(msg), kind, ms: 3000 }); }
@@ -955,7 +961,7 @@
             if (tr.length >= 2) {
                 const W = 260, H = 46, pad = 4, n = tr.length, mx = Math.max(1, ...tr.map((d) => d.placed));
                 const px = (i) => pad + i / (n - 1) * (W - 2 * pad), py = (v) => H - pad - (v / mx) * (H - 2 * pad);
-                const spark = svgEl('svg', { class: 'dash-spark', viewBox: '0 0 ' + W + ' ' + H, width: '100%', height: String(H), preserveAspectRatio: 'none' });
+                const spark = svgEl('svg', { class: 'dash-spark', viewBox: '0 0 ' + W + ' ' + H, width: '100%', height: String(H), preserveAspectRatio: 'none', role: 'img', 'aria-label': 'Belegungs-Trend: letzte ' + n + ' Aufnahmen, maximal ' + mx + ' platziert' });
                 spark.append(svgEl('polyline', { points: tr.map((d, i) => px(i).toFixed(1) + ',' + py(d.placed).toFixed(1)).join(' '), fill: 'none', class: 'dash-spark-line' }));
                 spark.append(svgEl('circle', { cx: String(px(n - 1)), cy: String(py(tr[n - 1].placed)), r: '2.6', class: 'dash-spark-dot' }));
                 occCard.append(el('div', { class: 'dash-spark-wrap' },
@@ -4528,7 +4534,7 @@
             floor, Wm, Hm, tor: num(geo.tor, 3), load: num(geo.load, 5), shape: geo.shape || 'rect',
             excl: (Array.isArray(geo.excl) ? geo.excl : []).map((e, i) => ({ id: 'x' + i, kind: e.kind || 'wall', x: num(e.x, 0), y: num(e.y, 0), w: num(e.w, 1), h: num(e.h, 1), rot: num(e.rot, 0), label: e.label || (EXCL[e.kind] ? EXCL[e.kind].label : 'Fläche'), mat: e.mat || (EXCL[e.kind] ? EXCL[e.kind].mat : undefined) })),
             // Optional Bauplan underlay: a downscaled image (data-URL) placed in metre space.
-            plan: (geo.plan && (geo.plan.href || geo.plan.dxf)) ? { href: geo.plan.href, dxf: geo.plan.dxf || undefined, x: num(geo.plan.x, 0), y: num(geo.plan.y, 0), w: num(geo.plan.w, Wm), h: num(geo.plan.h, Hm), opacity: num(geo.plan.opacity, 0.55), hidden: !!geo.plan.hidden } : null,
+            plan: (geo.plan && (geo.plan.href || (geo.plan.dxf && Array.isArray(geo.plan.dxf.pl) && geo.plan.dxf.pl.length))) ? { href: geo.plan.href, dxf: (geo.plan.dxf && Array.isArray(geo.plan.dxf.pl) && geo.plan.dxf.pl.length) ? geo.plan.dxf : undefined, x: num(geo.plan.x, 0), y: num(geo.plan.y, 0), w: num(geo.plan.w, Wm), h: num(geo.plan.h, Hm), opacity: num(geo.plan.opacity, 0.55), hidden: !!geo.plan.hidden } : null,
             // Wall node-graph (primary building structure — drawn interactively).
             walls: normalizeWalls(geo.walls),
             spots: (data.spots || []).map((s) => { const g = asObj(s.geometry); return {
@@ -4981,10 +4987,11 @@
             if (!data || !data.name) return;
             const name = String(data.name).slice(0, 60), walls = JSON.parse(JSON.stringify(P.walls));
             try { await api.post('/wall-templates', { name, walls }); await fetchTemplates(); toast('Vorlage gespeichert', 'ok'); }
-            catch (e) { const tpls = lsLoad(); tpls.unshift({ id: Date.now(), name, walls }); lsSave(tpls); tplCache = tpls; toast('Vorlage lokal gespeichert (offline)', 'warn'); }
+            catch (e) { const tpls = lsLoad(); tpls.unshift({ id: Date.now(), name, walls, local: true }); lsSave(tpls); tplCache = tpls; toast('Vorlage lokal gespeichert (offline)', 'warn'); }
         }
         async function deleteTemplate(t) {
-            try { if (typeof t.id === 'number') await api.del('/wall-templates/' + t.id); await fetchTemplates(); }
+            if (t.local) { const tpls = lsLoad().filter((x) => x.id !== t.id); lsSave(tpls); tplCache = tpls; return; } // local-only: remove from storage, no server call
+            try { await api.del('/wall-templates/' + t.id); await fetchTemplates(); }
             catch (e) { const tpls = lsLoad().filter((x) => x.id !== t.id); lsSave(tpls); tplCache = tpls; }
         }
         async function applyTemplate(t) {
@@ -5278,6 +5285,7 @@
         // persistence reused), so the CAD floor plan stays crisp at any zoom while it's traced over.
         function loadDxf(file) {
             if (!file) return;
+            if (file.size > 8 * 1024 * 1024) { toast('DXF-Datei zu groß (max 8 MB)', 'error'); return; } // reject before reading the whole file
             const rd = new FileReader();
             rd.onerror = () => toast('Datei konnte nicht gelesen werden', 'error');
             rd.onload = () => {
@@ -6152,7 +6160,7 @@
             }
             // Flag validity against the FINAL layout, not a mid-loop snapshot (spots move as we go).
             spots.forEach((b) => { b._invalid = !validVeh(b, b._id); });
-            spots.forEach((b) => persistSpot(b));
+            spots.forEach((b) => { if (!b._invalid) persistSpot(b); }); // don't persist a blockiert spot; it stays _dirty for a later valid move
 
             // Phase 2 — staging vehicles into the remaining free space (placed spots become obstacles,
             // inflated by pad so the clearance holds). Unplaceable ones silently stay in the palette.

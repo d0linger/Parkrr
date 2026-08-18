@@ -28,7 +28,7 @@ func TestWallTemplateCreateOK(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{"name": "Halle A", "walls": map[string]any{"nodes": []any{}, "edges": []any{}}})
 	rec := httptest.NewRecorder()
 	h.CreateWallTemplate(rec, httptest.NewRequest(http.MethodPost, "/api/wall-templates", bytes.NewReader(body)))
-	if rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
-		t.Fatalf("valid template should be 200/201, got %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("valid template should be 201 Created, got %d %s", rec.Code, rec.Body.String())
 	}
 }

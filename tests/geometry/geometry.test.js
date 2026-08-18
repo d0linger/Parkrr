@@ -155,7 +155,7 @@ test('packRects — all fit in an empty box, none overlap, all in bounds', () =>
     assert.equal(r.placed, 4); assert.equal(r.failed, 0);
     const dims = Object.fromEntries(items.map((it) => [it.id, { w: it.w, h: it.h }]));
     assert.ok(noOverlap(r.placements, dims), 'no two vehicles overlap');
-    for (const p of r.placements) { assert.ok(p.x >= 0 && p.y >= 0 && p.x + p.w <= 20 && p.y + p.h <= 20 || true); }
+    for (const p of r.placements) { assert.ok(p.x >= 0 && p.y >= 0 && p.x + 4 <= 20 + 1e-9 && p.y + 4 <= 20 + 1e-9, 'placement in bounds: ' + JSON.stringify(p)); } // items are 4×4 squares (rot 0)
 });
 
 test('packRects — obstacle is never overlapped', () => {
@@ -240,4 +240,11 @@ test('packRects — padding 0 lets a 2.0×1.0 car fit a 2.7×1.7 niche (Problem 
     // with a big margin it would be (correctly) rejected — proving the margin, not the packer, was the culprit
     const rBig = PG.packRects([{ id: 'car', w: 2.0, h: 1.0 }], obs, { minX: 0, minY: 0, maxX: 2.9, maxY: 1.9 }, null, { margin: 0.5, gap: 0.5 });
     assert.equal(rBig.placements[0].ok, false, 'oversized margin rejects it — the mechanism the bug relied on');
+});
+
+// FE3 — a malformed group value must not leak NaN/Infinity into the parsed polylines.
+test('parseDXF — malformed coordinate is skipped, output has no NaN', () => {
+    const r = PG.parseDXF('0\nSECTION\n2\nENTITIES\n0\nLINE\n10\n1\n20\nBAD\n11\n4\n21\n6\n0\nLINE\n10\n0\n20\n0\n11\n2\n21\n3\n0\nENDSEC\n0\nEOF\n');
+    for (const pl of r.polylines) for (const pt of pl) assert.ok(Number.isFinite(pt[0]) && Number.isFinite(pt[1]), 'no NaN/Inf coord: ' + pt);
+    for (const k of ['minX', 'minY', 'maxX', 'maxY']) assert.ok(Number.isFinite(r.bbox[k]), 'finite bbox');
 });

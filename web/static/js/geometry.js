@@ -134,6 +134,7 @@
                 continue;
             }
             const n = parseFloat(val);
+            if (!Number.isFinite(n)) continue; // skip a malformed group value → never emit NaN/Infinity coords
             switch (code) {
                 case 10: if (type === 'LINE') sx = n; else if (type === 'LWPOLYLINE') pendX = n; else if (type === 'VERTEX') vx = n; else if (type === 'CIRCLE' || type === 'ARC') cx = n; break;
                 case 20: if (type === 'LINE') sy = n; else if (type === 'LWPOLYLINE') { if (pendX != null) { verts.push([pendX, n]); pendX = null; } } else if (type === 'VERTEX') vy = n; else if (type === 'CIRCLE' || type === 'ARC') cy = n; break;
