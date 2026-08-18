@@ -4627,7 +4627,7 @@
         // FE4 — multi-select of the CURRENT subsystem's objects only: zones in the Garagenmanager
         // (plan), vehicles in the Stellplatzsystem (manage) — mirroring interactive(b). selSet holds
         // their ids; a marquee drag on empty floor fills it; group move/delete act on it.
-        let selSet = [], marq = null, measure = null; // measure = {a,{b|hover}} ruler (UX2)
+        let selSet = [], marq = null, measure = null, measurePre = null; // measure = {a,{b|hover}} ruler (UX2); measurePre = start-point snap preview
         const findBlock = (id) => P.spots.find((x) => x._id == id) || P.excl.find((x) => x.id === id);
         const inSel = (id) => id != null && selSet.indexOf(id) >= 0;
         const clearSelSet = () => { if (selSet.length) { selSet = []; return true; } return false; };
@@ -4665,7 +4665,7 @@
             b.x += snap1(b.x, b.x + b.w, xs); b.y += snap1(b.y, b.y + b.h, ys);
         }
         // Cancel any in-progress drawing and drop back to the selection cursor (never deletes).
-        function cancelDrawing() { const had = P.chain; P.tool = null; P.chain = null; P.openStart = null; P.preview = null; P.chainAnchor = null; P.snapHint = null; P.guide = null; P.attach = null; zoneDraw = null; measure = null; if (had) pruneNodes(); refreshFloorFromWalls(); fitView(); }
+        function cancelDrawing() { const had = P.chain; P.tool = null; P.chain = null; P.openStart = null; P.preview = null; P.chainAnchor = null; P.snapHint = null; P.guide = null; P.attach = null; zoneDraw = null; measure = null; measurePre = null; if (had) pruneNodes(); refreshFloorFromWalls(); fitView(); }
         // Inline quick-edit popover for a selected wall segment OR opening: length/width + delete.
         const wallPopLabel = el('span', { class: 'gp-wallpop-lab' }, 'Länge');
         const wallLenIn = el('input', { type: 'number', step: '0.01', min: '0.1', class: 'gp-lenin' });
@@ -5836,6 +5836,12 @@
                     const d = Math.hypot(b2.x - measure.a.x, b2.y - measure.a.y), ang = ((Math.atan2(b2.y - measure.a.y, b2.x - measure.a.x) * 180 / Math.PI) % 180 + 180) % 180;
                     const tl = svgEl('text', { x: (ax + bx) / 2, y: (ay + by) / 2 - 9, 'text-anchor': 'middle', class: 'gp-measurelab' });
                     tl.textContent = d.toFixed(2).replace('.', ',') + ' m · ' + Math.min(ang, 180 - ang).toFixed(0) + '°'; labelSvg.append(tl); } }
+            // Start-point (A) snap preview: show the magnet cue before the first click, too.
+            if (P.tool === 'measure' && !(measure && measure.a && !measure.b) && measurePre && measurePre.snap) {
+                const hx = measurePre.x * CELL, hy = measurePre.y * CELL;
+                svg.append(svgEl('circle', { cx: hx, cy: hy, r: 3, class: 'gp-measure-pt' }));
+                svg.append(svgEl('circle', { cx: hx, cy: hy, r: 8, fill: 'none', class: 'gp-measure-snap' }));
+            }
             // orthogonal snap guide-line (spans the canvas)
             if (P.guide && (P.chain || nodeDrag)) {
                 if (P.guide.kind === 'h') svg.append(svgEl('line', { x1: 0, y1: P.guide.y * CELL, x2: P.Wm * CELL, y2: P.guide.y * CELL, class: 'gp-guide' }));
@@ -6508,7 +6514,7 @@
         });
 
         // ---- interactive wall drawing / node editing (overlay in plan mode) ----
-        function setTool(kind) { P.tool = kind || null; P.chain = null; P.openStart = null; P.preview = null; P.snapHint = null; P.guide = null; P.attach = null; P.chainAnchor = null; measure = null; if (P.tool) { P.structSel = null; } draw(); }
+        function setTool(kind) { P.tool = kind || null; P.chain = null; P.openStart = null; P.preview = null; P.snapHint = null; P.guide = null; P.attach = null; P.chainAnchor = null; measure = null; measurePre = null; if (P.tool) { P.structSel = null; } draw(); }
         function evWorld(ev) { const r = planEl.getBoundingClientRect(); return { x: (ev.clientX - r.left) / P.CELL, y: (ev.clientY - r.top) / P.CELL }; }
         // Snap a drawing point: existing node > point on an existing wall (Anbau, records the
         // attach split for the distance readout) > grid, with automatic orthogonal (H/V) snap
@@ -6656,7 +6662,11 @@
         drawOverlay.addEventListener('pointermove', (ev) => {
             let p = evWorld(ev);
             if ((P.chain || nodeDrag || zoneDraw || zoneDrag) && maybeExpand(p)) p = evWorld(ev); // auto-expand while drawing/dragging
-            if (P.tool === 'measure') { if (measure && measure.a && !measure.b) { const s = snapMeasure(p, measure.a, ev.shiftKey); measure.hover = { x: s.x, y: s.y, snap: s.snap }; drawFloor(); } return; }
+            if (P.tool === 'measure') {
+                if (measure && measure.a && !measure.b) { const s = snapMeasure(p, measure.a, ev.shiftKey); measure.hover = { x: s.x, y: s.y, snap: s.snap }; }
+                else { const s = snapMeasure(p, null, ev.shiftKey); measurePre = { x: s.x, y: s.y, snap: s.snap }; } // preview where the start point A will snap
+                drawFloor(); return;
+            }
             if (zoneDraw) { zoneDraw.x1 = gsnap(p.x); zoneDraw.y1 = gsnap(p.y); drawFloor(); return; }
             if (zoneDrag) {
                 const b = P.excl.find((x) => x.id === zoneDrag.id); if (!b) { zoneDrag = null; return; }
