@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/preining/parkrr/internal/auth"
 	"github.com/preining/parkrr/internal/models"
 )
 
@@ -1112,12 +1113,15 @@ func (h *Handler) Occupancy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	// FE4: record today's snapshot (idempotent per day — a bounded, per-day upsert; the trend is
-	// best-effort telemetry) and return the recent daily trend for the dashboard sparkline.
-	_, _ = h.Pool.Exec(ctx,
-		`INSERT INTO occupancy_snapshots (day, placed, active) VALUES (CURRENT_DATE, $1, $2)
-		 ON CONFLICT (day) DO UPDATE SET placed = EXCLUDED.placed, active = EXCLUDED.active, taken_at = now()`,
-		resp.Placed, resp.Active)
+	// FE4: record today's snapshot (idempotent per day — a bounded, per-day upsert; best-effort
+	// telemetry) and return the recent daily trend for the sparkline. Only writers (admin/editor)
+	// trigger the write, so a read-only reader never mutates the DB on this GET (safe-GET / least-privilege).
+	if u, ok := auth.UserFrom(r.Context()); ok && (u.IsAdmin || u.Role == models.RoleEditor) {
+		_, _ = h.Pool.Exec(ctx,
+			`INSERT INTO occupancy_snapshots (day, placed, active) VALUES (CURRENT_DATE, $1, $2)
+			 ON CONFLICT (day) DO UPDATE SET placed = EXCLUDED.placed, active = EXCLUDED.active, taken_at = now()`,
+			resp.Placed, resp.Active)
+	}
 	resp.Trend = []occDay{}
 	if trows, terr := h.Pool.Query(ctx,
 		`SELECT to_char(day, 'YYYY-MM-DD'), placed, active FROM occupancy_snapshots

@@ -5289,6 +5289,7 @@
                 if (ptCount > 12000) { toast('DXF zu detailliert (' + ptCount + ' Punkte) — bitte vereinfachen', 'error'); return; } // keep the geometry blob under its size cap
                 // Store the polylines (2-dp) + bbox; the renderer maps them into the placement box.
                 const vec = { pl: dxf.polylines.map((pl) => pl.map((p) => [round2(p[0]), round2(p[1])])), minX: round2(minX), minY: round2(minY), dw: round2(dw), dh: round2(dh) };
+                if (JSON.stringify(vec).length > 230000) { toast('DXF zu detailliert — bitte eine einfachere Zeichnung verwenden', 'error'); return; } // keep the serialized plan under the 256 KiB geometry-blob cap
                 // Fit the drawing into the floor bounding box, aspect-preserving (letterbox), then calibrate.
                 const bb = floorBB(), fw = bb.maxX - bb.minX, fh = bb.maxY - bb.minY, fit = Math.min(fw / dw, fh / dh);
                 const pw = Math.max(1, dw * fit), ph = Math.max(1, dh * fit);
@@ -6146,9 +6147,11 @@
             for (const b of spots) {
                 const p = by1.get(b._id);
                 if (p && p.ok) { b.x = p.x; b.y = p.y; b.rot = p.rot; b._invalid = false; }
-                else { const o = orig.get(b._id); b.x = o.x; b.y = o.y; b.rot = o.rot; b._invalid = !validVeh(b, b._id); }
+                else { const o = orig.get(b._id); b.x = o.x; b.y = o.y; b.rot = o.rot; }
                 b._dirty = true;
             }
+            // Flag validity against the FINAL layout, not a mid-loop snapshot (spots move as we go).
+            spots.forEach((b) => { b._invalid = !validVeh(b, b._id); });
             spots.forEach((b) => persistSpot(b));
 
             // Phase 2 — staging vehicles into the remaining free space (placed spots become obstacles,
@@ -6692,7 +6695,7 @@
         drawOverlay.addEventListener('pointerdown', (ev) => {
             if (ev.button !== 0 || spaceDown || P.mode !== 'plan' || P.calib || !canManageNow) return;
             ev.preventDefault(); const p = evWorld(ev);
-            if (P.tool === 'measure') { const s = snapMeasure(p, (measure && measure.a && !measure.b) ? measure.a : null, ev.shiftKey); if (!measure || measure.b) measure = { a: { x: s.x, y: s.y } }; else measure.b = { x: s.x, y: s.y }; drawFloor(); return; } // ruler: click A, click B, click again = restart
+            if (P.tool === 'measure') { const s = snapMeasure(p, (measure && measure.a && !measure.b) ? measure.a : null, ev.shiftKey); if (!measure || measure.b) measure = { a: { x: s.x, y: s.y, snap: s.snap } }; else measure.b = { x: s.x, y: s.y, snap: s.snap }; drawFloor(); return; } // ruler: click A, click B, click again = restart
             if (isWallDraw(P.tool)) { wallClick(snapDraw(p, ev.shiftKey)); return; }
             if (isOpenKind(P.tool)) { openClick(p); return; }
             if (isZoneTool(P.tool) || P.tool === 'column') { const x = gsnap(p.x), y = gsnap(p.y); zoneDraw = { x0: x, y0: y, x1: x, y1: y }; try { drawOverlay.setPointerCapture(ev.pointerId); } catch (er) { /* ignore */ } return; }
