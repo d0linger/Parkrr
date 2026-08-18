@@ -220,3 +220,24 @@ test('packRects (MaxRects) — a large item still fits after obstacles split the
     assert.ok(big.ok, 'the big item finds a bay');
     assert.ok(!PG.rectsCollide({ x: big.x, y: big.y, w: 5, h: 8, rot: big.rot }, pillar), 'big item clears the pillar');
 });
+
+// FE1 — niche-first (BSSF): a small item prefers the tighter free region over a large open one,
+// and padding=0 lets it use the full pocket (no hidden inflation).
+test('packRects (MaxRects/BSSF) — small item fills the tight niche, not the open area', () => {
+    // A pillar at x3..5 splits a 12×4 bin into a snug 3-wide left pocket and a roomy 7-wide right area.
+    const pillar = { x: 3, y: 0, w: 2, h: 4, rot: 0 };
+    const r = PG.packRects([{ id: 's', w: 2.5, h: 2.5 }], [pillar], { minX: 0, minY: 0, maxX: 12, maxY: 4 }, null, { margin: 0, gap: 0 });
+    const p = r.placements[0];
+    assert.ok(p.ok);
+    assert.ok(p.x + 2.5 <= 3 + 0.01, 'placed in the tight left pocket (BSSF), not the open right area: x=' + p.x);
+});
+
+test('packRects — padding 0 lets a 2.0×1.0 car fit a 2.7×1.7 niche (Problem A regression)', () => {
+    // niche as a 2.7×1.7 pocket walled off on three sides; the car must fit with padding 0.
+    const obs = [{ x: 2.7, y: 0, w: 0.2, h: 1.7, rot: 0 }, { x: 0, y: 1.7, w: 2.9, h: 0.2, rot: 0 }];
+    const r0 = PG.packRects([{ id: 'car', w: 2.0, h: 1.0 }], obs, { minX: 0, minY: 0, maxX: 2.9, maxY: 1.9 }, null, { margin: 0, gap: 0 });
+    assert.ok(r0.placements[0].ok, 'car fits the niche with padding 0');
+    // with a big margin it would be (correctly) rejected — proving the margin, not the packer, was the culprit
+    const rBig = PG.packRects([{ id: 'car', w: 2.0, h: 1.0 }], obs, { minX: 0, minY: 0, maxX: 2.9, maxY: 1.9 }, null, { margin: 0.5, gap: 0.5 });
+    assert.equal(rBig.placements[0].ok, false, 'oversized margin rejects it — the mechanism the bug relied on');
+});

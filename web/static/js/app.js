@@ -6119,32 +6119,65 @@
             } else { c.append(el('span', { class: 'gp-vst' }, '⠿')); }
             return c;
         }
-        // FE1: Auto-Arrange via the tested best-fit-decreasing packer (PG.packRects) — largest
-        // vehicles first (keeps big contiguous areas for them), 0°/90° rotation to fill niches, and an
-        // exact SAT gate so nothing overlaps a wall, column, lane or another vehicle. Anything that
-        // can't fit is left where it was and flagged, never overlapped.
-        async function autoArrange() {
-            const items = P.spots.slice();
-            if (!items.length) { toast('Keine platzierten Gefährte zum Anordnen', 'warn'); return; }
-            if (!(await confirmDialog('Auto-Anordnen', items.length + ' platzierte Gefährte neu anordnen (größte zuerst, mit Drehung)? Die aktuellen Positionen werden überschrieben.', 'Anordnen'))) return;
+        // FE1: Auto-Arrange via the MaxRects packer (PG.packRects). `padding` is the ONLY clearance the
+        // maths uses — margin from walls AND gap between vehicles — and it defaults to 0 (flush), so a
+        // vehicle fits any niche its true footprint fits (no hidden inflation shrinking small pockets).
+        // The buffer toggle raises it to P.bufferM when the user wants breathing room. Two phases:
+        //   1) re-pack the already-placed vehicles (largest first; BSSF fills tight niches),
+        //   2) pack the "Nicht platziert" staging vehicles into the space that's left — those that fit
+        //      become real spots, the rest simply stay in staging (no error, no collision).
+        async function autoArrange(padding) {
+            const pad = padding != null ? padding : (P.buffer ? P.bufferM : 0); // allowZeroMargin: 0 ⇒ flush
+            const spots = P.spots.slice(), pals = P.palette.slice();
+            if (!spots.length && !pals.length) { toast('Keine Gefährte zum Anordnen', 'warn'); return; }
+            const msg = spots.length + ' platzierte' + (pals.length ? ' + ' + pals.length + ' aus „Nicht platziert"' : '') + ' anordnen (größte zuerst, mit Drehung, Abstand ' + pad.toFixed(2).replace('.', ',') + ' m)?';
+            if (!(await confirmDialog('Auto-Anordnen', msg, 'Anordnen'))) return;
             // Hard obstacles: walls, blocking structures (columns/Stützen) and driving lanes /
             // maintenance / exits. Stellflächen are parkable markings → NOT obstacles.
-            const obstacles = wallRects()
+            const baseObs = wallRects()
                 .concat(P.excl.filter((e) => !isZoneKind(e.kind)))
                 .concat(P.excl.filter((e) => isZoneKind(e.kind) && e.kind !== 'stell'));
-            const gap = P.buffer ? P.bufferM : 0.15; // vehicle↔vehicle clearance (walls stay flush)
-            const orig = new Map(items.map((b) => [b._id, { x: b.x, y: b.y, rot: b.rot || 0 }]));
-            const res = PG.packRects(items.map((b) => ({ id: b._id, w: b.w, h: b.h })), obstacles, floorBB(), P.floor, { step: 0.25, margin: 0.2, gap });
-            const byId = new Map(res.placements.map((p) => [p.id, p]));
-            for (const b of items) {
-                const p = byId.get(b._id);
+            const bb = floorBB(), opts = { margin: pad, gap: pad };
+
+            // Phase 1 — re-pack existing spots.
+            const orig = new Map(spots.map((b) => [b._id, { x: b.x, y: b.y, rot: b.rot || 0 }]));
+            const r1 = PG.packRects(spots.map((b) => ({ id: b._id, w: b.w, h: b.h })), baseObs, bb, P.floor, opts);
+            const by1 = new Map(r1.placements.map((p) => [p.id, p]));
+            for (const b of spots) {
+                const p = by1.get(b._id);
                 if (p && p.ok) { b.x = p.x; b.y = p.y; b.rot = p.rot; b._invalid = false; }
-                else { const o = orig.get(b._id); b.x = o.x; b.y = o.y; b.rot = o.rot; b._invalid = !validVeh(b, b._id); } // unplaceable → leave in place, flag
+                else { const o = orig.get(b._id); b.x = o.x; b.y = o.y; b.rot = o.rot; b._invalid = !validVeh(b, b._id); }
                 b._dirty = true;
             }
-            items.forEach((b) => persistSpot(b));
-            markDirty(); pushUndo(); draw();
-            toast(res.placed + ' angeordnet' + (res.failed ? ' · ' + res.failed + ' unverändert (kein Platz)' : '') + (P.buffer ? ' · Puffer ' + P.bufferM.toFixed(1).replace('.', ',') + ' m' : ''), res.failed ? 'warn' : '');
+            spots.forEach((b) => persistSpot(b));
+
+            // Phase 2 — staging vehicles into the remaining free space (placed spots become obstacles,
+            // inflated by pad so the clearance holds). Unplaceable ones silently stay in the palette.
+            const palFoot = (p) => { const d = catFoot(p.type); return { w: num(p.length_m, d[0]), h: num(p.width_m, d[1]) }; };
+            let staged = 0, stageErr = 0;
+            if (pals.length) {
+                const placedObs = baseObs.concat(spots.filter((b) => !b._invalid).map((b) => ({ x: b.x - pad, y: b.y - pad, w: b.w + 2 * pad, h: b.h + 2 * pad, rot: b.rot || 0 })));
+                const r2 = PG.packRects(pals.map((p) => ({ id: p.id, ...palFoot(p) })), placedObs, bb, P.floor, opts);
+                const by2 = new Map(r2.placements.map((p) => [p.id, p]));
+                for (const p of pals) {
+                    const pl = by2.get(p.id); if (!pl || !pl.ok) continue; // no room → stays in staging
+                    const f = palFoot(p);
+                    try {
+                        const spot = await api.post('/halls/' + P.hallId + '/spots', { label: (p.label + ' #' + p.id).slice(0, 90), geometry: { x: round2(pl.x), y: round2(pl.y), w: round2(f.w), h: round2(f.h), rot: pl.rot || 0, status: 'busy' } });
+                        try { await api.put('/spots/' + spot.id + '/vehicle', { vehicle_id: p.id }); }
+                        catch (linkErr) { try { await api.del('/spots/' + spot.id); } catch (e2) { /* best effort */ } throw linkErr; }
+                        P.spots.push({ _id: spot.id, kind: 'veh', label: p.label, spotLabel: spot.label, type: p.type || '', vehId: p.id, personId: p.person_id || null, personName: p.person_name || '', L: p.length_m, W: p.width_m, H: p.height_m, t: p.weight_t, x: pl.x, y: pl.y, w: f.w, h: f.h, rot: pl.rot || 0, status: 'busy', _dirty: false });
+                        P.palette = P.palette.filter((x) => x.id !== p.id); staged++;
+                    } catch (err) { stageErr++; } // keep in staging on failure
+                }
+            }
+
+            markDirty(); pushUndo(); draw(); renderRail();
+            const parts = [r1.placed + ' angeordnet'];
+            if (staged) parts.push(staged + ' aus „Nicht platziert" gesetzt');
+            const left = r1.failed + (pals.length - staged);
+            if (left) parts.push(left + ' ohne Platz (in „Nicht platziert")');
+            toast(parts.join(' · ') + (pad > 0 ? ' · Abstand ' + pad.toFixed(2).replace('.', ',') + ' m' : ''), (r1.failed || stageErr) ? 'warn' : 'ok');
         }
         function renderManageRail() {
             rail.append(hallSwitchCard(false));
@@ -6796,8 +6829,8 @@
             const pc = calcPlace(e), rr = planEl.getBoundingClientRect(), over = e.clientX >= rr.left && e.clientX <= rr.right && e.clientY >= rr.top && e.clientY <= rr.bottom;
             drag.g.remove(); if (prev) { prev.remove(); prev = null; } const p = drag.p; drag = null;
             if (!over) { toast('Auf die Fläche ziehen', 'warn'); return; }
-            if (!rectInPoly(pc, P.floor)) { toast('Außerhalb der Hallenfläche', 'error'); return; }
-            if (collide({ kind: 'veh', x: pc.x, y: pc.y, w: pc.w, h: pc.h }, null)) { toast('Kein Platz frei — belegt/ausgenommen', 'error'); return; }
+            if (!rectInPoly(pc, P.floor)) { toast('Außerhalb der Hallenfläche — bleibt in „Nicht platziert"', 'warn'); return; }
+            if (collide({ kind: 'veh', x: pc.x, y: pc.y, w: pc.w, h: pc.h }, null)) { toast('Kein Platz frei hier — bleibt in „Nicht platziert“ · „Auto-Anordnen“ packt es automatisch', 'warn'); return; }
             try {
                 const geom = { x: round2(pc.x), y: round2(pc.y), w: round2(pc.w), h: round2(pc.h), rot: 0, status: 'busy' };
                 // Hall-unique persisted spot label (uq_spots_hall_label) — suffix the vehicle id
