@@ -31,13 +31,12 @@ for (const [label, route] of views) {
     await page.waitForSelector('#page:not(:empty)', { timeout: 15000 });
     await page.waitForTimeout(400); // settle async list renders
 
-    // Baseline: three pre-existing debt areas on the authenticated views are excluded for now, so
-    // this guards against NEW serious/critical violations of every OTHER rule. To remediate in a
-    // dedicated a11y pass: theme `color-contrast`, unlabeled filter <select>s (`select-name`), and a
-    // prohibited aria-* attribute on the Gefährte list (`aria-prohibited-attr`).
+    // Enforces every serious/critical WCAG 2 A/AA rule with no exclusions — the earlier
+    // baseline (color-contrast, select-name, aria-prohibited-attr) has been remediated:
+    // light-theme AA text inks, aria-label on the filter/sort <select>s, and role="img"
+    // on the icon-only "Nicht platziert" span.
     const results = await new AxeBuilder({ page })
       .withTags(['wcag2a', 'wcag2aa'])
-      .disableRules(['color-contrast', 'select-name', 'aria-prohibited-attr'])
       .analyze();
     const serious = results.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical');
     if (serious.length) {

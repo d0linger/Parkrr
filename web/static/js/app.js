@@ -677,7 +677,7 @@
         page.append(head);
 
         const search = el('input', { class: 'search', type: 'search', placeholder: 'Suche …', value: q });
-        const sortSel = el('select', {}, ...opts.sorts.map((s, i) => el('option', { value: i, selected: i === sortIdx }, s.label)));
+        const sortSel = el('select', { 'aria-label': 'Sortierung' }, ...opts.sorts.map((s, i) => el('option', { value: i, selected: i === sortIdx }, s.label)));
         const toolbar = el('div', { class: 'toolbar' }, search, sortSel);
         const controlState = {};
         if (opts.controls) for (const c of opts.controls(() => { pageNum = 1; refresh(); }, controlState)) toolbar.append(c);
@@ -1839,10 +1839,10 @@
             ],
             controls: (refresh, cs) => {
                 cs.status = ''; cs.person = ''; cs.showArchived = false;
-                const stSel = el('select', {}, el('option', { value: '' }, 'Alle Status'),
+                const stSel = el('select', { 'aria-label': 'Status filtern' }, el('option', { value: '' }, 'Alle Status'),
                     ...['stored', 'reserved', 'collected', 'cancelled'].map((s) => el('option', { value: s }, STATUS_LABEL[s])));
                 stSel.addEventListener('change', () => { cs.status = stSel.value; refresh(); });
-                const peSel = el('select', {}, el('option', { value: '' }, 'Alle Personen'),
+                const peSel = el('select', { 'aria-label': 'Person filtern' }, el('option', { value: '' }, 'Alle Personen'),
                     ...state.persons.map((p) => el('option', { value: p.id }, personName(p))));
                 peSel.addEventListener('change', () => { cs.person = peSel.value; refresh(); });
                 const arChk = el('input', { type: 'checkbox' });
@@ -1938,7 +1938,7 @@
                 el('span', {}, '📍 ' + (v.hall_name ? 'Halle „' + v.hall_name + '"' : 'im Plan')),
                 el('span', { class: 'veh-loc-go' }, 'Im Plan zeigen →'));
         }
-        if (compact) return el('span', { class: 'veh-loc veh-loc-ic empty', title: 'Nicht platziert', 'aria-label': 'Nicht platziert' }, icon('pin', 20));
+        if (compact) return el('span', { class: 'veh-loc veh-loc-ic empty', role: 'img', title: 'Nicht platziert', 'aria-label': 'Nicht platziert' }, icon('pin', 20));
         return el('span', { class: 'veh-loc empty' }, '○ Nicht platziert');
     }
     function vehicleCard(v, { linkable = true, chargeInfo = null } = {}) {

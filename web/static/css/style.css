@@ -11,6 +11,7 @@
     --text-muted: #93a1b8;
     --primary: #0d9488;
     --primary-hover: #14b8a6;
+    --primary-ink: var(--primary-hover); /* teal used as TEXT; darkened for WCAG AA in light theme */
     --primary-soft: rgba(20, 184, 166, 0.16);
     --accent: #f59e0b;
     --danger: #ef4457;
@@ -54,7 +55,11 @@
         --glow: rgba(13, 148, 136, 0.09);
         --glass: rgba(238, 242, 248, 0.72);
         --glass-border: rgba(20, 40, 60, 0.08);
-        --tab-active: #0d9488;
+        /* AA text inks for the light surfaces (teal/red too light on white otherwise). */
+        --primary-ink: #0f766e;
+        --danger: #d11f31;
+        --danger-hover: #a81729;
+        --tab-active: #0f766e;
     }
 }
 
@@ -75,7 +80,11 @@
     --glow: rgba(13, 148, 136, 0.09);
     --glass: rgba(238, 242, 248, 0.72);
     --glass-border: rgba(20, 40, 60, 0.08);
-    --tab-active: #0d9488;
+    /* AA text inks for the light surfaces (teal/red too light on white otherwise). */
+    --primary-ink: #0f766e;
+    --danger: #d11f31;
+    --danger-hover: #a81729;
+    --tab-active: #0f766e;
 }
 :root[data-theme="dark"] {
     color-scheme: dark;
@@ -482,11 +491,11 @@ textarea { resize: vertical; min-height: 72px; }
 .stat.tone-teal::after { background: var(--primary); }
 .stat.tone-green::after { background: var(--success); }
 .stat.tone-amber::after { background: var(--accent); }
-.stat.tone-teal .value { color: var(--primary-hover); }
+.stat.tone-teal .value { color: var(--primary-ink); }
 .stat.tone-green .value { color: var(--success-text); }
 .stat.tone-amber .value { color: var(--accent-text); }
 .stat.tone-teal .stat-ic, .stat.tone-green .stat-ic, .stat.tone-amber .stat-ic { opacity: 0.85; }
-.stat.tone-teal .stat-ic { color: var(--primary-hover); }
+.stat.tone-teal .stat-ic { color: var(--primary-ink); }
 .stat.tone-green .stat-ic { color: var(--success-text); }
 .stat.tone-amber .stat-ic { color: var(--accent-text); }
 @media (prefers-reduced-motion: reduce) { .stat { transition: none; } .stat:hover { transform: none; } }
@@ -539,7 +548,7 @@ textarea { resize: vertical; min-height: 72px; }
 .bar-val { font-variant-numeric: tabular-nums; font-size: 0.85rem; color: var(--text-muted); text-align: right; }
 /* Year-over-year delta on the per-person "Kosten pro Jahr" chart. */
 .yoy { display: block; font-size: 0.7rem; font-variant-numeric: tabular-nums; margin-top: 1px; }
-.yoy.up { color: var(--primary-hover); }
+.yoy.up { color: var(--primary-ink); }
 .yoy.down, .yoy.flat { color: var(--text-muted); }
 /* Inline YoY delta inside a KPI tile value (dashboard Umsatz). */
 .stat .value .yoy { display: inline; font-size: 0.72rem; margin-top: 0; }
@@ -772,7 +781,7 @@ textarea { resize: vertical; min-height: 72px; }
 
 /* ---------- Section rhythm: eyebrow section headers ---------- */
 .section-head { margin-top: 1.6rem; margin-bottom: 0.7rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--border); align-items: baseline; }
-.sec-eyebrow { margin: 0; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--primary-hover); }
+.sec-eyebrow { margin: 0; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--primary-ink); }
 .sec-group { display: flex; align-items: baseline; gap: 0.5rem; }
 .sec-count { background: var(--bg-elev-2); color: var(--text-muted); font-size: 0.72rem; font-weight: 700; padding: 0.1rem 0.45rem; border-radius: 999px; font-variant-numeric: tabular-nums; }
 
@@ -959,9 +968,9 @@ textarea { resize: vertical; min-height: 72px; }
      rails, chart bars and buttons keep the bright --accent/--success/--warning. */
   --accent-text:var(--accent); --warning-text:var(--warning); --success-text:var(--success);
 }
-:root[data-theme="light"]{ --card-bg:#ffffff; --accent-text:#b45309; --warning-text:#b45309; --success-text:#166534; }
+:root[data-theme="light"]{ --card-bg:#ffffff; --accent-text:#92400e; --warning-text:#92400e; --success-text:#166534; }
 :root:not([data-theme]){ --card-bg:#16213a; }
-@media(prefers-color-scheme:light){ :root:not([data-theme]){ --card-bg:#ffffff; --accent-text:#b45309; --warning-text:#b45309; --success-text:#166534; } }
+@media(prefers-color-scheme:light){ :root:not([data-theme]){ --card-bg:#ffffff; --accent-text:#92400e; --warning-text:#92400e; --success-text:#166534; } }
 
 body{ font-family:var(--font); }
 h1,h2,h3,.sectitle,.mtitle,.bal-hero-num,.ag-accrued,.stat .value,.owe-amt,.amt{ font-family:var(--font-head); }
