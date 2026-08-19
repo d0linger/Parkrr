@@ -2,9 +2,12 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Server-side planner wall templates (AR3): shared, reusable wall layouts stored
@@ -88,8 +91,8 @@ func (h *Handler) CreateWallTemplate(w http.ResponseWriter, r *http.Request) {
 		maxWallTemplates)
 	// The walls payload is opaque planner geometry, not business data — record the
 	// identifying fields only, so the trail stays readable.
-	h.auditChange(r, "create", "wall_template", t.ID, "Wand-Vorlage angelegt: "+t.Name,
-		map[string]any{"name": map[string]any{"old": nil, "new": t.Name}})
+	h.auditCreated(r, "wall_template", t.ID, "Wand-Vorlage angelegt: "+t.Name,
+		map[string]any{"name": t.Name})
 	writeJSON(w, http.StatusCreated, t)
 }
 
@@ -100,14 +103,20 @@ func (h *Handler) DeleteWallTemplate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	// Read the name first so the trail says WHAT was deleted, not just an id.
+	// RETURNING both names what was deleted AND proves a row existed: the previous
+	// form audited unconditionally after a plain Exec, so deleting a nonexistent id
+	// wrote a phantom deletion into an append-only table.
 	var name string
-	_ = h.Pool.QueryRow(r.Context(), `SELECT name FROM wall_templates WHERE id=$1`, id).Scan(&name)
-	if _, err := h.Pool.Exec(r.Context(), `DELETE FROM wall_templates WHERE id=$1`, id); err != nil {
+	if err := h.Pool.QueryRow(r.Context(),
+		`DELETE FROM wall_templates WHERE id=$1 RETURNING name`, id).Scan(&name); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "template not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete template")
 		return
 	}
-	h.auditChange(r, "delete", "wall_template", id, "Wand-Vorlage gelöscht: "+name,
-		map[string]any{"name": map[string]any{"old": name, "new": nil}})
+	h.auditDeleted(r, "wall_template", id, "Wand-Vorlage gelöscht: "+name,
+		map[string]any{"name": name})
 	w.WriteHeader(http.StatusNoContent)
 }

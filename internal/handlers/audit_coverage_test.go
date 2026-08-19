@@ -51,16 +51,26 @@ func handlerSources(t *testing.T) map[string]string {
 	return out
 }
 
-var reBareDelete = regexp.MustCompile(`h\.audit(?:Tx)?\((?:ctx, tx, )?r, "delete"`)
+// Any audit spelling other than auditDeleted, recording action "delete". The
+// argument prefix before `r` varies (ctx/tx, r.Context()/tx, none), and the earlier
+// version of this pattern pinned it too tightly: it matched only `h.audit(r,` and
+// `h.audit…(ctx, tx, r,`, so a live `h.auditChange(r, "delete", …)` in
+// wall_templates.go slipped straight past the guard that exists to catch it.
+// Matching on the helper name plus the "delete" literal keeps it spelling-agnostic.
+var reBareDelete = regexp.MustCompile(`h\.(?:audit|auditTx|auditAs|auditChange|auditChangeTx|auditInsert)\([^)]*?"delete"`)
 
 // TestAuditDeletesCarryASnapshot fails if any deletion is recorded with a plain
 // summary instead of auditDeleted, which preserves the removed row's values.
 func TestAuditDeletesCarryASnapshot(t *testing.T) {
 	var bad []string
-	for path, src := range handlerSources(t) {
-		for _, loc := range reBareDelete.FindAllStringIndex(src, -1) {
-			line := strings.Count(src[:loc[0]], "\n") + 1
-			bad = append(bad, path+":"+itoaLine(line))
+	for _, hf := range handlerFuncs(t) {
+		// auditDeleted is the sanctioned wrapper; its own body naturally contains the
+		// delete-audit call this test forbids everywhere else.
+		if hf.Name == "auditDeleted" {
+			continue
+		}
+		if reBareDelete.MatchString(hf.Body) {
+			bad = append(bad, hf.File+" "+hf.Name)
 		}
 	}
 	sort.Strings(bad)
