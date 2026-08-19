@@ -157,8 +157,14 @@ func startFlatRateArchival(h *handlers.Handler, stop <-chan struct{}) {
 	}
 }
 
-// StartAuditRetention periodically prunes audit entries older than keep. It runs
-// until stop is closed. keep <= 0 disables retention (keep forever).
+// StartAuditRetention periodically prunes audit entries. It runs until stop is
+// closed.
+//
+// keep is the long window and shortKeep the auth/ops-noise window, and they are
+// INDEPENDENT: keep <= 0 disables the long window only, so the short tier keeps
+// running. Retention is off entirely only when both are <= 0. (This doc used to
+// say "keep <= 0 disables retention", which was true before the short tier existed
+// and is now contradicted by the guard below.)
 func StartAuditRetention(pool *pgxpool.Pool, keep, shortKeep time.Duration, stop <-chan struct{}) {
 	// The two windows are independent knobs: "keep the trail forever, but do not
 	// hoard a year of login rows" is a legitimate setting (keep=0, shortKeep=365).

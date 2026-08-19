@@ -46,7 +46,7 @@ type Config struct {
 	// Observability & data lifecycle
 	MetricsToken       string // Bearer token required to scrape /metrics ("" = open)
 	MetricsRequireAuth bool   // when true and MetricsToken is empty, /metrics is disabled (fail closed) instead of served open
-	AuditRetentionDays int    // prune audit entries older than N days (0 = keep forever)
+	AuditRetentionDays int    // prune audit entries older than N days (0 = disables this window only; see AuditRetentionShortDays)
 	// AuditRetentionShortDays ages out auth/ops noise (logins, backups, reminders,
 	// imports) earlier than the long window. 0 disables the short tier.
 	AuditRetentionShortDays int
