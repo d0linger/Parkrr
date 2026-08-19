@@ -1173,8 +1173,7 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 	// commit together (BAO §131).
 	if err := h.auditChangeTx(r.Context(), tx, r, "update", "flatrate", id,
 		"Pauschale "+personLabelTx(r.Context(), tx, a.PersonID)+" "+key+": "+periodPaidAuditState(req.Paid, req.Amount),
-		diffFields(map[string]any{"period": key, "paid": !req.Paid},
-			map[string]any{"period": key, "paid": req.Paid})); err != nil {
+		auditSnapshot(map[string]any{"period": key, "paid": req.Paid})); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update payment")
 		return
 	}

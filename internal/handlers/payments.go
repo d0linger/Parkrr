@@ -637,8 +637,7 @@ func (h *Handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 		if settled > 0 {
 			if err := h.auditChangeTx(ctx, tx, r, "update", "payment", p.ID,
 				fmt.Sprintf("stamped %d position(s) as paid", settled),
-				diffFields(map[string]any{"settled_positions": 0},
-					map[string]any{"settled_positions": settled})); err != nil {
+				auditSnapshot(map[string]any{"settled_positions": settled})); err != nil {
 				return err
 			}
 		}
@@ -899,8 +898,7 @@ func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
 		if settled > 0 {
 			return h.auditChangeTx(ctx, tx, r, "update", "payment", 0,
 				fmt.Sprintf("applied Guthaben to %d open position(s)", settled),
-				diffFields(map[string]any{"settled_positions": 0},
-					map[string]any{"settled_positions": settled}))
+				auditSnapshot(map[string]any{"settled_positions": settled}))
 		}
 		return nil
 	})

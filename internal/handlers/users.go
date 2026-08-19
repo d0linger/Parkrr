@@ -305,15 +305,18 @@ func (h *Handler) ResetUserTOTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	if _, err := h.Pool.Exec(r.Context(),
-		`UPDATE users SET totp_enabled=FALSE, totp_secret='', updated_at=now() WHERE id=$1`,
-		id); err != nil {
+	var prevTOTP bool
+	if err := h.Pool.QueryRow(r.Context(),
+		`WITH prev AS (SELECT totp_enabled FROM users WHERE id=$1)
+		 UPDATE users SET totp_enabled=FALSE, totp_secret='', updated_at=now() WHERE id=$1
+		 RETURNING (SELECT totp_enabled FROM prev)`,
+		id).Scan(&prevTOTP); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not reset two-factor")
 		return
 	}
 	_, _ = h.Pool.Exec(r.Context(), `DELETE FROM totp_backup_codes WHERE user_id=$1`, id)
 	h.auditChange(r, "update", "user", id, "reset 2FA for "+username,
-		diffFields(map[string]any{"totp_enabled": true}, map[string]any{"totp_enabled": false}))
+		diffFields(map[string]any{"totp_enabled": prevTOTP}, map[string]any{"totp_enabled": false}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reset"})
 }
 

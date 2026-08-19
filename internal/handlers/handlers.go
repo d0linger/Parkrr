@@ -233,6 +233,41 @@ func strPtr(v *string) any {
 	return *v
 }
 
+// auditSnapshot renders values as {field: {old: null, new: v}} — "this is what it
+// became", with no claim about what it was before.
+//
+// Use it wherever the previous value is genuinely unknown, or where the entry is a
+// COUNT or an outcome rather than a field transition (how many positions were
+// settled, which period was booked). Inventing an old value there is worse than
+// omitting one: a fabricated `false -> true` asserts a transition that may never
+// have happened, and diffFields would silently drop any key whose sides are equal,
+// losing exactly the identifying field the entry exists for.
+func auditSnapshot(values map[string]any) map[string]any {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(values))
+	for k, v := range values {
+		out[k] = map[string]any{"old": nil, "new": v}
+	}
+	return out
+}
+
+// mergeChanges combines change maps (e.g. a real diff plus an auditSnapshot of the
+// outcome fields) into one changes object. Later maps win on a key collision.
+func mergeChanges(maps ...map[string]any) map[string]any {
+	out := map[string]any{}
+	for _, m := range maps {
+		for k, v := range m {
+			out[k] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // auditCreated records a creation together with the values the new row was given,
 // as {field: {old: null, new: value}} — the mirror image of auditDeleted. Without
 // it a "created X" entry proves only THAT something appeared, never with which

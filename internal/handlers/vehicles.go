@@ -834,7 +834,7 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 		label = "bezahlt"
 	}
 	h.auditChange(r, "update", "vehicle", id, "Zahlung "+h.vehicleDesc(r, id)+": "+label,
-		diffFields(map[string]any{"paid": !req.Paid}, map[string]any{"paid": req.Paid}))
+		diffFields(map[string]any{"paid": curPaid}, map[string]any{"paid": req.Paid}))
 	h.autoArchiveIfClosed(r, id)
 	h.writeVehicle(w, r.Context(), id, http.StatusOK)
 }
@@ -847,18 +847,21 @@ func (h *Handler) ReactivateVehicle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE vehicles SET archived=false, updated_at=now() WHERE id=$1`, id)
+	var prevArchived bool
+	err := h.Pool.QueryRow(r.Context(),
+		`WITH prev AS (SELECT archived FROM vehicles WHERE id=$1)
+		 UPDATE vehicles SET archived=false, updated_at=now() WHERE id=$1
+		 RETURNING (SELECT archived FROM prev)`, id).Scan(&prevArchived)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "vehicle not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not reactivate vehicle")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "vehicle not found")
-		return
-	}
 	h.auditChange(r, "update", "vehicle", id, "Gefährt reaktiviert: "+h.vehicleDesc(r, id),
-		diffFields(map[string]any{"archived": true}, map[string]any{"archived": false}))
+		diffFields(map[string]any{"archived": prevArchived}, map[string]any{"archived": false}))
 	h.writeVehicle(w, r.Context(), id, http.StatusOK)
 }
 

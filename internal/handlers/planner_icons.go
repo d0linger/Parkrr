@@ -227,8 +227,9 @@ func (h *Handler) UpdatePlannerIcon(w http.ResponseWriter, r *http.Request) {
 		newName = name
 	}
 	h.auditChange(r, "update", "planner_icon", id, "updated planner icon "+newName,
-		diffFields(map[string]any{"name": prevName, "image_replaced": false},
-			map[string]any{"name": newName, "image_replaced": len(data) > 0}))
+		mergeChanges(
+			diffFields(map[string]any{"name": prevName}, map[string]any{"name": newName}),
+			auditSnapshot(map[string]any{"image_replaced": len(data) > 0})))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 

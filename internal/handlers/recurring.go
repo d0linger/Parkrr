@@ -673,8 +673,7 @@ func (h *Handler) SetRecurringChargePeriodPaid(w http.ResponseWriter, r *http.Re
 		}
 		return h.auditChangeTx(r.Context(), tx, r, "update", "recurring_charge", id,
 			"Nebenkosten-Periode "+req.PeriodKey+": "+periodPaidAuditState(req.Paid, req.Amount),
-			diffFields(map[string]any{"period": req.PeriodKey, "paid": !req.Paid},
-				map[string]any{"period": req.PeriodKey, "paid": req.Paid}))
+			auditSnapshot(map[string]any{"period": req.PeriodKey, "paid": req.Paid}))
 	})
 	if txErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not update recurring charge")

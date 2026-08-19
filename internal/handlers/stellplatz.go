@@ -617,8 +617,13 @@ func (h *Handler) AssignSpotVehicle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "vehicle not found")
 		return
 	}
+	// Who stood here before? Claiming nil would assert the spot was empty even when
+	// another Gefaehrt was displaced by this assignment.
+	var prevOccupant *int64
+	_ = h.Pool.QueryRow(r.Context(),
+		`SELECT id FROM vehicles WHERE spot_id=$1 AND id <> $2`, spotID, req.VehicleID).Scan(&prevOccupant)
 	h.auditChange(r, "update", "spot", spotID, "assigned vehicle to spot",
-		diffFields(map[string]any{"vehicle_id": nil}, map[string]any{"vehicle_id": req.VehicleID}))
+		diffFields(map[string]any{"vehicle_id": prevOccupant}, map[string]any{"vehicle_id": req.VehicleID}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

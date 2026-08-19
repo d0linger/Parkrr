@@ -246,7 +246,7 @@ func (h *Handler) RevokePortalLinks(w http.ResponseWriter, r *http.Request) {
 	n := tag.RowsAffected()
 	if n > 0 {
 		h.auditChange(r, "revoke", "portal-link", id, fmt.Sprintf("%d Self-Service-Link(s) widerrufen", n),
-			diffFields(map[string]any{"revoked_count": 0}, map[string]any{"revoked_count": n}))
+			auditSnapshot(map[string]any{"revoked_count": n}))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"revoked": n})
 }
