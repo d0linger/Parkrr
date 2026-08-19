@@ -146,12 +146,20 @@ func (h *Handler) SaveBackupSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "retention count must not be negative")
 		return
 	}
+	// Read the previous schedule first so the trail carries the before/after values —
+	// retention counts in particular decide how long backups survive.
+	prev, prevErr := backup.LoadSettings(r.Context(), h.Pool)
 	if err := backup.SaveSettings(r.Context(), h.Pool, in); err != nil {
 		slog.Error("backup: save schedule failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "could not save the schedule")
 		return
 	}
-	h.audit(r, "backup", "system", 0, "updated the backup schedule (volume '"+in.VolumeCron+"', S3 '"+in.S3Cron+"')")
+	var changes any
+	if prevErr == nil {
+		changes = diffFields(prev, in)
+	}
+	h.auditChange(r, "backup", "system", 0,
+		"updated the backup schedule (volume '"+in.VolumeCron+"', S3 '"+in.S3Cron+"')", changes)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
 }
 
