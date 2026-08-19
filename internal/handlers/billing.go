@@ -174,7 +174,13 @@ func (h *Handler) SaveBillingSettings(w http.ResponseWriter, r *http.Request) {
 		if len(chg) > 0 {
 			msg += ": " + strings.Join(chg, ", ")
 		}
-		return h.auditTx(r.Context(), tx, r, "update", "billing", 0, msg)
+		// The old values were read FOR UPDATE above, so the diff is free. seller_uid
+		// is a tax identifier, not a secret — kept readable for the audit.
+		return h.auditChangeTx(r.Context(), tx, r, "update", "billing", 0, msg, diffFields(
+			map[string]any{"next_invoice_no": oldNext, "seller_uid": oldUID,
+				"ust_rate": oldRate, "kleinunternehmer": oldKlein},
+			map[string]any{"next_invoice_no": in.NextInvoiceNo, "seller_uid": in.SellerUID,
+				"ust_rate": in.UStRate, "kleinunternehmer": in.Kleinunternehmer}))
 	})
 	if txErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not save billing settings")

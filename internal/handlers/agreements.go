@@ -553,7 +553,17 @@ func (h *Handler) persistAgreement(w http.ResponseWriter, r *http.Request, id, p
 	if create {
 		verb, verbWord, auditID = "create", "angelegt", pid
 	}
-	h.audit(r, verb, "flatrate", auditID, "Pauschale "+verbWord+" für "+h.personLabel(r, pid))
+	// Record the agreement's defining values. For an update the pre-state is not
+	// re-read here (persistAgreement rebuilds the row wholesale), so the new values
+	// are logged as the resulting state — the summary names create vs update.
+	h.auditChange(r, verb, "flatrate", auditID, "Pauschale "+verbWord+" für "+h.personLabel(r, pid),
+		map[string]any{
+			"amount":      map[string]any{"old": nil, "new": req.Amount},
+			"period":      map[string]any{"old": nil, "new": req.Period},
+			"start_date":  map[string]any{"old": nil, "new": req.StartDate},
+			"end_date":    map[string]any{"old": nil, "new": req.EndDate},
+			"vehicle_ids": map[string]any{"old": nil, "new": req.VehicleIDs},
+		})
 	// Archive bound vehicles right away if the agreement is now finished and
 	// settled, rather than waiting for the periodic sweep.
 	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), pid)
@@ -671,7 +681,8 @@ func (h *Handler) saveAgreement(r *http.Request, id, personID int64, a models.Fl
 	// Post-commit, best-effort: status history + audit for the created devices.
 	for _, c := range created {
 		h.recordStatus(r, c.id, "", models.StatusStored, "über Pauschale angelegt")
-		h.audit(r, "create", "vehicle", c.id, "created vehicle via Pauschale "+vehicleLabel(c.label, c.plate))
+		h.auditCreated(r, "vehicle", c.id, "created vehicle via Pauschale "+vehicleLabel(c.label, c.plate),
+			map[string]any{"label": c.label, "license_plate": c.plate})
 	}
 	return nil
 }
@@ -771,7 +782,8 @@ func (h *Handler) DeleteAgreement(w http.ResponseWriter, r *http.Request) {
 	if deleteVehicles {
 		msg = "Pauschale inkl. Gefährte gelöscht für " + h.personLabel(r, pid)
 	}
-	h.audit(r, "delete", "flatrate", id, msg)
+	h.auditDeleted(r, "flatrate", id, msg,
+		map[string]any{"person_id": pid, "vehicles_deleted": deleteVehicles})
 	// Coverage changed: kept vehicles may now be archive-eligible (or, no longer
 	// covered by a finished agreement, due to wake) — reconcile immediately like
 	// every other agreement mutation.
@@ -890,8 +902,9 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 	}
 	// Audit inside the tx (before commit): the settlement change and its trail
 	// commit together (C7 / BAO §131).
-	if err := h.auditTx(ctx, tx, r, "update", "flatrate", id,
-		"Pauschale "+personLabelTx(ctx, tx, pid)+" "+state); err != nil {
+	if err := h.auditChangeTx(ctx, tx, r, "update", "flatrate", id,
+		"Pauschale "+personLabelTx(ctx, tx, pid)+" "+state,
+		diffFields(map[string]any{"paid": !req.Paid}, map[string]any{"paid": req.Paid})); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update agreement")
 		return
 	}
@@ -1158,8 +1171,10 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 	}
 	// Audit inside the tx, before commit: the paid-state change and its trail
 	// commit together (BAO §131).
-	if err := h.auditTx(r.Context(), tx, r, "update", "flatrate", id,
-		"Pauschale "+personLabelTx(r.Context(), tx, a.PersonID)+" "+key+": "+periodPaidAuditState(req.Paid, req.Amount)); err != nil {
+	if err := h.auditChangeTx(r.Context(), tx, r, "update", "flatrate", id,
+		"Pauschale "+personLabelTx(r.Context(), tx, a.PersonID)+" "+key+": "+periodPaidAuditState(req.Paid, req.Amount),
+		diffFields(map[string]any{"period": key, "paid": !req.Paid},
+			map[string]any{"period": key, "paid": req.Paid})); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update payment")
 		return
 	}
