@@ -388,7 +388,27 @@ func (h *Handler) UpdateRecurringCharge(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "recurring charge not found")
 		return
 	}
-	h.audit(r, "update", "recurring_charge", id, "updated recurring cost "+desc)
+	// `existing` was already loaded above for the settlement checks, so the
+	// before/after diff costs nothing extra. Only the billing-defining fields are
+	// compared — the paid_* arrays are settlement state, not an edit.
+	type recAudit struct {
+		Description string  `json:"description"`
+		Amount      float64 `json:"amount"`
+		Period      string  `json:"period"`
+		StartDate   string  `json:"start_date"`
+		EndDate     string  `json:"end_date"`
+		VehicleID   *int64  `json:"vehicle_id"`
+	}
+	dateOrEmpty := func(t *time.Time) string {
+		if t == nil {
+			return ""
+		}
+		return t.Format("2006-01-02")
+	}
+	h.auditChange(r, "update", "recurring_charge", id, "updated recurring cost "+desc, diffFields(
+		recAudit{existing.Description, existing.Amount, existing.Period,
+			existing.StartDate.Format("2006-01-02"), dateOrEmpty(existing.EndDate), existing.VehicleID},
+		recAudit{desc, amount, period, start.Format("2006-01-02"), dateOrEmpty(end), req.VehicleID}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -496,7 +516,10 @@ func (h *Handler) SetRecurringChargePaid(w http.ResponseWriter, r *http.Request)
 			}
 		}
 		// Audit in the tx: the settlement change and its trail commit together (C7).
-		return h.auditTx(ctx, tx, r, "update", "recurring_charge", id, verb)
+		// rc was loaded above, so the settlement before/after is free. Transactional
+		// audit: the trail commits atomically with the money change.
+		return h.auditChangeTx(ctx, tx, r, "update", "recurring_charge", id, verb,
+			diffFields(map[string]any{"paid": rc.Paid}, map[string]any{"paid": req.Paid}))
 	})
 	if txErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not update recurring charge")

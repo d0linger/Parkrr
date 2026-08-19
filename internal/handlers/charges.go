@@ -565,6 +565,8 @@ func (h *Handler) SetChargePaid(w http.ResponseWriter, r *http.Request) {
 	if req.Paid {
 		verb = "charge marked paid"
 	}
-	h.audit(r, "update", "charge", id, verb)
+	// curPaid was read above for the bound-charge check, so the settlement diff is free.
+	h.auditChange(r, "update", "charge", id, verb,
+		diffFields(map[string]any{"paid": curPaid}, map[string]any{"paid": req.Paid}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
