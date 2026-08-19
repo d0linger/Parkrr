@@ -283,3 +283,18 @@ test('packRects routing — allowBlocking gates a "verparken" placement', () => 
     assert.equal(strict.placed, 1, 'allowBlocking:false places only the car that keeps an exit');
     assert.ok(strict.placements.some((p) => !p.ok), 'the boxed-in car is marked not-placeable');
 });
+
+// FE-Comb — perpendicular (Kamm) parking: cars near a horizontal driveway rotate tall so their
+// narrow side faces the Fahrstraße, forming a dense row (Bild 2), instead of a first-fit mix.
+test('packRects comb — cars near a horizontal driveway park perpendicular (tall) and line up', () => {
+    const bounds = { minX: 0, minY: 0, maxX: 12, maxY: 8 };
+    const driveway = { x: 0, y: 6, w: 12, h: 2, rot: 0 }; // Fahrstraße along the bottom (horizontal)
+    const items = [{ id: 'a', w: 4, h: 2 }, { id: 'b', w: 4, h: 2 }, { id: 'c', w: 4, h: 2 }];
+    const r = PG.packRects(items, [driveway], bounds, null, { margin: 0, gap: 0, driveways: [driveway] });
+    const ok = r.placements.filter((p) => p.ok);
+    assert.ok(ok.length >= 2, 'cars placed above the driveway');
+    for (const p of ok) assert.equal(p.rot, 90, 'car is perpendicular (tall) to the horizontal driveway, not laid across it');
+    // and they sit in the same row (all share the bottom edge, flush to the driveway)
+    const ys = ok.map((p) => Math.round((p.y + 4) * 10) / 10); // footprint bottom (rot 90 → 4 tall)
+    assert.ok(ys.every((y) => Math.abs(y - ys[0]) < 0.3), 'cars form one row along the driveway');
+});

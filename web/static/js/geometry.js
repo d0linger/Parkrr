@@ -241,26 +241,45 @@
 
         const order = items.map((it, i) => ({ it, i })).sort((a, b) =>
             (b.it.w * b.it.h) - (a.it.w * a.it.h) || Math.max(b.it.w, b.it.h) - Math.max(a.it.w, a.it.h) || a.i - b.i);
+        // scorePlacement — higher is better. Density (BSSF: small leftover short side) + a gentle
+        // top-left bias, PLUS a perpendicular-parking (Kamm) bonus when the candidate sits near a
+        // driveway: reward the orientation whose NARROW side faces the driveway and hugging it, both
+        // decaying with distance — so vehicles line up perpendicular to the Fahrstraße (Bild 2) instead
+        // of the first-fit mix. No driveways ⇒ pure density/hug (unchanged behaviour).
+        const driveways = o.driveways || [];
+        const scoreOf = (cand, F) => {
+            const fa = _aabb(cand), ww = fa.w, hh = fa.h;
+            let s = -0.3 * Math.min(F.w - ww, F.h - hh) - 0.002 * (fa.x + fa.y);
+            if (driveways.length) {
+                let bd = Infinity, ax = 'h';
+                for (const d of driveways) { const a = _aabb(d);
+                    const dx = Math.max(a.x - (fa.x + ww), fa.x - (a.x + a.w), 0), dy = Math.max(a.y - (fa.y + hh), fa.y - (a.y + a.h), 0), dist = Math.hypot(dx, dy);
+                    if (dist < bd) { bd = dist; ax = a.w >= a.h ? 'h' : 'v'; } // driveway axis: wider ⇒ horizontal
+                }
+                if (bd < 3) { const perp = ax === 'h' ? (hh >= ww) : (ww >= hh); s += ((perp ? 4 : 0) + 1.2) / (1 + bd); }
+            }
+            return s;
+        };
         const placements = []; let placed = 0, failed = 0;
         for (const { it } of order) {
             const oris = Math.abs(it.w - it.h) < 1e-3 ? [0] : [0, 90]; // 180°/270° share a rectangle's footprint
-            let best = null, bestShort = Infinity, bestLong = Infinity;
+            const cands = [];
             for (const rot of oris) {
                 const ww = rot === 90 ? it.h : it.w, hh = rot === 90 ? it.w : it.h;      // footprint (AABB) dims
                 const off = { x: (ww - it.w) / 2, y: (hh - it.h) / 2 };                   // anchor→block: keep the footprint's top-left on the anchor
                 for (const F of free) {
                     if (F.w + _EPS < ww || F.h + _EPS < hh) continue;
-                    const shortSide = Math.min(F.w - ww, F.h - hh), longSide = Math.max(F.w - ww, F.h - hh);
-                    const better = shortSide < bestShort - _EPS || (Math.abs(shortSide - bestShort) < _EPS && longSide < bestLong - _EPS);
-                    if (!better) continue; // strictly tighter fit only → first-best wins ties (deterministic)
                     // Four corner anchors of F → hug whichever wall/neighbour bounds this rect (never floats).
                     for (const [ax, ay] of [[F.x, F.y], [F.x + F.w - ww, F.y], [F.x, F.y + F.h - hh], [F.x + F.w - ww, F.y + F.h - hh]]) {
                         const cand = { x: Math.round((ax + off.x) * 100) / 100, y: Math.round((ay + off.y) * 100) / 100, w: it.w, h: it.h, rot };
-                        if (!feasible(cand) || !canAllExit(cand)) continue; // must fit AND keep every vehicle's exit path
-                        best = cand; bestShort = shortSide; bestLong = longSide; break; // corners of one F tie on score; first (top-left) wins
+                        if (!feasible(cand)) continue;
+                        cands.push({ cand, s: scoreOf(cand, F) });
                     }
                 }
             }
+            cands.sort((a, b) => b.s - a.s);
+            let best = null;
+            for (const c of cands) if (canAllExit(c.cand)) { best = c.cand; break; } // best-scoring that keeps every exit path
             if (best) { placements.push({ id: it.id, x: best.x, y: best.y, rot: best.rot, ok: true }); placedBlocks.push({ id: it.id, x: best.x, y: best.y, w: it.w, h: it.h, rot: best.rot });
                 const fp = _aabb(best); free = _carve(free, { x: fp.x - gap, y: fp.y - gap, w: fp.w + 2 * gap, h: fp.h + 2 * gap }); placed++; }
             else { placements.push({ id: it.id, ok: false }); failed++; }

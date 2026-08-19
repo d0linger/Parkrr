@@ -6159,7 +6159,9 @@
                 const cx = v.a.x + v.dx * o.c, cy = v.a.y + v.dy * o.c, ang = Math.atan2(v.dy, v.dx) * 180 / Math.PI, gw = o.w, gh = (e.thick || 0.24) + 0.8;
                 gates.push({ x: cx - gw / 2, y: cy - gh / 2, w: gw, h: gh, rot: ang }); }); });
             const routeObs = wallRects().concat(P.excl.filter((e) => EXCL[e.kind] && EXCL[e.kind].cat === 'wall'));
-            const bb = floorBB(), opts = { margin: pad, gap: pad, gates, routeObstacles: routeObs, allowBlocking: !!P.allowBlocking };
+            // Comb-parking reference: vehicles near a Fahrstraße rotate so their narrow side faces it.
+            const driveways = P.excl.filter((e) => e.kind === 'lane').map((e) => ({ x: e.x, y: e.y, w: e.w, h: e.h, rot: e.rot || 0 }));
+            const bb = floorBB(), opts = { margin: pad, gap: pad, gates, routeObstacles: routeObs, allowBlocking: !!P.allowBlocking, driveways };
 
             // Phase 1 — re-pack existing spots.
             const orig = new Map(spots.map((b) => [b._id, { x: b.x, y: b.y, rot: b.rot || 0 }]));
