@@ -222,6 +222,62 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "S3 cron is too long",
 		},
+		{
+			name:       "SaveBillingSettings: SellerName too long",
+			path:       "/api/billing/settings",
+			method:     "POST",
+			body:       billingSettings{SellerName: longName},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "seller_name is too long",
+		},
+		{
+			name:       "SaveBillingSettings: SellerAddress too long",
+			path:       "/api/billing/settings",
+			method:     "POST",
+			body:       billingSettings{SellerAddress: longAddress},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "seller_address is too long",
+		},
+		{
+			name:       "SaveBillingSettings: SellerUID too long",
+			path:       "/api/billing/settings",
+			method:     "POST",
+			body:       billingSettings{SellerUID: longName},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "seller_uid is too long",
+		},
+		{
+			name:       "SaveBillingSettings: InvoicePrefix too long",
+			path:       "/api/billing/settings",
+			method:     "POST",
+			body:       billingSettings{InvoicePrefix: longName},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "invoice_prefix is too long",
+		},
+		{
+			name:       "SaveBillingSettings: IBAN too long",
+			path:       "/api/billing/settings",
+			method:     "POST",
+			body:       billingSettings{IBAN: longName},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "iban is too long",
+		},
+		{
+			name:       "SaveBillingSettings: BIC too long",
+			path:       "/api/billing/settings",
+			method:     "POST",
+			body:       billingSettings{BIC: longName},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "bic is too long",
+		},
+		{
+			name:       "SaveBillingSettings: FooterNote too long",
+			path:       "/api/billing/settings",
+			method:     "POST",
+			body:       billingSettings{FooterNote: longNote},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "footer_note is too long",
+		},
 	}
 
 	for _, tt := range tests {
@@ -268,6 +324,8 @@ func TestInputLengthValidation(t *testing.T) {
 				h.CreatePayment(w, req)
 			case "SaveBackupSchedule: Volume cron too long", "SaveBackupSchedule: S3 cron too long":
 				h.SaveBackupSchedule(w, req)
+			case "SaveBillingSettings: SellerName too long", "SaveBillingSettings: SellerAddress too long", "SaveBillingSettings: SellerUID too long", "SaveBillingSettings: InvoicePrefix too long", "SaveBillingSettings: IBAN too long", "SaveBillingSettings: BIC too long", "SaveBillingSettings: FooterNote too long":
+				h.SaveBillingSettings(w, req)
 			}
 
 			if w.Code != tt.wantStatus {
