@@ -248,3 +248,38 @@ test('parseDXF — malformed coordinate is skipped, output has no NaN', () => {
     for (const pl of r.polylines) for (const pt of pl) assert.ok(Number.isFinite(pt[0]) && Number.isFinite(pt[1]), 'no NaN/Inf coord: ' + pt);
     for (const k of ['minX', 'minY', 'maxX', 'maxY']) assert.ok(Number.isFinite(r.bbox[k]), 'finite bbox');
 });
+
+// FE-Routing — exit-path reachability (Auspark-Logik) + packRects allowBlocking integration.
+test('hasExitPath — no target means no routing constraint', () => {
+    assert.equal(PG.hasExitPath({ x: 5, y: 5, w: 2, h: 1, rot: 0 }, [], [], { minX: 0, minY: 0, maxX: 10, maxY: 10 }, {}), true);
+});
+
+test('hasExitPath — open floor reaches a driveway strip', () => {
+    const gate = { x: 0, y: 9, w: 10, h: 1, rot: 0 };
+    assert.equal(PG.hasExitPath({ x: 1, y: 1, w: 2, h: 1, rot: 0 }, [], [gate], { minX: 0, minY: 0, maxX: 10, maxY: 10 }, { clearance: 0.6, cell: 0.25 }), true);
+});
+
+test('hasExitPath — a boxed-in vehicle cannot reach the gate', () => {
+    const walls = [{ x: 3.5, y: 3.5, w: 3, h: 0.4, rot: 0 }, { x: 3.5, y: 6.1, w: 3, h: 0.4, rot: 0 }, { x: 3.5, y: 3.5, w: 0.4, h: 3, rot: 0 }, { x: 6.1, y: 3.5, w: 0.4, h: 3, rot: 0 }];
+    const gate = { x: 0, y: 9, w: 10, h: 1, rot: 0 };
+    assert.equal(PG.hasExitPath({ x: 4, y: 4, w: 2, h: 2, rot: 0 }, walls, [gate], { minX: 0, minY: 0, maxX: 10, maxY: 10 }, { clearance: 0.3, cell: 0.2 }), false);
+});
+
+test('hasExitPath — corridor must be wider than the vehicle (clearance)', () => {
+    const gate = { x: 8, y: 0, w: 2, h: 10, rot: 0 };
+    const walls = [{ x: 5, y: 0, w: 0.4, h: 4.25, rot: 0 }, { x: 5, y: 5.75, w: 0.4, h: 4.25, rot: 0 }]; // gap y4.25..5.75 = 1.5 m
+    const bounds = { minX: 0, minY: 0, maxX: 10, maxY: 10 }, foot = { x: 1, y: 1, w: 1, h: 1, rot: 0 };
+    assert.equal(PG.hasExitPath(foot, walls, [gate], bounds, { clearance: 0.5, cell: 0.25 }), true);  // 2*0.5 < 1.5 gap
+    assert.equal(PG.hasExitPath(foot, walls, [gate], bounds, { clearance: 0.9, cell: 0.25 }), false); // 2*0.9 > 1.5 gap
+});
+
+test('packRects routing — allowBlocking gates a "verparken" placement', () => {
+    const bounds = { minX: 0, minY: 0, maxX: 4, maxY: 6 };
+    const gate = { x: 0, y: 0, w: 4, h: 0.5, rot: 0 }; // driveway along the top
+    const items = [{ id: 'a', w: 3, h: 2 }, { id: 'b', w: 3, h: 2 }];
+    const strict = PG.packRects(items, [], bounds, null, { margin: 0, gap: 0, gates: [gate], routeObstacles: [], allowBlocking: false, route: { cell: 0.25 } });
+    const loose = PG.packRects(items, [], bounds, null, { margin: 0, gap: 0, gates: [gate], routeObstacles: [], allowBlocking: true });
+    assert.equal(loose.placed, 2, 'allowBlocking:true packs both (verparken allowed)');
+    assert.equal(strict.placed, 1, 'allowBlocking:false places only the car that keeps an exit');
+    assert.ok(strict.placements.some((p) => !p.ok), 'the boxed-in car is marked not-placeable');
+});

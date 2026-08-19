@@ -223,6 +223,17 @@
         const useFloor = floor && floor.length >= 3;
         const obsQ = (obstacles || []).map(_quad);
         const feasible = (cand) => (!useFloor || _quadInPoly(_quad(cand), floor)) && !obsQ.some((ob) => _sat(_quad(cand), ob));
+        // Routing constraint: when a driveway/gate exists and blocking isn't allowed, accept a candidate
+        // only if EVERY vehicle (the candidate + all already placed) still reaches a target (no verparken).
+        const routeOn = !o.allowBlocking && o.gates && o.gates.length;
+        const routeObs = o.routeObstacles || obstacles || [], routeTol = (o.route && o.route.tol > 0) ? o.route.tol : 0.15, routeCell = o.route && o.route.cell;
+        const placedBlocks = [], pre = o.preplaced || []; // pre = vehicles already on the floor (other phases) that must keep exits + act as route obstacles
+        const canAllExit = (cand) => {
+            if (!routeOn) return true;
+            const all = pre.concat(placedBlocks, [cand]);
+            for (const v of all) if (!hasExitPath(v, routeObs.concat(all.filter((x) => x !== v)), o.gates, bounds, { cell: routeCell, clearance: Math.min(v.w, v.h) / 2 + routeTol })) return false;
+            return true;
+        };
         // Free set = shrunk bounds minus every obstacle's AABB (conservative: never offers occupied space).
         const B = { x: bounds.minX + m, y: bounds.minY + m, w: (bounds.maxX - m) - (bounds.minX + m), h: (bounds.maxY - m) - (bounds.minY + m) };
         let free = (B.w > _EPS && B.h > _EPS) ? [B] : [];
@@ -245,19 +256,58 @@
                     // Four corner anchors of F → hug whichever wall/neighbour bounds this rect (never floats).
                     for (const [ax, ay] of [[F.x, F.y], [F.x + F.w - ww, F.y], [F.x, F.y + F.h - hh], [F.x + F.w - ww, F.y + F.h - hh]]) {
                         const cand = { x: Math.round((ax + off.x) * 100) / 100, y: Math.round((ay + off.y) * 100) / 100, w: it.w, h: it.h, rot };
-                        if (!feasible(cand)) continue;
+                        if (!feasible(cand) || !canAllExit(cand)) continue; // must fit AND keep every vehicle's exit path
                         best = cand; bestShort = shortSide; bestLong = longSide; break; // corners of one F tie on score; first (top-left) wins
                     }
                 }
             }
-            if (best) { placements.push({ id: it.id, x: best.x, y: best.y, rot: best.rot, ok: true });
+            if (best) { placements.push({ id: it.id, x: best.x, y: best.y, rot: best.rot, ok: true }); placedBlocks.push({ id: it.id, x: best.x, y: best.y, w: it.w, h: it.h, rot: best.rot });
                 const fp = _aabb(best); free = _carve(free, { x: fp.x - gap, y: fp.y - gap, w: fp.w + 2 * gap, h: fp.h + 2 * gap }); placed++; }
             else { placements.push({ id: it.id, ok: false }); failed++; }
         }
         return { placements, placed, failed };
     }
 
-    const PG = { ringAreaS, pointInPoly, segCross, polySelfIntersects, insetRing, roomAreas, arcPts, parseDXF, rectsCollide, packRects };
+    // hasExitPath(foot, obstacles, targets, bounds, opts?) → can a vehicle at `foot` reach a driveway/
+    // gate (`targets`)? Configuration-space grid BFS: obstacles (walls/columns/OTHER vehicles) are
+    // dilated by `clearance` (= the vehicle's half-width + tolerance), so a path exists only through a
+    // corridor at least that wide. No targets ⇒ true (no routing constraint defined). Conservative:
+    // uses inflated AABBs (may slightly over-block a rotated obstacle) so it never reports a blocked
+    // vehicle as free. Cell size is adaptive (capped ~2500 cells) so cost is bounded by hall size.
+    function hasExitPath(foot, obstacles, targets, bounds, opts) {
+        if (!targets || !targets.length) return true;
+        const o = opts || {}, clr = o.clearance != null ? o.clearance : 0.15;
+        const W = bounds.maxX - bounds.minX, H = bounds.maxY - bounds.minY;
+        if (!(W > 0 && H > 0)) return true;
+        const cell = o.cell > 0 ? o.cell : Math.max(0.25, Math.sqrt((W * H) / 2500));
+        const nx = Math.max(1, Math.ceil(W / cell)), ny = Math.max(1, Math.ceil(H / cell));
+        const obs = (obstacles || []).map((b) => { const a = _aabb(b); return [a.x - clr, a.y - clr, a.x + a.w + clr, a.y + a.h + clr]; });
+        const tgt = targets.map((b) => { const a = _aabb(b); return [a.x, a.y, a.x + a.w, a.y + a.h]; });
+        const fa = _aabb(foot);
+        const inR = (px, py, r) => px >= r[0] && px <= r[2] && py >= r[1] && py <= r[3];
+        const blocked = new Uint8Array(nx * ny), isT = new Uint8Array(nx * ny), seen = new Uint8Array(nx * ny), q = [];
+        for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+            const px = bounds.minX + (i + 0.5) * cell, py = bounds.minY + (j + 0.5) * cell, k = j * nx + i;
+            if (obs.some((r) => inR(px, py, r))) blocked[k] = 1;
+            if (tgt.some((r) => inR(px, py, r))) isT[k] = 1;
+            if (!blocked[k] && px >= fa.x && px <= fa.x + fa.w && py >= fa.y && py <= fa.y + fa.h) { seen[k] = 1; q.push(k); }
+        }
+        if (!q.length) { // footprint boxed in by inflated others → try its centre cell
+            const ci = Math.min(nx - 1, Math.max(0, Math.floor((fa.x + fa.w / 2 - bounds.minX) / cell)));
+            const cj = Math.min(ny - 1, Math.max(0, Math.floor((fa.y + fa.h / 2 - bounds.minY) / cell)));
+            const k = cj * nx + ci; if (blocked[k]) return false; seen[k] = 1; q.push(k);
+        }
+        for (let hh = 0; hh < q.length; hh++) {
+            const k = q[hh]; if (isT[k]) return true; const i = k % nx, j = (k - i) / nx;
+            if (i > 0 && !seen[k - 1] && !blocked[k - 1]) { seen[k - 1] = 1; q.push(k - 1); }
+            if (i < nx - 1 && !seen[k + 1] && !blocked[k + 1]) { seen[k + 1] = 1; q.push(k + 1); }
+            if (j > 0 && !seen[k - nx] && !blocked[k - nx]) { seen[k - nx] = 1; q.push(k - nx); }
+            if (j < ny - 1 && !seen[k + nx] && !blocked[k + nx]) { seen[k + nx] = 1; q.push(k + nx); }
+        }
+        return false;
+    }
+
+    const PG = { ringAreaS, pointInPoly, segCross, polySelfIntersects, insetRing, roomAreas, arcPts, parseDXF, rectsCollide, packRects, hasExitPath };
     if (typeof module !== 'undefined' && module.exports) module.exports = PG;
     if (root) root.PG = PG;
 })(typeof window !== 'undefined' ? window : null);

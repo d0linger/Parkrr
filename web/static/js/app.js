@@ -4544,7 +4544,7 @@
                 plannerSymbol: s.planner_symbol || null, photoUrl: s.photo_id ? '/api/photos/' + s.photo_id : null,
                 x: num(g.x, 1), y: num(g.y, 1), w: num(g.w, s.length_m || catFoot(s.vehicle_type)[0]), h: num(g.h, s.width_m || catFoot(s.vehicle_type)[1]), rot: num(g.rot, 0), status: g.status || 'busy', noBuf: !!g.noBuf, _dirty: false }; }),
             palette, plannerIcons,
-            mode: 'manage', snap: true, gridStep: 0.5, autoSnap: true, calib: false, autoArea: true, ortho: false, zoom: 1, base: null, buffer: false, bufferM: 1, roomSel: null, wallRef: (geo.wallRef === 'inner' || geo.wallRef === 'outer') ? geo.wallRef : 'axis', sel: null,
+            mode: 'manage', snap: true, gridStep: 0.5, autoSnap: true, calib: false, autoArea: true, ortho: false, zoom: 1, base: null, buffer: false, bufferM: 1, allowBlocking: false, roomSel: null, wallRef: (geo.wallRef === 'inner' || geo.wallRef === 'outer') ? geo.wallRef : 'axis', sel: null,
             tool: null, chain: null, preview: null, structSel: null, // wall draw/edit state
             openStart: null, snapHint: null, drawKind: 'wall_ext', openKind: 'door', wallThick: null, // opening draw + last-used types + wall-thickness override (m)
             render: (function () { try { return localStorage.getItem('gp.render') || 'symbol'; } catch (e) { return 'symbol'; } })(),
@@ -5850,18 +5850,20 @@
             // ruler (UX2): line + distance + angle between the two measured points (or A → cursor)
             if (measure && measure.a) { const b2 = measure.b || measure.hover;
                 if (b2) { const ax = measure.a.x * CELL, ay = measure.a.y * CELL, bx = b2.x * CELL, by = b2.y * CELL;
-                    svg.append(svgEl('line', { x1: ax, y1: ay, x2: bx, y2: by, class: 'gp-measure' }));
-                    svg.append(svgEl('circle', { cx: ax, cy: ay, r: 4, class: 'gp-measure-pt' }));
-                    svg.append(svgEl('circle', { cx: bx, cy: by, r: 4, class: 'gp-measure-pt' }));
-                    if (b2.snap === 'node' || b2.snap === 'edge') svg.append(svgEl('circle', { cx: bx, cy: by, r: 8, fill: 'none', class: 'gp-measure-snap' })); // magnet caught a wall corner / edge
+                    // Draw the ruler on the labelSvg overlay (z-2, above the zone/vehicle DOM) so it
+                    // never disappears under a Fahrstraße/Wartung/Stütze block.
+                    labelSvg.append(svgEl('line', { x1: ax, y1: ay, x2: bx, y2: by, class: 'gp-measure' }));
+                    labelSvg.append(svgEl('circle', { cx: ax, cy: ay, r: 4, class: 'gp-measure-pt' }));
+                    labelSvg.append(svgEl('circle', { cx: bx, cy: by, r: 4, class: 'gp-measure-pt' }));
+                    if (b2.snap === 'node' || b2.snap === 'edge') labelSvg.append(svgEl('circle', { cx: bx, cy: by, r: 8, fill: 'none', class: 'gp-measure-snap' })); // magnet caught a wall corner / edge
                     const d = Math.hypot(b2.x - measure.a.x, b2.y - measure.a.y), ang = ((Math.atan2(b2.y - measure.a.y, b2.x - measure.a.x) * 180 / Math.PI) % 180 + 180) % 180;
                     const tl = svgEl('text', { x: (ax + bx) / 2, y: (ay + by) / 2 - 9, 'text-anchor': 'middle', class: 'gp-measurelab' });
                     tl.textContent = d.toFixed(2).replace('.', ',') + ' m · ' + Math.min(ang, 180 - ang).toFixed(0) + '°'; labelSvg.append(tl); } }
             // Start-point (A) snap preview: show the magnet cue before the first click, too.
             if (P.tool === 'measure' && !(measure && measure.a && !measure.b) && measurePre && measurePre.snap) {
                 const hx = measurePre.x * CELL, hy = measurePre.y * CELL;
-                svg.append(svgEl('circle', { cx: hx, cy: hy, r: 3, class: 'gp-measure-pt' }));
-                svg.append(svgEl('circle', { cx: hx, cy: hy, r: 8, fill: 'none', class: 'gp-measure-snap' }));
+                labelSvg.append(svgEl('circle', { cx: hx, cy: hy, r: 3, class: 'gp-measure-pt' }));
+                labelSvg.append(svgEl('circle', { cx: hx, cy: hy, r: 8, fill: 'none', class: 'gp-measure-snap' }));
             }
             // orthogonal snap guide-line (spans the canvas)
             if (P.guide && (P.chain || nodeDrag)) {
@@ -5968,6 +5970,7 @@
             // Auto-Snap: objects fang flush against each other (in addition to the floor line).
             if (canManageNow) toolbar.append(tb('🧲', 'Auto-Snap: Objekte fangen aneinander', () => { P.autoSnap = !P.autoSnap; renderToolbar(); toast(P.autoSnap ? 'Auto-Snap an' : 'Auto-Snap aus'); }, P.autoSnap));
             if (canManageNow) toolbar.append(tb('🛡', 'Pufferzonen zwischen Fahrzeugen (Taste P)', () => { P.buffer = !P.buffer; renderToolbar(); draw(); toast(P.buffer ? 'Pufferzonen an · ' + P.bufferM.toFixed(1).replace('.', ',') + ' m' : 'Pufferzonen aus'); }, P.buffer));
+            if (canManageNow) toolbar.append(tb('🚗↦', P.allowBlocking ? 'Zuparken erlaubt: Auto-Anordnen nutzt jeden m² (kein Auspark-Pfad-Check)' : 'Auspark-Pfad garantiert: kein Gefährt wird zugeparkt (Fahrstraße/Tor nötig)', () => { P.allowBlocking = !P.allowBlocking; renderToolbar(); toast(P.allowBlocking ? 'Zuparken erlaubt (max. Auslastung)' : 'Auspark-Pfad garantiert'); }, P.allowBlocking));
             if (canManageNow && P.mode === 'plan') toolbar.append(tb('📏', 'Messen: Punkt A klicken, Punkt B klicken (Distanz + Winkel). Fängt an Wand-Ecken und -Kanten (Rand); ⇧ oder achsennah = waagrecht/senkrecht. Nochmal klicken = neu.', () => setTool(P.tool === 'measure' ? null : 'measure'), P.tool === 'measure'));
             // Adjustable buffer distance (vehicle↔vehicle), shown only while buffers are on. 0.5 m steps,
             // 0–5 m. draw() re-runs the bands + collision uses P.bufferM live. Session-only, like the toggle.
@@ -6139,14 +6142,24 @@
             const pad = (typeof padding === 'number') ? padding : (P.buffer ? P.bufferM : 0); // allowZeroMargin: 0 ⇒ flush (ignore a stray event arg)
             const spots = P.spots.slice(), pals = P.palette.slice();
             if (!spots.length && !pals.length) { toast('Keine Gefährte zum Anordnen', 'warn'); return; }
-            const msg = spots.length + ' platzierte' + (pals.length ? ' + ' + pals.length + ' aus „Nicht platziert"' : '') + ' anordnen (größte zuerst, mit Drehung, Abstand ' + pad.toFixed(2).replace('.', ',') + ' m)?';
+            const hasGate = P.excl.some((e) => e.kind === 'lane' || e.kind === 'exit') || P.walls.edges.some((e) => (e.ops || []).some((o) => o.kind === 'gate' || o.kind === 'door'));
+            const routeNote = P.allowBlocking ? ' · Zuparken erlaubt' : (hasGate ? ' · mit Auspark-Pfad' : '');
+            const msg = spots.length + ' platzierte' + (pals.length ? ' + ' + pals.length + ' aus „Nicht platziert"' : '') + ' anordnen (größte zuerst, mit Drehung, Abstand ' + pad.toFixed(2).replace('.', ',') + ' m' + routeNote + ')?';
             if (!(await confirmDialog('Auto-Anordnen', msg, 'Anordnen'))) return;
             // Hard obstacles: walls, blocking structures (columns/Stützen) and driving lanes /
             // maintenance / exits. Stellflächen are parkable markings → NOT obstacles.
             const baseObs = wallRects()
                 .concat(P.excl.filter((e) => !isZoneKind(e.kind)))
                 .concat(P.excl.filter((e) => isZoneKind(e.kind) && e.kind !== 'stell'));
-            const bb = floorBB(), opts = { margin: pad, gap: pad };
+            // Routing (Erreichbarkeit): every vehicle must keep a clear path to the driveway/gate unless
+            // "Zuparken" (allowBlocking) is on. Targets = Fahrstraße/Notausgang zones + gate/door openings;
+            // route obstacles = walls + columns (lanes are DRIVABLE, so not obstacles for the path).
+            const gates = P.excl.filter((e) => e.kind === 'lane' || e.kind === 'exit').map((e) => ({ x: e.x, y: e.y, w: e.w, h: e.h, rot: e.rot || 0 }));
+            P.walls.edges.forEach((e) => { const v = edgeVec(e); (e.ops || []).forEach((o) => { if (o.kind !== 'gate' && o.kind !== 'door') return;
+                const cx = v.a.x + v.dx * o.c, cy = v.a.y + v.dy * o.c, ang = Math.atan2(v.dy, v.dx) * 180 / Math.PI, gw = o.w, gh = (e.thick || 0.24) + 0.8;
+                gates.push({ x: cx - gw / 2, y: cy - gh / 2, w: gw, h: gh, rot: ang }); }); });
+            const routeObs = wallRects().concat(P.excl.filter((e) => EXCL[e.kind] && EXCL[e.kind].cat === 'wall'));
+            const bb = floorBB(), opts = { margin: pad, gap: pad, gates, routeObstacles: routeObs, allowBlocking: !!P.allowBlocking };
 
             // Phase 1 — re-pack existing spots.
             const orig = new Map(spots.map((b) => [b._id, { x: b.x, y: b.y, rot: b.rot || 0 }]));
@@ -6167,8 +6180,12 @@
             const palFoot = (p) => { const d = catFoot(p.type); return { w: num(p.length_m, d[0]), h: num(p.width_m, d[1]) }; };
             let staged = 0, stageErr = 0;
             if (pals.length) {
-                const placedObs = baseObs.concat(spots.filter((b) => !b._invalid).map((b) => ({ x: b.x - pad, y: b.y - pad, w: b.w + 2 * pad, h: b.h + 2 * pad, rot: b.rot || 0 })));
-                const r2 = PG.packRects(pals.map((p) => ({ id: p.id, ...palFoot(p) })), placedObs, bb, P.floor, opts);
+                const placedSpots = spots.filter((b) => !b._invalid);
+                const placedObs = baseObs.concat(placedSpots.map((b) => ({ x: b.x - pad, y: b.y - pad, w: b.w + 2 * pad, h: b.h + 2 * pad, rot: b.rot || 0 })));
+                // Routing carries the phase-1 spots as `preplaced`: staging vehicles route around them AND
+                // must not block their exit paths either.
+                const r2 = PG.packRects(pals.map((p) => ({ id: p.id, ...palFoot(p) })), placedObs, bb, P.floor,
+                    Object.assign({}, opts, { preplaced: placedSpots.map((b) => ({ id: b._id, x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot || 0 })) }));
                 const by2 = new Map(r2.placements.map((p) => [p.id, p]));
                 for (const p of pals) {
                     const pl = by2.get(p.id); if (!pl || !pl.ok) continue; // no room → stays in staging
