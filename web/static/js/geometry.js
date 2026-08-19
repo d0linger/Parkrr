@@ -307,7 +307,9 @@
             const rot = horiz ? (it.w >= it.h ? 90 : 0) : (it.w >= it.h ? 0 : 90);
             const fw = rot === 90 ? it.h : it.w, fh = rot === 90 ? it.w : it.h;
             const loX = bounds.minX + m, hiX = bounds.maxX - m, loY = bounds.minY + m, hiY = bounds.maxY - m;
-            if (fw > hiX - loX + _EPS || fh > hiY - loY + _EPS) return null; // does not fit the hall at all
+            // "Does not fit the hall at all" is a property of the ITEM, not of the bay —
+            // report it separately so one oversized vehicle cannot close every row.
+            if (fw > hiX - loX + _EPS || fh > hiY - loY + _EPS) return { tooBig: true };
             const limit = horiz ? hiX : hiY, span = horiz ? fw : fh;
             // `bounds` is the floor bounding box, which INCLUDES the wall footprint, so the row line is
             // not at the bounding box edge. Probe inward from the wall until the first free depth — that
@@ -350,8 +352,13 @@
             for (const bay of bays) {
                 if (bay.dead) continue;
                 const r = bayPlace(bay, it);
-                if (r) { bay.cursor = r.next; bay.depth = r.depth; bayHit = r.cand; break; }
-                bay.dead = true;
+                if (r && r.cand) { bay.cursor = r.next; bay.depth = r.depth; bayHit = r.cand; break; }
+                // Close the bay only when NO row could be started here at all (depth was
+                // never established). A bay that already carries a row stays open: items
+                // are longest-first, so a shorter one may still fit after this rejection.
+                // Closing on any first rejection let a single oversized vehicle revert the
+                // whole hall to the scattered MaxRects layout.
+                if (!(r && r.tooBig) && bay.depth == null) bay.dead = true;
             }
             if (bayHit) {
                 placements.push({ id: it.id, x: bayHit.x, y: bayHit.y, rot: bayHit.rot, ok: true });

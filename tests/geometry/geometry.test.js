@@ -405,3 +405,25 @@ test('packRects bays — a large hall packs in well under a second (no exhausted
     assert.equal(r.placed, 60, 'all 60 placed');
     assert.ok(ms < 1500, 'pack finished in ' + ms + ' ms (was minutes when exhausted bays were rescanned)');
 });
+
+// FE1 — one unplaceable vehicle must not disable the bay pass for everyone else.
+// Closing a bay on its FIRST rejection reverted the whole hall to the scattered
+// MaxRects layout as soon as a single oversized item appeared in the list.
+test('packRects bays — an item too large for the hall does not break the comb', () => {
+    const W = 60, H = 40;
+    const B = { minX: 0, minY: 0, maxX: W, maxY: H };
+    const lane = { x: 0, y: 18, w: W, h: 4, rot: 0 };
+    const walls = [{ x: 0, y: 0, w: W, h: 0.3, rot: 0 }, { x: 0, y: H - 0.3, w: W, h: 0.3, rot: 0 },
+        { x: 0, y: 0, w: 0.3, h: H, rot: 0 }, { x: W - 0.3, y: 0, w: 0.3, h: H, rot: 0 }];
+    const opts = { margin: 0, gap: 0, gates: [lane], routeObstacles: walls, driveways: [lane], allowBlocking: false };
+    const cars = () => { const a = []; for (let i = 0; i < 12; i++) a.push({ id: 'c' + i, w: 4.6, h: 1.9 }); return a; };
+    const rowOf = (r) => { const ok = r.placements.filter((p) => p.ok && p.id.startsWith('c'));
+        return [...new Set(ok.map((p) => Math.round((p.y + (p.rot === 90 ? (1.9 - 4.6) / 2 : 0)) * 10) / 10))]; };
+
+    const plain = PG.packRects(cars(), walls.concat([lane]), B, null, opts);
+    const withOversized = PG.packRects([{ id: 'boat', w: 70, h: 3 }].concat(cars()), walls.concat([lane]), B, null, opts);
+
+    assert.deepEqual(rowOf(withOversized), rowOf(plain),
+        'the cars must still form the same wall-hugging row(s) despite an unplaceable item');
+    assert.ok(withOversized.placements.find((p) => p.id === 'boat' && !p.ok), 'the oversized item is reported unplaceable');
+});
