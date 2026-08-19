@@ -1,7 +1,10 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/preining/parkrr/internal/models"
 )
@@ -155,8 +158,18 @@ func (h *Handler) DeleteCategory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "category is still used by vehicles")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM categories WHERE id = $1`, id)
+	// RETURNING names the removed tariff; an id alone is unresolvable afterwards.
+	var delName string
+	var delMonthly, delYearly float64
+	err := h.Pool.QueryRow(r.Context(),
+		`DELETE FROM categories WHERE id = $1
+		 RETURNING name, default_monthly_cost, default_yearly_cost`, id).
+		Scan(&delName, &delMonthly, &delYearly)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "category not found")
+			return
+		}
 		// A vehicle referencing this tariff can be inserted between the count and
 		// the DELETE (ON DELETE RESTRICT) — report that as a clean 409, not a 500.
 		if isForeignKeyViolation(err) {
@@ -166,11 +179,9 @@ func (h *Handler) DeleteCategory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not delete category")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "category not found")
-		return
-	}
-	h.audit(r, "delete", "category", id, "deleted tariff")
+	h.auditDeleted(r, "category", id, "deleted tariff "+delName, map[string]any{
+		"name": delName, "default_monthly_cost": delMonthly, "default_yearly_cost": delYearly,
+	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 

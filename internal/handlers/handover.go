@@ -209,16 +209,23 @@ func (h *Handler) DeleteHandover(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	tag, err := h.Pool.Exec(r.Context(), `DELETE FROM handover_protocols WHERE id=$1`, id)
-	if err != nil {
+	// The signature image is deliberately not read back — the trail records WHICH
+	// protocol vanished (vehicle, direction, signer), never the biometric artefact.
+	var delVehicle int64
+	var delDirection, delSigner string
+	if err := h.Pool.QueryRow(r.Context(),
+		`DELETE FROM handover_protocols WHERE id=$1 RETURNING vehicle_id, direction, signer_name`, id).
+		Scan(&delVehicle, &delDirection, &delSigner); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "protocol not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete protocol")
 		return
 	}
-	if tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "protocol not found")
-		return
-	}
-	h.audit(r, "delete", "handover", id, "Übergabeprotokoll gelöscht")
+	h.auditDeleted(r, "handover", id, "Übergabeprotokoll gelöscht ("+delDirection+")", map[string]any{
+		"vehicle_id": delVehicle, "direction": delDirection, "signer_name": delSigner,
+	})
 	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 }
 

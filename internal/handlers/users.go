@@ -264,20 +264,25 @@ func (h *Handler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "cannot delete the last remaining admin")
 		return
 	}
-	ct, err := tx.Exec(r.Context(), `DELETE FROM users WHERE id = $1`, id)
-	if err != nil {
+	// Identify the account afterwards. The password hash is deliberately NOT read;
+	// the redaction layer would mask it anyway, but it must not travel at all.
+	var delUser, delEmail, delRole string
+	if err := tx.QueryRow(r.Context(),
+		`DELETE FROM users WHERE id = $1 RETURNING username, email, role`, id).
+		Scan(&delUser, &delEmail, &delRole); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete user")
-		return
-	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete user")
 		return
 	}
-	h.audit(r, "delete", "user", id, "deleted user")
+	h.auditDeleted(r, "user", id, "deleted user "+delUser,
+		map[string]any{"username": delUser, "email": delEmail, "role": delRole})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 

@@ -523,16 +523,27 @@ func (h *Handler) DeleteVehicle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "Fahrzeug ist Teil einer ausgestellten Rechnung und kann nicht gelöscht werden (Storno statt Löschen).")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM vehicles WHERE id = $1`, id)
+	// A Gefährt is master data: keep enough to identify it after the row is gone.
+	var delLabel, delPlate, delStatus string
+	var delPerson int64
+	err := h.Pool.QueryRow(r.Context(),
+		`DELETE FROM vehicles WHERE id = $1 RETURNING label, license_plate, status, person_id`, id).
+		Scan(&delLabel, &delPlate, &delStatus, &delPerson)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "vehicle not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete vehicle")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "vehicle not found")
-		return
+	name := delLabel
+	if name == "" {
+		name = delPlate
 	}
-	h.audit(r, "delete", "vehicle", id, "deleted vehicle")
+	h.auditDeleted(r, "vehicle", id, "deleted vehicle "+name, map[string]any{
+		"label": delLabel, "license_plate": delPlate, "status": delStatus, "person_id": delPerson,
+	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 

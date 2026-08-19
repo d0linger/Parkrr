@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Custom Garagenplaner icons ("tags"): user-uploaded top-view images selectable per
@@ -267,19 +269,20 @@ func (h *Handler) DeletePlannerIcon(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not delete icon")
 		return
 	}
-	ct, err := tx.Exec(r.Context(), `DELETE FROM planner_icons WHERE id=$1`, id)
-	if err != nil {
+	var delName string
+	if err := tx.QueryRow(r.Context(),
+		`DELETE FROM planner_icons WHERE id=$1 RETURNING name`, id).Scan(&delName); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "icon not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete icon")
-		return
-	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "icon not found")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete icon")
 		return
 	}
-	h.audit(r, "delete", "planner_icon", id, "deleted planner icon")
+	h.auditDeleted(r, "planner_icon", id, "deleted planner icon "+delName, map[string]any{"name": delName})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

@@ -535,16 +535,20 @@ func (h *Handler) DeleteSpot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM spots WHERE id=$1`, id)
+	var delLabel string
+	var delHall int64
+	err := h.Pool.QueryRow(r.Context(),
+		`DELETE FROM spots WHERE id=$1 RETURNING label, hall_id`, id).Scan(&delLabel, &delHall)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "spot not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete spot")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "spot not found")
-		return
-	}
-	h.audit(r, "delete", "spot", id, "deleted spot")
+	h.auditDeleted(r, "spot", id, "deleted spot "+delLabel,
+		map[string]any{"label": delLabel, "hall_id": delHall})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 

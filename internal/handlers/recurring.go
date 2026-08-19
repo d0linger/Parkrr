@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -430,16 +431,26 @@ func (h *Handler) DeleteRecurringCharge(w http.ResponseWriter, r *http.Request) 
 	}
 	// Remove its auto settle-payments in the same tx as the delete, so a paid-then-
 	// deleted Nebenkosten leaves no orphan Zahlungseingang (phantom money-in).
+	// Keep what was removed: a money position must stay reconstructable afterwards.
 	var affected int64
+	var delDesc, delPeriod string
+	var delAmount float64
+	var delPerson int64
 	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
 		if err := clearRecurringSettlementTx(r.Context(), tx, id); err != nil {
 			return err
 		}
-		ct, err := tx.Exec(r.Context(), `DELETE FROM recurring_charges WHERE id=$1`, id)
-		if err != nil {
+		if err := tx.QueryRow(r.Context(),
+			`DELETE FROM recurring_charges WHERE id=$1
+			 RETURNING description, amount, period, person_id`, id).
+			Scan(&delDesc, &delAmount, &delPeriod, &delPerson); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				affected = 0
+				return nil // not found — reported outside the tx
+			}
 			return err
 		}
-		affected = ct.RowsAffected()
+		affected = 1
 		return nil
 	})
 	if txErr != nil {
@@ -450,7 +461,9 @@ func (h *Handler) DeleteRecurringCharge(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "recurring charge not found")
 		return
 	}
-	h.audit(r, "delete", "recurring_charge", id, "deleted recurring cost")
+	h.auditDeleted(r, "recurring_charge", id, "deleted recurring cost "+delDesc, map[string]any{
+		"description": delDesc, "amount": delAmount, "period": delPeriod, "person_id": delPerson,
+	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
