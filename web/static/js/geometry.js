@@ -240,8 +240,10 @@
         let free = (B.w > _EPS && B.h > _EPS) ? [B] : [];
         for (const ob of obstacles || []) free = _carve(free, _aabb(ob));
 
+        // Longest edge first, then area: the long vehicles (Camper, Boote) claim the walls before the
+        // shorter PKWs fill in, which keeps long uninterrupted perimeter runs available for them.
         const order = items.map((it, i) => ({ it, i })).sort((a, b) =>
-            (b.it.w * b.it.h) - (a.it.w * a.it.h) || Math.max(b.it.w, b.it.h) - Math.max(a.it.w, a.it.h) || a.i - b.i);
+            Math.max(b.it.w, b.it.h) - Math.max(a.it.w, a.it.h) || (b.it.w * b.it.h) - (a.it.w * a.it.h) || a.i - b.i);
         // scorePlacement — higher is better. Density (BSSF: small leftover short side) + a gentle
         // top-left bias, PLUS a perpendicular-parking (Kamm) bonus when the candidate sits near a
         // driveway: reward the orientation whose NARROW side faces the driveway and hugging it, both
@@ -251,6 +253,13 @@
         const scoreOf = (cand, F) => {
             const fa = _aabb(cand), ww = fa.w, hh = fa.h;
             let s = -0.3 * Math.min(F.w - ww, F.h - hh) - 0.002 * (fa.x + fa.y);
+            // PERIMETER-FIRST (wall hugging): reward docking onto an outer wall, decaying inward, so the
+            // room fills from its edges instead of growing islands mid-floor that fragment the free
+            // rectangles and cut exit corridors. Weaker than the comb bonus, so a driveway row still
+            // forms — but among equally good comb slots the wall-hugging one wins.
+            const dEdge = Math.max(0, Math.min(fa.x - (bounds.minX + m), fa.y - (bounds.minY + m),
+                (bounds.maxX - m) - (fa.x + ww), (bounds.maxY - m) - (fa.y + hh)));
+            s += 2.5 / (1 + dEdge);
             if (driveways.length) {
                 let bd = Infinity, ax = 'h';
                 for (const d of driveways) { const a = _aabb(d);
@@ -364,16 +373,20 @@
         const tgt = targets.map((b) => { const a = _aabb(b); return [a.x, a.y, a.x + a.w, a.y + a.h]; });
         const inR = (px, py, r) => px >= r[0] && px <= r[2] && py >= r[1] && py <= r[3];
         const blocked = new Uint8Array(nx * ny), isT = new Uint8Array(nx * ny), seen = new Uint8Array(nx * ny), q = [];
+        // Every cell that is not a wall, restricted zone or placed vehicle is drivable (cost 1). The
+        // vehicle's OWN footprint is always a valid start — it legitimately occupies that space — so the
+        // neighbours' dilation must not erase its seed cells (that produced "no path" for dense rows).
         for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
             const px = bounds.minX + (i + 0.5) * cell, py = bounds.minY + (j + 0.5) * cell, k = j * nx + i;
-            if (obs.some((r) => inR(px, py, r))) blocked[k] = 1;
+            const own = px >= fa.x && px <= fa.x + fa.w && py >= fa.y && py <= fa.y + fa.h;
+            if (!own && obs.some((r) => inR(px, py, r))) blocked[k] = 1;
             if (tgt.some((r) => inR(px, py, r))) isT[k] = 1;
-            if (!blocked[k] && px >= fa.x && px <= fa.x + fa.w && py >= fa.y && py <= fa.y + fa.h) { seen[k] = 1; q.push(k); }
+            if (own) { seen[k] = 1; q.push(k); }
         }
-        if (!q.length) { // footprint boxed in by inflated others → try its centre cell
+        if (!q.length) { // degenerate footprint (smaller than a cell) → seed its centre cell
             const ci = Math.min(nx - 1, Math.max(0, Math.floor((fa.x + fa.w / 2 - bounds.minX) / cell)));
             const cj = Math.min(ny - 1, Math.max(0, Math.floor((fa.y + fa.h / 2 - bounds.minY) / cell)));
-            const k = cj * nx + ci; if (blocked[k]) return false; seen[k] = 1; q.push(k);
+            const k = cj * nx + ci; seen[k] = 1; q.push(k);
         }
         for (let hh = 0; hh < q.length; hh++) {
             const k = q[hh]; if (isT[k]) return true; const i = k % nx, j = (k - i) / nx;
