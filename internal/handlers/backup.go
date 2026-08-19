@@ -201,7 +201,7 @@ func (h *Handler) RunScheduledBackup(w http.ResponseWriter, r *http.Request) {
 	ran := []string{}
 	var firstErr error
 	if h.BackupDir != "" {
-		if _, err := backup.RunVolume(ctx, h.Pool, h.DatabaseURL, h.BackupKey, h.BackupDir, settings.VolumeKeep); err != nil {
+		if _, _, err := backup.RunVolume(ctx, h.Pool, h.DatabaseURL, h.BackupKey, h.BackupDir, settings.VolumeKeep); err != nil {
 			slog.Error("run-now volume backup failed", "err", err)
 			firstErr = err
 		} else {

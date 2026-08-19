@@ -3917,8 +3917,10 @@
     function delUser(u, node) { deleteWithUndo('Benutzer löschen?', `„${u.username}“ wird gelöscht.`, () => api.del('/users/' + u.id), () => render(), node); }
 
     // ================= AUDIT (admin) =================
-    const AUDIT_ACTIONS = { create: 'Erstellt', update: 'Geändert', delete: 'Gelöscht', login: 'Login', logout: 'Logout' };
-    const AUDIT_ENTITIES = { person: 'Person', vehicle: 'Gefährt', category: 'Tarif', service: 'Dienst', charge: 'Zusatzkosten', payment: 'Zahlung', invoice: 'Rechnung', billing: 'Rechnungs-Einstellungen', user: 'Benutzer', photo: 'Foto', passkey: 'Passkey' };
+    const AUDIT_ACTIONS = { create: 'Erstellt', update: 'Geändert', delete: 'Gelöscht', login: 'Login', logout: 'Logout', revoke: 'Widerrufen', backup: 'Backup', backup_failed: 'Backup fehlgeschlagen', restore: 'Wiederherstellung', remind: 'Mahnung', import: 'Import', security: 'Sicherheit' };
+    // Muss die im Backend verwendeten entity-Werte abdecken, sonst lässt sich ein
+    // Ereignis zwar protokollieren, aber im Filter nicht mehr auswählen.
+    const AUDIT_ENTITIES = { person: 'Person', vehicle: 'Gefährt', category: 'Tarif', service_type: 'Dienst', charge: 'Zusatzkosten', payment: 'Zahlung', invoice: 'Rechnung', billing: 'Rechnungs-Einstellungen', user: 'Benutzer', photo: 'Foto', passkey: 'Passkey', flatrate: 'Pauschale', recurring_charge: 'Wiederkehrende Kosten', spot: 'Stellplatz', hall: 'Halle', garage: 'Garage', handover: 'Übergabe', 'portal-link': 'Self-Service-Link', planner_icon: 'Planer-Symbol', wall_template: 'Wandvorlage', backup_settings: 'Backup-Einstellungen', system: 'System', audit_log: 'Audit-Log' };
 
     function fmtAuditVal(x) {
         if (x === null || x === undefined || x === '') return '∅';

@@ -13,7 +13,20 @@ import (
 
 type recorded struct {
 	action, entity, summary string
-	changes                 map[string]any
+	changes                 any
+}
+
+// val unwraps the {old:null,new:v} snapshot wrapper the sink now applies.
+func val(changes any, field string) any {
+	m, ok := changes.(map[string]any)
+	if !ok {
+		return nil
+	}
+	w, ok := m[field].(map[string]any)
+	if !ok {
+		return nil
+	}
+	return w["new"]
 }
 
 // withRecorder installs a capturing audit sink and restores the previous one.
@@ -21,7 +34,7 @@ func withRecorder(t *testing.T) *[]recorded {
 	t.Helper()
 	prev := auditSink.Load()
 	var got []recorded
-	SetAuditor(func(_ context.Context, action, entity string, _ int64, summary string, changes map[string]any) {
+	SetAuditor(func(_ context.Context, action, entity string, _ int64, summary string, changes any) {
 		got = append(got, recorded{action, entity, summary, changes})
 	})
 	t.Cleanup(func() {
@@ -64,16 +77,18 @@ func TestPruneDirAuditsTheDeletedArchives(t *testing.T) {
 		t.Fatalf("expected exactly one audit entry for the sweep, got %d", len(*got))
 	}
 	e := (*got)[0]
-	if e.action != "delete" || e.entity != "backup" {
-		t.Errorf("entry should be delete/backup, got %s/%s", e.action, e.entity)
+	// entity "system" matches what the manual backup endpoints already use, so one
+	// filter shows scheduled and manual runs together.
+	if e.action != "delete" || e.entity != "system" {
+		t.Errorf("entry should be delete/system, got %s/%s", e.action, e.entity)
 	}
-	if n, _ := e.changes["deleted_count"].(int); n != 3 {
-		t.Errorf("deleted_count should be 3, got %v", e.changes["deleted_count"])
+	if n, _ := val(e.changes, "deleted_count").(int); n != 3 {
+		t.Errorf("deleted_count should be 3, got %v", val(e.changes, "deleted_count"))
 	}
 	// The names matter: "3 files deleted" cannot tell you which restore point is gone.
-	names, ok := e.changes["deleted_files"].([]string)
+	names, ok := val(e.changes, "deleted_files").([]string)
 	if !ok || len(names) != 3 {
-		t.Fatalf("deleted_files should name all 3 removed archives, got %v", e.changes["deleted_files"])
+		t.Fatalf("deleted_files should name all 3 removed archives, got %v", val(e.changes, "deleted_files"))
 	}
 	for _, n := range names {
 		if filepath.Ext(n) != ".enc" || filepath.Base(n) != n {

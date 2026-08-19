@@ -145,6 +145,13 @@ var auditIgnoredPerFunc = map[string]map[string]bool{
 	// the user's change (the agreement flag) and must stay audited, which is why this
 	// is scoped to the handler instead of living in auditIgnoredColumns.
 	"DeletePayment": {"paid": true},
+	// TOTPSetup DOES record this column — as `two_factor_active`, because
+	// isSecretField substring-matches "totp" and would rewrite a `totp_enabled` key to
+	// ***REDACTED***, turning a harmless boolean into a payload that carries nothing
+	// and falsely signals a leaked credential. The exemption covers the alias, not a
+	// gap; everywhere else `totp_enabled` must still appear in the diff (TOTPEnable and
+	// TOTPDisable audit it directly, and both pass).
+	"TOTPSetup": {"totp_enabled": true},
 }
 
 // TestAuditDiffsCoverEveryWrittenColumn fails when a handler records field changes

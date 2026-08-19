@@ -18,7 +18,6 @@ import (
 	"github.com/preining/parkrr/internal/backup"
 	"github.com/preining/parkrr/internal/config"
 	"github.com/preining/parkrr/internal/database"
-	"github.com/preining/parkrr/internal/handlers"
 	"github.com/preining/parkrr/internal/mail"
 	"github.com/preining/parkrr/internal/server"
 )
@@ -167,7 +166,7 @@ func run() error {
 	if mailer.Enabled() {
 		slog.Info("SMTP e-mail enabled", "host", cfg.SMTPHost, "port", cfg.SMTPPort, "tls", cfg.SMTPTLS)
 	}
-	handler, err := server.New(pool, authMgr, webAuthn, cfg.RateLimitPerMin, cfg.MetricsToken, cfg.MetricsRequireAuth,
+	handler, apiHandler, err := server.New(pool, authMgr, webAuthn, cfg.RateLimitPerMin, cfg.MetricsToken, cfg.MetricsRequireAuth,
 		cfg.CheckBreachedPasswords, cfg.FailClosedOnBreach, cfg.BackupKey, cfg.DatabaseURL, cfg.BackupDir, s3,
 		mailer, cfg.PublicBaseURL, cleanupStop)
 	if err != nil {
@@ -177,11 +176,13 @@ func run() error {
 	// Scheduled encrypted backups driven by the DB-stored cron schedule
 	// (backup_settings, editable in the Backup tab). Opt-in via env: a key plus at
 	// least one target (a mounted directory and/or S3).
-	// Audit sink for the jobs that run without a request behind them. It is a plain
-	// Handler over the same pool, so background entries take the same write path (and
-	// the same redaction) as request-driven ones. Injected rather than imported:
-	// internal/backup cannot import internal/handlers, which already imports it.
-	sysAudit := handlers.New(pool).AuditSystem
+	// Audit sink for the jobs that run without a request behind them. It reuses the
+	// Handler that server.New already built over this pool rather than constructing a
+	// second one: a duplicate would carry its own idle http.Client and mail sender for
+	// the process lifetime, and the two could drift as configuration is added.
+	// Injected rather than imported — internal/backup cannot import internal/handlers,
+	// which already imports it.
+	sysAudit := apiHandler.AuditSystem
 	backup.SetAuditor(sysAudit)
 
 	if cfg.BackupKey != "" && (cfg.BackupDir != "" || s3.Enabled()) {

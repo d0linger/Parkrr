@@ -28,7 +28,7 @@ import (
 // New builds the top-level HTTP handler with all routes registered. Background
 // goroutines started here (rate-limiter cleanup, login-throttle cleanup) run
 // until stop is closed.
-func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, metricsRequireAuth, checkBreachedPasswords, failClosedOnBreach bool, backupKey, dbURL, backupDir string, s3 backup.S3Config, mailer mail.Sender, publicBaseURL string, stop <-chan struct{}) (http.Handler, error) {
+func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, metricsRequireAuth, checkBreachedPasswords, failClosedOnBreach bool, backupKey, dbURL, backupDir string, s3 backup.S3Config, mailer mail.Sender, publicBaseURL string, stop <-chan struct{}) (http.Handler, *handlers.Handler, error) {
 	h := handlers.New(pool)
 	h.Auth = authMgr
 	h.CheckBreachedPasswords = checkBreachedPasswords
@@ -257,17 +257,17 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	// --- Static assets and SPA shell ---
 	staticFS, err := fs.Sub(web.StaticFS, "static")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	fileServer := http.FileServer(http.FS(staticFS))
 
 	indexHTML, err := web.StaticFS.ReadFile("static/index.html")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	swJS, err := web.StaticFS.ReadFile("static/sw.js")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Asset fingerprinting: append a content hash to the JS/CSS references so a
 	// changed asset gets a new URL (cache-bust) while unchanged assets stay
@@ -313,7 +313,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 		_, _ = w.Write(indexHTML)
 	})))
 
-	return buildChain(authMgr, mux, rateLimitPerMin, stop), nil
+	return buildChain(authMgr, mux, rateLimitPerMin, stop), h, nil
 }
 
 // buildChain assembles the middleware stack around the router (outermost first:

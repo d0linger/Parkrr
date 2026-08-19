@@ -122,3 +122,26 @@ func TestAuditPruneBatchStaysWellInsideStatementTimeout(t *testing.T) {
 			auditPruneBatch)
 	}
 }
+
+// TestBackupFailureActionKeepsTheLongWindow pins the split the backup scheduler
+// relies on: a routine successful run is ops noise and may age out early, but a
+// failed or unverified run must survive the short window.
+//
+// Without this, adding "backup_failed" to auditShortLivedActions — or renaming the
+// action in internal/backup — would silently delete the answer to "when did the
+// nightly backups stop?" after one year, while everything still compiles.
+func TestBackupFailureActionKeepsTheLongWindow(t *testing.T) {
+	if !slices.Contains(auditShortLivedActions, "backup") {
+		t.Error(`"backup" should stay short-lived: a successful nightly run a year ago is noise`)
+	}
+	if slices.Contains(auditShortLivedActions, "backup_failed") {
+		t.Fatal(`"backup_failed" must NOT be short-lived — a failed or unverified backup is ` +
+			`exactly what an investigation needs years later`)
+	}
+	// The literal must match internal/backup.actionBackupFailed. The packages cannot
+	// import each other, so the value is pinned on both sides instead.
+	const actionBackupFailed = "backup_failed"
+	if slices.Contains(auditShortLivedActions, actionBackupFailed) {
+		t.Fatalf("%q is short-lived", actionBackupFailed)
+	}
+}

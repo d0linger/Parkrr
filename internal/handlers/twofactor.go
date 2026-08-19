@@ -32,12 +32,15 @@ func (h *AuthHandler) TOTPSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A pending TOTP secret is security-relevant state, so the attempt is recorded —
-	// but only THAT it happened. The secret itself never goes near the trail (the
-	// redaction choke point would strip a `totp_*` field anyway; not passing it is the
-	// first line). The guard above means this cannot disable an ACTIVE 2FA: enabling
-	// is a separate, audited step.
+	// but only THAT it happened, never the secret. The guard above means this cannot
+	// disable an ACTIVE 2FA; enabling is a separate, audited step.
+	//
+	// The field names deliberately avoid the substring "totp": isSecretField matches it,
+	// so `totp_enabled` and friends would be rewritten to ***REDACTED*** — turning two
+	// harmless booleans into a payload that carries no information AND falsely signals
+	// that a credential was handed to the trail.
 	h.auditChange(r, "update", "user", u.ID, u.Username+" started two-factor setup",
-		auditSnapshot(map[string]any{"totp_secret_pending": true, "totp_enabled": false}))
+		auditSnapshot(map[string]any{"two_factor_setup_started": true, "two_factor_active": false}))
 	qr, err := auth.QRCodeDataURI(key)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not render QR code")
