@@ -607,6 +607,10 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	if !validNoteLength(req.Note) {
+		writeError(w, http.StatusBadRequest, "note is too long")
+		return
+	}
 
 	items, err := h.invoiceLines(r, pid)
 	if err != nil {
