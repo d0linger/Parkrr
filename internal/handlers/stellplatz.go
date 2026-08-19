@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 
@@ -122,10 +123,19 @@ func (h *Handler) UpdateGarage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is too long")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE garages SET name=$1, sort_order=$2, updated_at=now() WHERE id=$3`,
-		req.Name, req.SortOrder, id)
+	// The `prev` CTE returns the pre-update values in the SAME statement, so the
+	// audit diff is atomic with the change (no second round-trip, no race).
+	var prev garageRequest
+	err := h.Pool.QueryRow(r.Context(),
+		`WITH prev AS (SELECT name, sort_order FROM garages WHERE id=$3)
+		 UPDATE garages SET name=$1, sort_order=$2, updated_at=now() WHERE id=$3
+		 RETURNING (SELECT name FROM prev), (SELECT sort_order FROM prev)`,
+		req.Name, req.SortOrder, id).Scan(&prev.Name, &prev.SortOrder)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "garage not found")
+			return
+		}
 		if isUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "a garage with that name already exists")
 			return
@@ -133,11 +143,7 @@ func (h *Handler) UpdateGarage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not update garage")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "garage not found")
-		return
-	}
-	h.audit(r, "update", "garage", id, "updated garage "+req.Name)
+	h.auditChange(r, "update", "garage", id, "updated garage "+req.Name, diffFields(prev, req))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -279,10 +285,20 @@ func (h *Handler) UpdateHall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "geometry is invalid or too large")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE halls SET name=$1, geometry=$2, sort_order=$3, updated_at=now() WHERE id=$4`,
-		req.Name, geom, req.SortOrder, id)
+	// `prev` returns the pre-update values atomically with the write (see UpdateGarage).
+	var prevName string
+	var prevSort int
+	var prevGeom []byte
+	err := h.Pool.QueryRow(r.Context(),
+		`WITH prev AS (SELECT name, sort_order, geometry FROM halls WHERE id=$4)
+		 UPDATE halls SET name=$1, geometry=$2, sort_order=$3, updated_at=now() WHERE id=$4
+		 RETURNING (SELECT name FROM prev), (SELECT sort_order FROM prev), (SELECT geometry FROM prev)`,
+		req.Name, geom, req.SortOrder, id).Scan(&prevName, &prevSort, &prevGeom)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "hall not found")
+			return
+		}
 		if isUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "a hall with that name already exists in this garage")
 			return
@@ -290,11 +306,23 @@ func (h *Handler) UpdateHall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not update hall")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "hall not found")
-		return
+	// The floor plan is a large opaque blob — a full before/after would drown the
+	// trail, so record only THAT it changed alongside the readable fields.
+	type hallAudit struct {
+		Name        string `json:"name"`
+		SortOrder   int    `json:"sort_order"`
+		FloorPlanOf string `json:"floor_plan"`
 	}
-	h.audit(r, "update", "hall", id, "updated hall "+req.Name)
+	planState := func(b []byte) string {
+		if len(b) == 0 {
+			return "leer"
+		}
+		return "gesetzt (" + strconv.Itoa(len(b)) + " B)"
+	}
+	changes := diffFields(
+		hallAudit{Name: prevName, SortOrder: prevSort, FloorPlanOf: planState(prevGeom)},
+		hallAudit{Name: req.Name, SortOrder: req.SortOrder, FloorPlanOf: planState(geom)})
+	h.auditChange(r, "update", "hall", id, "updated hall "+req.Name, changes)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
