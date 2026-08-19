@@ -89,7 +89,10 @@ func handlerFuncs(t *testing.T) []handlerFunc {
 		}
 		for _, d := range f.Decls {
 			fn, ok := d.(*ast.FuncDecl)
-			if !ok || fn.Recv == nil || fn.Body == nil {
+			// Package-level funcs count too, not just methods on *Handler: the *Tx helpers
+			// (createVehiclesTx, settleItemTx, recordPeriodPaymentTx …) carry real UPDATEs
+			// and DELETEs, and skipping them left those paths outside both guards.
+			if !ok || fn.Body == nil {
 				continue
 			}
 			s := fset.Position(fn.Body.Pos()).Offset
@@ -98,7 +101,7 @@ func handlerFuncs(t *testing.T) []handlerFunc {
 		}
 	}
 	if len(out) == 0 {
-		t.Fatal("no handler methods found")
+		t.Fatal("no handler functions found")
 	}
 	return out
 }
@@ -109,7 +112,9 @@ var (
 	// A struct-based diff: diffFields(old|prev|existing, …) — or one built from a
 	// local audit-view struct literal, e.g. diffFields(hallAudit{…}, hallAudit{…}).
 	reStructDif = regexp.MustCompile(`diffFields\(\s*(?:old|prev|existing)\b|diffFields\(\s*\n?\s*\w+\{`)
-	reColumn    = regexp.MustCompile(`^[a-z_]+$`)
+	// Column names may contain digits (s3_cron, s3_keep) but never start with one. The
+	// old ^[a-z_]+$ silently SKIPPED such columns, so a diff could omit them and pass.
+	reColumn = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 )
 
 // auditIgnoredColumns are columns a diff may legitimately omit.
@@ -122,6 +127,11 @@ var auditIgnoredColumns = map[string]bool{
 	"updated_at": true, "created_at": true,
 	"next_invoice_no": true, "paid_amount": true,
 	"paid_periods": true, "paid_fixed": true, "rates_synced": true,
+	// `paid` on a vehicle/charge when a PAYMENT is reversed: clearing it is the
+	// mechanical cascade of un-booking that payment, not an edit of those records —
+	// the payment's own entry is the trail. Where `paid` IS the user's change (the
+	// agreement flag) the handler audits it explicitly, so this never hides that.
+	"paid":        true,
 	"reversed_at": true, "reversed_by": true,
 	"password_hash": true, "totp_secret": true,
 	"data": true, "byte_size": true, "content_type": true,
@@ -140,8 +150,11 @@ func TestAuditDiffsCoverEveryWrittenColumn(t *testing.T) {
 			if idx < 0 {
 				continue // no field-level audit here; other tests cover presence
 			}
-			set := reUpdateSet.FindStringSubmatch(body)
-			if set == nil {
+			// EVERY UPDATE in the body, not just the first: a handler that writes two
+			// tables had only its first statement checked, so the second one's columns
+			// were unguarded (saveAgreement writes vehicles AND flat_rate_periods).
+			sets := reUpdateSet.FindAllStringSubmatch(body, -1)
+			if len(sets) == 0 {
 				continue
 			}
 			seg := body[idx:]
@@ -160,12 +173,16 @@ func TestAuditDiffsCoverEveryWrittenColumn(t *testing.T) {
 				audited[k[1]] = true
 			}
 			var missing []string
-			for _, part := range strings.Split(strings.ReplaceAll(set[1], "\n", " "), ",") {
-				col := strings.TrimSpace(strings.SplitN(part, "=", 2)[0])
-				if !reColumn.MatchString(col) || auditIgnoredColumns[col] || audited[col] {
-					continue
+			seenCol := map[string]bool{}
+			for _, set := range sets {
+				for _, part := range strings.Split(strings.ReplaceAll(set[1], "\n", " "), ",") {
+					col := strings.TrimSpace(strings.SplitN(part, "=", 2)[0])
+					if !reColumn.MatchString(col) || auditIgnoredColumns[col] || audited[col] || seenCol[col] {
+						continue
+					}
+					seenCol[col] = true
+					missing = append(missing, col)
 				}
-				missing = append(missing, col)
 			}
 			if len(missing) > 0 {
 				sort.Strings(missing)

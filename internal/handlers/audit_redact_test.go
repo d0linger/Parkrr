@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // The audit trail must never carry a secret in clear text. These tests pin the
@@ -125,5 +126,24 @@ func TestRedactStructInput(t *testing.T) {
 	}
 	if s, _ := got["iban"].(string); strings.Contains(s, "1904300234") {
 		t.Errorf("struct IBAN not masked: %v", got["iban"])
+	}
+}
+
+// maskTail slices by rune: the value is whatever a user typed into an IBAN field, and
+// byte slicing there cuts a multibyte character in half (the trail then shows U+FFFD).
+func TestMaskTailIsRuneSafe(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"AT611904300234573201", "…3201"},     // the ASCII case must be unchanged
+		{"AT61190430023457äöüß", "…äöüß"},     // 4 runes = 8 bytes; byte slicing would split ö
+		{"  AT611904300234573201  ", "…3201"}, // trimmed first
+		{"abcd", redactedMark},                // exactly keep runes → nothing left to reveal
+		{"äöüß", redactedMark},                // 4 runes / 8 bytes: rune count decides, not len()
+	} {
+		if got := maskTail(tc.in, 4); got != tc.want {
+			t.Errorf("maskTail(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	if got := maskTail("AT61190430023457äöüß", 4); !utf8.ValidString(got) {
+		t.Errorf("maskTail produced invalid UTF-8: %q", got)
 	}
 }

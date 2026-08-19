@@ -429,6 +429,13 @@ test('packRects bays — an item too large for the hall does not break the comb'
     const plain = PG.packRects(cars(), walls.concat([lane]), B, null, opts);
     const withOversized = PG.packRects([{ id: 'boat', w: 70, h: 3 }].concat(cars()), walls.concat([lane]), B, null, opts);
 
+    // Count first: rowOf returns a SET of row positions, so if neither run placed a
+    // single car both sides are [] and deepEqual passes vacuously — the exact regression
+    // this test exists to catch (a bay closing on its first rejection places nothing).
+    const carsPlaced = (r) => r.placements.filter((p) => p.ok && p.id.startsWith('c')).length;
+    assert.equal(carsPlaced(plain), 12, 'baseline must place all 12 cars, else the comparison below is vacuous');
+    assert.equal(carsPlaced(withOversized), carsPlaced(plain),
+        'the unplaceable item must not cost any car its place');
     assert.deepEqual(rowOf(withOversized), rowOf(plain),
         'the cars must still form the same wall-hugging row(s) despite an unplaceable item');
     assert.ok(withOversized.placements.find((p) => p.id === 'boat' && !p.ok), 'the oversized item is reported unplaceable');
@@ -455,4 +462,22 @@ test('hasExitPath — degenerate or non-finite bounds report NO exit path, not a
     ]) {
         assert.equal(PG.hasExitPath(car, [], [tiny], bounds, opts), false, name + ' must not claim an exit path');
     }
+});
+
+// FE-Preplaced — vehicles the caller declares as ALREADY on the floor are obstacles for both passes.
+// The bay pass always tested them; the MaxRects fallback did not, because `preplaced` is neither
+// carved out of the free set nor part of the obstacle list feasible() checks.
+test('packRects — a MaxRects placement never lands on a preplaced vehicle', () => {
+    const bounds = { minX: 0, minY: 0, maxX: 10, maxY: 10 };
+    // No driveways and no usable wall run for a bay: force the MaxRects path.
+    const pre = [{ id: 'pre', x: 0, y: 0, w: 6, h: 6, rot: 0 }];
+    const items = [{ id: 'a', w: 5, h: 5 }];
+    const r = PG.packRects(items, [], bounds, null, { margin: 0, gap: 0, preplaced: pre });
+    const p = r.placements.find((x) => x.id === 'a');
+    if (p && p.ok) {
+        const f = foot(p, 5, 5);
+        const overlap = f.x < 6 && f.x + f.w > 0 && f.y < 6 && f.y + f.h > 0;
+        assert.ok(!overlap, 'placed at ' + f.x + ',' + f.y + ' — overlaps the preplaced 6x6 block at 0,0');
+    }
+    // Either it found the clear corner or it declined; both are correct, stacking is not.
 });

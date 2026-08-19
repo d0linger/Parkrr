@@ -896,9 +896,12 @@ func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
 			settled++
 		}
 		if settled > 0 {
-			return h.auditChangeTx(ctx, tx, r, "update", "payment", 0,
+			// entity_id is the payment the drawdown is booked against — it is guaranteed
+			// non-zero here (the handler returns early above when there is none). Logging
+			// 0 left an entry under entity "payment" that resolved to no payment at all.
+			return h.auditChangeTx(ctx, tx, r, "update", "payment", latestPayment,
 				fmt.Sprintf("applied Guthaben to %d open position(s)", settled),
-				auditSnapshot(map[string]any{"settled_positions": settled}))
+				auditSnapshot(map[string]any{"settled_positions": settled, "person_id": id}))
 		}
 		return nil
 	})

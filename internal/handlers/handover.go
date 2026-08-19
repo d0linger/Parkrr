@@ -211,7 +211,7 @@ func (h *Handler) DeleteHandover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The signature image is deliberately not read back — the trail records WHICH
-	// protocol vanished (vehicle, direction, signer), never the biometric artefact.
+	// protocol vanished (vehicle, direction, signer), never the biometric artifact.
 	var delVehicle int64
 	var delDirection, delSigner string
 	if err := h.Pool.QueryRow(r.Context(),

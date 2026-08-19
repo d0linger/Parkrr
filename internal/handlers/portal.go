@@ -105,9 +105,10 @@ func (h *Handler) CreatePortalLink(w http.ResponseWriter, r *http.Request) {
 	// so the table doesn't grow unbounded across link issuance.
 	_, _ = h.Pool.Exec(r.Context(),
 		`DELETE FROM self_service_tokens WHERE revoked OR expires_at < now() - interval '30 days'`)
-	if _, err := h.Pool.Exec(r.Context(),
+	var tokenID int64
+	if err := h.Pool.QueryRow(r.Context(),
 		`INSERT INTO self_service_tokens (token_hash, person_id, expires_at, created_by)
-		 VALUES ($1,$2,$3,$4)`, hash, id, expires, createdBy); err != nil {
+		 VALUES ($1,$2,$3,$4) RETURNING id`, hash, id, expires, createdBy).Scan(&tokenID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not store token")
 		return
 	}
@@ -130,7 +131,10 @@ func (h *Handler) CreatePortalLink(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// The token itself is never logged — only that a link was issued and until when.
-	h.auditCreated(r, "portal-link", id, "Self-Service-Link erstellt (gültig bis "+expires.Format("2006-01-02")+")",
+	// entity_id is the TOKEN id, matching RevokePortalLink, so an issued link and its
+	// later revocation resolve to the same entity; it used to record the person id, which
+	// made the two impossible to correlate. person_id stays in the snapshot.
+	h.auditCreated(r, "portal-link", tokenID, "Self-Service-Link erstellt (gültig bis "+expires.Format("2006-01-02")+")",
 		map[string]any{"person_id": id, "expires_at": expires.Format("2006-01-02"), "emailed": emailed})
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"link":       link,

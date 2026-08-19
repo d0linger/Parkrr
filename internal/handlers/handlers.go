@@ -195,22 +195,19 @@ func actorFrom(r *http.Request) (int64, string) {
 // request context. Failures are ignored so auditing never breaks a request.
 //
 // This is the post-commit, best-effort path (separate connection). For money
-// mutations use auditTx / auditChangeTx inside the transaction so the trail is
-// atomic with the change (BAO §131) — a crash can never leave a booked change
-// without its audit row.
+// mutations use auditChangeTx inside the transaction so the trail is atomic with
+// the change (BAO §131) — a crash can never leave a booked change without its
+// audit row.
 func (h *Handler) audit(r *http.Request, action, entity string, id int64, summary string) {
 	h.auditChange(r, action, entity, id, summary, nil)
 }
 
-// auditTx writes an audit entry through q — pass the money transaction's pgx.Tx
-// so the row commits atomically with the mutation and rolls back with it. The
-// error is returned so the caller fails (and rolls back) the tx on an audit
+// auditChangeTx writes an audit entry through q — pass the money transaction's
+// pgx.Tx so the row commits atomically with the mutation and rolls back with it.
+// The error is returned so the caller fails (and rolls back) the tx on an audit
 // write failure: a booked money change must not persist without its trail.
-func (h *Handler) auditTx(ctx context.Context, q execer, r *http.Request, action, entity string, id int64, summary string) error {
-	return h.auditChangeTx(ctx, q, r, action, entity, id, summary, nil)
-}
-
-// auditChangeTx is auditTx with per-field before/after values (diffFields).
+// Records per-field before/after values (pass the result of diffFields); a
+// nil/empty changes is stored as NULL.
 func (h *Handler) auditChangeTx(ctx context.Context, q execer, r *http.Request, action, entity string, id int64, summary string, changes any) error {
 	actorID, actorName := actorFrom(r)
 	return auditExec(ctx, q, actorID, actorName, action, entity, id, summary, changes)
@@ -297,14 +294,10 @@ func mergeChanges(maps ...map[string]any) map[string]any {
 // reminders, imports) deliberately keep a plain summary — they have no fields to
 // diff, and inventing one would only add noise to the trail.
 func (h *Handler) auditCreated(r *http.Request, entity string, id int64, summary string, snapshot map[string]any) {
-	var changes map[string]any
-	if len(snapshot) > 0 {
-		changes = make(map[string]any, len(snapshot))
-		for k, v := range snapshot {
-			changes[k] = map[string]any{"old": nil, "new": v} // created: no old value
-		}
-	}
-	h.auditChange(r, "create", entity, id, summary, changes)
+	// auditSnapshot already produces exactly {field: {old: nil, new: v}} and returns nil
+	// for an empty input, which is what a creation needs. (auditDeleted cannot share it:
+	// its map is the mirror image, {old: v, new: nil}.)
+	h.auditChange(r, "create", entity, id, summary, auditSnapshot(snapshot))
 }
 
 // auditDeleted records a deletion together with the identifying values of the row
@@ -348,7 +341,7 @@ func auditExec(ctx context.Context, q execer, actorID int64, actorName, action, 
 	}
 	var changesArg any // nil -> SQL NULL
 	if changes != nil {
-		// Redact BEFORE marshalling — this is the single choke point every audit
+		// Redact BEFORE marshaling — this is the single choke point every audit
 		// write passes through, so a secret cannot reach the trail even if a call
 		// site forgets to exclude the field (see audit_redact.go).
 		if b, err := json.Marshal(redactChanges(normalizeChanges(changes))); err == nil && string(b) != "null" {

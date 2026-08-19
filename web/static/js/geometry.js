@@ -376,7 +376,12 @@
                     // Four corner anchors of F → hug whichever wall/neighbour bounds this rect (never floats).
                     for (const [ax, ay] of [[F.x, F.y], [F.x + F.w - ww, F.y], [F.x, F.y + F.h - hh], [F.x + F.w - ww, F.y + F.h - hh]]) {
                         const cand = { x: Math.round((ax + off.x) * 100) / 100, y: Math.round((ay + off.y) * 100) / 100, w: it.w, h: it.h, rot };
-                        if (!feasible(cand)) continue;
+                        // feasible() covers the floor polygon and `obstacles` only. Vehicles placed in
+                        // THIS run are kept apart by the free-rect carving below, but `preplaced` ones
+                        // are neither carved out of `free` nor part of obsQ — so without this a MaxRects
+                        // candidate could be stacked straight on top of a vehicle the caller declared as
+                        // already standing there. The bay pass has always tested this; this path had not.
+                        if (!feasible(cand) || !clearOfPlaced(cand)) continue;
                         cands.push({ cand, s: scoreOf(cand, F) });
                     }
                 }

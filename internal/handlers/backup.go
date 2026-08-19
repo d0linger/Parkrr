@@ -157,6 +157,10 @@ func (h *Handler) SaveBackupSchedule(w http.ResponseWriter, r *http.Request) {
 	var changes any
 	if prevErr == nil {
 		changes = diffFields(prev, in)
+	} else {
+		// The save still goes ahead, but the entry will carry no before/after values —
+		// say why, rather than leaving an unexplained diff-less settings change.
+		slog.Warn("backup: load previous settings failed, audit entry has no diff", "err", prevErr)
 	}
 	// action "update" (not "backup"): this is a configuration change, and the
 	// retention policy puts "backup" on the short window with the routine runs.

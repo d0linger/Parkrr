@@ -84,10 +84,15 @@ func isSecretField(name string) bool {
 // mask meaningfully is redacted wholesale.
 func maskTail(s string, keep int) string {
 	t := strings.TrimSpace(s)
-	if len(t) <= keep {
+	// Count and slice by RUNES, not bytes. An IBAN is ASCII in practice, but the value
+	// is whatever the user typed: byte slicing can cut a multibyte character in half,
+	// and the broken rune then reaches the trail as U+FFFD. Runes also make "keep the
+	// last 4 characters" true rather than "the last 4 bytes".
+	r := []rune(t)
+	if len(r) <= keep {
 		return redactedMark
 	}
-	return "…" + t[len(t)-keep:]
+	return "…" + string(r[len(r)-keep:])
 }
 
 // redactValue applies the policy to one field value. Nested maps/slices are walked
