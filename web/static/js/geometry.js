@@ -230,7 +230,9 @@
         const placedBlocks = [], pre = o.preplaced || []; // pre = vehicles already on the floor (other phases) that must keep exits + act as route obstacles
         const canAllExit = (cand) => {
             if (!routeOn) return true;
-            const all = pre.concat(placedBlocks, [cand]);
+            // Check the CANDIDATE first — it fails most often, and rejecting it early skips the O(n)
+            // re-check of everything already parked.
+            const all = [cand].concat(pre, placedBlocks);
             const exitTol = gap + 0.5; // a car within (gap + 0.5 m) of a driveway exits directly — comb stays valid
             for (const v of all) if (!hasExitPath(v, routeObs.concat(all.filter((x) => x !== v)), o.gates, bounds, { cell: routeCell, clearance: Math.min(v.w, v.h) / 2 + routeTol, exitTol })) return false;
             return true;
@@ -284,7 +286,7 @@
             return !placedBlocks.some((pb) => _sat(probe, _quad(pb)));
         };
         const bays = ['top', 'bottom', 'left', 'right'].map((edge) => ({
-            edge, cursor: (edge === 'top' || edge === 'bottom') ? bounds.minX + m : bounds.minY + m,
+            edge, cursor: (edge === 'top' || edge === 'bottom') ? bounds.minX + m : bounds.minY + m, depth: null,
         }));
         const bayPlace = (bay, it) => {
             const horiz = bay.edge === 'top' || bay.edge === 'bottom';
@@ -295,23 +297,42 @@
             const loX = bounds.minX + m, hiX = bounds.maxX - m, loY = bounds.minY + m, hiY = bounds.maxY - m;
             if (fw > hiX - loX + _EPS || fh > hiY - loY + _EPS) return null; // does not fit the hall at all
             const limit = horiz ? hiX : hiY, span = horiz ? fw : fh;
-            for (let c = bay.cursor; c + span <= limit + _EPS; c += 0.25) {
-                const ax = horiz ? c : (bay.edge === 'left' ? loX : hiX - fw);
-                const ay = horiz ? (bay.edge === 'top' ? loY : hiY - fh) : c;
-                if (ax < loX - _EPS || ay < loY - _EPS || ax + fw > hiX + _EPS || ay + fh > hiY + _EPS) continue;
+            // `bounds` is the floor bounding box, which INCLUDES the wall footprint, so the row line is
+            // not at the bounding box edge. Probe inward from the wall until the first free depth — that
+            // is the inner wall face — and then FIX that depth for the whole bay, so the row stays
+            // straight and every vehicle is pushed fully back against the wall. The space that stays
+            // free in front of the row is the manoeuvring corridor to the Fahrstraße.
+            // Probe only a short way in: the inner wall face is within a wall thickness or two. Searching
+            // deeper would stop being "wall hugging" (and costs a lot, since each step runs the checks).
+            const depthMax = Math.min(1.5, horiz ? (hiY - loY - fh) : (hiX - loX - fw));
+            const at = (c, d) => {
+                const ax = horiz ? c : (bay.edge === 'left' ? loX + d : hiX - fw - d);
+                const ay = horiz ? (bay.edge === 'top' ? loY + d : hiY - fh - d) : c;
+                if (ax < loX - _EPS || ay < loY - _EPS || ax + fw > hiX + _EPS || ay + fh > hiY + _EPS) return null;
                 // anchor→block offset, same convention as the MaxRects path: the FOOTPRINT's top-left
                 // must land on (ax, ay), so the block origin shifts by (footprint − item)/2.
                 const cand = { x: r2(ax + (fw - it.w) / 2), y: r2(ay + (fh - it.h) / 2), w: it.w, h: it.h, rot };
                 // feasible() only covers floor + obstacles; the free-rect carving that normally keeps
                 // vehicles apart is bypassed here, so check the placed vehicles explicitly (plus gap).
-                if (feasible(cand) && clearOfPlaced(cand) && canAllExit(cand)) return { cand, next: c + span + gap };
+                return (feasible(cand) && clearOfPlaced(cand) && canAllExit(cand)) ? cand : null;
+            };
+            for (let c = bay.cursor; c + span <= limit + _EPS; c += 0.25) {
+                if (bay.depth == null) { // establish the row line once: first free depth off the wall
+                    for (let d = 0; d <= depthMax + _EPS; d += 0.1) {
+                        const cand = at(c, d);
+                        if (cand) return { cand, next: c + span + gap, depth: d };
+                    }
+                } else {
+                    const cand = at(c, bay.depth);
+                    if (cand) return { cand, next: c + span + gap, depth: bay.depth };
+                }
             }
             return null;
         };
         const placements = []; let placed = 0, failed = 0;
         for (const { it } of order) {
             let bayHit = null;
-            for (const bay of bays) { const r = bayPlace(bay, it); if (r) { bay.cursor = r.next; bayHit = r.cand; break; } }
+            for (const bay of bays) { const r = bayPlace(bay, it); if (r) { bay.cursor = r.next; bay.depth = r.depth; bayHit = r.cand; break; } }
             if (bayHit) {
                 placements.push({ id: it.id, x: bayHit.x, y: bayHit.y, rot: bayHit.rot, ok: true });
                 placedBlocks.push({ id: it.id, x: bayHit.x, y: bayHit.y, w: it.w, h: it.h, rot: bayHit.rot });
