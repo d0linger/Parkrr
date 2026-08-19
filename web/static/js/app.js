@@ -662,6 +662,26 @@
         t.append(el('div', { class: 'value' }, esc(value)), el('div', { class: 'label' }, label));
         return t;
     };
+    // Backup-Health — Alter des jüngsten ERFOLGREICHEN Laufs, plus das serverseitige
+    // Urteil "überfällig". Die Schwelle kommt aus dem Cron des jeweiligen Ziels und
+    // wird bewusst NICHT hier gerechnet: ein wöchentlicher Plan darf nach zwei Tagen
+    // nicht rot werden, ein stündlicher nach zwei Tagen nicht mehr grün sein.
+    const backupAge = (sec) => {
+        if (sec == null) return 'nie';
+        const m = Math.floor(sec / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+        if (d >= 1) return d + (d === 1 ? ' Tag' : ' Tage');
+        if (h >= 1) return h + (h === 1 ? ' Stunde' : ' Stunden');
+        return Math.max(1, m) + ' Min.';
+    };
+    // tone entscheidet die Ampel: rot bei überfällig ODER wenn der letzte Versuch
+    // fehlschlug (ein frisches, aber kaputtes Backup ist kein grüner Zustand).
+    const backupTargetTone = (th) => (th.overdue || !th.last_ok) ? 'red' : 'green';
+    const backupTargetNote = (th) => {
+        if (th.never) return 'geplant, aber nie gelaufen';
+        if (!th.last_ok) return 'letzter Lauf fehlgeschlagen';
+        if (th.overdue) return 'überfällig laut Zeitplan';
+        return 'planmäßig';
+    };
     const personName = (p) => (`${p.first_name || ''} ${p.last_name || ''}`).trim() || '(ohne Namen)';
     const vehicleTitle = (v) => v.label || v.license_plate || v.category_name;
     const catById = (id) => state.categories.find((c) => c.id === Number(id));
@@ -947,6 +967,35 @@
             stat(ov.total_vehicles, 'Gefährte gesamt', { icon: 'car' }),
             stat(ov.total_categories, 'Tarife', { icon: 'tag' }),
         ));
+
+        // Backup-Health. Nur für Admins: /api/backup/status ist admin-only, ein
+        // Bearbeiter bekäme hier bloß einen 403. Der Aufruf ist bewusst NICHT Teil des
+        // Übersichts-Ladens, damit ein langsamer S3-Bucket das Dashboard nicht ausbremst
+        // — die Kachel wird nachgereicht, sobald die Antwort da ist.
+        if (isAdmin()) {
+            const slot = el('div', { class: 'stat-grid', 'aria-live': 'polite' });
+            page.append(slot);
+            api.get('/backup/status').then((bs) => {
+                const hh = bs && bs.health;
+                if (!hh) return;
+                const targets = [['Volume', hh.volume], ['S3', hh.s3]].filter(([, th]) => th && th.configured);
+                if (!targets.length) {
+                    // Kein Ziel eingerichtet: eine stumme Kachel wäre irreführend, eine rote
+                    // falsch — es ist eine Einrichtungslücke, keine Störung.
+                    if (bs.enabled) return;
+                    slot.append(stat('nicht eingerichtet', 'Backup', { icon: 'shield', tone: 'amber' }));
+                    return;
+                }
+                targets.forEach(([name, th]) => {
+                    const tile = stat(backupAge(th.age_seconds), 'Backup ' + name,
+                        { icon: 'shield', tone: backupTargetTone(th) });
+                    tile.append(el('div', { class: 'stat-note' }, backupTargetNote(th)));
+                    tile.setAttribute('title', 'Zeitplan: ' + (th.cron || 'aus')
+                        + ' · letzter Erfolg: ' + (th.last_at ? new Date(th.last_at).toLocaleString('de-AT') : 'nie'));
+                    slot.append(tile);
+                });
+            }).catch(() => { /* Backup-Status ist Zusatzinfo, nie ein Grund die Übersicht zu stören */ });
+        }
 
         // Belegung — how many active Gefährte are positioned in a hall plan, plus a
         // per-hall breakdown. The plan is area-based (no fixed slots), so this is a

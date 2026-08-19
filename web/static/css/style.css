@@ -494,7 +494,17 @@ textarea { resize: vertical; min-height: 72px; }
 .stat.tone-teal .value { color: var(--primary-ink); }
 .stat.tone-green .value { color: var(--success-text); }
 .stat.tone-amber .value { color: var(--accent-text); }
-.stat.tone-teal .stat-ic, .stat.tone-green .stat-ic, .stat.tone-amber .stat-ic { opacity: 0.85; }
+/* Rot ist der Störungszustand (Backup überfällig oder letzter Lauf fehlgeschlagen).
+   Bewusst dieselbe Anatomie wie die anderen Tönungen — die Kachel soll auffallen,
+   ohne aus dem Raster zu fallen. */
+.stat.tone-red::after { background: var(--danger); }
+.stat.tone-red .value { color: var(--danger); }
+.stat.tone-red .stat-ic { color: var(--danger); }
+.stat.tone-red { border-color: color-mix(in srgb, var(--danger) 40%, var(--card-border)); }
+/* Zusatzzeile unter dem Label: erklärt, WARUM die Kachel diese Farbe hat. */
+.stat .stat-note { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.3rem; line-height: 1.3; }
+.stat.tone-red .stat-note { color: var(--danger); font-weight: 600; }
+.stat.tone-teal .stat-ic, .stat.tone-green .stat-ic, .stat.tone-amber .stat-ic, .stat.tone-red .stat-ic { opacity: 0.85; }
 .stat.tone-teal .stat-ic { color: var(--primary-ink); }
 .stat.tone-green .stat-ic { color: var(--success-text); }
 .stat.tone-amber .stat-ic { color: var(--accent-text); }

@@ -75,6 +75,7 @@ func (h *Handler) BackupStatus(w http.ResponseWriter, r *http.Request) {
 		S3            bool            `json:"s3"` // an S3 target is configured
 		S3Bucket      string          `json:"s3_bucket"`
 		S3Files       []file          `json:"s3_files"`
+		Health        backup.Health   `json:"health"`
 	}{Enabled: h.BackupKey != "", Scheduled: h.BackupDir != "", Dir: h.BackupDir, Files: []file{},
 		S3: h.S3.Enabled(), S3Bucket: h.S3.Bucket, S3Files: []file{},
 		SchemaVersion: backup.SchemaVersion(r.Context(), h.Pool)}
@@ -112,6 +113,11 @@ func (h *Handler) BackupStatus(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("backup: S3 list failed", "err", err)
 		}
 	}
+	// Verdict last, once settings and status are both loaded. Computed server-side
+	// because the threshold comes from the target's own cron expression, and the cron
+	// parser lives here — the browser must not reimplement it.
+	resp.Health = backup.BackupHealth(resp.Settings, resp.Status,
+		h.BackupKey != "" && h.BackupDir != "", h.BackupKey != "" && h.S3.Enabled(), time.Now())
 	writeJSON(w, http.StatusOK, resp)
 }
 

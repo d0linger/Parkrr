@@ -215,3 +215,20 @@ test('wall templates: create → list → delete round-trip (AR3)', async ({ pag
   const del = await page.request.delete('/api/wall-templates/' + tpl.id, { headers: hdr });
   expect(del.ok(), 'delete template ' + del.status()).toBeTruthy();
 });
+
+test('dashboard: Backup-Health-Kachel erscheint für Admins (Ops)', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  await login(page);
+
+  // Die Kachel wird nachgereicht (eigener Fetch), damit ein langsamer S3-Bucket die
+  // Übersicht nicht ausbremst — daher auf sie warten statt sofort zu prüfen.
+  const tile = page.locator('.stat', { hasText: 'Backup Volume' });
+  await expect(tile).toBeVisible({ timeout: 15000 });
+  // Die Begründungszeile ist der eigentliche Nutzen: eine Zahl ohne "warum" sagt
+  // nicht, ob gehandelt werden muss.
+  await expect(tile.locator('.stat-note')).not.toBeEmpty();
+  // Der Zeitplan gehört in den Tooltip, damit die Schwelle nachvollziehbar ist.
+  await expect(tile).toHaveAttribute('title', /Zeitplan:/);
+  expect(errors, 'keine Fehler beim Laden der Übersicht').toEqual([]);
+});

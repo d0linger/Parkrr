@@ -28,6 +28,64 @@ type Status struct {
 	LastS3OK        bool       `json:"last_s3_ok"`
 }
 
+// TargetHealth is the answer to "is this backup target actually still working?".
+// Age is what an operator reads; Overdue is the verdict, derived from the target's
+// OWN cron rather than a fixed threshold — a weekly schedule must not be reported as
+// late after two days, and an hourly one must not stay green for a week.
+type TargetHealth struct {
+	Configured bool       `json:"configured"`
+	Cron       string     `json:"cron"`
+	LastAt     *time.Time `json:"last_at"` // last SUCCESSFUL run, nil if never
+	LastOK     bool       `json:"last_ok"` // the most recent attempt succeeded
+	AgeSeconds *int64     `json:"age_seconds"`
+	Overdue    bool       `json:"overdue"`
+	Never      bool       `json:"never"` // configured and scheduled, but never ran
+}
+
+// Health summarizes both targets for the dashboard tile.
+type Health struct {
+	Volume TargetHealth `json:"volume"`
+	S3     TargetHealth `json:"s3"`
+}
+
+// overdueGrace is added to the next scheduled time before a target counts as late,
+// so a run that is merely in progress — or a scheduler tick that fired a minute
+// after midnight — does not flip the tile to red.
+const overdueGrace = 90 * time.Minute
+
+// targetHealth evaluates one target. lastAt is its last successful run.
+func targetHealth(configured bool, cron string, lastAt *time.Time, lastOK bool, now time.Time) TargetHealth {
+	h := TargetHealth{Configured: configured, Cron: cron, LastAt: lastAt, LastOK: lastOK}
+	if !configured {
+		return h
+	}
+	if lastAt != nil {
+		age := int64(now.Sub(*lastAt).Seconds())
+		h.AgeSeconds = &age
+	}
+	// No (or invalid) cron means the target is not scheduled: an old backup is then a
+	// deliberate state, not a fault, so it is never reported as overdue.
+	if !ValidCron(cron) || cron == "" {
+		return h
+	}
+	if lastAt == nil {
+		h.Never = true
+		h.Overdue = true // scheduled but never produced a backup — the worst case, silently
+		return h
+	}
+	next := CronNext(cron, *lastAt)
+	h.Overdue = !next.IsZero() && now.After(next.Add(overdueGrace))
+	return h
+}
+
+// BackupHealth combines schedule and status into the per-target verdicts.
+func BackupHealth(s Settings, st Status, volumeConfigured, s3Configured bool, now time.Time) Health {
+	return Health{
+		Volume: targetHealth(volumeConfigured, s.VolumeCron, st.LastVolumeAt, st.LastVolumeOK, now),
+		S3:     targetHealth(s3Configured, s.S3Cron, st.LastS3At, st.LastS3OK, now),
+	}
+}
+
 // LoadSettings reads the single backup_settings row.
 func LoadSettings(ctx context.Context, pool *pgxpool.Pool) (Settings, error) {
 	var s Settings
