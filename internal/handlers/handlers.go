@@ -224,6 +224,15 @@ func (h *Handler) auditChange(r *http.Request, action, entity string, id int64, 
 	h.auditInsert(r, actorID, actorName, action, entity, id, summary, changes)
 }
 
+// strPtr renders a *string for an audit diff: nil stays nil so "not set" remains
+// distinguishable from an empty value.
+func strPtr(v *string) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
 // auditCreated records a creation together with the values the new row was given,
 // as {field: {old: null, new: value}} — the mirror image of auditDeleted. Without
 // it a "created X" entry proves only THAT something appeared, never with which

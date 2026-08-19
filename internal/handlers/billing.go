@@ -136,10 +136,19 @@ func (h *Handler) SaveBillingSettings(w http.ResponseWriter, r *http.Request) {
 	var oldUID string
 	var oldRate float64
 	var oldKlein bool
+	// Read every column the UPDATE writes, so the audit diff is complete (a changed
+	// IBAN or seller address must be provable; the redaction layer masks the values).
+	var oldName, oldAddr, oldPrefix, oldIBAN, oldBIC, oldFooter string
+	var oldPad, oldTerms int
 	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
 		if err := tx.QueryRow(r.Context(),
-			`SELECT next_invoice_no, seller_uid, ust_rate, kleinunternehmer FROM billing_settings WHERE id=1 FOR UPDATE`).
-			Scan(&oldNext, &oldUID, &oldRate, &oldKlein); err != nil {
+			`SELECT next_invoice_no, seller_uid, ust_rate, kleinunternehmer,
+			        seller_name, seller_address, invoice_prefix, number_pad,
+			        iban, bic, payment_terms_days, footer_note
+			   FROM billing_settings WHERE id=1 FOR UPDATE`).
+			Scan(&oldNext, &oldUID, &oldRate, &oldKlein,
+				&oldName, &oldAddr, &oldPrefix, &oldPad,
+				&oldIBAN, &oldBIC, &oldTerms, &oldFooter); err != nil {
 			return err
 		}
 		if in.NextInvoiceNo < oldNext {
@@ -178,9 +187,16 @@ func (h *Handler) SaveBillingSettings(w http.ResponseWriter, r *http.Request) {
 		// is a tax identifier, not a secret — kept readable for the audit.
 		return h.auditChangeTx(r.Context(), tx, r, "update", "billing", 0, msg, diffFields(
 			map[string]any{"next_invoice_no": oldNext, "seller_uid": oldUID,
-				"ust_rate": oldRate, "kleinunternehmer": oldKlein},
+				"ust_rate": oldRate, "kleinunternehmer": oldKlein,
+				"seller_name": oldName, "seller_address": oldAddr, "invoice_prefix": oldPrefix,
+				"number_pad": oldPad, "iban": oldIBAN, "bic": oldBIC,
+				"payment_terms_days": oldTerms, "footer_note": oldFooter},
 			map[string]any{"next_invoice_no": in.NextInvoiceNo, "seller_uid": in.SellerUID,
-				"ust_rate": in.UStRate, "kleinunternehmer": in.Kleinunternehmer}))
+				"ust_rate": in.UStRate, "kleinunternehmer": in.Kleinunternehmer,
+				"seller_name": in.SellerName, "seller_address": in.SellerAddress,
+				"invoice_prefix": in.InvoicePrefix, "number_pad": in.NumberPad,
+				"iban": in.IBAN, "bic": in.BIC,
+				"payment_terms_days": in.PaymentTermsDays, "footer_note": in.FooterNote}))
 	})
 	if txErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not save billing settings")

@@ -406,9 +406,23 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 	var oldStart time.Time
 	var oldPersonID int64
 	var archived bool
+	// Read the FULL editable row, not just the billing fields: a rename or a plate
+	// change must be provable too, and the audit diff below compares every column
+	// the UPDATE writes.
+	var oldLabel, oldPlate, oldNotes string
+	var oldCategoryID int64
+	var oldCostOverride *float64
+	var oldEnd, oldResFrom, oldResUntil *time.Time
+	var oldNeedsPower bool
+	var oldSymbol *string
 	scanErr := h.Pool.QueryRow(r.Context(),
-		`SELECT status, rate, billing_period, start_date, person_id, archived FROM vehicles WHERE id=$1`, id).
-		Scan(&oldStatus, &oldRate, &oldPeriod, &oldStart, &oldPersonID, &archived)
+		`SELECT status, rate, billing_period, start_date, person_id, archived,
+		        label, license_plate, notes, category_id, cost_override,
+		        end_date, reserved_from, reserved_until, needs_power, planner_symbol
+		   FROM vehicles WHERE id=$1`, id).
+		Scan(&oldStatus, &oldRate, &oldPeriod, &oldStart, &oldPersonID, &archived,
+			&oldLabel, &oldPlate, &oldNotes, &oldCategoryID, &oldCostOverride,
+			&oldEnd, &oldResFrom, &oldResUntil, &oldNeedsPower, &oldSymbol)
 	if !ensureVehicleWritable(w, archived, scanErr) {
 		return
 	}
@@ -463,12 +477,28 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 	}
 	// status/rate/period/start/person were read above for the writability checks,
 	// so the before/after of the billing-relevant fields costs no extra query.
+	dstr := func(t *time.Time) any {
+		if t == nil {
+			return nil
+		}
+		return t.Format("2006-01-02")
+	}
 	h.auditChange(r, "update", "vehicle", id,
 		"updated vehicle "+vehicleLabel(pv.req.Label, pv.req.LicensePlate), diffFields(
 			map[string]any{"status": oldStatus, "rate": oldRate, "billing_period": oldPeriod,
-				"start_date": oldStart.Format("2006-01-02"), "person_id": oldPersonID},
+				"start_date": oldStart.Format("2006-01-02"), "person_id": oldPersonID,
+				"label": oldLabel, "license_plate": oldPlate, "notes": oldNotes,
+				"category_id": oldCategoryID, "cost_override": oldCostOverride,
+				"end_date": dstr(oldEnd), "reserved_from": dstr(oldResFrom),
+				"reserved_until": dstr(oldResUntil), "needs_power": oldNeedsPower,
+				"planner_symbol": oldSymbol},
 			map[string]any{"status": pv.req.Status, "rate": rate, "billing_period": pv.req.BillingPeriod,
-				"start_date": pv.req.StartDate, "person_id": pv.req.PersonID}))
+				"start_date": pv.req.StartDate, "person_id": pv.req.PersonID,
+				"label": pv.req.Label, "license_plate": pv.req.LicensePlate, "notes": pv.req.Notes,
+				"category_id": pv.req.CategoryID, "cost_override": pv.req.CostOverride,
+				"end_date": strPtr(pv.req.EndDate), "reserved_from": strPtr(pv.req.ReservedFrom),
+				"reserved_until": strPtr(pv.req.ReservedUntil), "needs_power": pv.req.NeedsPower,
+				"planner_symbol": pv.req.PlannerSymbol}))
 	// An edit can change status/paid-relevant state too — keep archival behavior
 	// consistent with the status-slider endpoint.
 	h.autoArchiveIfClosed(r, id)
@@ -595,9 +625,10 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var oldStatus string
+	var oldEnd *time.Time // a status change can set or clear the end date — audit it
 	var archived bool
 	scanErr := h.Pool.QueryRow(r.Context(),
-		`SELECT status, archived FROM vehicles WHERE id=$1`, id).Scan(&oldStatus, &archived)
+		`SELECT status, archived, end_date FROM vehicles WHERE id=$1`, id).Scan(&oldStatus, &archived, &oldEnd)
 	if !ensureVehicleWritable(w, archived, scanErr) {
 		return
 	}
@@ -656,9 +687,19 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.recordStatus(r, id, oldStatus, req.Status, trim(req.Note))
+	// Re-read the end date: the branches above set, keep or clear it.
+	var newEnd *time.Time
+	_ = h.Pool.QueryRow(r.Context(), `SELECT end_date FROM vehicles WHERE id=$1`, id).Scan(&newEnd)
+	endStr := func(t *time.Time) any {
+		if t == nil {
+			return nil
+		}
+		return t.Format("2006-01-02")
+	}
 	h.auditChange(r, "update", "vehicle", id,
 		"Status "+h.vehicleDesc(r, id)+": "+oldStatus+" → "+req.Status,
-		diffFields(map[string]any{"status": oldStatus}, map[string]any{"status": req.Status}))
+		diffFields(map[string]any{"status": oldStatus, "end_date": endStr(oldEnd)},
+			map[string]any{"status": req.Status, "end_date": endStr(newEnd)}))
 	h.autoArchiveIfClosed(r, id)
 	h.writeVehicle(w, r.Context(), id, http.StatusOK)
 }
