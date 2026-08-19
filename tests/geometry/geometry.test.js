@@ -375,3 +375,33 @@ test('hasExitPath L-shape — still blocked when the elbow leg is occupied', () 
     const wallAll = { x: 4, y: 0, w: 1, h: 12, rot: 0 };           // full-height wall: no way through at all
     assert.equal(PG.hasExitPath(car, [wallAll], [lane], bounds, { clearance: 0.5, cell: 0.25 }), false);
 });
+
+// FE-Bay — the bay pass must follow the AISLE, not just the wall it sits on, and must not rescan a
+// wall it has already exhausted (that blew the runtime up on large halls).
+test('packRects bays — a VERTICAL driveway yields cars facing it (not turned along the far wall)', () => {
+    const B = { minX: 0, minY: 0, maxX: 40, maxY: 25 };
+    const lane = { x: 18, y: 0, w: 3, h: 25, rot: 0 }; // aisle runs top→bottom
+    const walls = [{ x: 0, y: 0, w: 40, h: 0.3, rot: 0 }, { x: 0, y: 24.7, w: 40, h: 0.3, rot: 0 },
+        { x: 0, y: 0, w: 0.3, h: 25, rot: 0 }, { x: 39.7, y: 0, w: 0.3, h: 25, rot: 0 }];
+    const items = []; for (let i = 0; i < 12; i++) items.push({ id: 'c' + i, w: 4.6, h: 1.9 });
+    const r = PG.packRects(items, walls.concat([lane]), B, null,
+        { margin: 0, gap: 0, gates: [lane], routeObstacles: walls, driveways: [lane], allowBlocking: false });
+    const ok = r.placements.filter((p) => p.ok);
+    assert.ok(ok.length >= 10, 'most cars placed, got ' + ok.length);
+    for (const p of ok) assert.equal(p.rot || 0, 0, 'long axis points at the vertical aisle (rot 0), not along the far wall');
+});
+
+test('packRects bays — a large hall packs in well under a second (no exhausted-bay rescan)', () => {
+    const W = 60, H = 40;
+    const B = { minX: 0, minY: 0, maxX: W, maxY: H };
+    const lane = { x: 0, y: H / 2 - 2, w: W, h: 4, rot: 0 };
+    const walls = [{ x: 0, y: 0, w: W, h: 0.3, rot: 0 }, { x: 0, y: H - 0.3, w: W, h: 0.3, rot: 0 },
+        { x: 0, y: 0, w: 0.3, h: H, rot: 0 }, { x: W - 0.3, y: 0, w: 0.3, h: H, rot: 0 }];
+    const items = []; for (let i = 0; i < 60; i++) items.push({ id: 'c' + i, w: 4.6, h: 1.9 });
+    const t0 = Date.now();
+    const r = PG.packRects(items, walls.concat([lane]), B, null,
+        { margin: 0, gap: 0, gates: [lane], routeObstacles: walls, driveways: [lane], allowBlocking: false });
+    const ms = Date.now() - t0;
+    assert.equal(r.placed, 60, 'all 60 placed');
+    assert.ok(ms < 1500, 'pack finished in ' + ms + ' ms (was minutes when exhausted bays were rescanned)');
+});

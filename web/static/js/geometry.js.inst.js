@@ -213,14 +213,11 @@
     //   opts      { margin, gap }          wall margin, vehicle↔vehicle clearance
     // MaxRects-BSSF: free space is an explicit set of maximal rectangles, initialised to the margin-shrunk
     // bounds with every obstacle AABB carved out — so a placement can NEVER land on a wall/column/lane, and
-    // never on another object's coordinates. Vehicles are sorted LONGEST EDGE first (then by area), and
-    // each is offered to the BAY pass first — a row along a wall, laid out by cursor arithmetic, which is
-    // the primary placement path when walls are usable. Whatever no bay accepts falls through to the
-    // MaxRects pass: it tries 0°/90° and anchors to a free-rect CORNER (Best-Short-Side-Fit) so it hugs a
-    // wall or a neighbour instead of floating mid-room. Every candidate from EITHER path passes the same
-    // exact gate: inside the floor polygon, SAT-clear of obstacles and of the already-placed vehicles, and
-    // (unless allowBlocking) leaving every vehicle an exit path. After a placement the used rect (inflated
-    // by `gap`) is carved out of the free set and it is re-maximalised.
+    // never on another object's coordinates. Vehicles are placed Best-Fit-Decreasing (largest first, keeping
+    // big contiguous rects for big vehicles), each tries 0°/90°, and is anchored to a free-rect CORNER
+    // (Best-Short-Side-Fit) so it hugs a wall or a neighbour instead of floating mid-room. Every candidate
+    // still passes an exact gate: fully inside the floor polygon AND SAT-clear of every obstacle. After a
+    // placement the used rect (inflated by `gap`) is carved out and the free set re-maximalised.
     function packRects(items, obstacles, bounds, floor, opts) {
         const o = opts || {}, m = o.margin != null ? o.margin : 0.2, gap = o.gap > 0 ? o.gap : 0;
         const useFloor = floor && floor.length >= 3;
@@ -284,21 +281,12 @@
         // survives a column or a driveway crossing the wall. Anything a bay can't take falls through to
         // the MaxRects free-rect placement below, so odd shapes and inner space still get filled.
         const r2 = (v) => Math.round(v * 100) / 100;
-        const preQ = pre.map(_quad); // preplaced vehicles are obstacles for the bay pass too
         const clearOfPlaced = (cand) => {
             const probe = gap > 0 ? _quad({ x: cand.x - gap, y: cand.y - gap, w: cand.w + 2 * gap, h: cand.h + 2 * gap, rot: cand.rot }) : _quad(cand);
-            return !placedBlocks.some((pb) => _sat(probe, pb.q || _quad(pb))) && !preQ.some((q) => _sat(probe, q));
+            return !placedBlocks.some((pb) => _sat(probe, _quad(pb)));
         };
-        // Only build bays along walls PARALLEL to the aisle: a row against such a wall automatically
-        // stands perpendicular to the aisle (the comb). A wall running ACROSS the aisle would give the
-        // opposite orientation, so those are left to the score-based MaxRects pass, which reads
-        // `driveways` and orients towards the aisle itself.
-        const dwAxis = (o.driveways && o.driveways.length)
-            ? (() => { let best = null, ba = -1; for (const d of o.driveways) { const a = _aabb(d); if (a.w * a.h > ba) { ba = a.w * a.h; best = a; } } return best.w >= best.h ? 'h' : 'v'; })()
-            : null;
-        const bayEdges = dwAxis === 'h' ? ['top', 'bottom'] : dwAxis === 'v' ? ['left', 'right'] : ['top', 'bottom', 'left', 'right'];
-        const bays = bayEdges.map((edge) => ({
-            edge, cursor: (edge === 'top' || edge === 'bottom') ? bounds.minX + m : bounds.minY + m, depth: null, dead: false,
+        const bays = ['top', 'bottom', 'left', 'right'].map((edge) => ({
+            edge, cursor: (edge === 'top' || edge === 'bottom') ? bounds.minX + m : bounds.minY + m, depth: null,
         }));
         const bayPlace = (bay, it) => {
             const horiz = bay.edge === 'top' || bay.edge === 'bottom';
@@ -317,7 +305,7 @@
             // Probe only a short way in: the inner wall face is within a wall thickness or two. Searching
             // deeper would stop being "wall hugging" (and costs a lot, since each step runs the checks).
             const depthMax = Math.min(1.5, horiz ? (hiY - loY - fh) : (hiX - loX - fw));
-            const at = (c, d) => {
+            const at = (c, d) => { globalThis.__at=(globalThis.__at||0)+1;
                 const ax = horiz ? c : (bay.edge === 'left' ? loX + d : hiX - fw - d);
                 const ay = horiz ? (bay.edge === 'top' ? loY + d : hiY - fh - d) : c;
                 if (ax < loX - _EPS || ay < loY - _EPS || ax + fw > hiX + _EPS || ay + fh > hiY + _EPS) return null;
@@ -344,18 +332,10 @@
         const placements = []; let placed = 0, failed = 0;
         for (const { it } of order) {
             let bayHit = null;
-            // A bay that cannot take this item is CLOSED: items are sorted longest-edge-first, and the
-            // cursor/depth only advance on success, so retrying it for every remaining item would re-run
-            // the whole wall scan each time (the dominant cost — it made big halls take minutes).
-            for (const bay of bays) {
-                if (bay.dead) continue;
-                const r = bayPlace(bay, it);
-                if (r) { bay.cursor = r.next; bay.depth = r.depth; bayHit = r.cand; break; }
-                bay.dead = true;
-            }
+            for (const bay of bays) { const r = bayPlace(bay, it); if (r) { bay.cursor = r.next; bay.depth = r.depth; bayHit = r.cand; break; } }
             if (bayHit) {
                 placements.push({ id: it.id, x: bayHit.x, y: bayHit.y, rot: bayHit.rot, ok: true });
-                placedBlocks.push({ id: it.id, x: bayHit.x, y: bayHit.y, w: it.w, h: it.h, rot: bayHit.rot, q: _quad(bayHit) });
+                placedBlocks.push({ id: it.id, x: bayHit.x, y: bayHit.y, w: it.w, h: it.h, rot: bayHit.rot });
                 const fpb = _aabb(bayHit); free = _carve(free, { x: fpb.x - gap, y: fpb.y - gap, w: fpb.w + 2 * gap, h: fpb.h + 2 * gap });
                 placed++; continue;
             }
@@ -377,7 +357,7 @@
             cands.sort((a, b) => b.s - a.s);
             let best = null;
             for (const c of cands) if (canAllExit(c.cand)) { best = c.cand; break; } // best-scoring that keeps every exit path
-            if (best) { placements.push({ id: it.id, x: best.x, y: best.y, rot: best.rot, ok: true }); placedBlocks.push({ id: it.id, x: best.x, y: best.y, w: it.w, h: it.h, rot: best.rot, q: _quad(best) });
+            if (best) { placements.push({ id: it.id, x: best.x, y: best.y, rot: best.rot, ok: true }); placedBlocks.push({ id: it.id, x: best.x, y: best.y, w: it.w, h: it.h, rot: best.rot });
                 const fp = _aabb(best); free = _carve(free, { x: fp.x - gap, y: fp.y - gap, w: fp.w + 2 * gap, h: fp.h + 2 * gap }); placed++; }
             else { placements.push({ id: it.id, ok: false }); failed++; }
         }
@@ -394,8 +374,8 @@
     //   3) Fallback: configuration-space grid BFS (obstacles dilated by `clearance`) for paths that need
     //      to go around a corner. Only ever ADDS reachability, never removes it.
     // No targets ⇒ true (no routing constraint defined). Cost is bounded: stages 1–2 are O(targets ×
-    // obstacles) and the BFS grid is capped at ~10000 cells.
-    function hasExitPath(foot, obstacles, targets, bounds, opts) {
+    // obstacles) and the BFS grid is capped at ~2500 cells.
+    function hasExitPath(foot, obstacles, targets, bounds, opts) { globalThis.__hep=(globalThis.__hep||0)+1;
         if (!targets || !targets.length) return true;
         const o = opts || {};
         const fa = _aabb(foot);
@@ -454,7 +434,7 @@
         // Stage 3 — BFS fallback (paths that need more than one turn).
         const W = bounds.maxX - bounds.minX, H = bounds.maxY - bounds.minY;
         if (!(W > 0 && H > 0)) return true;
-        const cell = o.cell > 0 ? o.cell : Math.max(0.2, Math.sqrt((W * H) / 10000));
+        globalThis.__bfs=(globalThis.__bfs||0)+1; const cell = o.cell > 0 ? o.cell : Math.max(0.2, Math.sqrt((W * H) / 10000));
         const nx = Math.max(1, Math.ceil(W / cell)), ny = Math.max(1, Math.ceil(H / cell));
         const obs = (obstacles || []).map((b) => { const a = _aabb(b); return [a.x - clr, a.y - clr, a.x + a.w + clr, a.y + a.h + clr]; });
         const tgt = targets.map((b) => { const a = _aabb(b); return [a.x, a.y, a.x + a.w, a.y + a.h]; });
@@ -473,7 +453,7 @@
         if (!q.length) { // degenerate footprint (smaller than a cell) → seed its centre cell
             const ci = Math.min(nx - 1, Math.max(0, Math.floor((fa.x + fa.w / 2 - bounds.minX) / cell)));
             const cj = Math.min(ny - 1, Math.max(0, Math.floor((fa.y + fa.h / 2 - bounds.minY) / cell)));
-            const k = cj * nx + ci; if (blocked[k]) return false; seen[k] = 1; q.push(k); // sitting inside an obstacle ⇒ no exit
+            const k = cj * nx + ci; seen[k] = 1; q.push(k);
         }
         for (let hh = 0; hh < q.length; hh++) {
             const k = q[hh]; if (isT[k]) return true; const i = k % nx, j = (k - i) / nx;
