@@ -6137,7 +6137,24 @@
         // cleanly back into the staging queue — the algorithm never forces an overlapping placement.
         // scope: 'CANVAS_ONLY' (default) re-arranges only the vehicles already on the plan and leaves the
         // "Nicht platziert" backlog untouched; 'INCLUDE_UNASSIGNED' also pulls the backlog in.
+        let arrangeBusy = false; // in-flight guard for autoArrange (see below)
         async function autoArrange(padding, scope) {
+            // Re-entry guard. autoArrange awaits a confirm dialog and then a long series of API calls,
+            // and the rail stays clickable throughout — so a second click starts a second run that
+            // snapshots P.spots BEFORE the first run's deletes/creates land. The two then fight:
+            // duplicate spots for the same staging vehicle, DELETEs against an already-deleted spot
+            // (counted as errors), and a plan that does not match the server. The guard is set before
+            // the confirmation so even the dialog cannot be opened twice.
+            if (arrangeBusy) return;
+            arrangeBusy = true;
+            try {
+                await runAutoArrange(padding, scope);
+            } finally {
+                arrangeBusy = false;
+                renderRail(); // re-enable the rail buttons
+            }
+        }
+        async function runAutoArrange(padding, scope) {
             const pad = (typeof padding === 'number') ? padding : (P.buffer ? P.bufferM : 0); // allowZeroMargin: 0 ⇒ flush (ignore a stray event arg)
             const includeUnassigned = scope === 'INCLUDE_UNASSIGNED';
             const spots = P.spots.slice(), pals = includeUnassigned ? P.palette.slice() : [];
@@ -6183,7 +6200,15 @@
                     else { // no collision-free spot → delete the placement, vehicle returns to staging
                         try { await api.del('/spots/' + b._id); P.spots = P.spots.filter((x) => x !== b);
                             if (b.vehId) P.palette.push({ id: b.vehId, label: b.label, type: b.type, person_id: b.personId, person_name: b.personName, length_m: b.L, width_m: b.W, height_m: b.H, weight_t: b.t });
-                            unassigned++; } catch (e) { errs++; }
+                            unassigned++; }
+                        catch (e) {
+                            // The delete failed, so this vehicle stays on the plan at its OLD position —
+                            // but the pack was computed WITHOUT it, so its neighbours may already have
+                            // been moved onto that space. Leaving it flagged valid would show an overlap
+                            // the feature promises never to produce, so mark it blocked (⚠ blockiert,
+                            // red outline) and let the user resolve it.
+                            b._invalid = true; b._dirty = true; errs++;
+                        }
                     }
                 } else if (pl && pl.ok) { // staging vehicle that fits → create its spot
                     const p = it.pal;
@@ -6221,8 +6246,11 @@
             fillPal();
             if (canManageNow && (P.spots.length || P.palette.length)) {
                 const arrCard = el('div', { class: 'gp-rcard card', style: 'padding:.55rem .7rem;display:flex;flex-direction:column;gap:.4rem' });
-                if (P.spots.length) arrCard.append(el('button', { class: 'btn btn-ghost btn-block', title: 'Nur die bereits platzierten Gefährte neu anordnen — „Nicht platziert" bleibt unangetastet', onclick: () => autoArrange(undefined, 'CANVAS_ONLY') }, '⊞ Platzierte anordnen'));
-                if (P.palette.length) arrCard.append(el('button', { class: 'btn btn-ghost btn-block', title: 'Platzierte + „Nicht platzierte" Gefährte zusammen anordnen (holt das Backlog aufs Feld)', onclick: () => autoArrange(undefined, 'INCLUDE_UNASSIGNED') }, '⤵ + „Nicht platzierte" (' + P.palette.length + ')'));
+                // While a run is in flight both buttons are disabled — autoArrange also guards itself,
+                // but a dead-looking button is the wrong feedback for a multi-second operation.
+                const arrAttrs = (title) => arrangeBusy ? { class: 'btn btn-ghost btn-block', title, disabled: 'disabled' } : { class: 'btn btn-ghost btn-block', title };
+                if (P.spots.length) arrCard.append(el('button', Object.assign(arrAttrs('Nur die bereits platzierten Gefährte neu anordnen — „Nicht platziert" bleibt unangetastet'), { onclick: () => autoArrange(undefined, 'CANVAS_ONLY') }), arrangeBusy ? '… wird angeordnet' : '⊞ Platzierte anordnen'));
+                if (P.palette.length) arrCard.append(el('button', Object.assign(arrAttrs('Platzierte + „Nicht platzierte" Gefährte zusammen anordnen (holt das Backlog aufs Feld)'), { onclick: () => autoArrange(undefined, 'INCLUDE_UNASSIGNED') }), arrangeBusy ? '… wird angeordnet' : '⤵ + „Nicht platzierte" (' + P.palette.length + ')'));
                 rail.append(arrCard);
             }
             rail.append(renderVehDetail());

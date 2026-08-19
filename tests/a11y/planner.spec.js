@@ -19,6 +19,26 @@ async function login(page) {
   await page.waitForSelector('#app-view:not([hidden])', { timeout: 15000 });
 }
 
+// These tests seed real records against a SHARED backend and `retries: 2` means a
+// flaky run seeds again. Without teardown that leaks: a live instance had 106
+// orphaned "E2E …" garages and 19 of its 32 persons were test residue, and the
+// leftovers are visible to later runs (the unassigned-vehicle palette is global,
+// not per hall).
+//
+// Each test registers what it creates; afterEach deletes in reverse order so
+// children go before parents. Deletion is BEST EFFORT and never asserts: a record
+// the app legitimately refuses to delete (an invoiced vehicle, say) must not turn a
+// passing test red, and a run that died halfway still cleans up whatever it got to.
+const trash = [];
+const track = (page, csrf, url) => { trash.push({ page, csrf, url }); };
+
+test.afterEach(async () => {
+  for (const t of trash.reverse()) {
+    try { await t.page.request.delete(t.url, { headers: { 'X-CSRF-Token': t.csrf } }); } catch { /* best effort */ }
+  }
+  trash.length = 0;
+});
+
 test('planner: login → seed a hall via API → Garagenplaner shell renders cleanly', async ({ page, context }) => {
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
@@ -35,10 +55,12 @@ test('planner: login → seed a hall via API → Garagenplaner shell renders cle
   const gRes = await post('/api/garages', { name: 'E2E Garage ' + Date.now() });
   expect(gRes.ok(), 'create garage: ' + gRes.status()).toBeTruthy();
   const garage = await gRes.json();
+  track(page, csrf, '/api/garages/' + garage.id);
 
   const hRes = await post(`/api/garages/${garage.id}/halls`, { name: 'E2E Halle' });
   expect(hRes.ok(), 'create hall: ' + hRes.status()).toBeTruthy();
   const hall = await hRes.json();
+  track(page, csrf, '/api/halls/' + hall.id);
 
   // Open the planner for that hall.
   await page.goto('/#/hall/' + hall.id);
@@ -76,7 +98,9 @@ test('measure tool: arm + two canvas clicks render a ruler with no errors (UX2 +
   const post = (url, data) =>
     page.request.post(url, { headers: { 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' }, data });
   const g = await (await post('/api/garages', { name: 'E2E MG ' + Date.now() })).json();
+  track(page, csrf, '/api/garages/' + g.id);
   const h = await (await post(`/api/garages/${g.id}/halls`, { name: 'E2E MHalle' })).json();
+  track(page, csrf, '/api/halls/' + h.id);
   await page.goto('/#/hall/' + h.id);
   await expect(page.locator('svg.gp-floor')).toBeVisible({ timeout: 15000 });
 
@@ -118,11 +142,16 @@ test('auto-arrange: the button opens the confirm dialog (regression: event passe
   const post = (url, data) =>
     page.request.post(url, { headers: { 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' }, data });
   const g = await (await post('/api/garages', { name: 'E2E AG ' + Date.now() })).json();
+  track(page, csrf, '/api/garages/' + g.id);
   const h = await (await post(`/api/garages/${g.id}/halls`, { name: 'E2E AHalle' })).json();
+  track(page, csrf, '/api/halls/' + h.id);
   const per = await (await post('/api/persons', { first_name: 'E2E', last_name: 'Auto' })).json();
+  track(page, csrf, '/api/persons/' + per.id);
   const cat = await (await post('/api/categories', { name: 'PKW E2E ' + Date.now(), default_monthly_cost: 10, default_yearly_cost: 100 })).json();
+  track(page, csrf, '/api/categories/' + cat.id);
   const vRes = await post('/api/vehicles', { person_id: per.id, category_id: cat.id, billing_period: 'monthly', status: 'stored', start_date: '2026-01-01' });
   expect(vRes.ok(), 'seed vehicle ' + vRes.status()).toBeTruthy();
+  track(page, csrf, '/api/vehicles/' + (await vRes.json()).id);
 
   await page.goto('/#/hall/' + h.id); // opens in "Stellplätze" (manage) mode; the unassigned vehicle populates the palette
   const btn = page.locator('button', { hasText: 'Nicht platzierte' }); // INCLUDE_UNASSIGNED button (only the palette has a vehicle)
@@ -158,7 +187,9 @@ test('dxf import: uploading a .dxf renders a vector underlay (FE3 vector)', asyn
   const post = (url, data) =>
     page.request.post(url, { headers: { 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' }, data });
   const g = await (await post('/api/garages', { name: 'E2E DG ' + Date.now() })).json();
+  track(page, csrf, '/api/garages/' + g.id);
   const h = await (await post(`/api/garages/${g.id}/halls`, { name: 'E2E DHalle' })).json();
+  track(page, csrf, '/api/halls/' + h.id);
   await page.goto('/#/hall/' + h.id);
   await page.getByRole('button', { name: 'Garagenplaner' }).click();
 

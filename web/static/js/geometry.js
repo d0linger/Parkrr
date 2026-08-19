@@ -400,8 +400,10 @@
     //      obstacle — which is what lets a car parked at an outer wall still reach the aisle.
     //   3) Fallback: configuration-space grid BFS (obstacles dilated by `clearance`) for paths that need
     //      to go around a corner. Only ever ADDS reachability, never removes it.
-    // No targets ⇒ true (no routing constraint defined). Cost is bounded: stages 1–2 are O(targets ×
-    // obstacles) and the BFS grid is capped at ~10000 cells.
+    // No targets ⇒ true (no routing constraint defined). Cost: stages 1–2 are O(targets × obstacles);
+    // the BFS grid holds ~10000 cells at the DEFAULT cell size (derived from the bounds area), but an
+    // explicit opts.cell overrides that and sets the grid size itself — a small cell on a large floor
+    // is unbounded, so callers passing route.cell own that cost.
     function hasExitPath(foot, obstacles, targets, bounds, opts) {
         if (!targets || !targets.length) return true;
         const o = opts || {};
@@ -459,8 +461,12 @@
             }
         }
         // Stage 3 — BFS fallback (paths that need more than one turn).
+        // Degenerate or non-finite bounds (zero/negative extent, NaN from a corrupt floor, Infinity)
+        // mean the grid cannot be built, so reachability is UNPROVEN. Stages 1–2b have already failed
+        // by this point, so the honest answer is "no exit path": failing open here would silently drop
+        // the guarantee that `guaranteeExitPath` exists to provide and let a vehicle be parked in.
         const W = bounds.maxX - bounds.minX, H = bounds.maxY - bounds.minY;
-        if (!(W > 0 && H > 0)) return true;
+        if (!(isFinite(W) && isFinite(H) && W > 0 && H > 0)) return false;
         const cell = o.cell > 0 ? o.cell : Math.max(0.2, Math.sqrt((W * H) / 10000));
         const nx = Math.max(1, Math.ceil(W / cell)), ny = Math.max(1, Math.ceil(H / cell));
         const obs = (obstacles || []).map((b) => { const a = _aabb(b); return [a.x - clr, a.y - clr, a.x + a.w + clr, a.y + a.h + clr]; });

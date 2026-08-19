@@ -306,7 +306,10 @@ test('packRects comb — cars near a horizontal driveway park perpendicular (tal
     assert.ok(ok.length >= 2, 'cars placed above the driveway');
     for (const p of ok) assert.equal(p.rot, 90, 'car is perpendicular (tall) to the horizontal driveway, not laid across it');
     // and they sit in the same row (all share the bottom edge, flush to the driveway)
-    const ys = ok.map((p) => Math.round((p.y + 4) * 10) / 10); // footprint bottom (rot 90 → 4 tall)
+    // Footprint bottom via the shared helper: the block origin is NOT the footprint origin for a
+    // rotated item, so `p.y + 4` was off by 1 here (it happened not to matter, because the assertion
+    // only compares the values to each other — a constant offset cancels).
+    const ys = ok.map((p) => { const f = foot(p, 4, 2); return Math.round((f.y + f.h) * 10) / 10; });
     assert.ok(ys.every((y) => Math.abs(y - ys[0]) < 0.3), 'cars form one row along the driveway');
 });
 
@@ -364,8 +367,11 @@ test('hasExitPath L-shape — corner car exits via horizontal run then turn onto
     const bounds = { minX: 0, minY: 0, maxX: 20, maxY: 12 };
     const lane = { x: 14, y: 0, w: 6, h: 12, rot: 0 };            // aisle on the RIGHT
     const car = { x: 0.5, y: 9.5, w: 3, h: 2, rot: 0 };            // bottom-LEFT corner
-    const wall = { x: 4, y: 0, w: 1, h: 9, rot: 0 };               // blocks the straight path except along the bottom
-    assert.equal(PG.hasExitPath(car, [wall], [lane], bounds, { clearance: 1.0, cell: 0.25 }), true, 'L-path along the bottom then onto the aisle');
+    // The wall must cover the car's OWN y-span (9.5–11.5), or the straight corridor of stage 2 passes
+    // underneath it and stage 2b — the thing this test is named for — never runs. It stops short of the
+    // top so the L is still open: slide up the free left edge, then turn right onto the aisle.
+    const wall = { x: 5, y: 4, w: 1, h: 8, rot: 0 };
+    assert.equal(PG.hasExitPath(car, [wall], [lane], bounds, { clearance: 1.0, cell: 0.25 }), true, 'L-path: vertical leg then turn onto the aisle');
 });
 
 test('hasExitPath L-shape — still blocked when the elbow leg is occupied', () => {
@@ -426,4 +432,27 @@ test('packRects bays — an item too large for the hall does not break the comb'
     assert.deepEqual(rowOf(withOversized), rowOf(plain),
         'the cars must still form the same wall-hugging row(s) despite an unplaceable item');
     assert.ok(withOversized.placements.find((p) => p.id === 'boat' && !p.ok), 'the oversized item is reported unplaceable');
+});
+
+// FE-Routing — degenerate floor bounds must not be reported as "can exit". Stages 1–2b have already
+// failed by the time the BFS runs, so if the grid cannot be built reachability is UNPROVEN and the
+// honest answer is false; returning true there silently dropped the guaranteeExitPath contract.
+test('hasExitPath — degenerate or non-finite bounds report NO exit path, not a free pass', () => {
+    // The target is SMALLER than the car on both axes, which is what forces stage 3: stage 2 needs the
+    // target to span the car's cross-section and stage 2b needs it at least as wide/tall as the car, so
+    // both are skipped and only the BFS can answer. (Stages 1–2b never read `bounds`, so a scenario they
+    // can solve would answer before the guard is ever reached and prove nothing.)
+    const car = { x: 0.5, y: 0.5, w: 2, h: 4, rot: 0 };
+    const tiny = { x: 16, y: 16, w: 1, h: 1, rot: 0 };
+    const opts = { clearance: 0.5, cell: 0.25 };
+    const good = { minX: 0, minY: 0, maxX: 20, maxY: 20 };
+    assert.equal(PG.hasExitPath(car, [], [tiny], good, opts), true, 'valid bounds still route via the BFS');
+    for (const [name, bounds] of [
+        ['zero width', { minX: 5, minY: 0, maxX: 5, maxY: 20 }],
+        ['negative extent', { minX: 10, minY: 0, maxX: 2, maxY: 20 }],
+        ['NaN', { minX: 0, minY: 0, maxX: NaN, maxY: 20 }],
+        ['Infinity', { minX: 0, minY: 0, maxX: Infinity, maxY: 20 }],
+    ]) {
+        assert.equal(PG.hasExitPath(car, [], [tiny], bounds, opts), false, name + ' must not claim an exit path');
+    }
 });
