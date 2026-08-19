@@ -62,18 +62,23 @@ func TestAuditLogAppendOnly(t *testing.T) {
 	// stopped pruning anything — the test has to age the row instead.
 	// Entity 'test' is outside auditKeepForeverEntities and action 'create' is
 	// outside auditShortLivedActions, so the LONG pass is what deletes it.
-	_, err := pool.Exec(ctx,
+	// Keep the row's id: the assertions below target THIS row rather than counting
+	// every 'tester' row in the table. audit_log is append-only and the test DB is
+	// reused, so a count could be perturbed by anything else that ever wrote under
+	// that username, and would then fail for a reason unrelated to retention.
+	var probeID int64
+	if err := pool.QueryRow(ctx,
 		`INSERT INTO audit_log (username, action, entity, summary, created_at)
-		 VALUES ('tester','create','test','append-only probe', now() - interval '30 days')`)
-	if err != nil {
+		 VALUES ('tester','create','test','append-only probe', now() - interval '30 days')
+		 RETURNING id`).Scan(&probeID); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 
 	// UPDATE and unguarded DELETE must be rejected by the trigger.
-	if _, err := pool.Exec(ctx, `UPDATE audit_log SET summary='tampered' WHERE username='tester'`); err == nil {
+	if _, err := pool.Exec(ctx, `UPDATE audit_log SET summary='tampered' WHERE id=$1`, probeID); err == nil {
 		t.Fatal("UPDATE on audit_log should be blocked")
 	}
-	if _, err := pool.Exec(ctx, `DELETE FROM audit_log WHERE username='tester'`); err == nil {
+	if _, err := pool.Exec(ctx, `DELETE FROM audit_log WHERE id=$1`, probeID); err == nil {
 		t.Fatal("ad-hoc DELETE on audit_log should be blocked")
 	}
 
@@ -83,10 +88,10 @@ func TestAuditLogAppendOnly(t *testing.T) {
 	}
 	var remaining int
 	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM audit_log WHERE username='tester'`).Scan(&remaining); err != nil {
+		`SELECT count(*) FROM audit_log WHERE id=$1`, probeID).Scan(&remaining); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if remaining != 0 {
-		t.Fatalf("retention prune should have removed the probe row, %d remain", remaining)
+		t.Fatalf("retention prune should have removed probe row %d", probeID)
 	}
 }

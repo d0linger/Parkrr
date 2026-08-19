@@ -149,19 +149,25 @@ func (h *Handler) SaveBackupSchedule(w http.ResponseWriter, r *http.Request) {
 	// Read the previous schedule first so the trail carries the before/after values —
 	// retention counts in particular decide how long backups survive.
 	prev, prevErr := backup.LoadSettings(r.Context(), h.Pool)
+	if prevErr != nil {
+		// Do not save blind. backup_settings is a migration-seeded singleton pinned by
+		// CHECK (id = 1), so a failed read is either a real database error — in which
+		// case SaveSettings would fail next anyway — or the row is gone, and then
+		// SaveSettings' `UPDATE … WHERE id = 1` touches zero rows, returns nil, and the
+		// user is told "saved" while nothing was written. Refusing also keeps the
+		// retention change from being recorded without the values it changed FROM.
+		slog.Error("backup: cannot read current schedule, refusing to save", "err", prevErr)
+		writeError(w, http.StatusInternalServerError, "could not read the current schedule")
+		return
+	}
 	if err := backup.SaveSettings(r.Context(), h.Pool, in); err != nil {
 		slog.Error("backup: save schedule failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "could not save the schedule")
 		return
 	}
-	var changes any
-	if prevErr == nil {
-		changes = diffFields(prev, in)
-	} else {
-		// The save still goes ahead, but the entry will carry no before/after values —
-		// say why, rather than leaving an unexplained diff-less settings change.
-		slog.Warn("backup: load previous settings failed, audit entry has no diff", "err", prevErr)
-	}
+	// prevErr is handled above (the request is refused), so the diff always has a real
+	// before-state here.
+	changes := diffFields(prev, in)
 	// action "update" (not "backup"): this is a configuration change, and the
 	// retention policy puts "backup" on the short window with the routine runs.
 	// The retention counts decide how long backups survive — that must stay

@@ -127,16 +127,24 @@ var auditIgnoredColumns = map[string]bool{
 	"updated_at": true, "created_at": true,
 	"next_invoice_no": true, "paid_amount": true,
 	"paid_periods": true, "paid_fixed": true, "rates_synced": true,
-	// `paid` on a vehicle/charge when a PAYMENT is reversed: clearing it is the
-	// mechanical cascade of un-booking that payment, not an edit of those records —
-	// the payment's own entry is the trail. Where `paid` IS the user's change (the
-	// agreement flag) the handler audits it explicitly, so this never hides that.
-	"paid":        true,
 	"reversed_at": true, "reversed_by": true,
 	"password_hash": true, "totp_secret": true,
 	"data": true, "byte_size": true, "content_type": true,
 	"spot_id":  true, // recorded as vehicle_id / vehicle_ids by the spot handlers
 	"geometry": true, // recorded as a size state, never the blob
+}
+
+// auditIgnoredPerFunc narrows an exemption to the ONE function where it is
+// justified. A column listed in auditIgnoredColumns is exempt everywhere, which is
+// wrong for a column that is a side effect in one handler and the user's actual
+// change in another — a blanket entry would silently license omitting it for good.
+var auditIgnoredPerFunc = map[string]map[string]bool{
+	// DeletePayment reverses a payment and clears `paid` on the vehicles/charges that
+	// payment had stamped. That is the mechanical cascade of un-booking it, not an edit
+	// of those records — the payment's own entry is the trail. Everywhere else `paid` is
+	// the user's change (the agreement flag) and must stay audited, which is why this
+	// is scoped to the handler instead of living in auditIgnoredColumns.
+	"DeletePayment": {"paid": true},
 }
 
 // TestAuditDiffsCoverEveryWrittenColumn fails when a handler records field changes
@@ -177,7 +185,7 @@ func TestAuditDiffsCoverEveryWrittenColumn(t *testing.T) {
 			for _, set := range sets {
 				for _, part := range strings.Split(strings.ReplaceAll(set[1], "\n", " "), ",") {
 					col := strings.TrimSpace(strings.SplitN(part, "=", 2)[0])
-					if !reColumn.MatchString(col) || auditIgnoredColumns[col] || audited[col] || seenCol[col] {
+					if !reColumn.MatchString(col) || auditIgnoredColumns[col] || auditIgnoredPerFunc[name][col] || audited[col] || seenCol[col] {
 						continue
 					}
 					seenCol[col] = true
