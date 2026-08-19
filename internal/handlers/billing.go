@@ -716,8 +716,13 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 			Subtotal: subtotal, UStRate: rate, TaxAmount: tax, Total: total,
 			Kleinunternehmer: s.Kleinunternehmer, Seller: seller, Buyer: buyer, Note: trim(req.Note)}
 		// Audit inside the tx: the immutable document and its trail commit together.
-		return h.auditTx(r.Context(), tx, r, "create", "invoice", invID,
-			"issued invoice "+number+" ("+fmt.Sprintf("%.2f €", total)+")")
+		// An issued invoice is an immutable document — keep its defining values.
+		return h.auditChangeTx(r.Context(), tx, r, "create", "invoice", invID,
+			"issued invoice "+number+" ("+fmt.Sprintf("%.2f €", total)+")",
+			map[string]any{
+				"number": map[string]any{"old": nil, "new": number},
+				"total":  map[string]any{"old": nil, "new": total},
+			})
 	})
 	if txErr != nil {
 		var ce *complianceError
@@ -864,13 +869,18 @@ func (h *Handler) CancelInvoice(w http.ResponseWriter, r *http.Request) {
 			Subtotal: -o.subtotal, UStRate: o.ustRate, TaxAmount: -o.tax, Total: -o.total,
 			Kleinunternehmer: o.klein, Note: note, CancelsID: &id}
 		// Both trail rows commit with the Storno itself (atomic).
-		if err := h.auditTx(r.Context(), tx, r, "update", "invoice", id, "storniert – Gegenbeleg "+number); err != nil {
+		if err := h.auditChangeTx(r.Context(), tx, r, "update", "invoice", id, "storniert – Gegenbeleg "+number,
+			diffFields(map[string]any{"canceled": false}, map[string]any{"canceled": true})); err != nil {
 			return err
 		}
 		// The counter-document is a distinct gapless-numbered Beleg — audit its issuance
 		// under its own id/number (it releases the original's payments to Guthaben).
-		return h.auditTx(r.Context(), tx, r, "create", "invoice", stornoID,
-			"Storno-Gegenbeleg "+number+" zu Rechnung "+o.number)
+		return h.auditChangeTx(r.Context(), tx, r, "create", "invoice", stornoID,
+			"Storno-Gegenbeleg "+number+" zu Rechnung "+o.number,
+			map[string]any{
+				"number":          map[string]any{"old": nil, "new": number},
+				"cancels_invoice": map[string]any{"old": nil, "new": o.number},
+			})
 	})
 	if txErr != nil {
 		if errors.Is(txErr, errAlreadyCanceled) {
@@ -1018,8 +1028,13 @@ func (h *Handler) PayInvoices(w http.ResponseWriter, r *http.Request) {
 		}
 		out.Allocated = round2(pr.Amount - remaining)
 		out.Unallocated = round2(remaining)
-		return h.auditTx(r.Context(), tx, r, "create", "payment", out.PaymentID,
-			fmt.Sprintf("Zahlung %.2f € auf %d Rechnung(en) (Rest %.2f € nicht zugeordnet)", pr.Amount, out.Invoices, out.Unallocated))
+		return h.auditChangeTx(r.Context(), tx, r, "create", "payment", out.PaymentID,
+			fmt.Sprintf("Zahlung %.2f € auf %d Rechnung(en) (Rest %.2f € nicht zugeordnet)", pr.Amount, out.Invoices, out.Unallocated),
+			map[string]any{
+				"amount":      map[string]any{"old": nil, "new": pr.Amount},
+				"invoices":    map[string]any{"old": nil, "new": out.Invoices},
+				"unallocated": map[string]any{"old": nil, "new": out.Unallocated},
+			})
 	})
 	if txErr != nil {
 		if errors.Is(txErr, errInvoiceNotOpen) {
