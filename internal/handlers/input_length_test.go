@@ -278,6 +278,14 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "footer_note is too long",
 		},
+		{
+			name:       "CreateInvoice: Note too long",
+			path:       "/api/persons/1/invoices",
+			method:     "POST",
+			body:       createInvoiceRequest{Note: longNote},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "note is too long",
+		},
 	}
 
 	for _, tt := range tests {
@@ -326,6 +334,9 @@ func TestInputLengthValidation(t *testing.T) {
 				h.SaveBackupSchedule(w, req)
 			case "SaveBillingSettings: SellerName too long", "SaveBillingSettings: SellerAddress too long", "SaveBillingSettings: SellerUID too long", "SaveBillingSettings: InvoicePrefix too long", "SaveBillingSettings: IBAN too long", "SaveBillingSettings: BIC too long", "SaveBillingSettings: FooterNote too long":
 				h.SaveBillingSettings(w, req)
+			case "CreateInvoice: Note too long":
+				req.SetPathValue("id", "1")
+				h.CreateInvoice(w, req)
 			}
 
 			if w.Code != tt.wantStatus {
