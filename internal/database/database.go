@@ -186,29 +186,40 @@ var auditShortLivedActions = []string{"login", "logout", "backup", "remind", "im
 // shorter than keep, additionally ages out auditShortLivedActions early; pass 0 to
 // disable the short tier so everything follows keep. Returns the total pruned.
 func PruneAuditLog(ctx context.Context, pool *pgxpool.Pool, keep, shortKeep time.Duration) (int64, error) {
-	cutoff := time.Now().Add(-keep)
 	var n int64
 	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `SET LOCAL parkrr.allow_audit_prune = 'on'`); err != nil {
 			return err
 		}
-		ct, err := tx.Exec(ctx,
-			`DELETE FROM audit_log
-			   WHERE created_at < $1
-			     AND entity <> ALL($2)`, cutoff, auditKeepForeverEntities)
-		if err != nil {
-			return err
+		// keep <= 0 means "keep the trail forever" — skip the long pass entirely; the
+		// short tier below is an independent setting and still applies.
+		if keep > 0 {
+			ct, err := tx.Exec(ctx,
+				`DELETE FROM audit_log
+				   WHERE created_at < $1
+				     AND entity <> ALL($2)`, time.Now().Add(-keep), auditKeepForeverEntities)
+			if err != nil {
+				return err
+			}
+			n = ct.RowsAffected()
 		}
-		n = ct.RowsAffected()
 		// Short tier: auth/ops noise only, and only when it actually shortens the
 		// window (a shortKeep >= keep would be a no-op the long pass already covered).
-		if shortKeep > 0 && shortKeep < keep {
+		//
+		// Deliberately NOT filtered by auditKeepForeverEntities. That list protects
+		// records of account by ENTITY, but a short-lived ACTION is noise whatever it
+		// references: a payment reminder is logged under entity 'invoice' because it
+		// concerns that invoice, yet the mail is not the record — the invoice is. With
+		// the entity filter the highest-volume noise category on a reminder-sending
+		// deployment was the one category the tier provably could not touch.
+		// auditShortLivedActions is the authority here, and it is an allow-list with a
+		// test demanding a documented reason per entry.
+		if shortKeep > 0 && (keep <= 0 || shortKeep < keep) {
 			shortCut := time.Now().Add(-shortKeep)
 			ct2, serr := tx.Exec(ctx,
 				`DELETE FROM audit_log
 				   WHERE created_at < $1
-				     AND entity <> ALL($2)
-				     AND action = ANY($3)`, shortCut, auditKeepForeverEntities, auditShortLivedActions)
+				     AND action = ANY($2)`, shortCut, auditShortLivedActions)
 			if serr != nil {
 				return serr
 			}

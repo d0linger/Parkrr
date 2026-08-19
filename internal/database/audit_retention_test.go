@@ -63,3 +63,16 @@ func TestSecurityRelevantActionsStayOnTheLongWindow(t *testing.T) {
 		}
 	}
 }
+
+// The short pass filters by ACTION only (see PruneAuditLog), so the allow-list is
+// the sole thing standing between the retention job and a record of account. This
+// pins that no action which can constitute one ever enters it.
+func TestShortTierCannotReachRecordsOfAccount(t *testing.T) {
+	for _, a := range []string{"create", "update", "delete", "restore", "revoke", "security"} {
+		if slices.Contains(auditShortLivedActions, a) {
+			t.Fatalf("action %q can carry a record of account (invoice/payment/billing/flatrate/"+
+				"recurring_charge) and must never be short-lived — the short pass is not "+
+				"entity-filtered", a)
+		}
+	}
+}

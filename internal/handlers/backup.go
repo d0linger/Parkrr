@@ -158,7 +158,11 @@ func (h *Handler) SaveBackupSchedule(w http.ResponseWriter, r *http.Request) {
 	if prevErr == nil {
 		changes = diffFields(prev, in)
 	}
-	h.auditChange(r, "backup", "system", 0,
+	// action "update" (not "backup"): this is a configuration change, and the
+	// retention policy puts "backup" on the short window with the routine runs.
+	// The retention counts decide how long backups survive — that must stay
+	// provable for as long as any other settings change.
+	h.auditChange(r, "update", "backup_settings", 0,
 		"updated the backup schedule (volume '"+in.VolumeCron+"', S3 '"+in.S3Cron+"')", changes)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
 }

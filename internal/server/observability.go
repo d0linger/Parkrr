@@ -160,7 +160,10 @@ func startFlatRateArchival(h *handlers.Handler, stop <-chan struct{}) {
 // StartAuditRetention periodically prunes audit entries older than keep. It runs
 // until stop is closed. keep <= 0 disables retention (keep forever).
 func StartAuditRetention(pool *pgxpool.Pool, keep, shortKeep time.Duration, stop <-chan struct{}) {
-	if keep <= 0 {
+	// The two windows are independent knobs: "keep the trail forever, but do not
+	// hoard a year of login rows" is a legitimate setting (keep=0, shortKeep=365).
+	// Returning on keep<=0 alone would silently disable the short tier too.
+	if keep <= 0 && shortKeep <= 0 {
 		return
 	}
 	ticker := time.NewTicker(6 * time.Hour)

@@ -371,6 +371,10 @@ func (h *Handler) validateCharge(ctx context.Context, req *chargeRequest) (time.
 		}
 		chargedOn = t
 	}
+	// Write the effective date back: an omitted charged_on defaults to today, and the
+	// audit trail must log the date that was STORED, not the empty request field —
+	// otherwise an update reads as "charge date cleared" on a keep-forever money row.
+	req.ChargedOn = chargedOn.Format(dateLayout)
 	return chargedOn, "", nil
 }
 
