@@ -6147,9 +6147,17 @@
             const scopeNote = includeUnassigned ? ' inkl. „Nicht platziert"' : ' (nur platzierte)';
             const msg = (spots.length + pals.length) + ' Gefährte anordnen' + scopeNote + ' (größte zuerst, mit Drehung, Abstand ' + pad.toFixed(2).replace('.', ',') + ' m' + routeNote + '). Was nicht kollisionsfrei passt, landet in „Nicht platziert".';
             if (!(await confirmDialog('Auto-Anordnen', msg, 'Anordnen'))) return;
-            // HARD obstacles (no-park): walls, columns/Stützen, Fahrstraße, Wartung, Notausgang. Only the
-            // Stellfläche (kind 'stell') is a parkable marking, so it is the sole zone NOT excluded.
-            const baseObs = wallRects().concat(P.excl.filter((e) => e.kind !== 'stell'));
+            // HARD obstacles (no-park): walls, columns/Stützen, Fahrstraße, Wartung, Notausgang AND every
+            // door swing zone (Türanschlag). Only the Stellfläche (kind 'stell') is a parkable marking.
+            // These are building infrastructure — allowBlocking only ever permits blocking another
+            // VEHICLE, never a restricted zone, so they stay hard obstacles in both modes.
+            const doorZones = [];
+            P.walls.edges.forEach((e) => (e.ops || []).forEach((o) => { if (o.kind !== 'door') return;
+                const sw = doorSweepQuad(e, o); if (!sw) return;
+                const xs = sw.map((p) => p[0]), ys = sw.map((p) => p[1]); // swing quad → AABB block for the packer
+                doorZones.push({ kind: 'doorswing', x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys), rot: 0 });
+            }));
+            const baseObs = wallRects().concat(P.excl.filter((e) => e.kind !== 'stell')).concat(doorZones);
             // Routing targets (drive-to) = Fahrstraße/Notausgang zones + gate/door openings.
             const gates = P.excl.filter((e) => e.kind === 'lane' || e.kind === 'exit').map((e) => ({ x: e.x, y: e.y, w: e.w, h: e.h, rot: e.rot || 0 }));
             P.walls.edges.forEach((e) => { const v = edgeVec(e); (e.ops || []).forEach((o) => { if (o.kind !== 'gate' && o.kind !== 'door') return;

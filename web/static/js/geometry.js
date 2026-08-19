@@ -301,8 +301,11 @@
     // obstacles) and the BFS grid is capped at ~2500 cells.
     function hasExitPath(foot, obstacles, targets, bounds, opts) {
         if (!targets || !targets.length) return true;
-        const o = opts || {}, clr = o.clearance != null ? o.clearance : 0.15;
+        const o = opts || {};
         const fa = _aabb(foot);
+        // BFS fallback clearance defaults to the vehicle's half short side, so the fallback models the
+        // real body (a point-robot BFS would let a 2 m car through a 1.5 m gap).
+        const clr = o.clearance != null ? o.clearance : Math.min(fa.w, fa.h) / 2;
         const obsA = (obstacles || []).map(_aabb);
         const hits = (c) => obsA.some((a) => a.x < c.x + c.w - _EPS && a.x + a.w > c.x + _EPS && a.y < c.y + c.h - _EPS && a.y + a.h > c.y + _EPS);
         // Stage 1 — DIRECT contact with a driveway/gate.
@@ -325,7 +328,34 @@
                 if (a.y + a.h <= fa.y && !hits({ x: fa.x, y: a.y + a.h, w: fa.w, h: fa.y - (a.y + a.h) })) return true;
             }
         }
-        // Stage 3 — BFS fallback (paths that need to turn a corner).
+        // Stage 2b — L-SHAPED corridor: drive along one axis to an elbow, then turn 90° onto the target.
+        // This is what a vehicle in a room CORNER does: first run parallel to the wall, then turn onto
+        // the Fahrstraße. Elbow candidates are sampled across the target's span (bounded), and both legs
+        // must be clear of placed objects; free parking area stays drivable.
+        const sample = (lo, hi, n) => { const out = []; if (hi < lo) return out; const step = (hi - lo) / Math.max(1, n - 1);
+            for (let i = 0; i < n; i++) out.push(lo + step * i); return out; };
+        for (const t of targets) {
+            const a = _aabb(t);
+            // Final approach VERTICAL: slide horizontally to x', then drive up/down onto the target.
+            if (a.w + _EPS >= fa.w) {
+                for (const x2 of sample(a.x, a.x + a.w - fa.w, 24)) {
+                    const legH = { x: Math.min(fa.x, x2), y: fa.y, w: Math.abs(x2 - fa.x) + fa.w, h: fa.h };
+                    if (hits(legH)) continue;
+                    if (a.y >= fa.y + fa.h && !hits({ x: x2, y: fa.y + fa.h, w: fa.w, h: a.y - (fa.y + fa.h) })) return true;
+                    if (a.y + a.h <= fa.y && !hits({ x: x2, y: a.y + a.h, w: fa.w, h: fa.y - (a.y + a.h) })) return true;
+                }
+            }
+            // Final approach HORIZONTAL: slide vertically to y', then drive left/right onto the target.
+            if (a.h + _EPS >= fa.h) {
+                for (const y2 of sample(a.y, a.y + a.h - fa.h, 24)) {
+                    const legV = { x: fa.x, y: Math.min(fa.y, y2), w: fa.w, h: Math.abs(y2 - fa.y) + fa.h };
+                    if (hits(legV)) continue;
+                    if (a.x >= fa.x + fa.w && !hits({ x: fa.x + fa.w, y: y2, w: a.x - (fa.x + fa.w), h: fa.h })) return true;
+                    if (a.x + a.w <= fa.x && !hits({ x: a.x + a.w, y: y2, w: fa.x - (a.x + a.w), h: fa.h })) return true;
+                }
+            }
+        }
+        // Stage 3 — BFS fallback (paths that need more than one turn).
         const W = bounds.maxX - bounds.minX, H = bounds.maxY - bounds.minY;
         if (!(W > 0 && H > 0)) return true;
         const cell = o.cell > 0 ? o.cell : Math.max(0.25, Math.sqrt((W * H) / 2500));

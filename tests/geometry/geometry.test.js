@@ -265,12 +265,14 @@ test('hasExitPath — a boxed-in vehicle cannot reach the gate', () => {
     assert.equal(PG.hasExitPath({ x: 4, y: 4, w: 2, h: 2, rot: 0 }, walls, [gate], { minX: 0, minY: 0, maxX: 10, maxY: 10 }, { clearance: 0.3, cell: 0.2 }), false);
 });
 
-test('hasExitPath — corridor must be wider than the vehicle (clearance)', () => {
+test('hasExitPath — a gap only passes a vehicle that actually fits through it', () => {
+    // The corridor check measures the vehicle's REAL footprint (not a dilated disk), so the question is
+    // simply: does the body fit through the 1.5 m gap between the two walls?
     const gate = { x: 8, y: 0, w: 2, h: 10, rot: 0 };
     const walls = [{ x: 5, y: 0, w: 0.4, h: 4.25, rot: 0 }, { x: 5, y: 5.75, w: 0.4, h: 4.25, rot: 0 }]; // gap y4.25..5.75 = 1.5 m
-    const bounds = { minX: 0, minY: 0, maxX: 10, maxY: 10 }, foot = { x: 1, y: 1, w: 1, h: 1, rot: 0 };
-    assert.equal(PG.hasExitPath(foot, walls, [gate], bounds, { clearance: 0.5, cell: 0.25 }), true);  // 2*0.5 < 1.5 gap
-    assert.equal(PG.hasExitPath(foot, walls, [gate], bounds, { clearance: 0.9, cell: 0.25 }), false); // 2*0.9 > 1.5 gap
+    const bounds = { minX: 0, minY: 0, maxX: 10, maxY: 10 };
+    assert.equal(PG.hasExitPath({ x: 1, y: 1, w: 1, h: 1, rot: 0 }, walls, [gate], bounds, { cell: 0.25 }), true, '1 m body fits the 1.5 m gap');
+    assert.equal(PG.hasExitPath({ x: 1, y: 1, w: 2, h: 2, rot: 0 }, walls, [gate], bounds, { cell: 0.25 }), false, '2 m body cannot pass a 1.5 m gap');
 });
 
 test('packRects routing — allowBlocking gates a "verparken" placement', () => {
@@ -345,4 +347,22 @@ test('hasExitPath corridor — free parking area is drivable, not an obstacle', 
     // neighbours beside the corridor (not in it) must not block the straight drive down
     const nb = [{ x: 5, y: 0.5, w: 2, h: 4, rot: 0 }, { x: 11, y: 0.5, w: 2, h: 4, rot: 0 }];
     assert.equal(PG.hasExitPath(car, nb, [lane], bounds, { clearance: 1.0 }), true);
+});
+
+// FE-Routing — L-shaped exit: a vehicle in a room corner drives parallel to the wall first, then
+// turns 90° onto the Fahrstraße. A straight-only check wrongly rejected these.
+test('hasExitPath L-shape — corner car exits via horizontal run then turn onto the aisle', () => {
+    const bounds = { minX: 0, minY: 0, maxX: 20, maxY: 12 };
+    const lane = { x: 14, y: 0, w: 6, h: 12, rot: 0 };            // aisle on the RIGHT
+    const car = { x: 0.5, y: 9.5, w: 3, h: 2, rot: 0 };            // bottom-LEFT corner
+    const wall = { x: 4, y: 0, w: 1, h: 9, rot: 0 };               // blocks the straight path except along the bottom
+    assert.equal(PG.hasExitPath(car, [wall], [lane], bounds, { clearance: 1.0, cell: 0.25 }), true, 'L-path along the bottom then onto the aisle');
+});
+
+test('hasExitPath L-shape — still blocked when the elbow leg is occupied', () => {
+    const bounds = { minX: 0, minY: 0, maxX: 20, maxY: 12 };
+    const lane = { x: 14, y: 0, w: 6, h: 12, rot: 0 };
+    const car = { x: 0.5, y: 9.5, w: 3, h: 2, rot: 0 };
+    const wallAll = { x: 4, y: 0, w: 1, h: 12, rot: 0 };           // full-height wall: no way through at all
+    assert.equal(PG.hasExitPath(car, [wallAll], [lane], bounds, { clearance: 0.5, cell: 0.25 }), false);
 });
