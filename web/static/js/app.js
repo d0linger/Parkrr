@@ -6135,13 +6135,17 @@
         // nothing can overlap across passes. `padding` (default 0 = flush; buffer toggle raises it) is the
         // only clearance. Vehicles that don't fit WITHOUT overlapping a wall / column / Fahrstraße go
         // cleanly back into the staging queue — the algorithm never forces an overlapping placement.
-        async function autoArrange(padding) {
+        // scope: 'CANVAS_ONLY' (default) re-arranges only the vehicles already on the plan and leaves the
+        // "Nicht platziert" backlog untouched; 'INCLUDE_UNASSIGNED' also pulls the backlog in.
+        async function autoArrange(padding, scope) {
             const pad = (typeof padding === 'number') ? padding : (P.buffer ? P.bufferM : 0); // allowZeroMargin: 0 ⇒ flush (ignore a stray event arg)
-            const spots = P.spots.slice(), pals = P.palette.slice();
-            if (!spots.length && !pals.length) { toast('Keine Gefährte zum Anordnen', 'warn'); return; }
+            const includeUnassigned = scope === 'INCLUDE_UNASSIGNED';
+            const spots = P.spots.slice(), pals = includeUnassigned ? P.palette.slice() : [];
+            if (!spots.length && !pals.length) { toast(includeUnassigned ? 'Keine Gefährte zum Anordnen' : 'Keine platzierten Gefährte zum Anordnen', 'warn'); return; }
             const hasGate = P.excl.some((e) => e.kind === 'lane' || e.kind === 'exit') || P.walls.edges.some((e) => (e.ops || []).some((o) => o.kind === 'gate' || o.kind === 'door'));
             const routeNote = P.allowBlocking ? ' · Zuparken erlaubt' : (hasGate ? ' · mit Auspark-Pfad' : '');
-            const msg = (spots.length + pals.length) + ' Gefährte anordnen (größte zuerst, mit Drehung, Abstand ' + pad.toFixed(2).replace('.', ',') + ' m' + routeNote + '). Was nicht kollisionsfrei passt, landet in „Nicht platziert".';
+            const scopeNote = includeUnassigned ? ' inkl. „Nicht platziert"' : ' (nur platzierte)';
+            const msg = (spots.length + pals.length) + ' Gefährte anordnen' + scopeNote + ' (größte zuerst, mit Drehung, Abstand ' + pad.toFixed(2).replace('.', ',') + ' m' + routeNote + '). Was nicht kollisionsfrei passt, landet in „Nicht platziert".';
             if (!(await confirmDialog('Auto-Anordnen', msg, 'Anordnen'))) return;
             // HARD obstacles (no-park): walls, columns/Stützen, Fahrstraße, Wartung, Notausgang. Only the
             // Stellfläche (kind 'stell') is a parkable marking, so it is the sole zone NOT excluded.
@@ -6207,7 +6211,12 @@
             search.addEventListener('input', () => { P.palQuery = search.value; fillPal(); });
             palCard.append(search, pal); rail.append(palCard);
             fillPal();
-            if (canManageNow && (P.spots.length || P.palette.length)) rail.append(el('div', { class: 'gp-rcard card', style: 'padding:.55rem .7rem' }, el('button', { class: 'btn btn-ghost btn-block', title: 'Platzierte + „Nicht platzierte" Gefährte anordnen (Abstand = Puffer, wenn aktiv; sonst bündig)', onclick: () => autoArrange() }, '⊞ Auto-Anordnen')));
+            if (canManageNow && (P.spots.length || P.palette.length)) {
+                const arrCard = el('div', { class: 'gp-rcard card', style: 'padding:.55rem .7rem;display:flex;flex-direction:column;gap:.4rem' });
+                if (P.spots.length) arrCard.append(el('button', { class: 'btn btn-ghost btn-block', title: 'Nur die bereits platzierten Gefährte neu anordnen — „Nicht platziert" bleibt unangetastet', onclick: () => autoArrange(undefined, 'CANVAS_ONLY') }, '⊞ Platzierte anordnen'));
+                if (P.palette.length) arrCard.append(el('button', { class: 'btn btn-ghost btn-block', title: 'Platzierte + „Nicht platzierte" Gefährte zusammen anordnen (holt das Backlog aufs Feld)', onclick: () => autoArrange(undefined, 'INCLUDE_UNASSIGNED') }, '⤵ + „Nicht platzierte" (' + P.palette.length + ')'));
+                rail.append(arrCard);
+            }
             rail.append(renderVehDetail());
         }
         // Partial update of the Garagenplaner display attributes straight from the detail

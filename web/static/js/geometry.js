@@ -231,7 +231,8 @@
         const canAllExit = (cand) => {
             if (!routeOn) return true;
             const all = pre.concat(placedBlocks, [cand]);
-            for (const v of all) if (!hasExitPath(v, routeObs.concat(all.filter((x) => x !== v)), o.gates, bounds, { cell: routeCell, clearance: Math.min(v.w, v.h) / 2 + routeTol })) return false;
+            const exitTol = gap + 0.5; // a car within (gap + 0.5 m) of a driveway exits directly — comb stays valid
+            for (const v of all) if (!hasExitPath(v, routeObs.concat(all.filter((x) => x !== v)), o.gates, bounds, { cell: routeCell, clearance: Math.min(v.w, v.h) / 2 + routeTol, exitTol })) return false;
             return true;
         };
         // Free set = shrunk bounds minus every obstacle's AABB (conservative: never offers occupied space).
@@ -296,13 +297,22 @@
     function hasExitPath(foot, obstacles, targets, bounds, opts) {
         if (!targets || !targets.length) return true;
         const o = opts || {}, clr = o.clearance != null ? o.clearance : 0.15;
+        const fa = _aabb(foot);
+        // 1-STEP EXIT: if the footprint already touches (within exitTol of) a driveway/gate target, the
+        // vehicle drives STRAIGHT out onto it — no lateral clearance, no path search. exitTol stays below
+        // a vehicle's width, so nothing can sit unseen in that gap. This is what keeps the comb valid:
+        // every car flush to the Fahrstraße exits directly, so allowBlocking:false matches true.
+        const exitTol = o.exitTol != null ? o.exitTol : 0.4;
+        for (const t of targets) { const a = _aabb(t);
+            const dx = Math.max(a.x - (fa.x + fa.w), fa.x - (a.x + a.w), 0), dy = Math.max(a.y - (fa.y + fa.h), fa.y - (a.y + a.h), 0);
+            if (Math.hypot(dx, dy) <= exitTol) return true;
+        }
         const W = bounds.maxX - bounds.minX, H = bounds.maxY - bounds.minY;
         if (!(W > 0 && H > 0)) return true;
         const cell = o.cell > 0 ? o.cell : Math.max(0.25, Math.sqrt((W * H) / 2500));
         const nx = Math.max(1, Math.ceil(W / cell)), ny = Math.max(1, Math.ceil(H / cell));
         const obs = (obstacles || []).map((b) => { const a = _aabb(b); return [a.x - clr, a.y - clr, a.x + a.w + clr, a.y + a.h + clr]; });
         const tgt = targets.map((b) => { const a = _aabb(b); return [a.x, a.y, a.x + a.w, a.y + a.h]; });
-        const fa = _aabb(foot);
         const inR = (px, py, r) => px >= r[0] && px <= r[2] && py >= r[1] && py <= r[3];
         const blocked = new Uint8Array(nx * ny), isT = new Uint8Array(nx * ny), seen = new Uint8Array(nx * ny), q = [];
         for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {

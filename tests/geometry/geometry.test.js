@@ -298,3 +298,24 @@ test('packRects comb — cars near a horizontal driveway park perpendicular (tal
     const ys = ok.map((p) => Math.round((p.y + 4) * 10) / 10); // footprint bottom (rot 90 → 4 tall)
     assert.ok(ys.every((y) => Math.abs(y - ys[0]) < 0.3), 'cars form one row along the driveway');
 });
+
+// FE-Routing — 1-step exit: a vehicle flush to the driveway exits directly (no lateral clearance),
+// so the comb stays valid and allowBlocking:false yields the same layout as true.
+test('hasExitPath 1-step — car flush to the driveway exits directly despite tight neighbours', () => {
+    const gate = { x: 0, y: 5, w: 10, h: 1, rot: 0 };
+    const foot = { x: 4, y: 1, w: 2, h: 4, rot: 0 }; // bottom edge at y5 touches the gate
+    const nbL = { x: 2, y: 1, w: 2, h: 4, rot: 0 }, nbR = { x: 6, y: 1, w: 2, h: 4, rot: 0 }; // tight neighbours
+    assert.equal(PG.hasExitPath(foot, [nbL, nbR], [gate], { minX: 0, minY: 0, maxX: 10, maxY: 6 }, { clearance: 1.0, exitTol: 0.4 }), true);
+});
+
+test('packRects — full comb against the driveway is identical for allowBlocking false and true', () => {
+    const bounds = { minX: 0, minY: 0, maxX: 12, maxY: 8 };
+    const driveway = { x: 0, y: 5, w: 12, h: 3, rot: 0 };
+    const items = []; for (let i = 0; i < 5; i++) items.push({ id: 'c' + i, w: 4, h: 2 });
+    const opts = { margin: 0, gap: 0, gates: [driveway], routeObstacles: [], driveways: [driveway] };
+    const strict = PG.packRects(items, [driveway], bounds, null, Object.assign({ allowBlocking: false }, opts));
+    const loose = PG.packRects(items, [driveway], bounds, null, Object.assign({ allowBlocking: true }, opts));
+    assert.equal(strict.placed, loose.placed, 'no car blocks another → both modes place the same count');
+    assert.ok(strict.placed >= 5, 'all cars fit the comb');
+    for (const p of strict.placements) if (p.ok) assert.equal(p.rot, 90, 'perpendicular comb in strict mode too');
+});

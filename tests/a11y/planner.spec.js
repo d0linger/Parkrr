@@ -125,7 +125,7 @@ test('auto-arrange: the button opens the confirm dialog (regression: event passe
   expect(vRes.ok(), 'seed vehicle ' + vRes.status()).toBeTruthy();
 
   await page.goto('/#/hall/' + h.id); // opens in "Stellplätze" (manage) mode; the unassigned vehicle populates the palette
-  const btn = page.locator('button', { hasText: 'Auto-Anordnen' });
+  const btn = page.locator('button', { hasText: 'Nicht platzierte' }); // INCLUDE_UNASSIGNED button (only the palette has a vehicle)
   await expect(btn).toBeVisible({ timeout: 15000 });
   await btn.click();
   await expect(page.locator('#confirm-title')).toHaveText('Auto-Anordnen', { timeout: 5000 });
