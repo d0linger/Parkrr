@@ -178,54 +178,106 @@ var auditKeepForeverEntities = []string{"invoice", "payment", "billing", "flatra
 //     indication of compromise and belongs in the long window.
 var auditShortLivedActions = []string{"login", "logout", "backup", "remind", "import"}
 
-// PruneAuditLog applies the retention policy. It runs inside a transaction that
-// opts into the append-only guard's retention exception (see migration 008), so
-// this is the single sanctioned path for removing audit rows.
+// auditPruneBatch caps how many rows a single DELETE statement removes.
+//
+// The size matters because audit_log carries a FOR EACH ROW plpgsql trigger
+// (migration 008) and every pooled connection runs under statement_timeout=10s.
+// One unbounded DELETE therefore has a hard cliff, and past it the failure mode is
+// not "slow" but "never": the statement is cancelled, the whole transaction rolls
+// back, and exactly zero rows are removed — so the next run faces the same backlog
+// and fails identically, forever.
+//
+// Measured against the real schema and trigger on this deployment's Postgres:
+// 200k rows delete in 515 ms (~390k rows/s), while 4M rows hit the 10s cap and
+// removed nothing at all, twice in a row. 20k rows is ~50 ms, two orders of
+// magnitude inside the cap, and keeps each transaction (and so each lock hold on
+// an append-only table) short.
+const auditPruneBatch = 20000
+
+// PruneAuditLog applies the retention policy. Each batch runs in its own
+// transaction that opts into the append-only guard's retention exception (see
+// migration 008), so this is the single sanctioned path for removing audit rows.
 //
 // keep is the long window (records of who changed what). shortKeep, when > 0 and
 // shorter than keep, additionally ages out auditShortLivedActions early; pass 0 to
 // disable the short tier so everything follows keep. Returns the total pruned.
+//
+// Per-batch commits are deliberate: retention is idempotent, so partial progress is
+// durable and a cancelled run resumes where it stopped instead of discarding its
+// work. The returned count is therefore meaningful even alongside an error.
 func PruneAuditLog(ctx context.Context, pool *pgxpool.Pool, keep, shortKeep time.Duration) (int64, error) {
-	var n int64
-	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SET LOCAL parkrr.allow_audit_prune = 'on'`); err != nil {
-			return err
+	var total int64
+	// keep <= 0 means "keep the trail forever" — skip the long pass entirely; the
+	// short tier below is an independent setting and still applies.
+	if keep > 0 {
+		n, err := pruneAuditBatched(ctx, pool,
+			`DELETE FROM audit_log WHERE id IN (
+			     SELECT id FROM audit_log
+			      WHERE created_at < $1 AND entity <> ALL($2)
+			      LIMIT $3)`,
+			time.Now().Add(-keep), auditKeepForeverEntities)
+		total += n
+		if err != nil {
+			return total, err
 		}
-		// keep <= 0 means "keep the trail forever" — skip the long pass entirely; the
-		// short tier below is an independent setting and still applies.
-		if keep > 0 {
-			ct, err := tx.Exec(ctx,
-				`DELETE FROM audit_log
-				   WHERE created_at < $1
-				     AND entity <> ALL($2)`, time.Now().Add(-keep), auditKeepForeverEntities)
+	}
+	// Short tier: auth/ops noise only, and only when it actually shortens the
+	// window (a shortKeep >= keep would be a no-op the long pass already covered).
+	//
+	// Deliberately NOT filtered by auditKeepForeverEntities. That list protects
+	// records of account by ENTITY, but a short-lived ACTION is noise whatever it
+	// references: a payment reminder is logged under entity 'invoice' because it
+	// concerns that invoice, yet the mail is not the record — the invoice is. With
+	// the entity filter the highest-volume noise category on a reminder-sending
+	// deployment was the one category the tier provably could not touch.
+	// auditShortLivedActions is the authority here, and it is an allow-list with a
+	// test demanding a documented reason per entry.
+	if shortKeep > 0 && (keep <= 0 || shortKeep < keep) {
+		n, err := pruneAuditBatched(ctx, pool,
+			`DELETE FROM audit_log WHERE id IN (
+			     SELECT id FROM audit_log
+			      WHERE created_at < $1 AND action = ANY($2)
+			      LIMIT $3)`,
+			time.Now().Add(-shortKeep), auditShortLivedActions)
+		total += n
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
+}
+
+// pruneAuditBatched runs one retention pass to completion in bounded batches. The
+// cutoff is computed once by the caller so the set being deleted cannot grow while
+// the loop drains it, which is what guarantees termination.
+func pruneAuditBatched(ctx context.Context, pool *pgxpool.Pool, sql string, cutoff time.Time, list []string) (int64, error) {
+	var total int64
+	for {
+		// Stop cleanly on a cancelled/expired context rather than letting the next
+		// BeginFunc fail: everything committed so far is kept.
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		var n int64
+		err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			// The guard flag is transaction-scoped, so it must be re-set per batch.
+			if _, err := tx.Exec(ctx, `SET LOCAL parkrr.allow_audit_prune = 'on'`); err != nil {
+				return err
+			}
+			ct, err := tx.Exec(ctx, sql, cutoff, list, auditPruneBatch)
 			if err != nil {
 				return err
 			}
 			n = ct.RowsAffected()
+			return nil
+		})
+		if err != nil {
+			return total, err
 		}
-		// Short tier: auth/ops noise only, and only when it actually shortens the
-		// window (a shortKeep >= keep would be a no-op the long pass already covered).
-		//
-		// Deliberately NOT filtered by auditKeepForeverEntities. That list protects
-		// records of account by ENTITY, but a short-lived ACTION is noise whatever it
-		// references: a payment reminder is logged under entity 'invoice' because it
-		// concerns that invoice, yet the mail is not the record — the invoice is. With
-		// the entity filter the highest-volume noise category on a reminder-sending
-		// deployment was the one category the tier provably could not touch.
-		// auditShortLivedActions is the authority here, and it is an allow-list with a
-		// test demanding a documented reason per entry.
-		if shortKeep > 0 && (keep <= 0 || shortKeep < keep) {
-			shortCut := time.Now().Add(-shortKeep)
-			ct2, serr := tx.Exec(ctx,
-				`DELETE FROM audit_log
-				   WHERE created_at < $1
-				     AND action = ANY($2)`, shortCut, auditShortLivedActions)
-			if serr != nil {
-				return serr
-			}
-			n += ct2.RowsAffected()
+		total += n
+		// A short batch means the matching set is drained.
+		if n < auditPruneBatch {
+			return total, nil
 		}
-		return nil
-	})
-	return n, err
+	}
 }

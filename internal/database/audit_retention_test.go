@@ -1,7 +1,10 @@
 package database
 
 import (
+	"os"
+	"regexp"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -74,5 +77,48 @@ func TestShortTierCannotReachRecordsOfAccount(t *testing.T) {
 				"recurring_charge) and must never be short-lived — the short pass is not "+
 				"entity-filtered", a)
 		}
+	}
+}
+
+// TestAuditDeletesStayBatched pins the shape that makes retention converge.
+//
+// audit_log carries a FOR EACH ROW plpgsql trigger and every pooled connection runs
+// under statement_timeout=10s, so an unbounded DELETE has a cliff — and past it the
+// failure mode is "never", not "slow": the statement is cancelled, the transaction
+// rolls back, and ZERO rows are removed, so the next run faces the same backlog and
+// fails identically. Measured on this deployment's Postgres against a clone of the
+// table with the same trigger: 200k rows drained in 515 ms, while a single
+// unbounded DELETE of 4M rows removed nothing at all, twice running. The batched
+// form drained the same 4M rows completely.
+//
+// A reviewer cannot see any of that by reading a DELETE, hence this guard.
+func TestAuditDeletesStayBatched(t *testing.T) {
+	src, err := os.ReadFile("database.go")
+	if err != nil {
+		t.Fatalf("read database.go: %v", err)
+	}
+	// Match to the end of the raw-string SQL literal, not to the first ")" — the
+	// first paren closes `ALL($2)`, well before the LIMIT this is looking for.
+	stmts := regexp.MustCompile("(?s)DELETE FROM audit_log.*?`").FindAllString(string(src), -1)
+	if len(stmts) == 0 {
+		t.Fatal("no DELETE against audit_log found — has PruneAuditLog been renamed or moved?")
+	}
+	for _, s := range stmts {
+		if !strings.Contains(s, "LIMIT") {
+			t.Errorf("unbounded DELETE against audit_log — it must delete in batches or it will\n"+
+				"silently stop making ANY progress once the backlog exceeds statement_timeout:\n%s", s)
+		}
+	}
+}
+
+// The batch must stay far enough inside statement_timeout that a slower disk, a
+// colder cache or a bulkier `changes` payload cannot push one statement over it.
+func TestAuditPruneBatchStaysWellInsideStatementTimeout(t *testing.T) {
+	// ~390k rows/s measured => 20k rows is ~50 ms against a 10 s cap. Allow generous
+	// headroom for a machine an order of magnitude slower than the one measured.
+	if auditPruneBatch < 1000 || auditPruneBatch > 100000 {
+		t.Fatalf("auditPruneBatch = %d is outside the range that keeps one DELETE safely inside "+
+			"the 10s statement_timeout while still draining a backlog in reasonable time",
+			auditPruneBatch)
 	}
 }
