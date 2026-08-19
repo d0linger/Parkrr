@@ -108,7 +108,8 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create user")
 		return
 	}
-	h.audit(r, "create", "user", u.ID, "created user "+u.Username+" ("+u.Role+")")
+	h.auditCreated(r, "user", u.ID, "created user "+u.Username+" ("+u.Role+")",
+		map[string]any{"username": u.Username, "email": u.Email, "role": u.Role, "is_admin": u.IsAdmin})
 	writeJSON(w, http.StatusCreated, u)
 }
 

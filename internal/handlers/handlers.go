@@ -224,6 +224,25 @@ func (h *Handler) auditChange(r *http.Request, action, entity string, id int64, 
 	h.auditInsert(r, actorID, actorName, action, entity, id, summary, changes)
 }
 
+// auditCreated records a creation together with the values the new row was given,
+// as {field: {old: null, new: value}} — the mirror image of auditDeleted. Without
+// it a "created X" entry proves only THAT something appeared, never with which
+// values, so a later edit cannot be told apart from the original state.
+//
+// Note for both helpers: events that are not data changes (login, backup, restore,
+// reminders, imports) deliberately keep a plain summary — they have no fields to
+// diff, and inventing one would only add noise to the trail.
+func (h *Handler) auditCreated(r *http.Request, entity string, id int64, summary string, snapshot map[string]any) {
+	var changes map[string]any
+	if len(snapshot) > 0 {
+		changes = make(map[string]any, len(snapshot))
+		for k, v := range snapshot {
+			changes[k] = map[string]any{"old": nil, "new": v} // created: no old value
+		}
+	}
+	h.auditChange(r, "create", entity, id, summary, changes)
+}
+
 // auditDeleted records a deletion together with the identifying values of the row
 // that was removed. This matters more than any other audit case: once the row is
 // gone, an entry that carries only an id can never be resolved back to WHAT was

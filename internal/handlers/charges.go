@@ -73,7 +73,8 @@ func (h *Handler) CreateServiceType(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create service")
 		return
 	}
-	h.audit(r, "create", "service_type", id, "created service "+req.Name)
+	h.auditCreated(r, "service_type", id, "created service "+req.Name,
+		map[string]any{"name": req.Name, "default_amount": req.DefaultAmount})
 	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
 }
 
@@ -403,7 +404,10 @@ func (h *Handler) CreateCharge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create charge")
 		return
 	}
-	h.audit(r, "create", "charge", id, "added charge "+req.Description)
+	h.auditCreated(r, "charge", id, "added charge "+req.Description, map[string]any{
+		"description": req.Description, "amount": req.Amount, "quantity": req.Quantity,
+		"person_id": req.PersonID, "charged_on": req.ChargedOn,
+	})
 	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
 }
 

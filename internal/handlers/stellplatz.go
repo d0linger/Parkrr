@@ -98,7 +98,8 @@ func (h *Handler) CreateGarage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create garage")
 		return
 	}
-	h.audit(r, "create", "garage", g.ID, "created garage "+g.Name)
+	h.auditCreated(r, "garage", g.ID, "created garage "+g.Name,
+		map[string]any{"name": g.Name, "sort_order": g.SortOrder})
 	writeJSON(w, http.StatusCreated, g)
 }
 
@@ -257,7 +258,8 @@ func (h *Handler) CreateHall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create hall")
 		return
 	}
-	h.audit(r, "create", "hall", hl.ID, "created hall "+hl.Name)
+	h.auditCreated(r, "hall", hl.ID, "created hall "+hl.Name,
+		map[string]any{"name": hl.Name, "garage_id": hl.GarageID, "sort_order": hl.SortOrder})
 	writeJSON(w, http.StatusCreated, hl)
 }
 
@@ -479,7 +481,8 @@ func (h *Handler) CreateSpot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create spot")
 		return
 	}
-	h.audit(r, "create", "spot", s.ID, "created spot "+s.Label)
+	h.auditCreated(r, "spot", s.ID, "created spot "+s.Label,
+		map[string]any{"label": s.Label, "hall_id": s.HallID})
 	writeJSON(w, http.StatusCreated, s)
 }
 
@@ -509,10 +512,18 @@ func (h *Handler) UpdateSpot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "geometry is invalid or too large")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE spots SET label=$1, geometry=$2, updated_at=now() WHERE id=$3`,
-		req.Label, geom, id)
+	var prevLabel string
+	var prevGeom []byte
+	err := h.Pool.QueryRow(r.Context(),
+		`WITH prev AS (SELECT label, geometry FROM spots WHERE id=$3)
+		 UPDATE spots SET label=$1, geometry=$2, updated_at=now() WHERE id=$3
+		 RETURNING (SELECT label FROM prev), (SELECT geometry FROM prev)`,
+		req.Label, geom, id).Scan(&prevLabel, &prevGeom)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "spot not found")
+			return
+		}
 		if isUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "a spot with that label already exists in this hall")
 			return
@@ -520,11 +531,16 @@ func (h *Handler) UpdateSpot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not update spot")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "spot not found")
-		return
+	// Geometry is an opaque blob — record its state, not the payload (as for halls).
+	geomState := func(b []byte) string {
+		if len(b) == 0 {
+			return "leer"
+		}
+		return "gesetzt (" + strconv.Itoa(len(b)) + " B)"
 	}
-	h.audit(r, "update", "spot", id, "updated spot "+req.Label)
+	h.auditChange(r, "update", "spot", id, "updated spot "+req.Label, diffFields(
+		map[string]any{"label": prevLabel, "geometry": geomState(prevGeom)},
+		map[string]any{"label": req.Label, "geometry": geomState(geom)}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -601,7 +617,8 @@ func (h *Handler) AssignSpotVehicle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "vehicle not found")
 		return
 	}
-	h.audit(r, "update", "spot", spotID, "assigned vehicle to spot")
+	h.auditChange(r, "update", "spot", spotID, "assigned vehicle to spot",
+		diffFields(map[string]any{"vehicle_id": nil}, map[string]any{"vehicle_id": req.VehicleID}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -612,12 +629,27 @@ func (h *Handler) UnassignSpotVehicle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	if _, err := h.Pool.Exec(r.Context(),
-		`UPDATE vehicles SET spot_id=NULL, updated_at=now() WHERE spot_id=$1`, spotID); err != nil {
+	// RETURNING names which Gefährt was freed; "freed spot" alone loses that.
+	var freed []int64
+	rows, err := h.Pool.Query(r.Context(),
+		`UPDATE vehicles SET spot_id=NULL, updated_at=now() WHERE spot_id=$1 RETURNING id`, spotID)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not unassign vehicle")
 		return
 	}
-	h.audit(r, "update", "spot", spotID, "freed spot")
+	for rows.Next() {
+		var vid int64
+		if rows.Scan(&vid) == nil {
+			freed = append(freed, vid)
+		}
+	}
+	rows.Close()
+	if rows.Err() != nil {
+		writeError(w, http.StatusInternalServerError, "could not unassign vehicle")
+		return
+	}
+	h.auditChange(r, "update", "spot", spotID, "freed spot",
+		diffFields(map[string]any{"vehicle_ids": freed}, map[string]any{"vehicle_ids": []int64{}}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

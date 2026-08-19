@@ -133,7 +133,8 @@ func (h *Handler) UploadPlannerIcon(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not store icon")
 		return
 	}
-	h.audit(r, "create", "planner_icon", iconID, "uploaded planner icon "+name)
+	h.auditCreated(r, "planner_icon", iconID, "uploaded planner icon "+name,
+		map[string]any{"name": name})
 	writeJSON(w, http.StatusCreated, plannerIconMeta{
 		ID: iconID, Name: name, ContentType: contentType, ByteSize: len(data), CreatedAt: createdAt,
 	})

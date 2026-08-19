@@ -135,7 +135,10 @@ func (h *Handler) CreatePerson(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create person")
 		return
 	}
-	h.audit(r, "create", "person", p.ID, "created person "+trim(p.FirstName+" "+p.LastName))
+	h.auditCreated(r, "person", p.ID, "created person "+trim(p.FirstName+" "+p.LastName), map[string]any{
+		"first_name": p.FirstName, "last_name": p.LastName, "email": p.Email,
+		"phone": p.Phone, "address": p.Address,
+	})
 	writeJSON(w, http.StatusCreated, p)
 }
 

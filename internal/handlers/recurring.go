@@ -302,7 +302,10 @@ func (h *Handler) CreateRecurringCharge(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "could not create recurring charge")
 		return
 	}
-	h.audit(r, "create", "recurring_charge", id, "added recurring cost "+desc)
+	h.auditCreated(r, "recurring_charge", id, "added recurring cost "+desc, map[string]any{
+		"description": desc, "amount": amount, "period": period,
+		"start_date": start.Format("2006-01-02"), "person_id": personID,
+	})
 	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
 }
 
