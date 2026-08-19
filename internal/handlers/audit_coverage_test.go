@@ -145,6 +145,13 @@ var auditIgnoredPerFunc = map[string]map[string]bool{
 	// the user's change (the agreement flag) and must stay audited, which is why this
 	// is scoped to the handler instead of living in auditIgnoredColumns.
 	"DeletePayment": {"paid": true},
+	// TOTPSetup DOES record this column — as `two_factor_active`, because
+	// isSecretField substring-matches "totp" and would rewrite a `totp_enabled` key to
+	// ***REDACTED***, turning a harmless boolean into a payload that carries nothing
+	// and falsely signals a leaked credential. The exemption covers the alias, not a
+	// gap; everywhere else `totp_enabled` must still appear in the diff (TOTPEnable and
+	// TOTPDisable audit it directly, and both pass).
+	"TOTPSetup": {"totp_enabled": true},
 }
 
 // TestAuditDiffsCoverEveryWrittenColumn fails when a handler records field changes
@@ -327,4 +334,97 @@ func flattenAdd(e ast.Expr) []ast.Expr {
 // exprText returns the exact source of an expression.
 func exprText(fset *token.FileSet, src []byte, e ast.Expr) string {
 	return string(src[fset.Position(e.Pos()).Offset:fset.Position(e.End()).Offset])
+}
+
+// auditExemptHandlers are the mutating routes that legitimately write no audit row.
+// Each entry needs a reason that survives review: "it seemed noisy" is not one. The
+// list is deliberately tiny and deliberately explicit — everything NOT in it must
+// audit, which is what makes the rule enforceable rather than aspirational.
+var auditExemptHandlers = map[string]string{
+	"PasskeyRegisterBegin": "WebAuthn ceremony start; stores only an ephemeral challenge, the finish step is audited",
+	"PasskeyLoginBegin":    "WebAuthn ceremony start; stores only an ephemeral challenge, the finish step is audited",
+	"BackupValidate":       "read-only (decrypt + pg_restore --list), changes nothing",
+	"BackupS3Test":         "read-only connection test, changes nothing",
+	"ClientError":          "forwards a browser error to slog, touches no domain data",
+}
+
+// TestEveryMutatingRouteIsAudited walks the route table and fails when a
+// POST/PUT/PATCH/DELETE handler contains no audit call.
+//
+// The per-handler guards elsewhere in this file check the QUALITY of an entry; this
+// one checks that an entry exists at all. It is what catches a newly added endpoint
+// that simply forgot — the gap that let session revocation and TOTP setup ship
+// unlogged. Handlers that audit indirectly (through saveAgreement) are accepted via
+// the delegation check.
+func TestEveryMutatingRouteIsAudited(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "server", "server.go"))
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+	byName := map[string]handlerFunc{}
+	for _, hf := range handlerFuncs(t) {
+		byName[hf.Name] = hf
+	}
+	reRoute := regexp.MustCompile(`"(?:POST|PUT|PATCH|DELETE) (/api[^"]*)"[^\n]*?(?:h|ah)\.([A-Za-z0-9_]+)`)
+	reAudit := regexp.MustCompile(`\.(?:audit|auditAs|auditChange|auditChangeTx|auditInsert|auditCreated|auditDeleted|AuditSystem)\(`)
+	reDelegates := regexp.MustCompile(`\b(?:saveAgreement|persistAgreement)\s*\(`)
+
+	// A guard that silently skips what it cannot parse is worse than no guard: the one
+	// route registered in a shape the pattern misses would be exactly the unaudited
+	// one. So first prove the pattern still sees EVERY mutating route literal, and only
+	// then judge the handlers. Today all 93 match, on one line each, receiver h or ah.
+	reAnyRoute := regexp.MustCompile(`"(?:POST|PUT|PATCH|DELETE) /api[^"]*"`)
+	total := len(reAnyRoute.FindAllString(string(src), -1))
+	matches := reRoute.FindAllStringSubmatch(string(src), -1)
+	if len(matches) != total {
+		t.Fatalf("this guard parsed %d of %d mutating route registrations — the %d it could not read "+
+			"would be checked by nothing at all. A route was probably registered across several lines "+
+			"or with a new receiver; widen reRoute (or move it to go/ast) before trusting this test again.",
+			len(matches), total, total-len(matches))
+	}
+
+	var bad, unknown []string
+	for _, m := range matches {
+		path, name := m[1], m[2]
+		if _, ok := auditExemptHandlers[name]; ok {
+			continue
+		}
+		hf, ok := byName[name]
+		if !ok {
+			// Not skipped quietly: a handler this package cannot see is a handler this
+			// guard cannot vouch for, and that has to be visible.
+			unknown = append(unknown, path+" -> "+name)
+			continue
+		}
+		if !reAudit.MatchString(hf.Body) && !reDelegates.MatchString(hf.Body) {
+			bad = append(bad, path+" -> "+name+" ("+hf.File+")")
+		}
+	}
+	sort.Strings(bad)
+	sort.Strings(unknown)
+	if len(unknown) > 0 {
+		t.Errorf("route handler(s) not found in this package, so their audit coverage is unverified:\n  %s",
+			strings.Join(unknown, "\n  "))
+	}
+	if len(bad) > 0 {
+		t.Fatalf("mutating route(s) write no audit entry — every state-changing action must be\n"+
+			"provable. Add an audit call, or add the handler to auditExemptHandlers WITH a reason:\n  %s",
+			strings.Join(bad, "\n  "))
+	}
+}
+
+// A stale exemption is worse than none: it silences a handler nobody remembers.
+func TestAuditExemptionsAreAllLive(t *testing.T) {
+	byName := map[string]bool{}
+	for _, hf := range handlerFuncs(t) {
+		byName[hf.Name] = true
+	}
+	for name, reason := range auditExemptHandlers {
+		if !byName[name] {
+			t.Errorf("auditExemptHandlers lists %q (%s) but no such handler exists any more", name, reason)
+		}
+		if strings.TrimSpace(reason) == "" {
+			t.Errorf("exemption for %q has no reason", name)
+		}
+	}
 }

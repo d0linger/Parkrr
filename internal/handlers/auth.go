@@ -387,6 +387,17 @@ func (h *AuthHandler) RevokeSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
 	}
+	// Revoking a session is a security action: it is how a stolen session is cut off,
+	// and equally how an attacker would cut off the legitimate owner.
+	//
+	// The handle is deliberately NOT recorded. It is left(token, 8) — the first eight
+	// characters of the real session token (see auth/sessions.go) — so writing it here
+	// would persist live credential material into an append-only table kept for years,
+	// and `session_handle` matches no secret token, so the redaction choke point would
+	// not catch it. The entity is the USER, which is the object entity_id identifies;
+	// there is no session row id to point at once the row is deleted.
+	h.auditChange(r, "revoke", "user", u.ID, u.Username+" revoked a session",
+		auditSnapshot(map[string]any{"revoked_sessions": n}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
 }
 
@@ -397,6 +408,10 @@ func (h *AuthHandler) RevokeOtherSessions(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "could not revoke sessions")
 		return
 	}
+	// Signing out every other device is the standard follow-up to a suspected
+	// compromise — and the standard move of whoever caused it. It must be in the trail.
+	h.auditChange(r, "revoke", "user", u.ID, u.Username+" signed out all other sessions",
+		auditSnapshot(map[string]any{"scope": "all_other_sessions"}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

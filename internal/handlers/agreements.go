@@ -1388,21 +1388,64 @@ func (h *Handler) ArchiveSettledExpiredVehicles(ctx context.Context, personID in
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
+	// Both branches collect the ids the UPDATE ACTUALLY changed via RETURNING, not the
+	// candidate slice built from the earlier SELECT. The statements carry an
+	// archived-state guard, so a concurrent sweep can settle a row between the two and
+	// the candidate list would then name a vehicle this entry did not touch.
 	if len(toWake) > 0 {
-		if _, err := h.Pool.Exec(ctx,
-			`UPDATE vehicles SET archived=false, updated_at=now() WHERE id = ANY($1) AND archived=true`, toWake); err != nil {
+		woke, err := archiveVehiclesTx(ctx, h.Pool,
+			`UPDATE vehicles SET archived=false, updated_at=now()
+			  WHERE id = ANY($1) AND archived=true RETURNING id`, toWake)
+		if err != nil {
 			return 0, err
+		}
+		// Un-archiving is a state change nobody requested explicitly — it happens when an
+		// agreement stops being settled. Without an entry a vehicle silently reappears in
+		// the active list with nothing to explain it.
+		if len(woke) > 0 {
+			h.AuditSystem(ctx, "update", "vehicle", 0,
+				"Archivierung automatisch aufgehoben (Pauschale wieder offen)",
+				auditSnapshot(map[string]any{"archived": false, "vehicle_ids": woke, "vehicle_count": len(woke)}))
 		}
 	}
 	if len(toArchive) == 0 {
 		return 0, nil
 	}
-	ct, err := h.Pool.Exec(ctx,
-		`UPDATE vehicles SET archived=true, updated_at=now() WHERE id = ANY($1) AND archived=false`, toArchive)
+	archived2, err := archiveVehiclesTx(ctx, h.Pool,
+		`UPDATE vehicles SET archived=true, updated_at=now()
+		  WHERE id = ANY($1) AND archived=false RETURNING id`, toArchive)
 	if err != nil {
 		return 0, err
 	}
-	return ct.RowsAffected(), nil
+	// Same for archiving: it runs both from handlers and from the startFlatRateArchival
+	// background job, so the trail is the only place this becomes visible.
+	if len(archived2) > 0 {
+		h.AuditSystem(ctx, "update", "vehicle", 0,
+			"Gefährte automatisch archiviert (Pauschale beendet und abgerechnet)",
+			auditSnapshot(map[string]any{"archived": true, "vehicle_ids": archived2, "vehicle_count": len(archived2)}))
+	}
+	return int64(len(archived2)), nil
+}
+
+// archiveVehiclesTx runs an archive/un-archive UPDATE and returns the ids it really
+// changed, so the audit entry names exactly those rows.
+func archiveVehiclesTx(ctx context.Context, q interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}, sql string, ids []int64) ([]int64, error) {
+	rows, err := q.Query(ctx, sql, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 // personRent computes rent accrued and paid over [from, to) for a person:

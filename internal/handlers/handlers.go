@@ -270,6 +270,10 @@ func auditSnapshot(values map[string]any) map[string]any {
 	return out
 }
 
+// AuditValues is the exported form of auditSnapshot, for the background jobs that
+// live in other packages and record an outcome rather than a before/after.
+func AuditValues(values map[string]any) map[string]any { return auditSnapshot(values) }
+
 // mergeChanges combines change maps (e.g. a real diff plus an auditSnapshot of the
 // outcome fields) into one changes object. Later maps win on a key collision.
 func mergeChanges(maps ...map[string]any) map[string]any {
@@ -325,6 +329,35 @@ func (h *Handler) auditAs(r *http.Request, actorID int64, actorName, action, ent
 func (h *Handler) auditInsert(r *http.Request, actorID int64, actorName, action, entity string, id int64, summary string, changes any) {
 	// Best-effort, post-commit: never break a request on an audit failure.
 	_ = auditExec(r.Context(), h.Pool, actorID, actorName, action, entity, id, summary, changes)
+}
+
+// AuditSystem records an action taken outside a request handler: a scheduled backup,
+// the retention sweep, the archival job. It routes through auditExec like every other
+// path, so the redaction choke point still applies and a background job cannot leak a
+// secret into the trail either.
+//
+// The actor comes from ctx when one is there. Several of these paths are reachable
+// BOTH from a background sweep and from a request (archival runs on every settlement
+// toggle), and hard-coding "system" attributed a user's own action to nobody — the
+// destructive half of an operator's click losing its attribution is exactly what an
+// audit trail must not do. Only a genuinely request-less caller records "system".
+//
+// changes is taken as-is, like auditChange and auditChangeTx: a caller with a real
+// before/after passes diffFields, a caller with only an outcome passes auditSnapshot.
+// Wrapping it here would have silently double-nested any future diffFields caller.
+//
+// Exported because the schedulers live outside this package (internal/backup cannot
+// import handlers — handlers already imports it), so main injects this as a callback.
+// Best-effort: a failed audit write must never abort a backup or a sweep.
+func (h *Handler) AuditSystem(ctx context.Context, action, entity string, id int64, summary string, changes any) {
+	var actorID int64
+	actorName := "system"
+	if u, ok := auth.UserFrom(ctx); ok {
+		actorID, actorName = u.ID, u.Username
+	}
+	if err := auditExec(ctx, h.Pool, actorID, actorName, action, entity, id, summary, changes); err != nil {
+		slog.Warn("audit: system entry failed", "action", action, "entity", entity, "err", err)
+	}
 }
 
 // auditExec inserts one audit row through q (pool or tx) and returns the write

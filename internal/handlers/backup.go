@@ -201,10 +201,19 @@ func (h *Handler) RunScheduledBackup(w http.ResponseWriter, r *http.Request) {
 	ran := []string{}
 	var firstErr error
 	if h.BackupDir != "" {
-		if _, err := backup.RunVolume(ctx, h.Pool, h.DatabaseURL, h.BackupKey, h.BackupDir, settings.VolumeKeep); err != nil {
+		// `verified` must be honored, not discarded: RunVolume returns a nil error for
+		// an archive that was written but failed its decrypt/restore-list check, so
+		// treating nil-error as success would report "Volume gesichert" for a backup
+		// that cannot be restored — and backup_status simultaneously records it as
+		// failed. Same distinction the scheduler makes.
+		switch _, verified, err := backup.RunVolume(ctx, h.Pool, h.DatabaseURL, h.BackupKey, h.BackupDir, settings.VolumeKeep); {
+		case err != nil:
 			slog.Error("run-now volume backup failed", "err", err)
 			firstErr = err
-		} else {
+		case !verified:
+			slog.Error("run-now volume backup written but NOT verified")
+			firstErr = errors.New("volume backup written but failed verification")
+		default:
 			ran = append(ran, "Volume")
 		}
 	}

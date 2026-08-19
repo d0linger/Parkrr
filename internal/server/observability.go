@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -157,15 +158,19 @@ func startFlatRateArchival(h *handlers.Handler, stop <-chan struct{}) {
 	}
 }
 
+// auditFn records the sweep itself. Declared here rather than imported from
+// internal/backup so the two schedulers stay independent of each other.
+type auditFn func(ctx context.Context, action, entity string, id int64, summary string, changes any)
+
 // StartAuditRetention periodically prunes audit entries. It runs until stop is
-// closed.
+// closed. rec (may be nil) records the sweep in the trail itself.
 //
 // keep is the long window and shortKeep the auth/ops-noise window, and they are
 // INDEPENDENT: keep <= 0 disables the long window only, so the short tier keeps
 // running. Retention is off entirely only when both are <= 0. (This doc used to
 // say "keep <= 0 disables retention", which was true before the short tier existed
 // and is now contradicted by the guard below.)
-func StartAuditRetention(pool *pgxpool.Pool, keep, shortKeep time.Duration, stop <-chan struct{}) {
+func StartAuditRetention(pool *pgxpool.Pool, keep, shortKeep time.Duration, stop <-chan struct{}, rec auditFn) {
 	// The two windows are independent knobs: "keep the trail forever, but do not
 	// hoard a year of login rows" is a legitimate setting (keep=0, shortKeep=365).
 	// Returning on keep<=0 alone would silently disable the short tier too.
@@ -186,10 +191,36 @@ func StartAuditRetention(pool *pgxpool.Pool, keep, shortKeep time.Duration, stop
 		// like a working one.
 		if err != nil {
 			slog.Warn("audit retention: prune failed", "pruned", n, "err", err)
-			return
-		}
-		if n > 0 {
+		} else if n > 0 {
 			slog.Info("audit retention: pruned expired entries", "pruned", n)
+		}
+		// The sweep is the ONLY path allowed to remove rows from an append-only table,
+		// so its own entry is what keeps a shrinking trail explainable. Keyed on rows
+		// actually removed, NOT on a clean return: PruneAuditLog commits per batch, so a
+		// run that deletes 1.5M rows and then hits the deadline returns both a count and
+		// an error. Skipping the entry there would leave the largest deletions — the ones
+		// that most need explaining — unrecorded. A no-op sweep still writes nothing,
+		// otherwise the six-hourly tick becomes the noise retention exists to remove.
+		if n > 0 && rec != nil {
+			// A fresh, bounded context. The prune above may well have ENDED because ctx
+			// expired — that is the partial-progress case this entry exists to explain —
+			// and writing the explanation through the same dead context would drop it.
+			wctx, wcancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer wcancel()
+			summary := fmt.Sprintf("Aufbewahrung: %d abgelaufene Audit-Einträge entfernt", n)
+			if err != nil {
+				summary += " (Lauf vorzeitig beendet)"
+			}
+			changes := map[string]any{"pruned_rows": n, "completed": err == nil}
+			// A disabled window is nil, not 0: recording keep_days 0 for "keep forever"
+			// inverts the policy in the very row meant to justify the deletion.
+			if keep > 0 {
+				changes["keep_days"] = int(keep.Hours() / 24)
+			}
+			if shortKeep > 0 {
+				changes["short_keep_days"] = int(shortKeep.Hours() / 24)
+			}
+			rec(wctx, "delete", "audit_log", 0, summary, handlers.AuditValues(changes))
 		}
 	}
 	prune() // once at startup
