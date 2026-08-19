@@ -29,7 +29,13 @@ var auditSink atomic.Pointer[AuditFunc]
 // Without it this package stays silent, which keeps the tests free of a DB dependency.
 func SetAuditor(fn AuditFunc) { auditSink.Store(&fn) }
 
-func audit(ctx context.Context, action, entity string, id int64, summary string, changes map[string]any) {
+// audit records one system-initiated backup action.
+//
+// entity and entity_id are fixed rather than parameters: "system" is the same bucket
+// the manual backup endpoints in internal/handlers use, so scheduled and manual runs
+// stay filterable together, and a backup refers to no single database row, so there
+// is no id to point at. Both would otherwise be constants dressed up as arguments.
+func audit(ctx context.Context, action, summary string, changes map[string]any) {
 	p := auditSink.Load()
 	if p == nil || *p == nil {
 		return
@@ -43,7 +49,7 @@ func audit(ctx context.Context, action, entity string, id int64, summary string,
 	defer cancel()
 	// These are outcome snapshots, not before/after diffs — wrap them here so the
 	// entry has the same {old,new} shape as every other row.
-	(*p)(wctx, action, entity, id, summary, snapshot(changes))
+	(*p)(wctx, action, "system", 0, summary, snapshot(changes))
 }
 
 // actionBackupFailed is deliberately NOT in database.auditShortLivedActions, so a
@@ -211,18 +217,18 @@ func schedulerTick(pool *pgxpool.Pool, dbURL, key, dir string, s3 S3Config, last
 		switch size, verified, err := RunVolume(ctx, pool, dbURL, key, dir, settings.VolumeKeep); {
 		case err != nil:
 			slog.Error("scheduled volume backup failed", "err", err)
-			audit(ctx, actionBackupFailed, "system", 0, "Geplantes Volume-Backup FEHLGESCHLAGEN",
+			audit(ctx, actionBackupFailed, "Geplantes Volume-Backup FEHLGESCHLAGEN",
 				map[string]any{"target": "volume", "ok": false, "cron": settings.VolumeCron, "error": err.Error()})
 		case !verified:
 			// Written, but it did not decrypt/restore-list cleanly. recordVolume already
 			// flagged it not-OK; reporting ok:true here would leave the append-only trail
 			// asserting a good backup that the status table simultaneously calls failed.
 			slog.Warn("scheduled volume backup written but NOT verified", "dir", dir, "bytes", size)
-			audit(ctx, actionBackupFailed, "system", 0, "Geplantes Volume-Backup geschrieben, aber NICHT verifiziert",
+			audit(ctx, actionBackupFailed, "Geplantes Volume-Backup geschrieben, aber NICHT verifiziert",
 				map[string]any{"target": "volume", "ok": false, "verified": false, "bytes": size, "cron": settings.VolumeCron})
 		default:
 			slog.Info("scheduled volume backup written", "dir", dir, "bytes", size)
-			audit(ctx, "backup", "system", 0, "Geplantes Volume-Backup erstellt und verifiziert",
+			audit(ctx, "backup", "Geplantes Volume-Backup erstellt und verifiziert",
 				map[string]any{"target": "volume", "ok": true, "verified": true, "bytes": size, "cron": settings.VolumeCron, "keep": settings.VolumeKeep})
 		}
 	}
@@ -230,11 +236,11 @@ func schedulerTick(pool *pgxpool.Pool, dbURL, key, dir string, s3 S3Config, last
 		*lastS3 = now
 		if name, err := RunS3(ctx, pool, dbURL, key, s3, settings.S3Keep); err != nil {
 			slog.Error("scheduled S3 backup failed", "err", err)
-			audit(ctx, actionBackupFailed, "system", 0, "Geplantes S3-Backup FEHLGESCHLAGEN",
+			audit(ctx, actionBackupFailed, "Geplantes S3-Backup FEHLGESCHLAGEN",
 				map[string]any{"target": "s3", "ok": false, "bucket": s3.Bucket, "cron": settings.S3Cron, "error": err.Error()})
 		} else {
 			slog.Info("scheduled S3 backup uploaded", "bucket", s3.Bucket, "name", name)
-			audit(ctx, "backup", "system", 0, "Geplantes S3-Backup hochgeladen",
+			audit(ctx, "backup", "Geplantes S3-Backup hochgeladen",
 				map[string]any{"target": "s3", "ok": true, "bucket": s3.Bucket, "object": name, "cron": settings.S3Cron, "keep": settings.S3Keep})
 		}
 	}
@@ -275,7 +281,7 @@ func pruneDir(ctx context.Context, dir string, keep int) {
 	// with nothing but a debug line. Record WHICH archives went and how many remain,
 	// so a missing restore point can be explained rather than guessed at.
 	if len(removed) > 0 {
-		audit(ctx, "delete", "system", 0,
+		audit(ctx, "delete",
 			fmt.Sprintf("%d alte Backup-Archive gelöscht (Aufbewahrung: %d)", len(removed), keep),
 			map[string]any{"deleted_files": removed, "deleted_count": len(removed), "keep": keep})
 	}

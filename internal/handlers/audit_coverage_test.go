@@ -369,21 +369,43 @@ func TestEveryMutatingRouteIsAudited(t *testing.T) {
 	reAudit := regexp.MustCompile(`\.(?:audit|auditAs|auditChange|auditChangeTx|auditInsert|auditCreated|auditDeleted|AuditSystem)\(`)
 	reDelegates := regexp.MustCompile(`\b(?:saveAgreement|persistAgreement)\s*\(`)
 
-	var bad []string
-	for _, m := range reRoute.FindAllStringSubmatch(string(src), -1) {
+	// A guard that silently skips what it cannot parse is worse than no guard: the one
+	// route registered in a shape the pattern misses would be exactly the unaudited
+	// one. So first prove the pattern still sees EVERY mutating route literal, and only
+	// then judge the handlers. Today all 93 match, on one line each, receiver h or ah.
+	reAnyRoute := regexp.MustCompile(`"(?:POST|PUT|PATCH|DELETE) /api[^"]*"`)
+	total := len(reAnyRoute.FindAllString(string(src), -1))
+	matches := reRoute.FindAllStringSubmatch(string(src), -1)
+	if len(matches) != total {
+		t.Fatalf("this guard parsed %d of %d mutating route registrations — the %d it could not read "+
+			"would be checked by nothing at all. A route was probably registered across several lines "+
+			"or with a new receiver; widen reRoute (or move it to go/ast) before trusting this test again.",
+			len(matches), total, total-len(matches))
+	}
+
+	var bad, unknown []string
+	for _, m := range matches {
 		path, name := m[1], m[2]
 		if _, ok := auditExemptHandlers[name]; ok {
 			continue
 		}
 		hf, ok := byName[name]
 		if !ok {
-			continue // handler defined outside this package
+			// Not skipped quietly: a handler this package cannot see is a handler this
+			// guard cannot vouch for, and that has to be visible.
+			unknown = append(unknown, path+" -> "+name)
+			continue
 		}
 		if !reAudit.MatchString(hf.Body) && !reDelegates.MatchString(hf.Body) {
 			bad = append(bad, path+" -> "+name+" ("+hf.File+")")
 		}
 	}
 	sort.Strings(bad)
+	sort.Strings(unknown)
+	if len(unknown) > 0 {
+		t.Errorf("route handler(s) not found in this package, so their audit coverage is unverified:\n  %s",
+			strings.Join(unknown, "\n  "))
+	}
 	if len(bad) > 0 {
 		t.Fatalf("mutating route(s) write no audit entry — every state-changing action must be\n"+
 			"provable. Add an audit call, or add the handler to auditExemptHandlers WITH a reason:\n  %s",

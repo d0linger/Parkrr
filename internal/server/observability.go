@@ -202,6 +202,11 @@ func StartAuditRetention(pool *pgxpool.Pool, keep, shortKeep time.Duration, stop
 		// that most need explaining — unrecorded. A no-op sweep still writes nothing,
 		// otherwise the six-hourly tick becomes the noise retention exists to remove.
 		if n > 0 && rec != nil {
+			// A fresh, bounded context. The prune above may well have ENDED because ctx
+			// expired — that is the partial-progress case this entry exists to explain —
+			// and writing the explanation through the same dead context would drop it.
+			wctx, wcancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer wcancel()
 			summary := fmt.Sprintf("Aufbewahrung: %d abgelaufene Audit-Einträge entfernt", n)
 			if err != nil {
 				summary += " (Lauf vorzeitig beendet)"
@@ -215,7 +220,7 @@ func StartAuditRetention(pool *pgxpool.Pool, keep, shortKeep time.Duration, stop
 			if shortKeep > 0 {
 				changes["short_keep_days"] = int(shortKeep.Hours() / 24)
 			}
-			rec(ctx, "delete", "audit_log", 0, summary, handlers.AuditValues(changes))
+			rec(wctx, "delete", "audit_log", 0, summary, handlers.AuditValues(changes))
 		}
 	}
 	prune() // once at startup
