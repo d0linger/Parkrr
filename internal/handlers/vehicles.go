@@ -500,14 +500,18 @@ func (h *Handler) UpdateVehiclePlanner(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE vehicles SET needs_power=$1, planner_symbol=$2, updated_at=now() WHERE id=$3 AND archived=false`,
-		req.NeedsPower, sym, id)
-	if err != nil {
+	var prevPower bool
+	var prevSymbol *string
+	err = h.Pool.QueryRow(r.Context(),
+		`WITH prev AS (SELECT needs_power, planner_symbol FROM vehicles WHERE id=$3)
+		 UPDATE vehicles SET needs_power=$1, planner_symbol=$2, updated_at=now() WHERE id=$3 AND archived=false
+		 RETURNING (SELECT needs_power FROM prev), (SELECT planner_symbol FROM prev)`,
+		req.NeedsPower, sym, id).Scan(&prevPower, &prevSymbol)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "could not update vehicle")
 		return
 	}
-	if ct.RowsAffected() == 0 {
+	if errors.Is(err, pgx.ErrNoRows) {
 		// No row updated: distinguish a missing vehicle (404) from an archived,
 		// read-only one (409) — same contract as UpdateVehicle.
 		var archived bool
@@ -518,7 +522,9 @@ func (h *Handler) UpdateVehiclePlanner(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "vehicle not found")
 		return
 	}
-	h.audit(r, "update", "vehicle", id, "Planer-Attribute geändert")
+	h.auditChange(r, "update", "vehicle", id, "Planer-Attribute geändert", diffFields(
+		map[string]any{"needs_power": prevPower, "planner_symbol": prevSymbol},
+		map[string]any{"needs_power": req.NeedsPower, "planner_symbol": sym}))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -886,7 +892,8 @@ func (h *Handler) DuplicateVehicle(w http.ResponseWriter, r *http.Request) {
 		 FROM vehicle_photos WHERE vehicle_id = $2`, newID, id)
 
 	h.recordStatus(r, newID, "", models.StatusStored, "erneut eingestellt")
-	h.audit(r, "create", "vehicle", newID, "re-stored vehicle from #"+strconv.FormatInt(id, 10))
+	h.auditCreated(r, "vehicle", newID, "re-stored vehicle from #"+strconv.FormatInt(id, 10),
+		map[string]any{"restored_from_vehicle_id": id, "status": models.StatusStored})
 	h.writeVehicle(w, r.Context(), newID, http.StatusCreated)
 }
 

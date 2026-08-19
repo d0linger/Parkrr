@@ -129,7 +129,9 @@ func (h *Handler) CreatePortalLink(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("portal link e-mail failed", "person", id, "err", err)
 		}
 	}
-	h.audit(r, "create", "portal-link", id, "Self-Service-Link erstellt (gültig bis "+expires.Format("2006-01-02")+")")
+	// The token itself is never logged — only that a link was issued and until when.
+	h.auditCreated(r, "portal-link", id, "Self-Service-Link erstellt (gültig bis "+expires.Format("2006-01-02")+")",
+		map[string]any{"person_id": id, "expires_at": expires.Format("2006-01-02"), "emailed": emailed})
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"link":       link,
 		"expires_at": expires,
@@ -222,7 +224,8 @@ func (h *Handler) RevokePortalLink(w http.ResponseWriter, r *http.Request) {
 	}
 	n := tag.RowsAffected()
 	if n > 0 {
-		h.audit(r, "revoke", "portal-link", id, "Self-Service-Link widerrufen")
+		h.auditChange(r, "revoke", "portal-link", id, "Self-Service-Link widerrufen",
+			diffFields(map[string]any{"revoked": false}, map[string]any{"revoked": true}))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"revoked": n})
 }
@@ -242,7 +245,8 @@ func (h *Handler) RevokePortalLinks(w http.ResponseWriter, r *http.Request) {
 	}
 	n := tag.RowsAffected()
 	if n > 0 {
-		h.audit(r, "revoke", "portal-link", id, fmt.Sprintf("%d Self-Service-Link(s) widerrufen", n))
+		h.auditChange(r, "revoke", "portal-link", id, fmt.Sprintf("%d Self-Service-Link(s) widerrufen", n),
+			diffFields(map[string]any{"revoked_count": 0}, map[string]any{"revoked_count": n}))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"revoked": n})
 }

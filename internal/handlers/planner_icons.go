@@ -205,6 +205,10 @@ func (h *Handler) UpdatePlannerIcon(w http.ResponseWriter, r *http.Request) {
 		query = `UPDATE planner_icons SET content_type=$1, byte_size=$2, data=$3 WHERE id=$4`
 		args = []any{contentType, len(data), data, id}
 	}
+	// The UPDATE is built dynamically above, so a prev-CTE would not fit; read the
+	// old name first (a rename is the only user-visible field change).
+	var prevName string
+	_ = h.Pool.QueryRow(r.Context(), `SELECT name FROM planner_icons WHERE id=$1`, id).Scan(&prevName)
 	ct, err := h.Pool.Exec(r.Context(), query, args...)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -218,7 +222,13 @@ func (h *Handler) UpdatePlannerIcon(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "icon not found")
 		return
 	}
-	h.audit(r, "update", "planner_icon", id, "updated planner icon")
+	newName := prevName
+	if name != "" {
+		newName = name
+	}
+	h.auditChange(r, "update", "planner_icon", id, "updated planner icon "+newName,
+		diffFields(map[string]any{"name": prevName, "image_replaced": false},
+			map[string]any{"name": newName, "image_replaced": len(data) > 0}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 

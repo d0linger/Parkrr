@@ -671,8 +671,10 @@ func (h *Handler) SetRecurringChargePeriodPaid(w http.ResponseWriter, r *http.Re
 		} else if err := deletePeriodPaymentTx(r.Context(), tx, "recurring", id, req.PeriodKey); err != nil {
 			return err
 		}
-		return h.auditTx(r.Context(), tx, r, "update", "recurring_charge", id,
-			"Nebenkosten-Periode "+req.PeriodKey+": "+periodPaidAuditState(req.Paid, req.Amount))
+		return h.auditChangeTx(r.Context(), tx, r, "update", "recurring_charge", id,
+			"Nebenkosten-Periode "+req.PeriodKey+": "+periodPaidAuditState(req.Paid, req.Amount),
+			diffFields(map[string]any{"period": req.PeriodKey, "paid": !req.Paid},
+				map[string]any{"period": req.PeriodKey, "paid": req.Paid}))
 	})
 	if txErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not update recurring charge")
