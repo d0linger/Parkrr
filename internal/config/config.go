@@ -47,6 +47,9 @@ type Config struct {
 	MetricsToken       string // Bearer token required to scrape /metrics ("" = open)
 	MetricsRequireAuth bool   // when true and MetricsToken is empty, /metrics is disabled (fail closed) instead of served open
 	AuditRetentionDays int    // prune audit entries older than N days (0 = keep forever)
+	// AuditRetentionShortDays ages out auth/ops noise (logins, backups, reminders,
+	// imports) earlier than the long window. 0 disables the short tier.
+	AuditRetentionShortDays int
 
 	// Account security
 	CheckBreachedPasswords bool // check new passwords against the HIBP range API
@@ -109,6 +112,8 @@ func Load() (*Config, error) {
 		// Default to the 7-year BAO §132 retention window; money-trail rows
 		// (invoice/payment/billing) are never pruned regardless (see PruneAuditLog).
 		AuditRetentionDays: getenvInt("PARKRR_AUDIT_RETENTION_DAYS", 2555),
+		// Auth/ops noise does not need the 7-year window; business changes still do.
+		AuditRetentionShortDays: getenvInt("PARKRR_AUDIT_RETENTION_SHORT_DAYS", 365),
 
 		CheckBreachedPasswords: getenvBool("PARKRR_CHECK_BREACHED_PASSWORDS", true),
 		FailClosedOnBreach:     getenvBool("PARKRR_BREACH_CHECK_FAIL_CLOSED", false),

@@ -159,31 +159,61 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
-// PruneAuditLog deletes audit entries older than keep. It runs inside a
-// transaction that opts into the append-only guard's retention exception (see
-// migration 008), so this is the single sanctioned path for removing audit
-// rows. Returns the number of pruned entries.
-func PruneAuditLog(ctx context.Context, pool *pgxpool.Pool, keep time.Duration) (int64, error) {
+// auditKeepForeverEntities are never pruned at any age: invoice issuance/Storno,
+// payment and its reversal, billing-settings changes (UID / USt-rate / Nummernkreis)
+// and per-period Pauschale/Nebenkosten settlements. For a person-level charge the
+// audit row is the ONLY record that a period was paid, so these explain documents
+// and receipts kept for 7 years (BAO §132).
+var auditKeepForeverEntities = []string{"invoice", "payment", "billing", "flatrate", "recurring_charge"}
+
+// auditShortLivedActions age out on the SHORT window instead of the long one:
+// authentication and operational noise that is never a business transaction.
+//
+// The categorisation is deliberately an allow-list, so an action added later
+// defaults to the LONG window — losing the trail of a change is far worse than
+// keeping some noise. Two entries are pointedly NOT here:
+//   - "restore": a database restore is the most security-relevant admin action
+//     there is, not ops noise;
+//   - "security": the passkey-clone warning is technically auth, but it is an
+//     indication of compromise and belongs in the long window.
+var auditShortLivedActions = []string{"login", "logout", "backup", "remind", "import"}
+
+// PruneAuditLog applies the retention policy. It runs inside a transaction that
+// opts into the append-only guard's retention exception (see migration 008), so
+// this is the single sanctioned path for removing audit rows.
+//
+// keep is the long window (records of who changed what). shortKeep, when > 0 and
+// shorter than keep, additionally ages out auditShortLivedActions early; pass 0 to
+// disable the short tier so everything follows keep. Returns the total pruned.
+func PruneAuditLog(ctx context.Context, pool *pgxpool.Pool, keep, shortKeep time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-keep)
 	var n int64
 	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `SET LOCAL parkrr.allow_audit_prune = 'on'`); err != nil {
 			return err
 		}
-		// Never prune the trail of records of account: invoice issuance/Storno,
-		// payment and its reversal, billing-settings changes (UID / USt-rate /
-		// Nummernkreis), and per-period Pauschale/Nebenkosten settlements — for a
-		// person-level charge the audit row is the only record it was paid. These
-		// explain documents/receipts kept for 7 years (BAO §132). Only operational
-		// noise (logins, CRUD of tariffs, etc.) ages out.
 		ct, err := tx.Exec(ctx,
 			`DELETE FROM audit_log
 			   WHERE created_at < $1
-			     AND entity NOT IN ('invoice','payment','billing','flatrate','recurring_charge')`, cutoff)
+			     AND entity <> ALL($2)`, cutoff, auditKeepForeverEntities)
 		if err != nil {
 			return err
 		}
 		n = ct.RowsAffected()
+		// Short tier: auth/ops noise only, and only when it actually shortens the
+		// window (a shortKeep >= keep would be a no-op the long pass already covered).
+		if shortKeep > 0 && shortKeep < keep {
+			shortCut := time.Now().Add(-shortKeep)
+			ct2, serr := tx.Exec(ctx,
+				`DELETE FROM audit_log
+				   WHERE created_at < $1
+				     AND entity <> ALL($2)
+				     AND action = ANY($3)`, shortCut, auditKeepForeverEntities, auditShortLivedActions)
+			if serr != nil {
+				return serr
+			}
+			n += ct2.RowsAffected()
+		}
 		return nil
 	})
 	return n, err

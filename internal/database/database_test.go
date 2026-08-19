@@ -71,7 +71,7 @@ func TestAuditLogAppendOnly(t *testing.T) {
 	}
 
 	// The sanctioned retention path (opts into the guard exception) may prune.
-	if _, err := PruneAuditLog(ctx, pool, -time.Hour); err != nil {
+	if _, err := PruneAuditLog(ctx, pool, -time.Hour, 0); err != nil {
 		t.Fatalf("PruneAuditLog: %v", err)
 	}
 	var remaining int

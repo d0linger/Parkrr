@@ -159,7 +159,7 @@ func startFlatRateArchival(h *handlers.Handler, stop <-chan struct{}) {
 
 // StartAuditRetention periodically prunes audit entries older than keep. It runs
 // until stop is closed. keep <= 0 disables retention (keep forever).
-func StartAuditRetention(pool *pgxpool.Pool, keep time.Duration, stop <-chan struct{}) {
+func StartAuditRetention(pool *pgxpool.Pool, keep, shortKeep time.Duration, stop <-chan struct{}) {
 	if keep <= 0 {
 		return
 	}
@@ -168,7 +168,7 @@ func StartAuditRetention(pool *pgxpool.Pool, keep time.Duration, stop <-chan str
 	prune := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_, _ = database.PruneAuditLog(ctx, pool, keep)
+		_, _ = database.PruneAuditLog(ctx, pool, keep, shortKeep)
 	}
 	prune() // once at startup
 	for {
