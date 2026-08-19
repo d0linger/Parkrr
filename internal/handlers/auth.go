@@ -387,6 +387,11 @@ func (h *AuthHandler) RevokeSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
 	}
+	// Revoking a session is a security action: it is how a stolen session is cut off,
+	// and equally how an attacker would cut off the legitimate owner. The handle is a
+	// public identifier for the session row, never the session token itself.
+	h.auditChange(r, "revoke", "session", u.ID, u.Username+" revoked a session",
+		auditSnapshot(map[string]any{"session_handle": handle, "revoked_sessions": n}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
 }
 
@@ -397,6 +402,10 @@ func (h *AuthHandler) RevokeOtherSessions(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "could not revoke sessions")
 		return
 	}
+	// Signing out every other device is the standard follow-up to a suspected
+	// compromise — and the standard move of whoever caused it. It must be in the trail.
+	h.auditChange(r, "revoke", "session", u.ID, u.Username+" signed out all other sessions",
+		auditSnapshot(map[string]any{"scope": "all_other_sessions"}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

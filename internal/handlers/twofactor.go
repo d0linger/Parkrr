@@ -31,6 +31,13 @@ func (h *AuthHandler) TOTPSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not store secret")
 		return
 	}
+	// A pending TOTP secret is security-relevant state, so the attempt is recorded —
+	// but only THAT it happened. The secret itself never goes near the trail (the
+	// redaction choke point would strip a `totp_*` field anyway; not passing it is the
+	// first line). The guard above means this cannot disable an ACTIVE 2FA: enabling
+	// is a separate, audited step.
+	h.auditChange(r, "update", "user", u.ID, u.Username+" started two-factor setup",
+		auditSnapshot(map[string]any{"totp_secret_pending": true, "totp_enabled": false}))
 	qr, err := auth.QRCodeDataURI(key)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not render QR code")

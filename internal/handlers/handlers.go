@@ -327,6 +327,21 @@ func (h *Handler) auditInsert(r *http.Request, actorID int64, actorName, action,
 	_ = auditExec(r.Context(), h.Pool, actorID, actorName, action, entity, id, summary, changes)
 }
 
+// AuditSystem records something the SYSTEM did with no request behind it: a
+// scheduled backup, the retention sweep, the archival job. The actor is recorded as
+// "system" rather than a user, and it deliberately routes through auditExec like
+// every other path, so the redaction choke point still applies and a background job
+// cannot leak a secret into the trail either.
+//
+// Exported because the schedulers live outside this package (internal/backup cannot
+// import handlers — handlers already imports it), so main injects this as a callback.
+// Best-effort: a failed audit write must never abort a backup or a sweep.
+func (h *Handler) AuditSystem(ctx context.Context, action, entity string, id int64, summary string, changes map[string]any) {
+	if err := auditExec(ctx, h.Pool, 0, "system", action, entity, id, summary, auditSnapshot(changes)); err != nil {
+		slog.Warn("audit: system entry failed", "action", action, "entity", entity, "err", err)
+	}
+}
+
 // auditExec inserts one audit row through q (pool or tx) and returns the write
 // error. It is the single INSERT shared by the best-effort and transactional
 // paths, so the row shape stays identical either way.

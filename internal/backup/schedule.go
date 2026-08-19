@@ -2,15 +2,38 @@ package backup
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// AuditFunc records a system-initiated backup action. It is injected rather than
+// imported: internal/handlers already imports this package, so this package cannot
+// import it back. main installs handlers.AuditSystem, which routes the entry through
+// the same auditExec choke point (and therefore the same redaction) as every other
+// audit write in the app.
+type AuditFunc func(ctx context.Context, action, entity string, id int64, summary string, changes map[string]any)
+
+// auditSink is set once at startup, before the scheduler goroutine starts, but is
+// held atomically so the race detector stays quiet if a test installs one later.
+var auditSink atomic.Pointer[AuditFunc]
+
+// SetAuditor installs the sink used to record scheduled backups and pruned archives.
+// Without it this package stays silent, which keeps the tests free of a DB dependency.
+func SetAuditor(fn AuditFunc) { auditSink.Store(&fn) }
+
+func audit(ctx context.Context, action, entity string, id int64, summary string, changes map[string]any) {
+	if p := auditSink.Load(); p != nil && *p != nil {
+		(*p)(ctx, action, entity, id, summary, changes)
+	}
+}
 
 // runMu serializes backup execution. The scheduler and the "run now" endpoints
 // share the same heavy dump→encrypt→write path, so at most one runs at a time.
@@ -56,7 +79,7 @@ func RunVolume(ctx context.Context, pool *pgxpool.Pool, dbURL, key, dir string, 
 		_ = recordVolume(ctx, pool, time.Now(), size, false, false)
 		return size, nil
 	}
-	pruneDir(dir, keep)
+	pruneDir(ctx, dir, keep)
 	_ = recordVolume(ctx, pool, time.Now(), size, true, true)
 	return size, nil
 }
@@ -137,20 +160,33 @@ func schedulerTick(pool *pgxpool.Pool, dbURL, key, dir string, s3 S3Config, last
 	}
 	now := time.Now()
 
+	// Both branches audit the OUTCOME, success and failure alike. A backup that
+	// silently stopped running is the failure mode that matters here, and previously
+	// the only trace was a log line that nobody keeps for seven years. The manual
+	// endpoints audit themselves, so only the scheduled path is recorded here — no
+	// double entry.
 	if dir != "" && fireDue(settings.VolumeCron, effectiveLast(status.LastVolumeAt, *lastVol), now) {
 		*lastVol = now // advance the guard before running so a status-write failure can't re-fire
 		if size, err := RunVolume(ctx, pool, dbURL, key, dir, settings.VolumeKeep); err != nil {
 			slog.Error("scheduled volume backup failed", "err", err)
+			audit(ctx, "backup", "backup", 0, "Geplantes Volume-Backup FEHLGESCHLAGEN",
+				map[string]any{"target": "volume", "ok": false, "cron": settings.VolumeCron, "error": err.Error()})
 		} else {
 			slog.Info("scheduled volume backup written", "dir", dir, "bytes", size)
+			audit(ctx, "backup", "backup", 0, "Geplantes Volume-Backup erstellt",
+				map[string]any{"target": "volume", "ok": true, "bytes": size, "cron": settings.VolumeCron, "keep": settings.VolumeKeep})
 		}
 	}
 	if s3.Enabled() && fireDue(settings.S3Cron, effectiveLast(status.LastS3At, *lastS3), now) {
 		*lastS3 = now
 		if name, err := RunS3(ctx, pool, dbURL, key, s3, settings.S3Keep); err != nil {
 			slog.Error("scheduled S3 backup failed", "err", err)
+			audit(ctx, "backup", "backup", 0, "Geplantes S3-Backup FEHLGESCHLAGEN",
+				map[string]any{"target": "s3", "ok": false, "bucket": s3.Bucket, "cron": settings.S3Cron, "error": err.Error()})
 		} else {
 			slog.Info("scheduled S3 backup uploaded", "bucket", s3.Bucket, "name", name)
+			audit(ctx, "backup", "backup", 0, "Geplantes S3-Backup hochgeladen",
+				map[string]any{"target": "s3", "ok": true, "bucket": s3.Bucket, "object": name, "cron": settings.S3Cron, "keep": settings.S3Keep})
 		}
 	}
 }
@@ -169,7 +205,7 @@ func fireDue(cron string, last *time.Time, now time.Time) bool {
 }
 
 // pruneDir keeps only the newest `keep` timestamped backups in dir (0 = keep all).
-func pruneDir(dir string, keep int) {
+func pruneDir(ctx context.Context, dir string, keep int) {
 	if keep < 1 {
 		return
 	}
@@ -178,9 +214,20 @@ func pruneDir(dir string, keep int) {
 		return
 	}
 	sort.Strings(files) // timestamped names sort chronologically
+	var removed []string
 	for _, old := range files[:len(files)-keep] {
 		if err := os.Remove(old); err != nil {
 			slog.Warn("backup: prune failed", "path", old, "err", err)
+			continue
 		}
+		removed = append(removed, filepath.Base(old))
+	}
+	// Deleting a backup is destructive and irreversible, and until now it happened
+	// with nothing but a debug line. Record WHICH archives went and how many remain,
+	// so a missing restore point can be explained rather than guessed at.
+	if len(removed) > 0 {
+		audit(ctx, "delete", "backup", 0,
+			fmt.Sprintf("%d alte Backup-Archive gelöscht (Aufbewahrung: %d)", len(removed), keep),
+			map[string]any{"deleted_files": removed, "deleted_count": len(removed), "keep": keep})
 	}
 }

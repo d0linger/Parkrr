@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -157,15 +158,19 @@ func startFlatRateArchival(h *handlers.Handler, stop <-chan struct{}) {
 	}
 }
 
+// auditFn records the sweep itself. Declared here rather than imported from
+// internal/backup so the two schedulers stay independent of each other.
+type auditFn func(ctx context.Context, action, entity string, id int64, summary string, changes map[string]any)
+
 // StartAuditRetention periodically prunes audit entries. It runs until stop is
-// closed.
+// closed. rec (may be nil) records the sweep in the trail itself.
 //
 // keep is the long window and shortKeep the auth/ops-noise window, and they are
 // INDEPENDENT: keep <= 0 disables the long window only, so the short tier keeps
 // running. Retention is off entirely only when both are <= 0. (This doc used to
 // say "keep <= 0 disables retention", which was true before the short tier existed
 // and is now contradicted by the guard below.)
-func StartAuditRetention(pool *pgxpool.Pool, keep, shortKeep time.Duration, stop <-chan struct{}) {
+func StartAuditRetention(pool *pgxpool.Pool, keep, shortKeep time.Duration, stop <-chan struct{}, rec auditFn) {
 	// The two windows are independent knobs: "keep the trail forever, but do not
 	// hoard a year of login rows" is a legitimate setting (keep=0, shortKeep=365).
 	// Returning on keep<=0 alone would silently disable the short tier too.
@@ -190,6 +195,17 @@ func StartAuditRetention(pool *pgxpool.Pool, keep, shortKeep time.Duration, stop
 		}
 		if n > 0 {
 			slog.Info("audit retention: pruned expired entries", "pruned", n)
+			// The sweep is the ONLY path allowed to remove rows from an append-only table,
+			// so its own entry is what keeps a shrinking trail explainable. Written only
+			// when rows actually went, otherwise a six-hourly no-op would itself become
+			// the noise the retention policy exists to remove.
+			if rec != nil {
+				rec(ctx, "delete", "audit_log", 0,
+					fmt.Sprintf("Aufbewahrung: %d abgelaufene Audit-Einträge entfernt", n),
+					map[string]any{"pruned_rows": n,
+						"keep_days":       int(keep.Hours() / 24),
+						"short_keep_days": int(shortKeep.Hours() / 24)})
+			}
 		}
 	}
 	prune() // once at startup

@@ -1389,9 +1389,18 @@ func (h *Handler) ArchiveSettledExpiredVehicles(ctx context.Context, personID in
 		return 0, err
 	}
 	if len(toWake) > 0 {
-		if _, err := h.Pool.Exec(ctx,
-			`UPDATE vehicles SET archived=false, updated_at=now() WHERE id = ANY($1) AND archived=true`, toWake); err != nil {
+		ct, err := h.Pool.Exec(ctx,
+			`UPDATE vehicles SET archived=false, updated_at=now() WHERE id = ANY($1) AND archived=true`, toWake)
+		if err != nil {
 			return 0, err
+		}
+		// Un-archiving is a state change nobody requested explicitly — it happens when an
+		// agreement stops being settled. Without an entry a vehicle silently reappears in
+		// the active list with nothing to explain it.
+		if n := ct.RowsAffected(); n > 0 {
+			h.AuditSystem(ctx, "update", "vehicle", 0,
+				"Archivierung automatisch aufgehoben (Pauschale wieder offen)",
+				map[string]any{"archived": false, "vehicle_ids": toWake, "vehicle_count": n})
 		}
 	}
 	if len(toArchive) == 0 {
@@ -1401,6 +1410,13 @@ func (h *Handler) ArchiveSettledExpiredVehicles(ctx context.Context, personID in
 		`UPDATE vehicles SET archived=true, updated_at=now() WHERE id = ANY($1) AND archived=false`, toArchive)
 	if err != nil {
 		return 0, err
+	}
+	// Same for archiving: it runs both from handlers and from the startFlatRateArchival
+	// background job, so the trail is the only place this becomes visible.
+	if n := ct.RowsAffected(); n > 0 {
+		h.AuditSystem(ctx, "update", "vehicle", 0,
+			"Gefährte automatisch archiviert (Pauschale beendet und abgerechnet)",
+			map[string]any{"archived": true, "vehicle_ids": toArchive, "vehicle_count": n})
 	}
 	return ct.RowsAffected(), nil
 }

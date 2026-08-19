@@ -18,6 +18,7 @@ import (
 	"github.com/preining/parkrr/internal/backup"
 	"github.com/preining/parkrr/internal/config"
 	"github.com/preining/parkrr/internal/database"
+	"github.com/preining/parkrr/internal/handlers"
 	"github.com/preining/parkrr/internal/mail"
 	"github.com/preining/parkrr/internal/server"
 )
@@ -176,6 +177,13 @@ func run() error {
 	// Scheduled encrypted backups driven by the DB-stored cron schedule
 	// (backup_settings, editable in the Backup tab). Opt-in via env: a key plus at
 	// least one target (a mounted directory and/or S3).
+	// Audit sink for the jobs that run without a request behind them. It is a plain
+	// Handler over the same pool, so background entries take the same write path (and
+	// the same redaction) as request-driven ones. Injected rather than imported:
+	// internal/backup cannot import internal/handlers, which already imports it.
+	sysAudit := handlers.New(pool).AuditSystem
+	backup.SetAuditor(sysAudit)
+
 	if cfg.BackupKey != "" && (cfg.BackupDir != "" || s3.Enabled()) {
 		go backup.StartScheduler(cleanupStop, pool, cfg.DatabaseURL, cfg.BackupKey, cfg.BackupDir, s3)
 		slog.Info("scheduled backups enabled", "dir", cfg.BackupDir, "s3", s3.Enabled())
@@ -184,7 +192,7 @@ func run() error {
 	go server.StartSessionCleanup(authMgr, cleanupStop)
 	go server.StartAuditRetention(pool,
 		time.Duration(cfg.AuditRetentionDays)*24*time.Hour,
-		time.Duration(cfg.AuditRetentionShortDays)*24*time.Hour, cleanupStop)
+		time.Duration(cfg.AuditRetentionShortDays)*24*time.Hour, cleanupStop, sysAudit)
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
