@@ -312,7 +312,8 @@ func (h *Handler) ResetUserTOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = h.Pool.Exec(r.Context(), `DELETE FROM totp_backup_codes WHERE user_id=$1`, id)
-	h.audit(r, "update", "user", id, "reset 2FA for "+username)
+	h.auditChange(r, "update", "user", id, "reset 2FA for "+username,
+		diffFields(map[string]any{"totp_enabled": true}, map[string]any{"totp_enabled": false}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reset"})
 }
 

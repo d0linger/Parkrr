@@ -745,17 +745,24 @@ func (h *Handler) SetVehicleDimensions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "dimension out of range")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE vehicles SET length_m=$1, width_m=$2, height_m=$3, weight_t=$4, updated_at=now() WHERE id=$5`,
-		req.LengthM, req.WidthM, req.HeightM, req.WeightT, id)
+	var pL, pW, pH, pT *float64
+	err := h.Pool.QueryRow(r.Context(),
+		`WITH prev AS (SELECT length_m, width_m, height_m, weight_t FROM vehicles WHERE id=$5)
+		 UPDATE vehicles SET length_m=$1, width_m=$2, height_m=$3, weight_t=$4, updated_at=now() WHERE id=$5
+		 RETURNING (SELECT length_m FROM prev), (SELECT width_m FROM prev),
+		           (SELECT height_m FROM prev), (SELECT weight_t FROM prev)`,
+		req.LengthM, req.WidthM, req.HeightM, req.WeightT, id).Scan(&pL, &pW, &pH, &pT)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "vehicle not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not update dimensions")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "vehicle not found")
-		return
-	}
-	h.audit(r, "update", "vehicle", id, "updated dimensions")
+	h.auditChange(r, "update", "vehicle", id, "updated dimensions", diffFields(
+		map[string]any{"length_m": pL, "width_m": pW, "height_m": pH, "weight_t": pT},
+		map[string]any{"length_m": req.LengthM, "width_m": req.WidthM,
+			"height_m": req.HeightM, "weight_t": req.WeightT}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

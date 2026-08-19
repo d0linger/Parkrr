@@ -786,7 +786,8 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 	if req.Paid {
 		label = "bezahlt"
 	}
-	h.audit(r, "update", "vehicle", id, "Zahlung "+h.vehicleDesc(r, id)+": "+label)
+	h.auditChange(r, "update", "vehicle", id, "Zahlung "+h.vehicleDesc(r, id)+": "+label,
+		diffFields(map[string]any{"paid": !req.Paid}, map[string]any{"paid": req.Paid}))
 	h.autoArchiveIfClosed(r, id)
 	h.writeVehicle(w, r.Context(), id, http.StatusOK)
 }
