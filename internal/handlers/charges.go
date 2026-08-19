@@ -127,16 +127,20 @@ func (h *Handler) DeleteServiceType(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM service_types WHERE id=$1`, id)
+	var delName string
+	var delAmount float64
+	err := h.Pool.QueryRow(r.Context(),
+		`DELETE FROM service_types WHERE id=$1 RETURNING name, default_amount`, id).Scan(&delName, &delAmount)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "service not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete service")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "service not found")
-		return
-	}
-	h.audit(r, "delete", "service_type", id, "deleted service")
+	h.auditDeleted(r, "service_type", id, "deleted service "+delName,
+		map[string]any{"name": delName, "default_amount": delAmount})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -475,16 +479,26 @@ func (h *Handler) DeleteCharge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "Zusatzkosten sind Teil einer ausgestellten Rechnung und können nicht gelöscht werden (Storno statt Löschen).")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM charges WHERE id=$1`, id)
+	// Money row: the trail must retain what was removed (amount, who, when).
+	var dDesc string
+	var dAmount, dQty float64
+	var dPerson int64
+	var dOn time.Time
+	err := h.Pool.QueryRow(r.Context(),
+		`DELETE FROM charges WHERE id=$1 RETURNING description, amount, quantity, person_id, charged_on`, id).
+		Scan(&dDesc, &dAmount, &dQty, &dPerson, &dOn)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "charge not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete charge")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "charge not found")
-		return
-	}
-	h.audit(r, "delete", "charge", id, "deleted charge")
+	h.auditDeleted(r, "charge", id, "deleted charge "+dDesc, map[string]any{
+		"description": dDesc, "amount": dAmount, "quantity": dQty,
+		"person_id": dPerson, "charged_on": dOn.Format("2006-01-02"),
+	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 

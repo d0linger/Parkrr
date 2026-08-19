@@ -224,6 +224,22 @@ func (h *Handler) auditChange(r *http.Request, action, entity string, id int64, 
 	h.auditInsert(r, actorID, actorName, action, entity, id, summary, changes)
 }
 
+// auditDeleted records a deletion together with the identifying values of the row
+// that was removed. This matters more than any other audit case: once the row is
+// gone, an entry that carries only an id can never be resolved back to WHAT was
+// deleted. Callers get the snapshot from `DELETE … RETURNING`, so it costs no extra
+// query and is atomic with the delete. Values still pass the redaction choke point.
+func (h *Handler) auditDeleted(r *http.Request, entity string, id int64, summary string, snapshot map[string]any) {
+	var changes map[string]any
+	if len(snapshot) > 0 {
+		changes = make(map[string]any, len(snapshot))
+		for k, v := range snapshot {
+			changes[k] = map[string]any{"old": v, "new": nil} // deleted: old value, no new one
+		}
+	}
+	h.auditChange(r, "delete", entity, id, summary, changes)
+}
+
 // auditAs writes an audit entry with an explicit acting user. Use this where the
 // user is not yet in the request context (e.g. at login).
 func (h *Handler) auditAs(r *http.Request, actorID int64, actorName, action, entity string, id int64, summary string) {

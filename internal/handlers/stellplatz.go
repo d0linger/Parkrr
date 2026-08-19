@@ -155,16 +155,18 @@ func (h *Handler) DeleteGarage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM garages WHERE id=$1`, id)
+	// RETURNING names what was deleted; an id alone is unresolvable afterwards.
+	var delName string
+	err := h.Pool.QueryRow(r.Context(), `DELETE FROM garages WHERE id=$1 RETURNING name`, id).Scan(&delName)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "garage not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete garage")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "garage not found")
-		return
-	}
-	h.audit(r, "delete", "garage", id, "deleted garage")
+	h.auditDeleted(r, "garage", id, "deleted garage "+delName, map[string]any{"name": delName})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -334,16 +336,17 @@ func (h *Handler) DeleteHall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM halls WHERE id=$1`, id)
+	var delName string
+	err := h.Pool.QueryRow(r.Context(), `DELETE FROM halls WHERE id=$1 RETURNING name`, id).Scan(&delName)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "hall not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete hall")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "hall not found")
-		return
-	}
-	h.audit(r, "delete", "hall", id, "deleted hall")
+	h.auditDeleted(r, "hall", id, "deleted hall "+delName, map[string]any{"name": delName})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 

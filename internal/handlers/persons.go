@@ -2,7 +2,11 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"strings"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/preining/parkrr/internal/models"
 )
@@ -193,8 +197,17 @@ func (h *Handler) DeletePerson(w http.ResponseWriter, r *http.Request) {
 			"Person hat erfasste Zahlungen und kann nicht gelöscht werden (Aufbewahrungspflicht).")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM persons WHERE id = $1`, id)
+	// RETURNING captures who was deleted, atomically with the delete — once the row
+	// is gone an id-only audit entry could never be resolved back to a person.
+	var delFirst, delLast, delEmail string
+	err := h.Pool.QueryRow(r.Context(),
+		`DELETE FROM persons WHERE id = $1 RETURNING first_name, last_name, email`, id).
+		Scan(&delFirst, &delLast, &delEmail)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "person not found")
+			return
+		}
 		if isForeignKeyViolation(err) {
 			// Invoices reference the person (ON DELETE RESTRICT) for immutability —
 			// a person with issued invoices must be kept (storniere statt löschen).
@@ -205,10 +218,9 @@ func (h *Handler) DeletePerson(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not delete person")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "person not found")
-		return
-	}
-	h.audit(r, "delete", "person", id, "deleted person")
+	name := strings.TrimSpace(delFirst + " " + delLast)
+	h.auditDeleted(r, "person", id, "deleted person "+name, map[string]any{
+		"first_name": delFirst, "last_name": delLast, "email": delEmail,
+	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
