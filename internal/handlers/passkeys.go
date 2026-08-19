@@ -241,7 +241,10 @@ func (h *AuthHandler) DeletePasskey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "passkey not found")
 		return
 	}
-	h.audit(r, "delete", "passkey", id, u.Username+" removed a passkey")
+	// Credential material is never read back — the trail records that a passkey of
+	// this user was removed, never the key itself.
+	h.auditDeleted(r, "passkey", id, u.Username+" removed a passkey",
+		map[string]any{"user": u.Username})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
