@@ -289,24 +289,43 @@
     }
 
     // hasExitPath(foot, obstacles, targets, bounds, opts?) → can a vehicle at `foot` reach a driveway/
-    // gate (`targets`)? Configuration-space grid BFS: obstacles (walls/columns/OTHER vehicles) are
-    // dilated by `clearance` (= the vehicle's half-width + tolerance), so a path exists only through a
-    // corridor at least that wide. No targets ⇒ true (no routing constraint defined). Conservative:
-    // uses inflated AABBs (may slightly over-block a rotated obstacle) so it never reports a blocked
-    // vehicle as free. Cell size is adaptive (capped ~2500 cells) so cost is bounded by hall size.
+    // gate (`targets`)? Two-stage check, then a BFS fallback:
+    //   1) DIRECT (1-step): the footprint already touches a target (within exitTol) → drives straight out.
+    //   2) CORRIDOR (multi-step): sweep the footprint's own box along an axis toward a target. If that
+    //      corridor is clear of PLACED OBJECTS (other vehicles, walls, columns), the vehicle can drive
+    //      over the free parking area onto the driveway. Empty parking space is drivable — it is not an
+    //      obstacle — which is what lets a car parked at an outer wall still reach the aisle.
+    //   3) Fallback: configuration-space grid BFS (obstacles dilated by `clearance`) for paths that need
+    //      to go around a corner. Only ever ADDS reachability, never removes it.
+    // No targets ⇒ true (no routing constraint defined). Cost is bounded: stages 1–2 are O(targets ×
+    // obstacles) and the BFS grid is capped at ~2500 cells.
     function hasExitPath(foot, obstacles, targets, bounds, opts) {
         if (!targets || !targets.length) return true;
         const o = opts || {}, clr = o.clearance != null ? o.clearance : 0.15;
         const fa = _aabb(foot);
-        // 1-STEP EXIT: if the footprint already touches (within exitTol of) a driveway/gate target, the
-        // vehicle drives STRAIGHT out onto it — no lateral clearance, no path search. exitTol stays below
-        // a vehicle's width, so nothing can sit unseen in that gap. This is what keeps the comb valid:
-        // every car flush to the Fahrstraße exits directly, so allowBlocking:false matches true.
+        const obsA = (obstacles || []).map(_aabb);
+        const hits = (c) => obsA.some((a) => a.x < c.x + c.w - _EPS && a.x + a.w > c.x + _EPS && a.y < c.y + c.h - _EPS && a.y + a.h > c.y + _EPS);
+        // Stage 1 — DIRECT contact with a driveway/gate.
         const exitTol = o.exitTol != null ? o.exitTol : 0.4;
         for (const t of targets) { const a = _aabb(t);
             const dx = Math.max(a.x - (fa.x + fa.w), fa.x - (a.x + a.w), 0), dy = Math.max(a.y - (fa.y + fa.h), fa.y - (a.y + a.h), 0);
             if (Math.hypot(dx, dy) <= exitTol) return true;
         }
+        // Stage 2 — straight manoeuvring CORRIDOR to a target, across free (unoccupied) parking area.
+        for (const t of targets) {
+            const a = _aabb(t);
+            // Moving right/left: the corridor keeps the vehicle's y-span, so the target must cover it.
+            if (a.y <= fa.y + _EPS && a.y + a.h >= fa.y + fa.h - _EPS) {
+                if (a.x >= fa.x + fa.w && !hits({ x: fa.x + fa.w, y: fa.y, w: a.x - (fa.x + fa.w), h: fa.h })) return true;
+                if (a.x + a.w <= fa.x && !hits({ x: a.x + a.w, y: fa.y, w: fa.x - (a.x + a.w), h: fa.h })) return true;
+            }
+            // Moving down/up: the corridor keeps the vehicle's x-span, so the target must cover it.
+            if (a.x <= fa.x + _EPS && a.x + a.w >= fa.x + fa.w - _EPS) {
+                if (a.y >= fa.y + fa.h && !hits({ x: fa.x, y: fa.y + fa.h, w: fa.w, h: a.y - (fa.y + fa.h) })) return true;
+                if (a.y + a.h <= fa.y && !hits({ x: fa.x, y: a.y + a.h, w: fa.w, h: fa.y - (a.y + a.h) })) return true;
+            }
+        }
+        // Stage 3 — BFS fallback (paths that need to turn a corner).
         const W = bounds.maxX - bounds.minX, H = bounds.maxY - bounds.minY;
         if (!(W > 0 && H > 0)) return true;
         const cell = o.cell > 0 ? o.cell : Math.max(0.25, Math.sqrt((W * H) / 2500));

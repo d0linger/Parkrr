@@ -319,3 +319,30 @@ test('packRects — full comb against the driveway is identical for allowBlockin
     assert.ok(strict.placed >= 5, 'all cars fit the comb');
     for (const p of strict.placements) if (p.ok) assert.equal(p.rot, 90, 'perpendicular comb in strict mode too');
 });
+
+// FE-Routing — corridor (multi-step) exit: a car parked away from the aisle still exits by driving
+// straight across FREE parking area; only placed objects block that corridor.
+test('hasExitPath corridor — car at the outer wall reaches the aisle across free space', () => {
+    const bounds = { minX: 0, minY: 0, maxX: 20, maxY: 12 };
+    const lane = { x: 0, y: 9, w: 20, h: 3, rot: 0 };          // aisle along the bottom, spans the hall
+    const car = { x: 2, y: 0.5, w: 2, h: 4, rot: 0 };           // at the top wall, 4.5 m of free space below
+    assert.equal(PG.hasExitPath(car, [], [lane], bounds, { clearance: 1.0 }), true, 'free corridor down to the aisle');
+});
+
+test('hasExitPath corridor — blocked when another vehicle sits in the corridor', () => {
+    const bounds = { minX: 0, minY: 0, maxX: 20, maxY: 12 };
+    const lane = { x: 0, y: 9, w: 20, h: 3, rot: 0 };
+    const car = { x: 2, y: 0.5, w: 2, h: 4, rot: 0 };
+    const blocker = { x: 1.5, y: 5.5, w: 3, h: 2, rot: 0 };     // parked right in the way, wall to wall around it
+    const walls = [{ x: 0, y: 5.5, w: 1.5, h: 2, rot: 0 }, { x: 4.5, y: 5.5, w: 15.5, h: 2, rot: 0 }];
+    assert.equal(PG.hasExitPath(car, [blocker].concat(walls), [lane], bounds, { clearance: 1.0, cell: 0.25 }), false, 'corridor and detours blocked');
+});
+
+test('hasExitPath corridor — free parking area is drivable, not an obstacle', () => {
+    const bounds = { minX: 0, minY: 0, maxX: 20, maxY: 12 };
+    const lane = { x: 0, y: 10, w: 20, h: 2, rot: 0 };
+    const car = { x: 8, y: 0.5, w: 2, h: 4, rot: 0 };
+    // neighbours beside the corridor (not in it) must not block the straight drive down
+    const nb = [{ x: 5, y: 0.5, w: 2, h: 4, rot: 0 }, { x: 11, y: 0.5, w: 2, h: 4, rot: 0 }];
+    assert.equal(PG.hasExitPath(car, nb, [lane], bounds, { clearance: 1.0 }), true);
+});
