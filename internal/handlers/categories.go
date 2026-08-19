@@ -1,7 +1,10 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/preining/parkrr/internal/models"
 )
@@ -79,7 +82,10 @@ func (h *Handler) CreateCategory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create category")
 		return
 	}
-	h.audit(r, "create", "category", c.ID, "created tariff "+c.Name)
+	h.auditCreated(r, "category", c.ID, "created tariff "+c.Name, map[string]any{
+		"name": c.Name, "default_monthly_cost": c.DefaultMonthlyCost,
+		"default_yearly_cost": c.DefaultYearlyCost,
+	})
 	writeJSON(w, http.StatusCreated, c)
 }
 
@@ -155,8 +161,18 @@ func (h *Handler) DeleteCategory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "category is still used by vehicles")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM categories WHERE id = $1`, id)
+	// RETURNING names the removed tariff; an id alone is unresolvable afterwards.
+	var delName string
+	var delMonthly, delYearly float64
+	err := h.Pool.QueryRow(r.Context(),
+		`DELETE FROM categories WHERE id = $1
+		 RETURNING name, default_monthly_cost, default_yearly_cost`, id).
+		Scan(&delName, &delMonthly, &delYearly)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "category not found")
+			return
+		}
 		// A vehicle referencing this tariff can be inserted between the count and
 		// the DELETE (ON DELETE RESTRICT) — report that as a clean 409, not a 500.
 		if isForeignKeyViolation(err) {
@@ -166,11 +182,9 @@ func (h *Handler) DeleteCategory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not delete category")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "category not found")
-		return
-	}
-	h.audit(r, "delete", "category", id, "deleted tariff")
+	h.auditDeleted(r, "category", id, "deleted tariff "+delName, map[string]any{
+		"name": delName, "default_monthly_cost": delMonthly, "default_yearly_cost": delYearly,
+	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -189,20 +203,26 @@ func (h *Handler) SetCategoryArchived(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE categories SET archived=$1, updated_at=now() WHERE id=$2`, req.Archived, id)
+	var prevArchived bool
+	var catName string
+	err := h.Pool.QueryRow(r.Context(),
+		`WITH prev AS (SELECT archived, name FROM categories WHERE id=$2)
+		 UPDATE categories SET archived=$1, updated_at=now() WHERE id=$2
+		 RETURNING (SELECT archived FROM prev), (SELECT name FROM prev)`,
+		req.Archived, id).Scan(&prevArchived, &catName)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "category not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not update category")
-		return
-	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "category not found")
 		return
 	}
 	verb := "reactivated tariff"
 	if req.Archived {
 		verb = "archived tariff"
 	}
-	h.audit(r, "update", "category", id, verb)
+	h.auditChange(r, "update", "category", id, verb+" "+catName,
+		diffFields(map[string]any{"archived": prevArchived}, map[string]any{"archived": req.Archived}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

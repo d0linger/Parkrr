@@ -64,7 +64,9 @@ func (h *Handler) autoArchiveIfClosed(r *http.Request, id int64) {
 		                            WHERE s.kind='vehicle' AND s.ref_id=$1 AND NOT i.canceled
 		                              AND (i.total - i.paid_amount) > 0.005)))`, id)
 	if err == nil && ct.RowsAffected() > 0 {
-		h.audit(r, "update", "vehicle", id, "Gefährt archiviert (abgeschlossen): "+h.vehicleDesc(r, id))
+		h.auditChange(r, "update", "vehicle", id,
+			"Gefährt archiviert (abgeschlossen): "+h.vehicleDesc(r, id),
+			diffFields(map[string]any{"archived": false}, map[string]any{"archived": true}))
 	}
 }
 
@@ -379,7 +381,11 @@ func (h *Handler) CreateVehicle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.recordStatus(r, id, "", pv.req.Status, "angelegt")
-	h.audit(r, "create", "vehicle", id, "created vehicle "+vehicleLabel(pv.req.Label, pv.req.LicensePlate))
+	h.auditCreated(r, "vehicle", id, "created vehicle "+vehicleLabel(pv.req.Label, pv.req.LicensePlate),
+		map[string]any{"label": pv.req.Label, "license_plate": pv.req.LicensePlate,
+			"person_id": pv.req.PersonID, "category_id": pv.req.CategoryID,
+			"status": pv.req.Status, "billing_period": pv.req.BillingPeriod,
+			"start_date": pv.req.StartDate})
 	h.writeVehicle(w, r.Context(), id, http.StatusCreated)
 }
 
@@ -400,9 +406,23 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 	var oldStart time.Time
 	var oldPersonID int64
 	var archived bool
+	// Read the FULL editable row, not just the billing fields: a rename or a plate
+	// change must be provable too, and the audit diff below compares every column
+	// the UPDATE writes.
+	var oldLabel, oldPlate, oldNotes string
+	var oldCategoryID int64
+	var oldCostOverride *float64
+	var oldEnd, oldResFrom, oldResUntil *time.Time
+	var oldNeedsPower bool
+	var oldSymbol *string
 	scanErr := h.Pool.QueryRow(r.Context(),
-		`SELECT status, rate, billing_period, start_date, person_id, archived FROM vehicles WHERE id=$1`, id).
-		Scan(&oldStatus, &oldRate, &oldPeriod, &oldStart, &oldPersonID, &archived)
+		`SELECT status, rate, billing_period, start_date, person_id, archived,
+		        label, license_plate, notes, category_id, cost_override,
+		        end_date, reserved_from, reserved_until, needs_power, planner_symbol
+		   FROM vehicles WHERE id=$1`, id).
+		Scan(&oldStatus, &oldRate, &oldPeriod, &oldStart, &oldPersonID, &archived,
+			&oldLabel, &oldPlate, &oldNotes, &oldCategoryID, &oldCostOverride,
+			&oldEnd, &oldResFrom, &oldResUntil, &oldNeedsPower, &oldSymbol)
 	if !ensureVehicleWritable(w, archived, scanErr) {
 		return
 	}
@@ -455,7 +475,24 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 	if oldStatus != pv.req.Status {
 		h.recordStatus(r, id, oldStatus, pv.req.Status, "über Bearbeitung geändert")
 	}
-	h.audit(r, "update", "vehicle", id, "updated vehicle "+vehicleLabel(pv.req.Label, pv.req.LicensePlate))
+	// status/rate/period/start/person were read above for the writability checks,
+	// so the before/after of the billing-relevant fields costs no extra query.
+	h.auditChange(r, "update", "vehicle", id,
+		"updated vehicle "+vehicleLabel(pv.req.Label, pv.req.LicensePlate), diffFields(
+			map[string]any{"status": oldStatus, "rate": oldRate, "billing_period": oldPeriod,
+				"start_date": oldStart.Format("2006-01-02"), "person_id": oldPersonID,
+				"label": oldLabel, "license_plate": oldPlate, "notes": oldNotes,
+				"category_id": oldCategoryID, "cost_override": oldCostOverride,
+				"end_date": auditDate(oldEnd), "reserved_from": auditDate(oldResFrom),
+				"reserved_until": auditDate(oldResUntil), "needs_power": oldNeedsPower,
+				"planner_symbol": oldSymbol},
+			map[string]any{"status": pv.req.Status, "rate": rate, "billing_period": pv.req.BillingPeriod,
+				"start_date": pv.req.StartDate, "person_id": pv.req.PersonID,
+				"label": pv.req.Label, "license_plate": pv.req.LicensePlate, "notes": pv.req.Notes,
+				"category_id": pv.req.CategoryID, "cost_override": pv.req.CostOverride,
+				"end_date": strPtr(pv.req.EndDate), "reserved_from": strPtr(pv.req.ReservedFrom),
+				"reserved_until": strPtr(pv.req.ReservedUntil), "needs_power": pv.req.NeedsPower,
+				"planner_symbol": pv.req.PlannerSymbol}))
 	// An edit can change status/paid-relevant state too — keep archival behavior
 	// consistent with the status-slider endpoint.
 	h.autoArchiveIfClosed(r, id)
@@ -487,14 +524,18 @@ func (h *Handler) UpdateVehiclePlanner(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE vehicles SET needs_power=$1, planner_symbol=$2, updated_at=now() WHERE id=$3 AND archived=false`,
-		req.NeedsPower, sym, id)
-	if err != nil {
+	var prevPower bool
+	var prevSymbol *string
+	err = h.Pool.QueryRow(r.Context(),
+		`WITH prev AS (SELECT needs_power, planner_symbol FROM vehicles WHERE id=$3)
+		 UPDATE vehicles SET needs_power=$1, planner_symbol=$2, updated_at=now() WHERE id=$3 AND archived=false
+		 RETURNING (SELECT needs_power FROM prev), (SELECT planner_symbol FROM prev)`,
+		req.NeedsPower, sym, id).Scan(&prevPower, &prevSymbol)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "could not update vehicle")
 		return
 	}
-	if ct.RowsAffected() == 0 {
+	if errors.Is(err, pgx.ErrNoRows) {
 		// No row updated: distinguish a missing vehicle (404) from an archived,
 		// read-only one (409) — same contract as UpdateVehicle.
 		var archived bool
@@ -505,7 +546,9 @@ func (h *Handler) UpdateVehiclePlanner(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "vehicle not found")
 		return
 	}
-	h.audit(r, "update", "vehicle", id, "Planer-Attribute geändert")
+	h.auditChange(r, "update", "vehicle", id, "Planer-Attribute geändert", diffFields(
+		map[string]any{"needs_power": prevPower, "planner_symbol": prevSymbol},
+		map[string]any{"needs_power": req.NeedsPower, "planner_symbol": sym}))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -523,16 +566,27 @@ func (h *Handler) DeleteVehicle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "Fahrzeug ist Teil einer ausgestellten Rechnung und kann nicht gelöscht werden (Storno statt Löschen).")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM vehicles WHERE id = $1`, id)
+	// A Gefährt is master data: keep enough to identify it after the row is gone.
+	var delLabel, delPlate, delStatus string
+	var delPerson int64
+	err := h.Pool.QueryRow(r.Context(),
+		`DELETE FROM vehicles WHERE id = $1 RETURNING label, license_plate, status, person_id`, id).
+		Scan(&delLabel, &delPlate, &delStatus, &delPerson)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "vehicle not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete vehicle")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "vehicle not found")
-		return
+	name := delLabel
+	if name == "" {
+		name = delPlate
 	}
-	h.audit(r, "delete", "vehicle", id, "deleted vehicle")
+	h.auditDeleted(r, "vehicle", id, "deleted vehicle "+name, map[string]any{
+		"label": delLabel, "license_plate": delPlate, "status": delStatus, "person_id": delPerson,
+	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -565,9 +619,10 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var oldStatus string
+	var oldEnd *time.Time // a status change can set or clear the end date — audit it
 	var archived bool
 	scanErr := h.Pool.QueryRow(r.Context(),
-		`SELECT status, archived FROM vehicles WHERE id=$1`, id).Scan(&oldStatus, &archived)
+		`SELECT status, archived, end_date FROM vehicles WHERE id=$1`, id).Scan(&oldStatus, &archived, &oldEnd)
 	if !ensureVehicleWritable(w, archived, scanErr) {
 		return
 	}
@@ -626,7 +681,13 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.recordStatus(r, id, oldStatus, req.Status, trim(req.Note))
-	h.audit(r, "update", "vehicle", id, "Status "+h.vehicleDesc(r, id)+": "+oldStatus+" → "+req.Status)
+	// Re-read the end date: the branches above set, keep or clear it.
+	var newEnd *time.Time
+	_ = h.Pool.QueryRow(r.Context(), `SELECT end_date FROM vehicles WHERE id=$1`, id).Scan(&newEnd)
+	h.auditChange(r, "update", "vehicle", id,
+		"Status "+h.vehicleDesc(r, id)+": "+oldStatus+" → "+req.Status,
+		diffFields(map[string]any{"status": oldStatus, "end_date": auditDate(oldEnd)},
+			map[string]any{"status": req.Status, "end_date": auditDate(newEnd)}))
 	h.autoArchiveIfClosed(r, id)
 	h.writeVehicle(w, r.Context(), id, http.StatusOK)
 }
@@ -760,7 +821,8 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 	if req.Paid {
 		label = "bezahlt"
 	}
-	h.audit(r, "update", "vehicle", id, "Zahlung "+h.vehicleDesc(r, id)+": "+label)
+	h.auditChange(r, "update", "vehicle", id, "Zahlung "+h.vehicleDesc(r, id)+": "+label,
+		diffFields(map[string]any{"paid": curPaid}, map[string]any{"paid": req.Paid}))
 	h.autoArchiveIfClosed(r, id)
 	h.writeVehicle(w, r.Context(), id, http.StatusOK)
 }
@@ -773,17 +835,21 @@ func (h *Handler) ReactivateVehicle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE vehicles SET archived=false, updated_at=now() WHERE id=$1`, id)
+	var prevArchived bool
+	err := h.Pool.QueryRow(r.Context(),
+		`WITH prev AS (SELECT archived FROM vehicles WHERE id=$1)
+		 UPDATE vehicles SET archived=false, updated_at=now() WHERE id=$1
+		 RETURNING (SELECT archived FROM prev)`, id).Scan(&prevArchived)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "vehicle not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not reactivate vehicle")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "vehicle not found")
-		return
-	}
-	h.audit(r, "update", "vehicle", id, "Gefährt reaktiviert: "+h.vehicleDesc(r, id))
+	h.auditChange(r, "update", "vehicle", id, "Gefährt reaktiviert: "+h.vehicleDesc(r, id),
+		diffFields(map[string]any{"archived": prevArchived}, map[string]any{"archived": false}))
 	h.writeVehicle(w, r.Context(), id, http.StatusOK)
 }
 
@@ -858,7 +924,8 @@ func (h *Handler) DuplicateVehicle(w http.ResponseWriter, r *http.Request) {
 		 FROM vehicle_photos WHERE vehicle_id = $2`, newID, id)
 
 	h.recordStatus(r, newID, "", models.StatusStored, "erneut eingestellt")
-	h.audit(r, "create", "vehicle", newID, "re-stored vehicle from #"+strconv.FormatInt(id, 10))
+	h.auditCreated(r, "vehicle", newID, "re-stored vehicle from #"+strconv.FormatInt(id, 10),
+		map[string]any{"restored_from_vehicle_id": id, "status": models.StatusStored})
 	h.writeVehicle(w, r.Context(), newID, http.StatusCreated)
 }
 

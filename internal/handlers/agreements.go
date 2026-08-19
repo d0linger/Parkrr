@@ -546,14 +546,8 @@ func (h *Handler) persistAgreement(w http.ResponseWriter, r *http.Request, id, p
 		writeError(w, code, msg)
 		return
 	}
-	// Audit entity_id mirrors the pre-refactor behavior: the person for a
-	// create (the new agreement id isn't surfaced here), the agreement id for
-	// an update.
-	verb, verbWord, auditID := "update", "geändert", id
-	if create {
-		verb, verbWord, auditID = "create", "angelegt", pid
-	}
-	h.audit(r, verb, "flatrate", auditID, "Pauschale "+verbWord+" für "+h.personLabel(r, pid))
+	// The audit is written inside saveAgreement's transaction (atomic with the change,
+	// and the only place that knows the final vehicle set and the pre-state).
 	// Archive bound vehicles right away if the agreement is now finished and
 	// settled, rather than waiting for the periodic sweep.
 	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), pid)
@@ -566,6 +560,7 @@ func (h *Handler) persistAgreement(w http.ResponseWriter, r *http.Request, id, p
 // dialog).
 func (h *Handler) saveAgreement(r *http.Request, id, personID int64, a models.FlatRatePeriod, news []newVehicleReq, edits []editVehicleReq) error {
 	ctx := r.Context()
+	isCreate := id == 0 // captured before the INSERT below overwrites id with the new row's
 	tx, err := h.Pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -587,14 +582,46 @@ func (h *Handler) saveAgreement(r *http.Request, id, personID int64, a models.Fl
 		if ev.ID <= 0 || ev.CategoryID <= 0 {
 			continue
 		}
-		if _, err := tx.Exec(ctx,
-			`UPDATE vehicles SET category_id=$1, label=$2, license_plate=$3, updated_at=now()
-			 WHERE id=$4 AND person_id=$5`,
-			ev.CategoryID, trim(ev.Label), trim(ev.LicensePlate), ev.ID, personID); err != nil {
+		// These edits went unaudited: changing a bound vehicle's Tarif, label or plate
+		// from the Pauschale dialog left no trail at all, while the identical change via
+		// UpdateVehicle is fully recorded. Capture the pre-values in the same statement
+		// (prev CTE) and audit inside this transaction. A row that does not belong to the
+		// person matches nothing, so RETURNING yields no row and nothing is logged.
+		var oCat int64
+		var oLabel, oPlate string
+		err := tx.QueryRow(ctx,
+			`WITH prev AS (SELECT category_id, label, license_plate FROM vehicles WHERE id=$4 AND person_id=$5)
+			 UPDATE vehicles SET category_id=$1, label=$2, license_plate=$3, updated_at=now()
+			 WHERE id=$4 AND person_id=$5
+			 RETURNING (SELECT category_id FROM prev), (SELECT label FROM prev), (SELECT license_plate FROM prev)`,
+			ev.CategoryID, trim(ev.Label), trim(ev.LicensePlate), ev.ID, personID).Scan(&oCat, &oLabel, &oPlate)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue // foreign id — silently ignored, as before
+		}
+		if err != nil {
+			return err
+		}
+		if err := h.auditChangeTx(ctx, tx, r, "update", "vehicle", ev.ID,
+			"Gefährt über Pauschale geändert "+vehicleLabel(trim(ev.Label), trim(ev.LicensePlate)),
+			diffFields(
+				map[string]any{"category_id": oCat, "label": oLabel, "license_plate": oPlate},
+				map[string]any{"category_id": ev.CategoryID, "label": trim(ev.Label), "license_plate": trim(ev.LicensePlate)},
+			)); err != nil {
 			return err
 		}
 	}
 
+	// Audit pre-state. Nil/zero for a create (there is no "before"); filled from the
+	// locked row for an update, so the diff below reports what this transaction
+	// actually changed instead of asserting an unknown previous value.
+	var (
+		oldEnd      *time.Time
+		oldNote     string
+		oldAmount   float64
+		oldPeriod   string
+		oldStart    time.Time
+		oldVehicles []int64
+	)
 	if id == 0 {
 		if err := tx.QueryRow(ctx,
 			`INSERT INTO flat_rate_periods (person_id, amount, period, start_date, end_date, paid, note)
@@ -607,12 +634,12 @@ func (h *Handler) saveAgreement(r *http.Request, id, personID int64, a models.Fl
 		// per-period payment keys ("YYYY-MM" vs "YYYY"): they would linger but
 		// never be counted by PaidCentsInRange. Clear them so the payment state
 		// is visibly reset instead of silently uncounted.
-		var oldPeriod string
-		var oldStart time.Time
-		var oldAmount float64
+		// oldEnd/oldNote are read for the audit diff only; the other three also drive
+		// the invoiced-freeze checks below. All are read under the same FOR UPDATE, so
+		// the recorded "before" is the state this transaction actually mutates.
 		if err := tx.QueryRow(ctx,
-			`SELECT period, start_date, amount FROM flat_rate_periods WHERE id=$1 FOR UPDATE`, id).
-			Scan(&oldPeriod, &oldStart, &oldAmount); err != nil {
+			`SELECT period, start_date, amount, end_date, note FROM flat_rate_periods WHERE id=$1 FOR UPDATE`, id).
+			Scan(&oldPeriod, &oldStart, &oldAmount, &oldEnd, &oldNote); err != nil {
 			return err
 		}
 		// Freeze the billing-defining fields once a period is invoiced: changing
@@ -628,6 +655,7 @@ func (h *Handler) saveAgreement(r *http.Request, id, personID int64, a models.Fl
 		if verr != nil {
 			return verr
 		}
+		oldVehicles = curVeh
 		retract, rerr := h.endDateRetractsBelowInvoiced(ctx, tx, "agreement", id, a.EndDate)
 		if rerr != nil {
 			return rerr
@@ -665,13 +693,34 @@ func (h *Handler) saveAgreement(r *http.Request, id, personID int64, a models.Fl
 			return err
 		}
 	}
+	// Audit INSIDE the transaction, after the row and its vehicle bindings are final.
+	// Three things this position gets right that the old post-commit call at the caller
+	// could not: the vehicle set includes devices createVehiclesTx appended (a
+	// new-device-only Pauschale used to log an empty list), `note` is recorded, and an
+	// update carries its real old values instead of nil. flatrate is a keep-forever
+	// entity, so the trail commits or rolls back with the money (BAO §131).
+	verb, verbWord := "update", "geändert"
+	if isCreate {
+		verb, verbWord = "create", "angelegt"
+	}
+	if err := h.auditChangeTx(ctx, tx, r, verb, "flatrate", id,
+		"Pauschale "+verbWord+" für "+personLabelTx(ctx, tx, personID),
+		diffFields(
+			map[string]any{"amount": oldAmount, "period": oldPeriod, "start_date": auditDate(&oldStart),
+				"end_date": auditDate(oldEnd), "note": oldNote, "vehicle_ids": oldVehicles},
+			map[string]any{"amount": a.Amount, "period": a.Period, "start_date": auditDate(&a.StartDate),
+				"end_date": auditDate(a.EndDate), "note": a.Note, "vehicle_ids": a.VehicleIDs},
+		)); err != nil {
+		return err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	// Post-commit, best-effort: status history + audit for the created devices.
 	for _, c := range created {
 		h.recordStatus(r, c.id, "", models.StatusStored, "über Pauschale angelegt")
-		h.audit(r, "create", "vehicle", c.id, "created vehicle via Pauschale "+vehicleLabel(c.label, c.plate))
+		h.auditCreated(r, "vehicle", c.id, "created vehicle via Pauschale "+vehicleLabel(c.label, c.plate),
+			map[string]any{"label": c.label, "license_plate": c.plate})
 	}
 	return nil
 }
@@ -771,7 +820,8 @@ func (h *Handler) DeleteAgreement(w http.ResponseWriter, r *http.Request) {
 	if deleteVehicles {
 		msg = "Pauschale inkl. Gefährte gelöscht für " + h.personLabel(r, pid)
 	}
-	h.audit(r, "delete", "flatrate", id, msg)
+	h.auditDeleted(r, "flatrate", id, msg,
+		map[string]any{"person_id": pid, "vehicles_deleted": deleteVehicles})
 	// Coverage changed: kept vehicles may now be archive-eligible (or, no longer
 	// covered by a finished agreement, due to wake) — reconcile immediately like
 	// every other agreement mutation.
@@ -829,10 +879,12 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 	// Set the flag and load the money fields in one shot — needed to book the real
 	// per-period rent payments below, not just flip paid.
 	var ag models.FlatRatePeriod
+	var prevPaid bool // pre-value captured in the SAME statement (see the audit below)
 	if err := tx.QueryRow(ctx,
-		`UPDATE flat_rate_periods SET paid=$1, updated_at=now() WHERE id=$2
-		 RETURNING person_id, amount, period, start_date, end_date`,
-		req.Paid, id).Scan(&ag.PersonID, &ag.Amount, &ag.Period, &ag.StartDate, &ag.EndDate); err != nil {
+		`WITH prev AS (SELECT paid FROM flat_rate_periods WHERE id=$2)
+		 UPDATE flat_rate_periods SET paid=$1, updated_at=now() WHERE id=$2
+		 RETURNING person_id, amount, period, start_date, end_date, (SELECT paid FROM prev)`,
+		req.Paid, id).Scan(&ag.PersonID, &ag.Amount, &ag.Period, &ag.StartDate, &ag.EndDate, &prevPaid); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "agreement not found")
 			return
@@ -890,8 +942,14 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 	}
 	// Audit inside the tx (before commit): the settlement change and its trail
 	// commit together (C7 / BAO §131).
-	if err := h.auditTx(ctx, tx, r, "update", "flatrate", id,
-		"Pauschale "+personLabelTx(ctx, tx, pid)+" "+state); err != nil {
+	// The old value is the row's ACTUAL previous paid flag, captured by the prev CTE in
+	// the same UPDATE. It used to be written as !req.Paid, which fabricates the
+	// transition: re-settling an already-paid agreement logged "false -> true" although
+	// nothing changed, and because diffFields drops keys whose sides are equal, that
+	// spelling could never record "no change" at all.
+	if err := h.auditChangeTx(ctx, tx, r, "update", "flatrate", id,
+		"Pauschale "+personLabelTx(ctx, tx, pid)+" "+state,
+		diffFields(map[string]any{"paid": prevPaid}, map[string]any{"paid": req.Paid})); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update agreement")
 		return
 	}
@@ -1158,8 +1216,9 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 	}
 	// Audit inside the tx, before commit: the paid-state change and its trail
 	// commit together (BAO §131).
-	if err := h.auditTx(r.Context(), tx, r, "update", "flatrate", id,
-		"Pauschale "+personLabelTx(r.Context(), tx, a.PersonID)+" "+key+": "+periodPaidAuditState(req.Paid, req.Amount)); err != nil {
+	if err := h.auditChangeTx(r.Context(), tx, r, "update", "flatrate", id,
+		"Pauschale "+personLabelTx(r.Context(), tx, a.PersonID)+" "+key+": "+periodPaidAuditState(req.Paid, req.Amount),
+		auditSnapshot(map[string]any{"period": key, "paid": req.Paid})); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update payment")
 		return
 	}

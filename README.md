@@ -117,7 +117,8 @@ compose network). Schema migrations run automatically at startup.
 | `PARKRR_SECURE_COOKIES` | `Secure` flag on cookies (secure-by-default; `false` only for plain-HTTP dev on non-`localhost`) | `true` |
 | `PARKRR_TRUSTED_PROXY` | behind a reverse proxy: trust `X-Forwarded-*` | `false` |
 | `PARKRR_RATE_LIMIT_PER_MIN` | general per-IP request budget/minute (`0` = off) | `600` |
-| `PARKRR_AUDIT_RETENTION_DAYS` | prune audit entries older than N days (`0` = keep forever) | `365` |
+| `PARKRR_AUDIT_RETENTION_DAYS` | long window: prune audit entries older than N days (`0` = disables **this** window only, see below). Records of account (`invoice`, `payment`, `billing`, `flatrate`, `recurring_charge`) are never pruned at any age | `2555` (7 y, BAO §132) |
+| `PARKRR_AUDIT_RETENTION_SHORT_DAYS` | short window for auth/ops noise only (`login`, `logout`, `backup`, `remind`, `import`); `0` disables the short tier | `365` |
 | `PARKRR_METRICS_TOKEN` | Bearer token for `/metrics` (empty = open on an internal network) | – |
 | `PARKRR_CHECK_BREACHED_PASSWORDS` | check new passwords against the HIBP range API (fail-open) | `true` |
 | `PARKRR_LOG_FORMAT` / `PARKRR_LOG_LEVEL` | `json`\|`text` / `debug`..`error` | `json` / `info` |
@@ -168,7 +169,10 @@ PARKRR_WEBAUTHN_ORIGINS=https://parkrr.example.com
 The container ships a `HEALTHCHECK` (`parkrr healthcheck`, self-probing — the
 image ships no curl/wget). The **audit log is append-only** (a DB
 trigger blocks UPDATE/DELETE); only the retention job
-(`PARKRR_AUDIT_RETENTION_DAYS`) may remove old entries.
+(`PARKRR_AUDIT_RETENTION_DAYS` / `PARKRR_AUDIT_RETENTION_SHORT_DAYS`) may remove
+old entries. The two windows are independent: setting the long one to `0` keeps
+the change trail forever but does **not** stop the short tier from ageing out
+login/logout noise — set both to `0` to disable retention completely.
 
 ---
 

@@ -157,18 +157,40 @@ func startFlatRateArchival(h *handlers.Handler, stop <-chan struct{}) {
 	}
 }
 
-// StartAuditRetention periodically prunes audit entries older than keep. It runs
-// until stop is closed. keep <= 0 disables retention (keep forever).
-func StartAuditRetention(pool *pgxpool.Pool, keep time.Duration, stop <-chan struct{}) {
-	if keep <= 0 {
+// StartAuditRetention periodically prunes audit entries. It runs until stop is
+// closed.
+//
+// keep is the long window and shortKeep the auth/ops-noise window, and they are
+// INDEPENDENT: keep <= 0 disables the long window only, so the short tier keeps
+// running. Retention is off entirely only when both are <= 0. (This doc used to
+// say "keep <= 0 disables retention", which was true before the short tier existed
+// and is now contradicted by the guard below.)
+func StartAuditRetention(pool *pgxpool.Pool, keep, shortKeep time.Duration, stop <-chan struct{}) {
+	// The two windows are independent knobs: "keep the trail forever, but do not
+	// hoard a year of login rows" is a legitimate setting (keep=0, shortKeep=365).
+	// Returning on keep<=0 alone would silently disable the short tier too.
+	if keep <= 0 && shortKeep <= 0 {
 		return
 	}
 	ticker := time.NewTicker(6 * time.Hour)
 	defer ticker.Stop()
 	prune := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// Generous budget: PruneAuditLog commits per batch, so a run that does not
+		// finish inside it keeps everything it already removed and simply resumes on
+		// the next tick. The deadline bounds one run, it does not discard its work.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
-		_, _ = database.PruneAuditLog(ctx, pool, keep)
+		n, err := database.PruneAuditLog(ctx, pool, keep, shortKeep)
+		// Never silent: retention failing is how an audit table grows without bound,
+		// and the previous `_, _ =` meant a permanently failing prune looked exactly
+		// like a working one.
+		if err != nil {
+			slog.Warn("audit retention: prune failed", "pruned", n, "err", err)
+			return
+		}
+		if n > 0 {
+			slog.Info("audit retention: pruned expired entries", "pruned", n)
+		}
 	}
 	prune() // once at startup
 	for {

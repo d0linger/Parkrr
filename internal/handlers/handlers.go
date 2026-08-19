@@ -195,22 +195,19 @@ func actorFrom(r *http.Request) (int64, string) {
 // request context. Failures are ignored so auditing never breaks a request.
 //
 // This is the post-commit, best-effort path (separate connection). For money
-// mutations use auditTx / auditChangeTx inside the transaction so the trail is
-// atomic with the change (BAO §131) — a crash can never leave a booked change
-// without its audit row.
+// mutations use auditChangeTx inside the transaction so the trail is atomic with
+// the change (BAO §131) — a crash can never leave a booked change without its
+// audit row.
 func (h *Handler) audit(r *http.Request, action, entity string, id int64, summary string) {
 	h.auditChange(r, action, entity, id, summary, nil)
 }
 
-// auditTx writes an audit entry through q — pass the money transaction's pgx.Tx
-// so the row commits atomically with the mutation and rolls back with it. The
-// error is returned so the caller fails (and rolls back) the tx on an audit
+// auditChangeTx writes an audit entry through q — pass the money transaction's
+// pgx.Tx so the row commits atomically with the mutation and rolls back with it.
+// The error is returned so the caller fails (and rolls back) the tx on an audit
 // write failure: a booked money change must not persist without its trail.
-func (h *Handler) auditTx(ctx context.Context, q execer, r *http.Request, action, entity string, id int64, summary string) error {
-	return h.auditChangeTx(ctx, q, r, action, entity, id, summary, nil)
-}
-
-// auditChangeTx is auditTx with per-field before/after values (diffFields).
+// Records per-field before/after values (pass the result of diffFields); a
+// nil/empty changes is stored as NULL.
 func (h *Handler) auditChangeTx(ctx context.Context, q execer, r *http.Request, action, entity string, id int64, summary string, changes any) error {
 	actorID, actorName := actorFrom(r)
 	return auditExec(ctx, q, actorID, actorName, action, entity, id, summary, changes)
@@ -222,6 +219,101 @@ func (h *Handler) auditChangeTx(ctx context.Context, q execer, r *http.Request, 
 func (h *Handler) auditChange(r *http.Request, action, entity string, id int64, summary string, changes any) {
 	actorID, actorName := actorFrom(r)
 	h.auditInsert(r, actorID, actorName, action, entity, id, summary, changes)
+}
+
+// strPtr renders a *string for an audit diff: nil stays nil so "not set" remains
+// distinguishable from an empty value.
+func strPtr(v *string) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+// auditDate renders an optional date for an audit diff. Like strPtr, nil stays nil
+// so "no end date" stays distinguishable from a date that happens to be empty.
+func auditDate(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return t.Format("2006-01-02")
+}
+
+// blobState describes a binary column for an audit diff without reading it into
+// the trail. The bytes themselves (a floor plan, a geometry blob) are noise in a
+// log and can be large; what an auditor needs is whether it was set and whether it
+// changed, which the size captures.
+func blobState(b []byte) string {
+	if len(b) == 0 {
+		return "leer"
+	}
+	return "gesetzt (" + strconv.Itoa(len(b)) + " B)"
+}
+
+// auditSnapshot renders values as {field: {old: null, new: v}} — "this is what it
+// became", with no claim about what it was before.
+//
+// Use it wherever the previous value is genuinely unknown, or where the entry is a
+// COUNT or an outcome rather than a field transition (how many positions were
+// settled, which period was booked). Inventing an old value there is worse than
+// omitting one: a fabricated `false -> true` asserts a transition that may never
+// have happened, and diffFields would silently drop any key whose sides are equal,
+// losing exactly the identifying field the entry exists for.
+func auditSnapshot(values map[string]any) map[string]any {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(values))
+	for k, v := range values {
+		out[k] = map[string]any{"old": nil, "new": v}
+	}
+	return out
+}
+
+// mergeChanges combines change maps (e.g. a real diff plus an auditSnapshot of the
+// outcome fields) into one changes object. Later maps win on a key collision.
+func mergeChanges(maps ...map[string]any) map[string]any {
+	out := map[string]any{}
+	for _, m := range maps {
+		for k, v := range m {
+			out[k] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// auditCreated records a creation together with the values the new row was given,
+// as {field: {old: null, new: value}} — the mirror image of auditDeleted. Without
+// it a "created X" entry proves only THAT something appeared, never with which
+// values, so a later edit cannot be told apart from the original state.
+//
+// Note for both helpers: events that are not data changes (login, backup, restore,
+// reminders, imports) deliberately keep a plain summary — they have no fields to
+// diff, and inventing one would only add noise to the trail.
+func (h *Handler) auditCreated(r *http.Request, entity string, id int64, summary string, snapshot map[string]any) {
+	// auditSnapshot already produces exactly {field: {old: nil, new: v}} and returns nil
+	// for an empty input, which is what a creation needs. (auditDeleted cannot share it:
+	// its map is the mirror image, {old: v, new: nil}.)
+	h.auditChange(r, "create", entity, id, summary, auditSnapshot(snapshot))
+}
+
+// auditDeleted records a deletion together with the identifying values of the row
+// that was removed. This matters more than any other audit case: once the row is
+// gone, an entry that carries only an id can never be resolved back to WHAT was
+// deleted. Callers get the snapshot from `DELETE … RETURNING`, so it costs no extra
+// query and is atomic with the delete. Values still pass the redaction choke point.
+func (h *Handler) auditDeleted(r *http.Request, entity string, id int64, summary string, snapshot map[string]any) {
+	var changes map[string]any
+	if len(snapshot) > 0 {
+		changes = make(map[string]any, len(snapshot))
+		for k, v := range snapshot {
+			changes[k] = map[string]any{"old": v, "new": nil} // deleted: old value, no new one
+		}
+	}
+	h.auditChange(r, "delete", entity, id, summary, changes)
 }
 
 // auditAs writes an audit entry with an explicit acting user. Use this where the
@@ -249,7 +341,10 @@ func auditExec(ctx context.Context, q execer, actorID int64, actorName, action, 
 	}
 	var changesArg any // nil -> SQL NULL
 	if changes != nil {
-		if b, err := json.Marshal(changes); err == nil && string(b) != "null" {
+		// Redact BEFORE marshaling — this is the single choke point every audit
+		// write passes through, so a secret cannot reach the trail even if a call
+		// site forgets to exclude the field (see audit_redact.go).
+		if b, err := json.Marshal(redactChanges(normalizeChanges(changes))); err == nil && string(b) != "null" {
 			changesArg = string(b)
 		}
 	}

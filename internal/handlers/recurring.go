@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -301,7 +302,10 @@ func (h *Handler) CreateRecurringCharge(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "could not create recurring charge")
 		return
 	}
-	h.audit(r, "create", "recurring_charge", id, "added recurring cost "+desc)
+	h.auditCreated(r, "recurring_charge", id, "added recurring cost "+desc, map[string]any{
+		"description": desc, "amount": amount, "period": period,
+		"start_date": start.Format("2006-01-02"), "person_id": personID,
+	})
 	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
 }
 
@@ -388,7 +392,27 @@ func (h *Handler) UpdateRecurringCharge(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "recurring charge not found")
 		return
 	}
-	h.audit(r, "update", "recurring_charge", id, "updated recurring cost "+desc)
+	// `existing` was already loaded above for the settlement checks, so the
+	// before/after diff costs nothing extra. Only the billing-defining fields are
+	// compared — the paid_* arrays are settlement state, not an edit.
+	type recAudit struct {
+		Description string  `json:"description"`
+		Amount      float64 `json:"amount"`
+		Period      string  `json:"period"`
+		StartDate   string  `json:"start_date"`
+		EndDate     string  `json:"end_date"`
+		VehicleID   *int64  `json:"vehicle_id"`
+	}
+	dateOrEmpty := func(t *time.Time) string {
+		if t == nil {
+			return ""
+		}
+		return t.Format("2006-01-02")
+	}
+	h.auditChange(r, "update", "recurring_charge", id, "updated recurring cost "+desc, diffFields(
+		recAudit{existing.Description, existing.Amount, existing.Period,
+			existing.StartDate.Format("2006-01-02"), dateOrEmpty(existing.EndDate), existing.VehicleID},
+		recAudit{desc, amount, period, start.Format("2006-01-02"), dateOrEmpty(end), req.VehicleID}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -410,16 +434,26 @@ func (h *Handler) DeleteRecurringCharge(w http.ResponseWriter, r *http.Request) 
 	}
 	// Remove its auto settle-payments in the same tx as the delete, so a paid-then-
 	// deleted Nebenkosten leaves no orphan Zahlungseingang (phantom money-in).
+	// Keep what was removed: a money position must stay reconstructable afterwards.
 	var affected int64
+	var delDesc, delPeriod string
+	var delAmount float64
+	var delPerson int64
 	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
 		if err := clearRecurringSettlementTx(r.Context(), tx, id); err != nil {
 			return err
 		}
-		ct, err := tx.Exec(r.Context(), `DELETE FROM recurring_charges WHERE id=$1`, id)
-		if err != nil {
+		if err := tx.QueryRow(r.Context(),
+			`DELETE FROM recurring_charges WHERE id=$1
+			 RETURNING description, amount, period, person_id`, id).
+			Scan(&delDesc, &delAmount, &delPeriod, &delPerson); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				affected = 0
+				return nil // not found — reported outside the tx
+			}
 			return err
 		}
-		affected = ct.RowsAffected()
+		affected = 1
 		return nil
 	})
 	if txErr != nil {
@@ -430,7 +464,9 @@ func (h *Handler) DeleteRecurringCharge(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "recurring charge not found")
 		return
 	}
-	h.audit(r, "delete", "recurring_charge", id, "deleted recurring cost")
+	h.auditDeleted(r, "recurring_charge", id, "deleted recurring cost "+delDesc, map[string]any{
+		"description": delDesc, "amount": delAmount, "period": delPeriod, "person_id": delPerson,
+	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -496,7 +532,10 @@ func (h *Handler) SetRecurringChargePaid(w http.ResponseWriter, r *http.Request)
 			}
 		}
 		// Audit in the tx: the settlement change and its trail commit together (C7).
-		return h.auditTx(ctx, tx, r, "update", "recurring_charge", id, verb)
+		// rc was loaded above, so the settlement before/after is free. Transactional
+		// audit: the trail commits atomically with the money change.
+		return h.auditChangeTx(ctx, tx, r, "update", "recurring_charge", id, verb,
+			diffFields(map[string]any{"paid": rc.Paid}, map[string]any{"paid": req.Paid}))
 	})
 	if txErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not update recurring charge")
@@ -632,8 +671,9 @@ func (h *Handler) SetRecurringChargePeriodPaid(w http.ResponseWriter, r *http.Re
 		} else if err := deletePeriodPaymentTx(r.Context(), tx, "recurring", id, req.PeriodKey); err != nil {
 			return err
 		}
-		return h.auditTx(r.Context(), tx, r, "update", "recurring_charge", id,
-			"Nebenkosten-Periode "+req.PeriodKey+": "+periodPaidAuditState(req.Paid, req.Amount))
+		return h.auditChangeTx(r.Context(), tx, r, "update", "recurring_charge", id,
+			"Nebenkosten-Periode "+req.PeriodKey+": "+periodPaidAuditState(req.Paid, req.Amount),
+			auditSnapshot(map[string]any{"period": req.PeriodKey, "paid": req.Paid}))
 	})
 	if txErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not update recurring charge")

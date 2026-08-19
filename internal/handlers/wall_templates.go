@@ -2,9 +2,12 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Server-side planner wall templates (AR3): shared, reusable wall layouts stored
@@ -86,6 +89,10 @@ func (h *Handler) CreateWallTemplate(w http.ResponseWriter, r *http.Request) {
 	_, _ = h.Pool.Exec(r.Context(),
 		`DELETE FROM wall_templates WHERE id IN (SELECT id FROM wall_templates ORDER BY created_at DESC OFFSET $1)`,
 		maxWallTemplates)
+	// The walls payload is opaque planner geometry, not business data — record the
+	// identifying fields only, so the trail stays readable.
+	h.auditCreated(r, "wall_template", t.ID, "Wand-Vorlage angelegt: "+t.Name,
+		map[string]any{"name": t.Name})
 	writeJSON(w, http.StatusCreated, t)
 }
 
@@ -96,9 +103,20 @@ func (h *Handler) DeleteWallTemplate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	if _, err := h.Pool.Exec(r.Context(), `DELETE FROM wall_templates WHERE id=$1`, id); err != nil {
+	// RETURNING both names what was deleted AND proves a row existed: the previous
+	// form audited unconditionally after a plain Exec, so deleting a nonexistent id
+	// wrote a phantom deletion into an append-only table.
+	var name string
+	if err := h.Pool.QueryRow(r.Context(),
+		`DELETE FROM wall_templates WHERE id=$1 RETURNING name`, id).Scan(&name); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "template not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete template")
 		return
 	}
+	h.auditDeleted(r, "wall_template", id, "Wand-Vorlage gelöscht: "+name,
+		map[string]any{"name": name})
 	w.WriteHeader(http.StatusNoContent)
 }

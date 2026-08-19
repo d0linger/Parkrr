@@ -108,7 +108,8 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create user")
 		return
 	}
-	h.audit(r, "create", "user", u.ID, "created user "+u.Username+" ("+u.Role+")")
+	h.auditCreated(r, "user", u.ID, "created user "+u.Username+" ("+u.Role+")",
+		map[string]any{"username": u.Username, "email": u.Email, "role": u.Role, "is_admin": u.IsAdmin})
 	writeJSON(w, http.StatusCreated, u)
 }
 
@@ -264,20 +265,25 @@ func (h *Handler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "cannot delete the last remaining admin")
 		return
 	}
-	ct, err := tx.Exec(r.Context(), `DELETE FROM users WHERE id = $1`, id)
-	if err != nil {
+	// Identify the account afterwards. The password hash is deliberately NOT read;
+	// the redaction layer would mask it anyway, but it must not travel at all.
+	var delUser, delEmail, delRole string
+	if err := tx.QueryRow(r.Context(),
+		`DELETE FROM users WHERE id = $1 RETURNING username, email, role`, id).
+		Scan(&delUser, &delEmail, &delRole); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete user")
-		return
-	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete user")
 		return
 	}
-	h.audit(r, "delete", "user", id, "deleted user")
+	h.auditDeleted(r, "user", id, "deleted user "+delUser,
+		map[string]any{"username": delUser, "email": delEmail, "role": delRole})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -299,14 +305,18 @@ func (h *Handler) ResetUserTOTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	if _, err := h.Pool.Exec(r.Context(),
-		`UPDATE users SET totp_enabled=FALSE, totp_secret='', updated_at=now() WHERE id=$1`,
-		id); err != nil {
+	var prevTOTP bool
+	if err := h.Pool.QueryRow(r.Context(),
+		`WITH prev AS (SELECT totp_enabled FROM users WHERE id=$1)
+		 UPDATE users SET totp_enabled=FALSE, totp_secret='', updated_at=now() WHERE id=$1
+		 RETURNING (SELECT totp_enabled FROM prev)`,
+		id).Scan(&prevTOTP); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not reset two-factor")
 		return
 	}
 	_, _ = h.Pool.Exec(r.Context(), `DELETE FROM totp_backup_codes WHERE user_id=$1`, id)
-	h.audit(r, "update", "user", id, "reset 2FA for "+username)
+	h.auditChange(r, "update", "user", id, "reset 2FA for "+username,
+		diffFields(map[string]any{"totp_enabled": prevTOTP}, map[string]any{"totp_enabled": false}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reset"})
 }
 

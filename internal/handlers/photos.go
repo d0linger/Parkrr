@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Upload limits.
@@ -142,7 +144,9 @@ func (h *Handler) UploadPhoto(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not store photo")
 		return
 	}
-	h.audit(r, "create", "photo", photoID, "uploaded photo for vehicle")
+	// Metadata only — image bytes must never enter the audit log.
+	h.auditCreated(r, "photo", photoID, "uploaded photo for vehicle",
+		map[string]any{"vehicle_id": id, "filename": filename, "content_type": contentType, "byte_size": len(data)})
 	writeJSON(w, http.StatusCreated, photoMeta{
 		ID: photoID, VehicleID: id, Filename: filename,
 		ContentType: contentType, ByteSize: len(data), CreatedAt: time.Now(),
@@ -232,15 +236,22 @@ func (h *Handler) DeletePhoto(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM vehicle_photos WHERE id=$1`, id)
-	if err != nil {
+	// Metadata only — the image bytes must never enter the audit log.
+	var delVehicle int64
+	var delFile, delType string
+	var delSize int
+	if err := h.Pool.QueryRow(r.Context(),
+		`DELETE FROM vehicle_photos WHERE id=$1 RETURNING vehicle_id, filename, content_type, byte_size`, id).
+		Scan(&delVehicle, &delFile, &delType, &delSize); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "photo not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete photo")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "photo not found")
-		return
-	}
-	h.audit(r, "delete", "photo", id, "deleted photo")
+	h.auditDeleted(r, "photo", id, "deleted photo "+delFile, map[string]any{
+		"vehicle_id": delVehicle, "filename": delFile, "content_type": delType, "byte_size": delSize,
+	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

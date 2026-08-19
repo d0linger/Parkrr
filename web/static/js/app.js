@@ -4544,7 +4544,7 @@
                 plannerSymbol: s.planner_symbol || null, photoUrl: s.photo_id ? '/api/photos/' + s.photo_id : null,
                 x: num(g.x, 1), y: num(g.y, 1), w: num(g.w, s.length_m || catFoot(s.vehicle_type)[0]), h: num(g.h, s.width_m || catFoot(s.vehicle_type)[1]), rot: num(g.rot, 0), status: g.status || 'busy', noBuf: !!g.noBuf, _dirty: false }; }),
             palette, plannerIcons,
-            mode: 'manage', snap: true, gridStep: 0.5, autoSnap: true, calib: false, autoArea: true, ortho: false, zoom: 1, base: null, buffer: false, bufferM: 1, roomSel: null, wallRef: (geo.wallRef === 'inner' || geo.wallRef === 'outer') ? geo.wallRef : 'axis', sel: null,
+            mode: 'manage', snap: true, gridStep: 0.5, autoSnap: true, calib: false, autoArea: true, ortho: false, zoom: 1, base: null, buffer: false, bufferM: 1, allowBlocking: false, roomSel: null, wallRef: (geo.wallRef === 'inner' || geo.wallRef === 'outer') ? geo.wallRef : 'axis', sel: null,
             tool: null, chain: null, preview: null, structSel: null, // wall draw/edit state
             openStart: null, snapHint: null, drawKind: 'wall_ext', openKind: 'door', wallThick: null, // opening draw + last-used types + wall-thickness override (m)
             render: (function () { try { return localStorage.getItem('gp.render') || 'symbol'; } catch (e) { return 'symbol'; } })(),
@@ -5850,18 +5850,20 @@
             // ruler (UX2): line + distance + angle between the two measured points (or A → cursor)
             if (measure && measure.a) { const b2 = measure.b || measure.hover;
                 if (b2) { const ax = measure.a.x * CELL, ay = measure.a.y * CELL, bx = b2.x * CELL, by = b2.y * CELL;
-                    svg.append(svgEl('line', { x1: ax, y1: ay, x2: bx, y2: by, class: 'gp-measure' }));
-                    svg.append(svgEl('circle', { cx: ax, cy: ay, r: 4, class: 'gp-measure-pt' }));
-                    svg.append(svgEl('circle', { cx: bx, cy: by, r: 4, class: 'gp-measure-pt' }));
-                    if (b2.snap === 'node' || b2.snap === 'edge') svg.append(svgEl('circle', { cx: bx, cy: by, r: 8, fill: 'none', class: 'gp-measure-snap' })); // magnet caught a wall corner / edge
+                    // Draw the ruler on the labelSvg overlay (z-2, above the zone/vehicle DOM) so it
+                    // never disappears under a Fahrstraße/Wartung/Stütze block.
+                    labelSvg.append(svgEl('line', { x1: ax, y1: ay, x2: bx, y2: by, class: 'gp-measure' }));
+                    labelSvg.append(svgEl('circle', { cx: ax, cy: ay, r: 4, class: 'gp-measure-pt' }));
+                    labelSvg.append(svgEl('circle', { cx: bx, cy: by, r: 4, class: 'gp-measure-pt' }));
+                    if (b2.snap === 'node' || b2.snap === 'edge') labelSvg.append(svgEl('circle', { cx: bx, cy: by, r: 8, fill: 'none', class: 'gp-measure-snap' })); // magnet caught a wall corner / edge
                     const d = Math.hypot(b2.x - measure.a.x, b2.y - measure.a.y), ang = ((Math.atan2(b2.y - measure.a.y, b2.x - measure.a.x) * 180 / Math.PI) % 180 + 180) % 180;
                     const tl = svgEl('text', { x: (ax + bx) / 2, y: (ay + by) / 2 - 9, 'text-anchor': 'middle', class: 'gp-measurelab' });
                     tl.textContent = d.toFixed(2).replace('.', ',') + ' m · ' + Math.min(ang, 180 - ang).toFixed(0) + '°'; labelSvg.append(tl); } }
             // Start-point (A) snap preview: show the magnet cue before the first click, too.
             if (P.tool === 'measure' && !(measure && measure.a && !measure.b) && measurePre && measurePre.snap) {
                 const hx = measurePre.x * CELL, hy = measurePre.y * CELL;
-                svg.append(svgEl('circle', { cx: hx, cy: hy, r: 3, class: 'gp-measure-pt' }));
-                svg.append(svgEl('circle', { cx: hx, cy: hy, r: 8, fill: 'none', class: 'gp-measure-snap' }));
+                labelSvg.append(svgEl('circle', { cx: hx, cy: hy, r: 3, class: 'gp-measure-pt' }));
+                labelSvg.append(svgEl('circle', { cx: hx, cy: hy, r: 8, fill: 'none', class: 'gp-measure-snap' }));
             }
             // orthogonal snap guide-line (spans the canvas)
             if (P.guide && (P.chain || nodeDrag)) {
@@ -5968,6 +5970,7 @@
             // Auto-Snap: objects fang flush against each other (in addition to the floor line).
             if (canManageNow) toolbar.append(tb('🧲', 'Auto-Snap: Objekte fangen aneinander', () => { P.autoSnap = !P.autoSnap; renderToolbar(); toast(P.autoSnap ? 'Auto-Snap an' : 'Auto-Snap aus'); }, P.autoSnap));
             if (canManageNow) toolbar.append(tb('🛡', 'Pufferzonen zwischen Fahrzeugen (Taste P)', () => { P.buffer = !P.buffer; renderToolbar(); draw(); toast(P.buffer ? 'Pufferzonen an · ' + P.bufferM.toFixed(1).replace('.', ',') + ' m' : 'Pufferzonen aus'); }, P.buffer));
+            if (canManageNow) toolbar.append(tb('🚗↦', P.allowBlocking ? 'Zuparken erlaubt: Auto-Anordnen nutzt jeden m² (kein Auspark-Pfad-Check)' : 'Auspark-Pfad garantiert: kein Gefährt wird zugeparkt (Fahrstraße/Tor nötig)', () => { P.allowBlocking = !P.allowBlocking; renderToolbar(); toast(P.allowBlocking ? 'Zuparken erlaubt (max. Auslastung)' : 'Auspark-Pfad garantiert'); }, P.allowBlocking));
             if (canManageNow && P.mode === 'plan') toolbar.append(tb('📏', 'Messen: Punkt A klicken, Punkt B klicken (Distanz + Winkel). Fängt an Wand-Ecken und -Kanten (Rand); ⇧ oder achsennah = waagrecht/senkrecht. Nochmal klicken = neu.', () => setTool(P.tool === 'measure' ? null : 'measure'), P.tool === 'measure'));
             // Adjustable buffer distance (vehicle↔vehicle), shown only while buffers are on. 0.5 m steps,
             // 0–5 m. draw() re-runs the bands + collision uses P.bufferM live. Session-only, like the toggle.
@@ -6128,67 +6131,112 @@
             } else { c.append(el('span', { class: 'gp-vst' }, '⠿')); }
             return c;
         }
-        // FE1: Auto-Arrange via the MaxRects packer (PG.packRects). `padding` is the ONLY clearance the
-        // maths uses — margin from walls AND gap between vehicles — and it defaults to 0 (flush), so a
-        // vehicle fits any niche its true footprint fits (no hidden inflation shrinking small pockets).
-        // The buffer toggle raises it to P.bufferM when the user wants breathing room. Two phases:
-        //   1) re-pack the already-placed vehicles (largest first; BSSF fills tight niches),
-        //   2) pack the "Nicht platziert" staging vehicles into the space that's left — those that fit
-        //      become real spots, the rest simply stay in staging (no error, no collision).
-        async function autoArrange(padding) {
-            const pad = (typeof padding === 'number') ? padding : (P.buffer ? P.bufferM : 0); // allowZeroMargin: 0 ⇒ flush (ignore a stray event arg)
-            const spots = P.spots.slice(), pals = P.palette.slice();
-            if (!spots.length && !pals.length) { toast('Keine Gefährte zum Anordnen', 'warn'); return; }
-            const msg = spots.length + ' platzierte' + (pals.length ? ' + ' + pals.length + ' aus „Nicht platziert"' : '') + ' anordnen (größte zuerst, mit Drehung, Abstand ' + pad.toFixed(2).replace('.', ',') + ' m)?';
-            if (!(await confirmDialog('Auto-Anordnen', msg, 'Anordnen'))) return;
-            // Hard obstacles: walls, blocking structures (columns/Stützen) and driving lanes /
-            // maintenance / exits. Stellflächen are parkable markings → NOT obstacles.
-            const baseObs = wallRects()
-                .concat(P.excl.filter((e) => !isZoneKind(e.kind)))
-                .concat(P.excl.filter((e) => isZoneKind(e.kind) && e.kind !== 'stell'));
-            const bb = floorBB(), opts = { margin: pad, gap: pad };
-
-            // Phase 1 — re-pack existing spots.
-            const orig = new Map(spots.map((b) => [b._id, { x: b.x, y: b.y, rot: b.rot || 0 }]));
-            const r1 = PG.packRects(spots.map((b) => ({ id: b._id, w: b.w, h: b.h })), baseObs, bb, P.floor, opts);
-            const by1 = new Map(r1.placements.map((p) => [p.id, p]));
-            for (const b of spots) {
-                const p = by1.get(b._id);
-                if (p && p.ok) { b.x = p.x; b.y = p.y; b.rot = p.rot; b._invalid = false; }
-                else { const o = orig.get(b._id); b.x = o.x; b.y = o.y; b.rot = o.rot; }
-                b._dirty = true;
+        // FE1: Auto-Arrange in ONE pack of every vehicle (placed spots + "Nicht platziert" staging), so
+        // nothing can overlap across passes. `padding` (default 0 = flush; buffer toggle raises it) is the
+        // only clearance. Vehicles that don't fit WITHOUT overlapping a wall / column / Fahrstraße go
+        // cleanly back into the staging queue — the algorithm never forces an overlapping placement.
+        // scope: 'CANVAS_ONLY' (default) re-arranges only the vehicles already on the plan and leaves the
+        // "Nicht platziert" backlog untouched; 'INCLUDE_UNASSIGNED' also pulls the backlog in.
+        let arrangeBusy = false; // in-flight guard for autoArrange (see below)
+        async function autoArrange(padding, scope) {
+            // Re-entry guard. autoArrange awaits a confirm dialog and then a long series of API calls,
+            // and the rail stays clickable throughout — so a second click starts a second run that
+            // snapshots P.spots BEFORE the first run's deletes/creates land. The two then fight:
+            // duplicate spots for the same staging vehicle, DELETEs against an already-deleted spot
+            // (counted as errors), and a plan that does not match the server. The guard is set before
+            // the confirmation so even the dialog cannot be opened twice.
+            if (arrangeBusy) return;
+            arrangeBusy = true;
+            try {
+                await runAutoArrange(padding, scope);
+            } finally {
+                arrangeBusy = false;
+                renderRail(); // re-enable the rail buttons
             }
-            // Flag validity against the FINAL layout, not a mid-loop snapshot (spots move as we go).
-            spots.forEach((b) => { b._invalid = !validVeh(b, b._id); });
-            spots.forEach((b) => { if (!b._invalid) persistSpot(b); }); // don't persist a blockiert spot; it stays _dirty for a later valid move
+        }
+        async function runAutoArrange(padding, scope) {
+            const pad = (typeof padding === 'number') ? padding : (P.buffer ? P.bufferM : 0); // allowZeroMargin: 0 ⇒ flush (ignore a stray event arg)
+            const includeUnassigned = scope === 'INCLUDE_UNASSIGNED';
+            const spots = P.spots.slice(), pals = includeUnassigned ? P.palette.slice() : [];
+            if (!spots.length && !pals.length) { toast(includeUnassigned ? 'Keine Gefährte zum Anordnen' : 'Keine platzierten Gefährte zum Anordnen', 'warn'); return; }
+            const hasGate = P.excl.some((e) => e.kind === 'lane' || e.kind === 'exit') || P.walls.edges.some((e) => (e.ops || []).some((o) => o.kind === 'gate' || o.kind === 'door'));
+            const routeNote = P.allowBlocking ? ' · Zuparken erlaubt' : (hasGate ? ' · mit Auspark-Pfad' : '');
+            const scopeNote = includeUnassigned ? ' inkl. „Nicht platziert"' : ' (nur platzierte)';
+            const msg = (spots.length + pals.length) + ' Gefährte anordnen' + scopeNote + ' (größte zuerst, mit Drehung, Abstand ' + pad.toFixed(2).replace('.', ',') + ' m' + routeNote + '). Was nicht kollisionsfrei passt, landet in „Nicht platziert".';
+            if (!(await confirmDialog('Auto-Anordnen', msg, 'Anordnen'))) return;
+            // HARD obstacles (no-park): walls, columns/Stützen, Fahrstraße, Wartung, Notausgang AND every
+            // door swing zone (Türanschlag). Only the Stellfläche (kind 'stell') is a parkable marking.
+            // These are building infrastructure — allowBlocking only ever permits blocking another
+            // VEHICLE, never a restricted zone, so they stay hard obstacles in both modes.
+            const doorZones = [];
+            P.walls.edges.forEach((e) => (e.ops || []).forEach((o) => { if (o.kind !== 'door') return;
+                const sw = doorSweepQuad(e, o); if (!sw) return;
+                const xs = sw.map((p) => p[0]), ys = sw.map((p) => p[1]); // swing quad → AABB block for the packer
+                doorZones.push({ kind: 'doorswing', x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys), rot: 0 });
+            }));
+            const baseObs = wallRects().concat(P.excl.filter((e) => e.kind !== 'stell')).concat(doorZones);
+            // Routing targets (drive-to) = Fahrstraße/Notausgang zones + gate/door openings.
+            const gates = P.excl.filter((e) => e.kind === 'lane' || e.kind === 'exit').map((e) => ({ x: e.x, y: e.y, w: e.w, h: e.h, rot: e.rot || 0 }));
+            P.walls.edges.forEach((e) => { const v = edgeVec(e); (e.ops || []).forEach((o) => { if (o.kind !== 'gate' && o.kind !== 'door') return;
+                const cx = v.a.x + v.dx * o.c, cy = v.a.y + v.dy * o.c, ang = Math.atan2(v.dy, v.dx) * 180 / Math.PI, gw = o.w, gh = (e.thick || 0.24) + 0.8;
+                gates.push({ x: cx - gw / 2, y: cy - gh / 2, w: gw, h: gh, rot: ang }); }); });
+            const routeObs = wallRects().concat(P.excl.filter((e) => EXCL[e.kind] && EXCL[e.kind].cat === 'wall')); // path can cross lanes, not walls/columns
+            const driveways = P.excl.filter((e) => e.kind === 'lane').map((e) => ({ x: e.x, y: e.y, w: e.w, h: e.h, rot: e.rot || 0 })); // comb reference
+            const bb = floorBB(), opts = { margin: pad, gap: pad, gates, routeObstacles: routeObs, allowBlocking: !!P.allowBlocking, driveways };
 
-            // Phase 2 — staging vehicles into the remaining free space (placed spots become obstacles,
-            // inflated by pad so the clearance holds). Unplaceable ones silently stay in the palette.
+            // One item set — spots ('s'+id) and palette ('p'+id) together → a single overlap-free pack.
             const palFoot = (p) => { const d = catFoot(p.type); return { w: num(p.length_m, d[0]), h: num(p.width_m, d[1]) }; };
-            let staged = 0, stageErr = 0;
-            if (pals.length) {
-                const placedObs = baseObs.concat(spots.filter((b) => !b._invalid).map((b) => ({ x: b.x - pad, y: b.y - pad, w: b.w + 2 * pad, h: b.h + 2 * pad, rot: b.rot || 0 })));
-                const r2 = PG.packRects(pals.map((p) => ({ id: p.id, ...palFoot(p) })), placedObs, bb, P.floor, opts);
-                const by2 = new Map(r2.placements.map((p) => [p.id, p]));
-                for (const p of pals) {
-                    const pl = by2.get(p.id); if (!pl || !pl.ok) continue; // no room → stays in staging
-                    const f = palFoot(p);
+            const items = spots.map((b) => ({ key: 's' + b._id, w: b.w, h: b.h, spot: b }))
+                .concat(pals.map((p) => { const f = palFoot(p); return { key: 'p' + p.id, w: f.w, h: f.h, pal: p, f }; }));
+            const res = PG.packRects(items.map((it) => ({ id: it.key, w: it.w, h: it.h })), baseObs, bb, P.floor, opts);
+            const by = new Map(res.placements.map((p) => [p.id, p]));
+
+            let arranged = 0, staged = 0, unassigned = 0, errs = 0;
+            // persistSpot returns the spot's write-queue promise. Collect them: fire-and-forget
+            // let the run "finish" with its PUTs still in flight, which cleared arrangeBusy
+            // early (so a second Auto-Arrange could re-snapshot P.spots mid-write — exactly what
+            // the guard exists to prevent) and reported the summary before anything was saved.
+            const writes = [];
+            for (const it of items) {
+                const pl = by.get(it.key);
+                if (it.spot) {
+                    const b = it.spot;
+                    if (pl && pl.ok) { b.x = pl.x; b.y = pl.y; b.rot = pl.rot; b._invalid = false; b._dirty = true; writes.push(persistSpot(b)); arranged++; }
+                    else { // no collision-free spot → delete the placement, vehicle returns to staging
+                        try { await api.del('/spots/' + b._id); P.spots = P.spots.filter((x) => x !== b);
+                            if (b.vehId) P.palette.push({ id: b.vehId, label: b.label, type: b.type, person_id: b.personId, person_name: b.personName, length_m: b.L, width_m: b.W, height_m: b.H, weight_t: b.t });
+                            unassigned++; }
+                        catch (e) {
+                            // The delete failed, so this vehicle stays on the plan at its OLD position —
+                            // but the pack was computed WITHOUT it, so its neighbours may already have
+                            // been moved onto that space. Leaving it flagged valid would show an overlap
+                            // the feature promises never to produce, so mark it blocked (⚠ blockiert,
+                            // red outline) and let the user resolve it.
+                            b._invalid = true; b._dirty = true; errs++;
+                        }
+                    }
+                } else if (pl && pl.ok) { // staging vehicle that fits → create its spot
+                    const p = it.pal;
                     try {
-                        const spot = await api.post('/halls/' + P.hallId + '/spots', { label: (p.label + ' #' + p.id).slice(0, 90), geometry: { x: round2(pl.x), y: round2(pl.y), w: round2(f.w), h: round2(f.h), rot: pl.rot || 0, status: 'busy' } });
+                        const spot = await api.post('/halls/' + P.hallId + '/spots', { label: (p.label + ' #' + p.id).slice(0, 90), geometry: { x: round2(pl.x), y: round2(pl.y), w: round2(it.f.w), h: round2(it.f.h), rot: pl.rot || 0, status: 'busy' } });
                         try { await api.put('/spots/' + spot.id + '/vehicle', { vehicle_id: p.id }); }
                         catch (linkErr) { try { await api.del('/spots/' + spot.id); } catch (e2) { /* best effort */ } throw linkErr; }
-                        P.spots.push({ _id: spot.id, kind: 'veh', label: p.label, spotLabel: spot.label, type: p.type || '', vehId: p.id, personId: p.person_id || null, personName: p.person_name || '', L: p.length_m, W: p.width_m, H: p.height_m, t: p.weight_t, x: pl.x, y: pl.y, w: f.w, h: f.h, rot: pl.rot || 0, status: 'busy', _dirty: false });
+                        P.spots.push({ _id: spot.id, kind: 'veh', label: p.label, spotLabel: spot.label, type: p.type || '', vehId: p.id, personId: p.person_id || null, personName: p.person_name || '', L: p.length_m, W: p.width_m, H: p.height_m, t: p.weight_t, x: pl.x, y: pl.y, w: it.f.w, h: it.f.h, rot: pl.rot || 0, status: 'busy', _dirty: false });
                         P.palette = P.palette.filter((x) => x.id !== p.id); staged++;
-                    } catch (err) { stageErr++; } // keep in staging on failure
-                }
+                    } catch (err) { errs++; } // keep in staging on failure
+                } // else: staging vehicle with no room → stays in staging
             }
 
+            // Wait for every spot PUT before the run reports done. allSettled, not all:
+            // persistSpot already handles its own rejection (it re-flags _dirty and toasts),
+            // so a failed write must not abort the remaining bookkeeping here.
+            await Promise.allSettled(writes);
             markDirty(); pushUndo(); draw(); renderRail();
-            const parts = [r1.placed + ' angeordnet'];
-            if (staged) parts.push(staged + ' aus „Nicht platziert" gesetzt');
-            const left = r1.failed + (pals.length - staged);
-            if (left) parts.push(left + ' ohne Platz (in „Nicht platziert")');
-            toast(parts.join(' · ') + (pad > 0 ? ' · Abstand ' + pad.toFixed(2).replace('.', ',') + ' m' : ''), (r1.failed || stageErr) ? 'warn' : 'ok');
+            const parts = [(arranged + staged) + ' angeordnet'];
+            const inQueue = unassigned + (pals.length - staged);
+            if (inQueue) parts.push(inQueue + ' → „Nicht platziert" (kein Platz)');
+            if (errs) parts.push(errs + ' Fehler');
+            toast(parts.join(' · ') + (pad > 0 ? ' · Abstand ' + pad.toFixed(2).replace('.', ',') + ' m' : ''), (inQueue || errs) ? 'warn' : 'ok');
         }
         function renderManageRail() {
             rail.append(hallSwitchCard(false));
@@ -6205,7 +6253,15 @@
             search.addEventListener('input', () => { P.palQuery = search.value; fillPal(); });
             palCard.append(search, pal); rail.append(palCard);
             fillPal();
-            if (canManageNow && (P.spots.length || P.palette.length)) rail.append(el('div', { class: 'gp-rcard card', style: 'padding:.55rem .7rem' }, el('button', { class: 'btn btn-ghost btn-block', title: 'Platzierte + „Nicht platzierte" Gefährte anordnen (Abstand = Puffer, wenn aktiv; sonst bündig)', onclick: () => autoArrange() }, '⊞ Auto-Anordnen')));
+            if (canManageNow && (P.spots.length || P.palette.length)) {
+                const arrCard = el('div', { class: 'gp-rcard card', style: 'padding:.55rem .7rem;display:flex;flex-direction:column;gap:.4rem' });
+                // While a run is in flight both buttons are disabled — autoArrange also guards itself,
+                // but a dead-looking button is the wrong feedback for a multi-second operation.
+                const arrAttrs = (title) => arrangeBusy ? { class: 'btn btn-ghost btn-block', title, disabled: 'disabled' } : { class: 'btn btn-ghost btn-block', title };
+                if (P.spots.length) arrCard.append(el('button', Object.assign(arrAttrs('Nur die bereits platzierten Gefährte neu anordnen — „Nicht platziert" bleibt unangetastet'), { onclick: () => autoArrange(undefined, 'CANVAS_ONLY') }), arrangeBusy ? '… wird angeordnet' : '⊞ Platzierte anordnen'));
+                if (P.palette.length) arrCard.append(el('button', Object.assign(arrAttrs('Platzierte + „Nicht platzierte" Gefährte zusammen anordnen (holt das Backlog aufs Feld)'), { onclick: () => autoArrange(undefined, 'INCLUDE_UNASSIGNED') }), arrangeBusy ? '… wird angeordnet' : '⤵ + „Nicht platzierte" (' + P.palette.length + ')'));
+                rail.append(arrCard);
+            }
             rail.append(renderVehDetail());
         }
         // Partial update of the Garagenplaner display attributes straight from the detail

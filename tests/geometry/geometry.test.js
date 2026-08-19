@@ -191,23 +191,29 @@ test('packRects — big item is placed (BFD keeps the big area for the big vehic
 
 // FE1 — MaxRects specifics: placements hug an edge/neighbour (never float), and never land on an
 // obstacle's or another vehicle's coordinates.
-test('packRects (MaxRects) — first item hugs the top-left corner, does not float', () => {
+// A placement's block {x,y} is the UNROTATED rect origin; what is visually placed is its footprint
+// AABB, so these assertions are made on the footprint (rotation shifts the block origin by design).
+const foot = (p, w, h) => { const W = p.rot === 90 ? h : w, H = p.rot === 90 ? w : h; return { x: p.x + (w - W) / 2, y: p.y + (h - H) / 2, w: W, h: H }; };
+
+test('packRects — first item hugs the margin corner, does not float', () => {
     const r = PG.packRects([{ id: 'a', w: 3, h: 2 }], [], { minX: 0, minY: 0, maxX: 20, maxY: 20 }, null, { margin: 0.2, gap: 0 });
     const p = r.placements[0];
     assert.ok(p.ok);
-    assert.ok(near(p.x, 0.2, 0.01) && near(p.y, 0.2, 0.01), 'placed flush to the margin corner, not mid-room: ' + p.x + ',' + p.y);
+    const f = foot(p, 3, 2);
+    assert.ok(near(f.x, 0.2, 0.01) && near(f.y, 0.2, 0.01), 'footprint flush to the margin corner, not mid-room: ' + f.x + ',' + f.y);
 });
 
-test('packRects (MaxRects) — second item sits flush against the first, not on its coordinates', () => {
+test('packRects — second item sits flush against the first, not on its coordinates', () => {
     const items = [{ id: 'a', w: 4, h: 3 }, { id: 'b', w: 4, h: 3 }];
     const r = PG.packRects(items, [], { minX: 0, minY: 0, maxX: 20, maxY: 20 }, null, { margin: 0, gap: 0 });
     const A = r.placements.find((p) => p.id === 'a'), Bp = r.placements.find((p) => p.id === 'b');
     assert.ok(A.ok && Bp.ok);
     assert.ok(!(near(A.x, Bp.x) && near(A.y, Bp.y)), 'B not stacked on A\'s coordinates');
     assert.ok(!PG.rectsCollide({ x: A.x, y: A.y, w: 4, h: 3, rot: A.rot }, { x: Bp.x, y: Bp.y, w: 4, h: 3, rot: Bp.rot }), 'no overlap');
-    // flush: they share an edge (touching within a couple cm) on some axis
-    const touchX = near(A.x + 4, Bp.x, 0.05) || near(Bp.x + 4, A.x, 0.05);
-    const touchY = near(A.y + 3, Bp.y, 0.05) || near(Bp.y + 3, A.y, 0.05);
+    // flush: their footprints share an edge (touching within a couple cm) on some axis
+    const fa = foot(A, 4, 3), fb = foot(Bp, 4, 3);
+    const touchX = near(fa.x + fa.w, fb.x, 0.05) || near(fb.x + fb.w, fa.x, 0.05);
+    const touchY = near(fa.y + fa.h, fb.y, 0.05) || near(fb.y + fb.h, fa.y, 0.05);
     assert.ok(touchX || touchY, 'B is flush against A');
 });
 
@@ -247,4 +253,231 @@ test('parseDXF — malformed coordinate is skipped, output has no NaN', () => {
     const r = PG.parseDXF('0\nSECTION\n2\nENTITIES\n0\nLINE\n10\n1\n20\nBAD\n11\n4\n21\n6\n0\nLINE\n10\n0\n20\n0\n11\n2\n21\n3\n0\nENDSEC\n0\nEOF\n');
     for (const pl of r.polylines) for (const pt of pl) assert.ok(Number.isFinite(pt[0]) && Number.isFinite(pt[1]), 'no NaN/Inf coord: ' + pt);
     for (const k of ['minX', 'minY', 'maxX', 'maxY']) assert.ok(Number.isFinite(r.bbox[k]), 'finite bbox');
+});
+
+// FE-Routing — exit-path reachability (Auspark-Logik) + packRects allowBlocking integration.
+test('hasExitPath — no target means no routing constraint', () => {
+    assert.equal(PG.hasExitPath({ x: 5, y: 5, w: 2, h: 1, rot: 0 }, [], [], { minX: 0, minY: 0, maxX: 10, maxY: 10 }, {}), true);
+});
+
+test('hasExitPath — open floor reaches a driveway strip', () => {
+    const gate = { x: 0, y: 9, w: 10, h: 1, rot: 0 };
+    assert.equal(PG.hasExitPath({ x: 1, y: 1, w: 2, h: 1, rot: 0 }, [], [gate], { minX: 0, minY: 0, maxX: 10, maxY: 10 }, { clearance: 0.6, cell: 0.25 }), true);
+});
+
+test('hasExitPath — a boxed-in vehicle cannot reach the gate', () => {
+    const walls = [{ x: 3.5, y: 3.5, w: 3, h: 0.4, rot: 0 }, { x: 3.5, y: 6.1, w: 3, h: 0.4, rot: 0 }, { x: 3.5, y: 3.5, w: 0.4, h: 3, rot: 0 }, { x: 6.1, y: 3.5, w: 0.4, h: 3, rot: 0 }];
+    const gate = { x: 0, y: 9, w: 10, h: 1, rot: 0 };
+    assert.equal(PG.hasExitPath({ x: 4, y: 4, w: 2, h: 2, rot: 0 }, walls, [gate], { minX: 0, minY: 0, maxX: 10, maxY: 10 }, { clearance: 0.3, cell: 0.2 }), false);
+});
+
+test('hasExitPath — a gap only passes a vehicle that actually fits through it', () => {
+    // The corridor check measures the vehicle's REAL footprint (not a dilated disk), so the question is
+    // simply: does the body fit through the 1.5 m gap between the two walls?
+    const gate = { x: 8, y: 0, w: 2, h: 10, rot: 0 };
+    const walls = [{ x: 5, y: 0, w: 0.4, h: 4.25, rot: 0 }, { x: 5, y: 5.75, w: 0.4, h: 4.25, rot: 0 }]; // gap y4.25..5.75 = 1.5 m
+    const bounds = { minX: 0, minY: 0, maxX: 10, maxY: 10 };
+    assert.equal(PG.hasExitPath({ x: 1, y: 1, w: 1, h: 1, rot: 0 }, walls, [gate], bounds, { cell: 0.25 }), true, '1 m body fits the 1.5 m gap');
+    assert.equal(PG.hasExitPath({ x: 1, y: 1, w: 2, h: 2, rot: 0 }, walls, [gate], bounds, { cell: 0.25 }), false, '2 m body cannot pass a 1.5 m gap');
+});
+
+test('packRects routing — allowBlocking gates a "verparken" placement', () => {
+    // A dead-end corridor only one car wide: the aisle is at the top, so a second car can only go
+    // BEHIND the first and would be boxed in. Exactly the case allowBlocking is meant to decide.
+    const bounds = { minX: 0, minY: 0, maxX: 2.5, maxY: 10 };
+    const lane = { x: 0, y: 0, w: 2.5, h: 1, rot: 0 }; // driveway across the top; also a no-park obstacle
+    const items = [{ id: 'a', w: 4, h: 2 }, { id: 'b', w: 4, h: 2 }];
+    const opts = { margin: 0, gap: 0, gates: [lane], routeObstacles: [], route: { cell: 0.25 } };
+    const strict = PG.packRects(items, [lane], bounds, null, Object.assign({ allowBlocking: false }, opts));
+    const loose = PG.packRects(items, [lane], bounds, null, Object.assign({ allowBlocking: true }, opts));
+    assert.equal(loose.placed, 2, 'allowBlocking:true packs both (verparken allowed)');
+    assert.equal(strict.placed, 1, 'allowBlocking:false places only the car that keeps an exit');
+    assert.ok(strict.placements.some((p) => !p.ok), 'the boxed-in car is marked not-placeable');
+});
+
+// FE-Comb — perpendicular (Kamm) parking: cars near a horizontal driveway rotate tall so their
+// narrow side faces the Fahrstraße, forming a dense row (Bild 2), instead of a first-fit mix.
+test('packRects comb — cars near a horizontal driveway park perpendicular (tall) and line up', () => {
+    const bounds = { minX: 0, minY: 0, maxX: 12, maxY: 8 };
+    const driveway = { x: 0, y: 6, w: 12, h: 2, rot: 0 }; // Fahrstraße along the bottom (horizontal)
+    const items = [{ id: 'a', w: 4, h: 2 }, { id: 'b', w: 4, h: 2 }, { id: 'c', w: 4, h: 2 }];
+    const r = PG.packRects(items, [driveway], bounds, null, { margin: 0, gap: 0, driveways: [driveway] });
+    const ok = r.placements.filter((p) => p.ok);
+    assert.ok(ok.length >= 2, 'cars placed above the driveway');
+    for (const p of ok) assert.equal(p.rot, 90, 'car is perpendicular (tall) to the horizontal driveway, not laid across it');
+    // and they sit in the same row (all share the bottom edge, flush to the driveway)
+    // Footprint bottom via the shared helper: the block origin is NOT the footprint origin for a
+    // rotated item, so `p.y + 4` was off by 1 here (it happened not to matter, because the assertion
+    // only compares the values to each other — a constant offset cancels).
+    const ys = ok.map((p) => { const f = foot(p, 4, 2); return Math.round((f.y + f.h) * 10) / 10; });
+    assert.ok(ys.every((y) => Math.abs(y - ys[0]) < 0.3), 'cars form one row along the driveway');
+});
+
+// FE-Routing — 1-step exit: a vehicle flush to the driveway exits directly (no lateral clearance),
+// so the comb stays valid and allowBlocking:false yields the same layout as true.
+test('hasExitPath 1-step — car flush to the driveway exits directly despite tight neighbours', () => {
+    const gate = { x: 0, y: 5, w: 10, h: 1, rot: 0 };
+    const foot = { x: 4, y: 1, w: 2, h: 4, rot: 0 }; // bottom edge at y5 touches the gate
+    const nbL = { x: 2, y: 1, w: 2, h: 4, rot: 0 }, nbR = { x: 6, y: 1, w: 2, h: 4, rot: 0 }; // tight neighbours
+    assert.equal(PG.hasExitPath(foot, [nbL, nbR], [gate], { minX: 0, minY: 0, maxX: 10, maxY: 6 }, { clearance: 1.0, exitTol: 0.4 }), true);
+});
+
+test('packRects — full comb against the driveway is identical for allowBlocking false and true', () => {
+    const bounds = { minX: 0, minY: 0, maxX: 12, maxY: 8 };
+    const driveway = { x: 0, y: 5, w: 12, h: 3, rot: 0 };
+    const items = []; for (let i = 0; i < 5; i++) items.push({ id: 'c' + i, w: 4, h: 2 });
+    const opts = { margin: 0, gap: 0, gates: [driveway], routeObstacles: [], driveways: [driveway] };
+    const strict = PG.packRects(items, [driveway], bounds, null, Object.assign({ allowBlocking: false }, opts));
+    const loose = PG.packRects(items, [driveway], bounds, null, Object.assign({ allowBlocking: true }, opts));
+    assert.equal(strict.placed, loose.placed, 'no car blocks another → both modes place the same count');
+    assert.ok(strict.placed >= 5, 'all cars fit the comb');
+    for (const p of strict.placements) if (p.ok) assert.equal(p.rot, 90, 'perpendicular comb in strict mode too');
+});
+
+// FE-Routing — corridor (multi-step) exit: a car parked away from the aisle still exits by driving
+// straight across FREE parking area; only placed objects block that corridor.
+test('hasExitPath corridor — car at the outer wall reaches the aisle across free space', () => {
+    const bounds = { minX: 0, minY: 0, maxX: 20, maxY: 12 };
+    const lane = { x: 0, y: 9, w: 20, h: 3, rot: 0 };          // aisle along the bottom, spans the hall
+    const car = { x: 2, y: 0.5, w: 2, h: 4, rot: 0 };           // at the top wall, 4.5 m of free space below
+    assert.equal(PG.hasExitPath(car, [], [lane], bounds, { clearance: 1.0 }), true, 'free corridor down to the aisle');
+});
+
+test('hasExitPath corridor — blocked when another vehicle sits in the corridor', () => {
+    const bounds = { minX: 0, minY: 0, maxX: 20, maxY: 12 };
+    const lane = { x: 0, y: 9, w: 20, h: 3, rot: 0 };
+    const car = { x: 2, y: 0.5, w: 2, h: 4, rot: 0 };
+    const blocker = { x: 1.5, y: 5.5, w: 3, h: 2, rot: 0 };     // parked right in the way, wall to wall around it
+    const walls = [{ x: 0, y: 5.5, w: 1.5, h: 2, rot: 0 }, { x: 4.5, y: 5.5, w: 15.5, h: 2, rot: 0 }];
+    assert.equal(PG.hasExitPath(car, [blocker].concat(walls), [lane], bounds, { clearance: 1.0, cell: 0.25 }), false, 'corridor and detours blocked');
+});
+
+test('hasExitPath corridor — free parking area is drivable, not an obstacle', () => {
+    const bounds = { minX: 0, minY: 0, maxX: 20, maxY: 12 };
+    const lane = { x: 0, y: 10, w: 20, h: 2, rot: 0 };
+    const car = { x: 8, y: 0.5, w: 2, h: 4, rot: 0 };
+    // neighbours beside the corridor (not in it) must not block the straight drive down
+    const nb = [{ x: 5, y: 0.5, w: 2, h: 4, rot: 0 }, { x: 11, y: 0.5, w: 2, h: 4, rot: 0 }];
+    assert.equal(PG.hasExitPath(car, nb, [lane], bounds, { clearance: 1.0 }), true);
+});
+
+// FE-Routing — L-shaped exit: a vehicle in a room corner drives parallel to the wall first, then
+// turns 90° onto the Fahrstraße. A straight-only check wrongly rejected these.
+test('hasExitPath L-shape — corner car exits via horizontal run then turn onto the aisle', () => {
+    const bounds = { minX: 0, minY: 0, maxX: 20, maxY: 12 };
+    const lane = { x: 14, y: 0, w: 6, h: 12, rot: 0 };            // aisle on the RIGHT
+    const car = { x: 0.5, y: 9.5, w: 3, h: 2, rot: 0 };            // bottom-LEFT corner
+    // The wall must cover the car's OWN y-span (9.5–11.5), or the straight corridor of stage 2 passes
+    // underneath it and stage 2b — the thing this test is named for — never runs. It stops short of the
+    // top so the L is still open: slide up the free left edge, then turn right onto the aisle.
+    const wall = { x: 5, y: 4, w: 1, h: 8, rot: 0 };
+    assert.equal(PG.hasExitPath(car, [wall], [lane], bounds, { clearance: 1.0, cell: 0.25 }), true, 'L-path: vertical leg then turn onto the aisle');
+});
+
+test('hasExitPath L-shape — still blocked when the elbow leg is occupied', () => {
+    const bounds = { minX: 0, minY: 0, maxX: 20, maxY: 12 };
+    const lane = { x: 14, y: 0, w: 6, h: 12, rot: 0 };
+    const car = { x: 0.5, y: 9.5, w: 3, h: 2, rot: 0 };
+    const wallAll = { x: 4, y: 0, w: 1, h: 12, rot: 0 };           // full-height wall: no way through at all
+    assert.equal(PG.hasExitPath(car, [wallAll], [lane], bounds, { clearance: 0.5, cell: 0.25 }), false);
+});
+
+// FE-Bay — the bay pass must follow the AISLE, not just the wall it sits on, and must not rescan a
+// wall it has already exhausted (that blew the runtime up on large halls).
+test('packRects bays — a VERTICAL driveway yields cars facing it (not turned along the far wall)', () => {
+    const B = { minX: 0, minY: 0, maxX: 40, maxY: 25 };
+    const lane = { x: 18, y: 0, w: 3, h: 25, rot: 0 }; // aisle runs top→bottom
+    const walls = [{ x: 0, y: 0, w: 40, h: 0.3, rot: 0 }, { x: 0, y: 24.7, w: 40, h: 0.3, rot: 0 },
+        { x: 0, y: 0, w: 0.3, h: 25, rot: 0 }, { x: 39.7, y: 0, w: 0.3, h: 25, rot: 0 }];
+    const items = []; for (let i = 0; i < 12; i++) items.push({ id: 'c' + i, w: 4.6, h: 1.9 });
+    const r = PG.packRects(items, walls.concat([lane]), B, null,
+        { margin: 0, gap: 0, gates: [lane], routeObstacles: walls, driveways: [lane], allowBlocking: false });
+    const ok = r.placements.filter((p) => p.ok);
+    assert.ok(ok.length >= 10, 'most cars placed, got ' + ok.length);
+    for (const p of ok) assert.equal(p.rot || 0, 0, 'long axis points at the vertical aisle (rot 0), not along the far wall');
+});
+
+test('packRects bays — a large hall packs in well under a second (no exhausted-bay rescan)', () => {
+    const W = 60, H = 40;
+    const B = { minX: 0, minY: 0, maxX: W, maxY: H };
+    const lane = { x: 0, y: H / 2 - 2, w: W, h: 4, rot: 0 };
+    const walls = [{ x: 0, y: 0, w: W, h: 0.3, rot: 0 }, { x: 0, y: H - 0.3, w: W, h: 0.3, rot: 0 },
+        { x: 0, y: 0, w: 0.3, h: H, rot: 0 }, { x: W - 0.3, y: 0, w: 0.3, h: H, rot: 0 }];
+    const items = []; for (let i = 0; i < 60; i++) items.push({ id: 'c' + i, w: 4.6, h: 1.9 });
+    const t0 = Date.now();
+    const r = PG.packRects(items, walls.concat([lane]), B, null,
+        { margin: 0, gap: 0, gates: [lane], routeObstacles: walls, driveways: [lane], allowBlocking: false });
+    const ms = Date.now() - t0;
+    assert.equal(r.placed, 60, 'all 60 placed');
+    assert.ok(ms < 1500, 'pack finished in ' + ms + ' ms (was minutes when exhausted bays were rescanned)');
+});
+
+// FE1 — one unplaceable vehicle must not disable the bay pass for everyone else.
+// Closing a bay on its FIRST rejection reverted the whole hall to the scattered
+// MaxRects layout as soon as a single oversized item appeared in the list.
+test('packRects bays — an item too large for the hall does not break the comb', () => {
+    const W = 60, H = 40;
+    const B = { minX: 0, minY: 0, maxX: W, maxY: H };
+    const lane = { x: 0, y: 18, w: W, h: 4, rot: 0 };
+    const walls = [{ x: 0, y: 0, w: W, h: 0.3, rot: 0 }, { x: 0, y: H - 0.3, w: W, h: 0.3, rot: 0 },
+        { x: 0, y: 0, w: 0.3, h: H, rot: 0 }, { x: W - 0.3, y: 0, w: 0.3, h: H, rot: 0 }];
+    const opts = { margin: 0, gap: 0, gates: [lane], routeObstacles: walls, driveways: [lane], allowBlocking: false };
+    const cars = () => { const a = []; for (let i = 0; i < 12; i++) a.push({ id: 'c' + i, w: 4.6, h: 1.9 }); return a; };
+    const rowOf = (r) => { const ok = r.placements.filter((p) => p.ok && p.id.startsWith('c'));
+        return [...new Set(ok.map((p) => Math.round((p.y + (p.rot === 90 ? (1.9 - 4.6) / 2 : 0)) * 10) / 10))]; };
+
+    const plain = PG.packRects(cars(), walls.concat([lane]), B, null, opts);
+    const withOversized = PG.packRects([{ id: 'boat', w: 70, h: 3 }].concat(cars()), walls.concat([lane]), B, null, opts);
+
+    // Count first: rowOf returns a SET of row positions, so if neither run placed a
+    // single car both sides are [] and deepEqual passes vacuously — the exact regression
+    // this test exists to catch (a bay closing on its first rejection places nothing).
+    const carsPlaced = (r) => r.placements.filter((p) => p.ok && p.id.startsWith('c')).length;
+    assert.equal(carsPlaced(plain), 12, 'baseline must place all 12 cars, else the comparison below is vacuous');
+    assert.equal(carsPlaced(withOversized), carsPlaced(plain),
+        'the unplaceable item must not cost any car its place');
+    assert.deepEqual(rowOf(withOversized), rowOf(plain),
+        'the cars must still form the same wall-hugging row(s) despite an unplaceable item');
+    assert.ok(withOversized.placements.find((p) => p.id === 'boat' && !p.ok), 'the oversized item is reported unplaceable');
+});
+
+// FE-Routing — degenerate floor bounds must not be reported as "can exit". Stages 1–2b have already
+// failed by the time the BFS runs, so if the grid cannot be built reachability is UNPROVEN and the
+// honest answer is false; returning true there silently dropped the guaranteeExitPath contract.
+test('hasExitPath — degenerate or non-finite bounds report NO exit path, not a free pass', () => {
+    // The target is SMALLER than the car on both axes, which is what forces stage 3: stage 2 needs the
+    // target to span the car's cross-section and stage 2b needs it at least as wide/tall as the car, so
+    // both are skipped and only the BFS can answer. (Stages 1–2b never read `bounds`, so a scenario they
+    // can solve would answer before the guard is ever reached and prove nothing.)
+    const car = { x: 0.5, y: 0.5, w: 2, h: 4, rot: 0 };
+    const tiny = { x: 16, y: 16, w: 1, h: 1, rot: 0 };
+    const opts = { clearance: 0.5, cell: 0.25 };
+    const good = { minX: 0, minY: 0, maxX: 20, maxY: 20 };
+    assert.equal(PG.hasExitPath(car, [], [tiny], good, opts), true, 'valid bounds still route via the BFS');
+    for (const [name, bounds] of [
+        ['zero width', { minX: 5, minY: 0, maxX: 5, maxY: 20 }],
+        ['negative extent', { minX: 10, minY: 0, maxX: 2, maxY: 20 }],
+        ['NaN', { minX: 0, minY: 0, maxX: NaN, maxY: 20 }],
+        ['Infinity', { minX: 0, minY: 0, maxX: Infinity, maxY: 20 }],
+    ]) {
+        assert.equal(PG.hasExitPath(car, [], [tiny], bounds, opts), false, name + ' must not claim an exit path');
+    }
+});
+
+// FE-Preplaced — vehicles the caller declares as ALREADY on the floor are obstacles for both passes.
+// The bay pass always tested them; the MaxRects fallback did not, because `preplaced` is neither
+// carved out of the free set nor part of the obstacle list feasible() checks.
+test('packRects — a MaxRects placement never lands on a preplaced vehicle', () => {
+    const bounds = { minX: 0, minY: 0, maxX: 10, maxY: 10 };
+    // No driveways and no usable wall run for a bay: force the MaxRects path.
+    const pre = [{ id: 'pre', x: 0, y: 0, w: 6, h: 6, rot: 0 }];
+    const items = [{ id: 'a', w: 5, h: 5 }];
+    const r = PG.packRects(items, [], bounds, null, { margin: 0, gap: 0, preplaced: pre });
+    const p = r.placements.find((x) => x.id === 'a');
+    if (p && p.ok) {
+        const f = foot(p, 5, 5);
+        const overlap = f.x < 6 && f.x + f.w > 0 && f.y < 6 && f.y + f.h > 0;
+        assert.ok(!overlap, 'placed at ' + f.x + ',' + f.y + ' — overlaps the preplaced 6x6 block at 0,0');
+    }
+    // Either it found the clear corner or it declined; both are correct, stacking is not.
 });

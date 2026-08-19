@@ -625,13 +625,19 @@ func (h *Handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 			settled, archive = n, arch
 		}
 		// Trail commits with the payment (atomic).
-		if err := h.auditTx(ctx, tx, r, "create", "payment", p.ID,
-			fmt.Sprintf("recorded payment %.2f € (%s)", p.Amount, p.Method)); err != nil {
+		if err := h.auditChangeTx(ctx, tx, r, "create", "payment", p.ID,
+			fmt.Sprintf("recorded payment %.2f € (%s)", p.Amount, p.Method),
+			map[string]any{
+				"amount":    map[string]any{"old": nil, "new": p.Amount},
+				"method":    map[string]any{"old": nil, "new": p.Method},
+				"person_id": map[string]any{"old": nil, "new": p.PersonID},
+			}); err != nil {
 			return err
 		}
 		if settled > 0 {
-			if err := h.auditTx(ctx, tx, r, "update", "payment", p.ID,
-				fmt.Sprintf("stamped %d position(s) as paid", settled)); err != nil {
+			if err := h.auditChangeTx(ctx, tx, r, "update", "payment", p.ID,
+				fmt.Sprintf("stamped %d position(s) as paid", settled),
+				auditSnapshot(map[string]any{"settled_positions": settled})); err != nil {
 				return err
 			}
 		}
@@ -770,9 +776,11 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 		}
 		// Reversal trail commits with the reversal (atomic) — the retained-record
 		// Storno and its audit row are inseparable (BAO §131).
-		return h.auditTx(ctx, tx, r, "update", "payment", id, fmt.Sprintf(
+		return h.auditChangeTx(ctx, tx, r, "update", "payment", id, fmt.Sprintf(
 			"Zahlung storniert: %.2f € (%s, %s) – Datensatz bleibt erhalten, Zuordnungen zurückgesetzt",
-			delAmt, delMethod, delOn.Format("2006-01-02")))
+			delAmt, delMethod, delOn.Format("2006-01-02")),
+			diffFields(map[string]any{"reversed": false, "amount": delAmt, "method": delMethod},
+				map[string]any{"reversed": true, "amount": delAmt, "method": delMethod}))
 	})
 	if txErr == errPaymentNotFound || (txErr == nil && !deleted) {
 		writeError(w, http.StatusNotFound, "payment not found")
@@ -888,8 +896,12 @@ func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
 			settled++
 		}
 		if settled > 0 {
-			return h.auditTx(ctx, tx, r, "update", "payment", 0,
-				fmt.Sprintf("applied Guthaben to %d open position(s)", settled))
+			// entity_id is the payment the drawdown is booked against — it is guaranteed
+			// non-zero here (the handler returns early above when there is none). Logging
+			// 0 left an entry under entity "payment" that resolved to no payment at all.
+			return h.auditChangeTx(ctx, tx, r, "update", "payment", latestPayment,
+				fmt.Sprintf("applied Guthaben to %d open position(s)", settled),
+				auditSnapshot(map[string]any{"settled_positions": settled, "person_id": id}))
 		}
 		return nil
 	})

@@ -55,31 +55,43 @@ func TestAuditLogAppendOnly(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	_, err := pool.Exec(ctx,
-		`INSERT INTO audit_log (username, action, entity, summary)
-		 VALUES ('tester','create','test','append-only probe')`)
-	if err != nil {
+	// Backdated so a POSITIVE retention window can actually reach it. The row used to
+	// be inserted at now() and pruned with keep=-1h, which only worked because a
+	// negative keep put the cutoff in the FUTURE. PruneAuditLog now treats keep <= 0
+	// as "keep forever" and skips the long pass entirely, so that trick silently
+	// stopped pruning anything — the test has to age the row instead.
+	// Entity 'test' is outside auditKeepForeverEntities and action 'create' is
+	// outside auditShortLivedActions, so the LONG pass is what deletes it.
+	// Keep the row's id: the assertions below target THIS row rather than counting
+	// every 'tester' row in the table. audit_log is append-only and the test DB is
+	// reused, so a count could be perturbed by anything else that ever wrote under
+	// that username, and would then fail for a reason unrelated to retention.
+	var probeID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO audit_log (username, action, entity, summary, created_at)
+		 VALUES ('tester','create','test','append-only probe', now() - interval '30 days')
+		 RETURNING id`).Scan(&probeID); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 
 	// UPDATE and unguarded DELETE must be rejected by the trigger.
-	if _, err := pool.Exec(ctx, `UPDATE audit_log SET summary='tampered' WHERE username='tester'`); err == nil {
+	if _, err := pool.Exec(ctx, `UPDATE audit_log SET summary='tampered' WHERE id=$1`, probeID); err == nil {
 		t.Fatal("UPDATE on audit_log should be blocked")
 	}
-	if _, err := pool.Exec(ctx, `DELETE FROM audit_log WHERE username='tester'`); err == nil {
+	if _, err := pool.Exec(ctx, `DELETE FROM audit_log WHERE id=$1`, probeID); err == nil {
 		t.Fatal("ad-hoc DELETE on audit_log should be blocked")
 	}
 
 	// The sanctioned retention path (opts into the guard exception) may prune.
-	if _, err := PruneAuditLog(ctx, pool, -time.Hour); err != nil {
+	if _, err := PruneAuditLog(ctx, pool, 24*time.Hour, 0); err != nil {
 		t.Fatalf("PruneAuditLog: %v", err)
 	}
 	var remaining int
 	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM audit_log WHERE username='tester'`).Scan(&remaining); err != nil {
+		`SELECT count(*) FROM audit_log WHERE id=$1`, probeID).Scan(&remaining); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if remaining != 0 {
-		t.Fatalf("retention prune should have removed the probe row, %d remain", remaining)
+		t.Fatalf("retention prune should have removed probe row %d", probeID)
 	}
 }

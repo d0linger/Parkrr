@@ -136,10 +136,19 @@ func (h *Handler) SaveBillingSettings(w http.ResponseWriter, r *http.Request) {
 	var oldUID string
 	var oldRate float64
 	var oldKlein bool
+	// Read every column the UPDATE writes, so the audit diff is complete (a changed
+	// IBAN or seller address must be provable; the redaction layer masks the values).
+	var oldName, oldAddr, oldPrefix, oldIBAN, oldBIC, oldFooter string
+	var oldPad, oldTerms int
 	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
 		if err := tx.QueryRow(r.Context(),
-			`SELECT next_invoice_no, seller_uid, ust_rate, kleinunternehmer FROM billing_settings WHERE id=1 FOR UPDATE`).
-			Scan(&oldNext, &oldUID, &oldRate, &oldKlein); err != nil {
+			`SELECT next_invoice_no, seller_uid, ust_rate, kleinunternehmer,
+			        seller_name, seller_address, invoice_prefix, number_pad,
+			        iban, bic, payment_terms_days, footer_note
+			   FROM billing_settings WHERE id=1 FOR UPDATE`).
+			Scan(&oldNext, &oldUID, &oldRate, &oldKlein,
+				&oldName, &oldAddr, &oldPrefix, &oldPad,
+				&oldIBAN, &oldBIC, &oldTerms, &oldFooter); err != nil {
 			return err
 		}
 		if in.NextInvoiceNo < oldNext {
@@ -174,7 +183,20 @@ func (h *Handler) SaveBillingSettings(w http.ResponseWriter, r *http.Request) {
 		if len(chg) > 0 {
 			msg += ": " + strings.Join(chg, ", ")
 		}
-		return h.auditTx(r.Context(), tx, r, "update", "billing", 0, msg)
+		// The old values were read FOR UPDATE above, so the diff is free. seller_uid
+		// is a tax identifier, not a secret — kept readable for the audit.
+		return h.auditChangeTx(r.Context(), tx, r, "update", "billing", 0, msg, diffFields(
+			map[string]any{"next_invoice_no": oldNext, "seller_uid": oldUID,
+				"ust_rate": oldRate, "kleinunternehmer": oldKlein,
+				"seller_name": oldName, "seller_address": oldAddr, "invoice_prefix": oldPrefix,
+				"number_pad": oldPad, "iban": oldIBAN, "bic": oldBIC,
+				"payment_terms_days": oldTerms, "footer_note": oldFooter},
+			map[string]any{"next_invoice_no": in.NextInvoiceNo, "seller_uid": in.SellerUID,
+				"ust_rate": in.UStRate, "kleinunternehmer": in.Kleinunternehmer,
+				"seller_name": in.SellerName, "seller_address": in.SellerAddress,
+				"invoice_prefix": in.InvoicePrefix, "number_pad": in.NumberPad,
+				"iban": in.IBAN, "bic": in.BIC,
+				"payment_terms_days": in.PaymentTermsDays, "footer_note": in.FooterNote}))
 	})
 	if txErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not save billing settings")
@@ -716,8 +738,13 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 			Subtotal: subtotal, UStRate: rate, TaxAmount: tax, Total: total,
 			Kleinunternehmer: s.Kleinunternehmer, Seller: seller, Buyer: buyer, Note: trim(req.Note)}
 		// Audit inside the tx: the immutable document and its trail commit together.
-		return h.auditTx(r.Context(), tx, r, "create", "invoice", invID,
-			"issued invoice "+number+" ("+fmt.Sprintf("%.2f €", total)+")")
+		// An issued invoice is an immutable document — keep its defining values.
+		return h.auditChangeTx(r.Context(), tx, r, "create", "invoice", invID,
+			"issued invoice "+number+" ("+fmt.Sprintf("%.2f €", total)+")",
+			map[string]any{
+				"number": map[string]any{"old": nil, "new": number},
+				"total":  map[string]any{"old": nil, "new": total},
+			})
 	})
 	if txErr != nil {
 		var ce *complianceError
@@ -864,13 +891,18 @@ func (h *Handler) CancelInvoice(w http.ResponseWriter, r *http.Request) {
 			Subtotal: -o.subtotal, UStRate: o.ustRate, TaxAmount: -o.tax, Total: -o.total,
 			Kleinunternehmer: o.klein, Note: note, CancelsID: &id}
 		// Both trail rows commit with the Storno itself (atomic).
-		if err := h.auditTx(r.Context(), tx, r, "update", "invoice", id, "storniert – Gegenbeleg "+number); err != nil {
+		if err := h.auditChangeTx(r.Context(), tx, r, "update", "invoice", id, "storniert – Gegenbeleg "+number,
+			diffFields(map[string]any{"canceled": false}, map[string]any{"canceled": true})); err != nil {
 			return err
 		}
 		// The counter-document is a distinct gapless-numbered Beleg — audit its issuance
 		// under its own id/number (it releases the original's payments to Guthaben).
-		return h.auditTx(r.Context(), tx, r, "create", "invoice", stornoID,
-			"Storno-Gegenbeleg "+number+" zu Rechnung "+o.number)
+		return h.auditChangeTx(r.Context(), tx, r, "create", "invoice", stornoID,
+			"Storno-Gegenbeleg "+number+" zu Rechnung "+o.number,
+			map[string]any{
+				"number":          map[string]any{"old": nil, "new": number},
+				"cancels_invoice": map[string]any{"old": nil, "new": o.number},
+			})
 	})
 	if txErr != nil {
 		if errors.Is(txErr, errAlreadyCanceled) {
@@ -1018,8 +1050,13 @@ func (h *Handler) PayInvoices(w http.ResponseWriter, r *http.Request) {
 		}
 		out.Allocated = round2(pr.Amount - remaining)
 		out.Unallocated = round2(remaining)
-		return h.auditTx(r.Context(), tx, r, "create", "payment", out.PaymentID,
-			fmt.Sprintf("Zahlung %.2f € auf %d Rechnung(en) (Rest %.2f € nicht zugeordnet)", pr.Amount, out.Invoices, out.Unallocated))
+		return h.auditChangeTx(r.Context(), tx, r, "create", "payment", out.PaymentID,
+			fmt.Sprintf("Zahlung %.2f € auf %d Rechnung(en) (Rest %.2f € nicht zugeordnet)", pr.Amount, out.Invoices, out.Unallocated),
+			map[string]any{
+				"amount":      map[string]any{"old": nil, "new": pr.Amount},
+				"invoices":    map[string]any{"old": nil, "new": out.Invoices},
+				"unallocated": map[string]any{"old": nil, "new": out.Unallocated},
+			})
 	})
 	if txErr != nil {
 		if errors.Is(txErr, errInvoiceNotOpen) {

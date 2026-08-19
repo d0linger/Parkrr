@@ -98,7 +98,8 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 	// row updated, backup codes issued), so a failure at any step keeps the
 	// accumulated attempts counted.
 	h.resetReauth(key, ip)
-	h.audit(r, "update", "user", u.ID, "enabled two-factor authentication")
+	h.auditChange(r, "update", "user", u.ID, "enabled two-factor authentication",
+		diffFields(map[string]any{"totp_enabled": false}, map[string]any{"totp_enabled": true}))
 	writeJSON(w, http.StatusOK, map[string]any{"status": "enabled", "backup_codes": codes})
 }
 
@@ -141,7 +142,8 @@ func (h *AuthHandler) TOTPDisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.Auth.DeleteBackupCodes(r.Context(), u.ID)
-	h.audit(r, "update", "user", u.ID, u.Username+" disabled two-factor authentication")
+	h.auditChange(r, "update", "user", u.ID, u.Username+" disabled two-factor authentication",
+		diffFields(map[string]any{"totp_enabled": true}, map[string]any{"totp_enabled": false}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "disabled"})
 }
 

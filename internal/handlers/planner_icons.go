@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Custom Garagenplaner icons ("tags"): user-uploaded top-view images selectable per
@@ -131,7 +133,8 @@ func (h *Handler) UploadPlannerIcon(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not store icon")
 		return
 	}
-	h.audit(r, "create", "planner_icon", iconID, "uploaded planner icon "+name)
+	h.auditCreated(r, "planner_icon", iconID, "uploaded planner icon "+name,
+		map[string]any{"name": name})
 	writeJSON(w, http.StatusCreated, plannerIconMeta{
 		ID: iconID, Name: name, ContentType: contentType, ByteSize: len(data), CreatedAt: createdAt,
 	})
@@ -202,20 +205,56 @@ func (h *Handler) UpdatePlannerIcon(w http.ResponseWriter, r *http.Request) {
 		query = `UPDATE planner_icons SET content_type=$1, byte_size=$2, data=$3 WHERE id=$4`
 		args = []any{contentType, len(data), data, id}
 	}
-	ct, err := h.Pool.Exec(r.Context(), query, args...)
-	if err != nil {
-		if isUniqueViolation(err) {
-			writeError(w, http.StatusConflict, "an icon with that name already exists")
-			return
+	// The UPDATE is built dynamically above, so a prev-CTE would not fit. Read the old
+	// name under FOR UPDATE in the SAME transaction as the write instead: an unlocked
+	// SELECT followed by a separate Exec could observe a name a concurrent rename had
+	// already replaced, and record a "before" that was never the value this request
+	// changed. The audit row is written inside the transaction too, so it commits or
+	// rolls back with the icon.
+	var prevName, newName string
+	var notFound, dupName bool
+	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(r.Context(),
+			`SELECT name FROM planner_icons WHERE id=$1 FOR UPDATE`, id).Scan(&prevName); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				notFound = true
+				return nil
+			}
+			return err
 		}
+		ct, err := tx.Exec(r.Context(), query, args...)
+		if err != nil {
+			if isUniqueViolation(err) {
+				dupName = true
+				return nil
+			}
+			return err
+		}
+		if ct.RowsAffected() == 0 {
+			notFound = true
+			return nil
+		}
+		newName = prevName
+		if name != "" {
+			newName = name
+		}
+		return h.auditChangeTx(r.Context(), tx, r, "update", "planner_icon", id,
+			"updated planner icon "+newName,
+			mergeChanges(
+				diffFields(map[string]any{"name": prevName}, map[string]any{"name": newName}),
+				auditSnapshot(map[string]any{"image_replaced": len(data) > 0})))
+	})
+	switch {
+	case txErr != nil:
 		writeError(w, http.StatusInternalServerError, "could not update icon")
 		return
-	}
-	if ct.RowsAffected() == 0 {
+	case dupName:
+		writeError(w, http.StatusConflict, "an icon with that name already exists")
+		return
+	case notFound:
 		writeError(w, http.StatusNotFound, "icon not found")
 		return
 	}
-	h.audit(r, "update", "planner_icon", id, "updated planner icon")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
@@ -267,19 +306,20 @@ func (h *Handler) DeletePlannerIcon(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not delete icon")
 		return
 	}
-	ct, err := tx.Exec(r.Context(), `DELETE FROM planner_icons WHERE id=$1`, id)
-	if err != nil {
+	var delName string
+	if err := tx.QueryRow(r.Context(),
+		`DELETE FROM planner_icons WHERE id=$1 RETURNING name`, id).Scan(&delName); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "icon not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete icon")
-		return
-	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "icon not found")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete icon")
 		return
 	}
-	h.audit(r, "delete", "planner_icon", id, "deleted planner icon")
+	h.auditDeleted(r, "planner_icon", id, "deleted planner icon "+delName, map[string]any{"name": delName})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

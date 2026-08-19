@@ -97,7 +97,8 @@ func (h *Handler) CreateGarage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create garage")
 		return
 	}
-	h.audit(r, "create", "garage", g.ID, "created garage "+g.Name)
+	h.auditCreated(r, "garage", g.ID, "created garage "+g.Name,
+		map[string]any{"name": g.Name, "sort_order": g.SortOrder})
 	writeJSON(w, http.StatusCreated, g)
 }
 
@@ -122,10 +123,19 @@ func (h *Handler) UpdateGarage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is too long")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE garages SET name=$1, sort_order=$2, updated_at=now() WHERE id=$3`,
-		req.Name, req.SortOrder, id)
+	// The `prev` CTE returns the pre-update values in the SAME statement, so the
+	// audit diff is atomic with the change (no second round-trip, no race).
+	var prev garageRequest
+	err := h.Pool.QueryRow(r.Context(),
+		`WITH prev AS (SELECT name, sort_order FROM garages WHERE id=$3)
+		 UPDATE garages SET name=$1, sort_order=$2, updated_at=now() WHERE id=$3
+		 RETURNING (SELECT name FROM prev), (SELECT sort_order FROM prev)`,
+		req.Name, req.SortOrder, id).Scan(&prev.Name, &prev.SortOrder)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "garage not found")
+			return
+		}
 		if isUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "a garage with that name already exists")
 			return
@@ -133,11 +143,7 @@ func (h *Handler) UpdateGarage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not update garage")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "garage not found")
-		return
-	}
-	h.audit(r, "update", "garage", id, "updated garage "+req.Name)
+	h.auditChange(r, "update", "garage", id, "updated garage "+req.Name, diffFields(prev, req))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -149,16 +155,18 @@ func (h *Handler) DeleteGarage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM garages WHERE id=$1`, id)
+	// RETURNING names what was deleted; an id alone is unresolvable afterwards.
+	var delName string
+	err := h.Pool.QueryRow(r.Context(), `DELETE FROM garages WHERE id=$1 RETURNING name`, id).Scan(&delName)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "garage not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete garage")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "garage not found")
-		return
-	}
-	h.audit(r, "delete", "garage", id, "deleted garage")
+	h.auditDeleted(r, "garage", id, "deleted garage "+delName, map[string]any{"name": delName})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -249,7 +257,8 @@ func (h *Handler) CreateHall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create hall")
 		return
 	}
-	h.audit(r, "create", "hall", hl.ID, "created hall "+hl.Name)
+	h.auditCreated(r, "hall", hl.ID, "created hall "+hl.Name,
+		map[string]any{"name": hl.Name, "garage_id": hl.GarageID, "sort_order": hl.SortOrder})
 	writeJSON(w, http.StatusCreated, hl)
 }
 
@@ -279,10 +288,20 @@ func (h *Handler) UpdateHall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "geometry is invalid or too large")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE halls SET name=$1, geometry=$2, sort_order=$3, updated_at=now() WHERE id=$4`,
-		req.Name, geom, req.SortOrder, id)
+	// `prev` returns the pre-update values atomically with the write (see UpdateGarage).
+	var prevName string
+	var prevSort int
+	var prevGeom []byte
+	err := h.Pool.QueryRow(r.Context(),
+		`WITH prev AS (SELECT name, sort_order, geometry FROM halls WHERE id=$4)
+		 UPDATE halls SET name=$1, geometry=$2, sort_order=$3, updated_at=now() WHERE id=$4
+		 RETURNING (SELECT name FROM prev), (SELECT sort_order FROM prev), (SELECT geometry FROM prev)`,
+		req.Name, geom, req.SortOrder, id).Scan(&prevName, &prevSort, &prevGeom)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "hall not found")
+			return
+		}
 		if isUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "a hall with that name already exists in this garage")
 			return
@@ -290,11 +309,17 @@ func (h *Handler) UpdateHall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not update hall")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "hall not found")
-		return
+	// The floor plan is a large opaque blob — a full before/after would drown the
+	// trail, so record only THAT it changed alongside the readable fields.
+	type hallAudit struct {
+		Name        string `json:"name"`
+		SortOrder   int    `json:"sort_order"`
+		FloorPlanOf string `json:"floor_plan"`
 	}
-	h.audit(r, "update", "hall", id, "updated hall "+req.Name)
+	changes := diffFields(
+		hallAudit{Name: prevName, SortOrder: prevSort, FloorPlanOf: blobState(prevGeom)},
+		hallAudit{Name: req.Name, SortOrder: req.SortOrder, FloorPlanOf: blobState(geom)})
+	h.auditChange(r, "update", "hall", id, "updated hall "+req.Name, changes)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -306,16 +331,17 @@ func (h *Handler) DeleteHall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM halls WHERE id=$1`, id)
+	var delName string
+	err := h.Pool.QueryRow(r.Context(), `DELETE FROM halls WHERE id=$1 RETURNING name`, id).Scan(&delName)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "hall not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete hall")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "hall not found")
-		return
-	}
-	h.audit(r, "delete", "hall", id, "deleted hall")
+	h.auditDeleted(r, "hall", id, "deleted hall "+delName, map[string]any{"name": delName})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -448,7 +474,8 @@ func (h *Handler) CreateSpot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create spot")
 		return
 	}
-	h.audit(r, "create", "spot", s.ID, "created spot "+s.Label)
+	h.auditCreated(r, "spot", s.ID, "created spot "+s.Label,
+		map[string]any{"label": s.Label, "hall_id": s.HallID})
 	writeJSON(w, http.StatusCreated, s)
 }
 
@@ -478,10 +505,18 @@ func (h *Handler) UpdateSpot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "geometry is invalid or too large")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE spots SET label=$1, geometry=$2, updated_at=now() WHERE id=$3`,
-		req.Label, geom, id)
+	var prevLabel string
+	var prevGeom []byte
+	err := h.Pool.QueryRow(r.Context(),
+		`WITH prev AS (SELECT label, geometry FROM spots WHERE id=$3)
+		 UPDATE spots SET label=$1, geometry=$2, updated_at=now() WHERE id=$3
+		 RETURNING (SELECT label FROM prev), (SELECT geometry FROM prev)`,
+		req.Label, geom, id).Scan(&prevLabel, &prevGeom)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "spot not found")
+			return
+		}
 		if isUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "a spot with that label already exists in this hall")
 			return
@@ -489,11 +524,10 @@ func (h *Handler) UpdateSpot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not update spot")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "spot not found")
-		return
-	}
-	h.audit(r, "update", "spot", id, "updated spot "+req.Label)
+	// Geometry is an opaque blob — record its state, not the payload (as for halls).
+	h.auditChange(r, "update", "spot", id, "updated spot "+req.Label, diffFields(
+		map[string]any{"label": prevLabel, "geometry": blobState(prevGeom)},
+		map[string]any{"label": req.Label, "geometry": blobState(geom)}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -504,16 +538,20 @@ func (h *Handler) DeleteSpot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(), `DELETE FROM spots WHERE id=$1`, id)
+	var delLabel string
+	var delHall int64
+	err := h.Pool.QueryRow(r.Context(),
+		`DELETE FROM spots WHERE id=$1 RETURNING label, hall_id`, id).Scan(&delLabel, &delHall)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "spot not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not delete spot")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "spot not found")
-		return
-	}
-	h.audit(r, "delete", "spot", id, "deleted spot")
+	h.auditDeleted(r, "spot", id, "deleted spot "+delLabel,
+		map[string]any{"label": delLabel, "hall_id": delHall})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -566,7 +604,13 @@ func (h *Handler) AssignSpotVehicle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "vehicle not found")
 		return
 	}
-	h.audit(r, "update", "spot", spotID, "assigned vehicle to spot")
+	// Who stood here before? Claiming nil would assert the spot was empty even when
+	// another Gefaehrt was displaced by this assignment.
+	var prevOccupant *int64
+	_ = h.Pool.QueryRow(r.Context(),
+		`SELECT id FROM vehicles WHERE spot_id=$1 AND id <> $2`, spotID, req.VehicleID).Scan(&prevOccupant)
+	h.auditChange(r, "update", "spot", spotID, "assigned vehicle to spot",
+		diffFields(map[string]any{"vehicle_id": prevOccupant}, map[string]any{"vehicle_id": req.VehicleID}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -577,12 +621,27 @@ func (h *Handler) UnassignSpotVehicle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	if _, err := h.Pool.Exec(r.Context(),
-		`UPDATE vehicles SET spot_id=NULL, updated_at=now() WHERE spot_id=$1`, spotID); err != nil {
+	// RETURNING names which Gefährt was freed; "freed spot" alone loses that.
+	var freed []int64
+	rows, err := h.Pool.Query(r.Context(),
+		`UPDATE vehicles SET spot_id=NULL, updated_at=now() WHERE spot_id=$1 RETURNING id`, spotID)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not unassign vehicle")
 		return
 	}
-	h.audit(r, "update", "spot", spotID, "freed spot")
+	for rows.Next() {
+		var vid int64
+		if rows.Scan(&vid) == nil {
+			freed = append(freed, vid)
+		}
+	}
+	rows.Close()
+	if rows.Err() != nil {
+		writeError(w, http.StatusInternalServerError, "could not unassign vehicle")
+		return
+	}
+	h.auditChange(r, "update", "spot", spotID, "freed spot",
+		diffFields(map[string]any{"vehicle_ids": freed}, map[string]any{"vehicle_ids": []int64{}}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -678,17 +737,24 @@ func (h *Handler) SetVehicleDimensions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "dimension out of range")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE vehicles SET length_m=$1, width_m=$2, height_m=$3, weight_t=$4, updated_at=now() WHERE id=$5`,
-		req.LengthM, req.WidthM, req.HeightM, req.WeightT, id)
+	var pL, pW, pH, pT *float64
+	err := h.Pool.QueryRow(r.Context(),
+		`WITH prev AS (SELECT length_m, width_m, height_m, weight_t FROM vehicles WHERE id=$5)
+		 UPDATE vehicles SET length_m=$1, width_m=$2, height_m=$3, weight_t=$4, updated_at=now() WHERE id=$5
+		 RETURNING (SELECT length_m FROM prev), (SELECT width_m FROM prev),
+		           (SELECT height_m FROM prev), (SELECT weight_t FROM prev)`,
+		req.LengthM, req.WidthM, req.HeightM, req.WeightT, id).Scan(&pL, &pW, &pH, &pT)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "vehicle not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not update dimensions")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "vehicle not found")
-		return
-	}
-	h.audit(r, "update", "vehicle", id, "updated dimensions")
+	h.auditChange(r, "update", "vehicle", id, "updated dimensions", diffFields(
+		map[string]any{"length_m": pL, "width_m": pW, "height_m": pH, "weight_t": pT},
+		map[string]any{"length_m": req.LengthM, "width_m": req.WidthM,
+			"height_m": req.HeightM, "weight_t": req.WeightT}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
