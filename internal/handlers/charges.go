@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -97,10 +98,17 @@ func (h *Handler) UpdateServiceType(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is too long")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE service_types SET name=$1, default_amount=$2, updated_at=now() WHERE id=$3`,
-		req.Name, req.DefaultAmount, id)
+	var prev serviceTypeRequest
+	err := h.Pool.QueryRow(r.Context(),
+		`WITH prev AS (SELECT name, default_amount FROM service_types WHERE id=$3)
+		 UPDATE service_types SET name=$1, default_amount=$2, updated_at=now() WHERE id=$3
+		 RETURNING (SELECT name FROM prev), (SELECT default_amount FROM prev)`,
+		req.Name, req.DefaultAmount, id).Scan(&prev.Name, &prev.DefaultAmount)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "service not found")
+			return
+		}
 		if isUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "a service with that name already exists")
 			return
@@ -108,11 +116,7 @@ func (h *Handler) UpdateServiceType(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not update service")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "service not found")
-		return
-	}
-	h.audit(r, "update", "service_type", id, "updated service "+req.Name)
+	h.auditChange(r, "update", "service_type", id, "updated service "+req.Name, diffFields(prev, req))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -151,21 +155,28 @@ func (h *Handler) SetServiceArchived(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE service_types SET archived=$1, updated_at=now() WHERE id=$2`, req.Archived, id)
+	var prevArchived bool
+	var name string
+	err := h.Pool.QueryRow(r.Context(),
+		`WITH prev AS (SELECT archived, name FROM service_types WHERE id=$2)
+		 UPDATE service_types SET archived=$1, updated_at=now() WHERE id=$2
+		 RETURNING (SELECT archived FROM prev), (SELECT name FROM prev)`,
+		req.Archived, id).Scan(&prevArchived, &name)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "service not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not update service")
-		return
-	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "service not found")
 		return
 	}
 	verb := "reactivated service"
 	if req.Archived {
 		verb = "archived service"
 	}
-	h.audit(r, "update", "service_type", id, verb)
+	// Name the object, not just its id, so the trail stays readable.
+	h.auditChange(r, "update", "service_type", id, verb+" "+name,
+		diffFields(map[string]any{"archived": prevArchived}, map[string]any{"archived": req.Archived}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -417,13 +428,27 @@ func (h *Handler) UpdateCharge(w http.ResponseWriter, r *http.Request) {
 	// vehicle/Pauschale. So when the binding changes (bind, unbind or rebind) the
 	// old flag is stale — reset it to open. Edits that keep the binding keep paid.
 	// (In UPDATE, the RHS vehicle_id refers to the pre-update value.)
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE charges SET person_id=$1, vehicle_id=$2, description=$3, amount=$4,
+	// `prev` captures the pre-update row in the SAME statement, so the money diff is
+	// atomic with the change (amounts must be provable after the fact).
+	var prev chargeRequest
+	var prevChargedOn time.Time
+	err := h.Pool.QueryRow(r.Context(),
+		`WITH prev AS (SELECT person_id, vehicle_id, description, amount, quantity, charged_on
+		                 FROM charges WHERE id=$7)
+		 UPDATE charges SET person_id=$1, vehicle_id=$2, description=$3, amount=$4,
 		        quantity=$5, charged_on=$6,
 		        paid = CASE WHEN vehicle_id IS DISTINCT FROM $2 THEN false ELSE paid END
-		 WHERE id=$7`,
-		req.PersonID, req.VehicleID, req.Description, req.Amount, req.Quantity, chargedOn, id)
+		 WHERE id=$7
+		 RETURNING (SELECT person_id FROM prev), (SELECT vehicle_id FROM prev),
+		           (SELECT description FROM prev), (SELECT amount FROM prev),
+		           (SELECT quantity FROM prev), (SELECT charged_on FROM prev)`,
+		req.PersonID, req.VehicleID, req.Description, req.Amount, req.Quantity, chargedOn, id).
+		Scan(&prev.PersonID, &prev.VehicleID, &prev.Description, &prev.Amount, &prev.Quantity, &prevChargedOn)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "charge not found")
+			return
+		}
 		if isForeignKeyViolation(err) {
 			writeError(w, http.StatusBadRequest, "person or vehicle does not exist")
 			return
@@ -431,11 +456,8 @@ func (h *Handler) UpdateCharge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not update charge")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "charge not found")
-		return
-	}
-	h.audit(r, "update", "charge", id, "updated charge "+req.Description)
+	prev.ChargedOn = prevChargedOn.Format("2006-01-02")
+	h.auditChange(r, "update", "charge", id, "updated charge "+req.Description, diffFields(prev, req))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
