@@ -134,7 +134,8 @@ func (h *Handler) CreateHandover(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not store protocol")
 		return
 	}
-	h.audit(r, "create", "handover", meta.ID, handoverDirectionLabel(direction)+" für Gefährt "+strconv.FormatInt(id, 10))
+	h.auditCreated(r, "handover", meta.ID, handoverDirectionLabel(direction)+" für Gefährt "+strconv.FormatInt(id, 10),
+		map[string]any{"vehicle_id": id, "direction": direction, "signer_name": signerName})
 	writeJSON(w, http.StatusCreated, meta)
 }
 

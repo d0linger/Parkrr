@@ -64,7 +64,9 @@ func (h *Handler) autoArchiveIfClosed(r *http.Request, id int64) {
 		                            WHERE s.kind='vehicle' AND s.ref_id=$1 AND NOT i.canceled
 		                              AND (i.total - i.paid_amount) > 0.005)))`, id)
 	if err == nil && ct.RowsAffected() > 0 {
-		h.audit(r, "update", "vehicle", id, "Gefährt archiviert (abgeschlossen): "+h.vehicleDesc(r, id))
+		h.auditChange(r, "update", "vehicle", id,
+			"Gefährt archiviert (abgeschlossen): "+h.vehicleDesc(r, id),
+			diffFields(map[string]any{"archived": false}, map[string]any{"archived": true}))
 	}
 }
 
@@ -379,7 +381,11 @@ func (h *Handler) CreateVehicle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.recordStatus(r, id, "", pv.req.Status, "angelegt")
-	h.audit(r, "create", "vehicle", id, "created vehicle "+vehicleLabel(pv.req.Label, pv.req.LicensePlate))
+	h.auditCreated(r, "vehicle", id, "created vehicle "+vehicleLabel(pv.req.Label, pv.req.LicensePlate),
+		map[string]any{"label": pv.req.Label, "license_plate": pv.req.LicensePlate,
+			"person_id": pv.req.PersonID, "category_id": pv.req.CategoryID,
+			"status": pv.req.Status, "billing_period": pv.req.BillingPeriod,
+			"start_date": pv.req.StartDate})
 	h.writeVehicle(w, r.Context(), id, http.StatusCreated)
 }
 
@@ -455,7 +461,14 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 	if oldStatus != pv.req.Status {
 		h.recordStatus(r, id, oldStatus, pv.req.Status, "über Bearbeitung geändert")
 	}
-	h.audit(r, "update", "vehicle", id, "updated vehicle "+vehicleLabel(pv.req.Label, pv.req.LicensePlate))
+	// status/rate/period/start/person were read above for the writability checks,
+	// so the before/after of the billing-relevant fields costs no extra query.
+	h.auditChange(r, "update", "vehicle", id,
+		"updated vehicle "+vehicleLabel(pv.req.Label, pv.req.LicensePlate), diffFields(
+			map[string]any{"status": oldStatus, "rate": oldRate, "billing_period": oldPeriod,
+				"start_date": oldStart.Format("2006-01-02"), "person_id": oldPersonID},
+			map[string]any{"status": pv.req.Status, "rate": rate, "billing_period": pv.req.BillingPeriod,
+				"start_date": pv.req.StartDate, "person_id": pv.req.PersonID}))
 	// An edit can change status/paid-relevant state too — keep archival behavior
 	// consistent with the status-slider endpoint.
 	h.autoArchiveIfClosed(r, id)
@@ -637,7 +650,9 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.recordStatus(r, id, oldStatus, req.Status, trim(req.Note))
-	h.audit(r, "update", "vehicle", id, "Status "+h.vehicleDesc(r, id)+": "+oldStatus+" → "+req.Status)
+	h.auditChange(r, "update", "vehicle", id,
+		"Status "+h.vehicleDesc(r, id)+": "+oldStatus+" → "+req.Status,
+		diffFields(map[string]any{"status": oldStatus}, map[string]any{"status": req.Status}))
 	h.autoArchiveIfClosed(r, id)
 	h.writeVehicle(w, r.Context(), id, http.StatusOK)
 }
@@ -794,7 +809,8 @@ func (h *Handler) ReactivateVehicle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "vehicle not found")
 		return
 	}
-	h.audit(r, "update", "vehicle", id, "Gefährt reaktiviert: "+h.vehicleDesc(r, id))
+	h.auditChange(r, "update", "vehicle", id, "Gefährt reaktiviert: "+h.vehicleDesc(r, id),
+		diffFields(map[string]any{"archived": true}, map[string]any{"archived": false}))
 	h.writeVehicle(w, r.Context(), id, http.StatusOK)
 }
 

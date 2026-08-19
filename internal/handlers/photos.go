@@ -144,7 +144,9 @@ func (h *Handler) UploadPhoto(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not store photo")
 		return
 	}
-	h.audit(r, "create", "photo", photoID, "uploaded photo for vehicle")
+	// Metadata only — image bytes must never enter the audit log.
+	h.auditCreated(r, "photo", photoID, "uploaded photo for vehicle",
+		map[string]any{"vehicle_id": id, "filename": filename, "content_type": contentType, "byte_size": len(data)})
 	writeJSON(w, http.StatusCreated, photoMeta{
 		ID: photoID, VehicleID: id, Filename: filename,
 		ContentType: contentType, ByteSize: len(data), CreatedAt: time.Now(),
