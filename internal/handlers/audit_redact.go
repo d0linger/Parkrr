@@ -29,8 +29,17 @@ func normalizeChanges(v any) any {
 // Every value that reaches the audit_log `changes` column passes through
 // redactChanges, which is called from auditExec — the single INSERT shared by the
 // best-effort and transactional paths. Putting the filter at that choke point (and
-// not at the ~90 call sites) means a new handler CANNOT leak a secret into the
-// trail by forgetting a skip list: the default for a matching field is redaction.
+// not at the ~90 call sites) means a new handler cannot leak a secret through
+// `changes` by forgetting a skip list: the default for a matching field is redaction.
+//
+// SCOPE — this covers `changes` ONLY. The `summary` column is free text assembled
+// by string concatenation at the call site, so there are no field names to key a
+// policy on and no automatic masking is possible. Summaries are therefore a
+// deliberate exception: they must be written to be safe by construction (name the
+// object and the operation, never a credential), which is why e.g. the admin
+// bootstrap logs a control-flow-selected mode literal rather than the password
+// flag. That convention is enforced at build time by
+// TestAuditSummariesCarryNoSecretIdentifiers in audit_coverage_test.go.
 //
 // Policy:
 //   - Secrets (passwords, tokens, keys, TOTP/backup codes, hashes) are replaced

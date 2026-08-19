@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -26,30 +27,6 @@ import (
 //
 // Both are deliberately source-level checks: there is no runtime hook that could
 // notice a forgotten field, and a reviewer cannot hold 95 call sites in their head.
-
-// handlerSources returns the non-test handler .go files with their contents.
-func handlerSources(t *testing.T) map[string]string {
-	t.Helper()
-	paths, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatalf("glob: %v", err)
-	}
-	out := map[string]string{}
-	for _, p := range paths {
-		if strings.HasSuffix(p, "_test.go") {
-			continue
-		}
-		b, rerr := os.ReadFile(p)
-		if rerr != nil {
-			t.Fatalf("read %s: %v", p, rerr)
-		}
-		out[p] = string(b)
-	}
-	if len(out) == 0 {
-		t.Fatal("no handler sources found")
-	}
-	return out
-}
 
 // Any audit spelling other than auditDeleted, recording action "delete". The
 // argument prefix before `r` varies (ctx/tx, r.Context()/tx, none), and the earlier
@@ -204,16 +181,125 @@ func TestAuditDiffsCoverEveryWrittenColumn(t *testing.T) {
 	}
 }
 
-func itoaLine(n int) string {
-	if n == 0 {
-		return "0"
+// reSecretWord matches a credential-ish word. It is applied to two different
+// things below (an interpolated expression, and a string literal), which is why it
+// must not be run over raw source text: `u.Username+" regenerated recovery codes"`
+// contains the word "recovery" in PROSE, and flagging that is a false positive.
+// The AST walk separates the literal parts from the interpolated ones first.
+var reSecretWord = regexp.MustCompile(`(?i)(password|passwort|secret|token|apikey|api_key|privatekey|private_key|accesskey|access_key|credential|hash|salt|totp|backup_?code|recovery)`)
+
+// auditCallNames is every spelling that writes an audit row — including the
+// package-level auditSystem in cmd/parkrr, which audits the boot-time bootstrap
+// without a request.
+var auditCallNames = map[string]bool{
+	"audit": true, "auditTx": true, "auditAs": true, "auditInsert": true,
+	"auditChange": true, "auditChangeTx": true,
+	"auditCreated": true, "auditDeleted": true, "auditSystem": true,
+}
+
+// auditSummaryDirs are the trees this guard walks. cmd/parkrr is included on
+// purpose: audit_redact.go names its bootstrap as the worked example of the
+// convention, so the guard has to actually reach it.
+var auditSummaryDirs = []string{".", filepath.Join("..", "..", "cmd", "parkrr")}
+
+// TestAuditSummariesCarryNoSecretIdentifiers guards the one part of an audit row
+// that the redaction choke point cannot reach.
+//
+// redactChanges filters the `changes` column by field NAME, but `summary` is free
+// text concatenated at the call site — there is no field name to key a policy on.
+// A handler writing `h.audit(r, "update", "user", id, "reset token to "+tok)` would
+// put a credential in clear text into an append-only, seven-year table and no
+// redaction test would notice. Two shapes are therefore rejected:
+//
+//  1. an INTERPOLATED expression whose text reads like a credential
+//     (`+newPassword`, `+cfg.APIKey`) — the value itself is going into the row;
+//  2. a string literal that ANNOUNCES a credential and has something concatenated
+//     AFTER it (`"neues Passwort: "+x`) — the label promises the value follows,
+//     whatever the variable happens to be called.
+//
+// A literal that merely mentions a credential in prose and ENDS the expression
+// ("… regenerated recovery codes") is fine: it names the operation, not a value.
+// That distinction is the whole reason this runs on the AST and not on source text.
+func TestAuditSummariesCarryNoSecretIdentifiers(t *testing.T) {
+	var bad []string
+	for _, dir := range auditSummaryDirs {
+		paths, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		if err != nil {
+			t.Fatalf("glob %s: %v", dir, err)
+		}
+		for _, p := range paths {
+			if strings.HasSuffix(p, "_test.go") {
+				continue
+			}
+			src, rerr := os.ReadFile(p)
+			if rerr != nil {
+				t.Fatalf("read %s: %v", p, rerr)
+			}
+			fset := token.NewFileSet()
+			f, perr := parser.ParseFile(fset, p, src, 0)
+			if perr != nil {
+				t.Fatalf("parse %s: %v", p, perr)
+			}
+			ast.Inspect(f, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok || !isAuditCall(call.Fun) {
+					return true
+				}
+				for _, arg := range call.Args {
+					// Only a summary is built with `+`; ids, actions and changes never are.
+					be, isAdd := arg.(*ast.BinaryExpr)
+					if !isAdd || be.Op != token.ADD {
+						continue
+					}
+					parts := flattenAdd(be)
+					for i, part := range parts {
+						txt := exprText(fset, src, part)
+						where := p + ":" + strconv.Itoa(fset.Position(part.Pos()).Line)
+						if lit, isLit := part.(*ast.BasicLit); isLit && lit.Kind == token.STRING {
+							if i < len(parts)-1 && reSecretWord.MatchString(txt) {
+								bad = append(bad, where+": label "+txt+" precedes a concatenated value")
+							}
+							continue
+						}
+						if reSecretWord.MatchString(txt) {
+							bad = append(bad, where+": interpolates "+txt)
+						}
+					}
+				}
+				return true
+			})
+		}
 	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
+	sort.Strings(bad)
+	if len(bad) > 0 {
+		t.Fatalf("audit summary carries a credential — summaries are NOT redacted (only `changes` is,\n"+
+			"see audit_redact.go). Log the object and the operation, never the value:\n  %s",
+			strings.Join(bad, "\n  "))
 	}
-	return string(b[i:])
+}
+
+// isAuditCall reports whether a call expression is one of the audit writers,
+// whether spelled as a method (h.audit) or a plain function (auditSystem).
+func isAuditCall(fun ast.Expr) bool {
+	switch t := fun.(type) {
+	case *ast.SelectorExpr:
+		return auditCallNames[t.Sel.Name]
+	case *ast.Ident:
+		return auditCallNames[t.Name]
+	}
+	return false
+}
+
+// flattenAdd turns a left-leaning `a + b + c` tree into its operands.
+func flattenAdd(e ast.Expr) []ast.Expr {
+	be, ok := e.(*ast.BinaryExpr)
+	if !ok || be.Op != token.ADD {
+		return []ast.Expr{e}
+	}
+	return append(flattenAdd(be.X), flattenAdd(be.Y)...)
+}
+
+// exprText returns the exact source of an expression.
+func exprText(fset *token.FileSet, src []byte, e ast.Expr) string {
+	return string(src[fset.Position(e.Pos()).Offset:fset.Position(e.End()).Offset])
 }
