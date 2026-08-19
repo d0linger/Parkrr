@@ -6,7 +6,6 @@ import (
 	"errors"
 	"math"
 	"net/http"
-	"strconv"
 
 	"github.com/jackc/pgx/v5"
 
@@ -317,15 +316,9 @@ func (h *Handler) UpdateHall(w http.ResponseWriter, r *http.Request) {
 		SortOrder   int    `json:"sort_order"`
 		FloorPlanOf string `json:"floor_plan"`
 	}
-	planState := func(b []byte) string {
-		if len(b) == 0 {
-			return "leer"
-		}
-		return "gesetzt (" + strconv.Itoa(len(b)) + " B)"
-	}
 	changes := diffFields(
-		hallAudit{Name: prevName, SortOrder: prevSort, FloorPlanOf: planState(prevGeom)},
-		hallAudit{Name: req.Name, SortOrder: req.SortOrder, FloorPlanOf: planState(geom)})
+		hallAudit{Name: prevName, SortOrder: prevSort, FloorPlanOf: blobState(prevGeom)},
+		hallAudit{Name: req.Name, SortOrder: req.SortOrder, FloorPlanOf: blobState(geom)})
 	h.auditChange(r, "update", "hall", id, "updated hall "+req.Name, changes)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -532,15 +525,9 @@ func (h *Handler) UpdateSpot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Geometry is an opaque blob — record its state, not the payload (as for halls).
-	geomState := func(b []byte) string {
-		if len(b) == 0 {
-			return "leer"
-		}
-		return "gesetzt (" + strconv.Itoa(len(b)) + " B)"
-	}
 	h.auditChange(r, "update", "spot", id, "updated spot "+req.Label, diffFields(
-		map[string]any{"label": prevLabel, "geometry": geomState(prevGeom)},
-		map[string]any{"label": req.Label, "geometry": geomState(geom)}))
+		map[string]any{"label": prevLabel, "geometry": blobState(prevGeom)},
+		map[string]any{"label": req.Label, "geometry": blobState(geom)}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

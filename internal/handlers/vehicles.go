@@ -477,20 +477,14 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 	}
 	// status/rate/period/start/person were read above for the writability checks,
 	// so the before/after of the billing-relevant fields costs no extra query.
-	dstr := func(t *time.Time) any {
-		if t == nil {
-			return nil
-		}
-		return t.Format("2006-01-02")
-	}
 	h.auditChange(r, "update", "vehicle", id,
 		"updated vehicle "+vehicleLabel(pv.req.Label, pv.req.LicensePlate), diffFields(
 			map[string]any{"status": oldStatus, "rate": oldRate, "billing_period": oldPeriod,
 				"start_date": oldStart.Format("2006-01-02"), "person_id": oldPersonID,
 				"label": oldLabel, "license_plate": oldPlate, "notes": oldNotes,
 				"category_id": oldCategoryID, "cost_override": oldCostOverride,
-				"end_date": dstr(oldEnd), "reserved_from": dstr(oldResFrom),
-				"reserved_until": dstr(oldResUntil), "needs_power": oldNeedsPower,
+				"end_date": auditDate(oldEnd), "reserved_from": auditDate(oldResFrom),
+				"reserved_until": auditDate(oldResUntil), "needs_power": oldNeedsPower,
 				"planner_symbol": oldSymbol},
 			map[string]any{"status": pv.req.Status, "rate": rate, "billing_period": pv.req.BillingPeriod,
 				"start_date": pv.req.StartDate, "person_id": pv.req.PersonID,
@@ -690,16 +684,10 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 	// Re-read the end date: the branches above set, keep or clear it.
 	var newEnd *time.Time
 	_ = h.Pool.QueryRow(r.Context(), `SELECT end_date FROM vehicles WHERE id=$1`, id).Scan(&newEnd)
-	endStr := func(t *time.Time) any {
-		if t == nil {
-			return nil
-		}
-		return t.Format("2006-01-02")
-	}
 	h.auditChange(r, "update", "vehicle", id,
 		"Status "+h.vehicleDesc(r, id)+": "+oldStatus+" → "+req.Status,
-		diffFields(map[string]any{"status": oldStatus, "end_date": endStr(oldEnd)},
-			map[string]any{"status": req.Status, "end_date": endStr(newEnd)}))
+		diffFields(map[string]any{"status": oldStatus, "end_date": auditDate(oldEnd)},
+			map[string]any{"status": req.Status, "end_date": auditDate(newEnd)}))
 	h.autoArchiveIfClosed(r, id)
 	h.writeVehicle(w, r.Context(), id, http.StatusOK)
 }

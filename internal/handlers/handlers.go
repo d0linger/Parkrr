@@ -233,6 +233,26 @@ func strPtr(v *string) any {
 	return *v
 }
 
+// auditDate renders an optional date for an audit diff. Like strPtr, nil stays nil
+// so "no end date" stays distinguishable from a date that happens to be empty.
+func auditDate(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return t.Format("2006-01-02")
+}
+
+// blobState describes a binary column for an audit diff without reading it into
+// the trail. The bytes themselves (a floor plan, a geometry blob) are noise in a
+// log and can be large; what an auditor needs is whether it was set and whether it
+// changed, which the size captures.
+func blobState(b []byte) string {
+	if len(b) == 0 {
+		return "leer"
+	}
+	return "gesetzt (" + strconv.Itoa(len(b)) + " B)"
+}
+
 // auditSnapshot renders values as {field: {old: null, new: v}} — "this is what it
 // became", with no claim about what it was before.
 //
