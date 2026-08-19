@@ -249,7 +249,10 @@ func auditExec(ctx context.Context, q execer, actorID int64, actorName, action, 
 	}
 	var changesArg any // nil -> SQL NULL
 	if changes != nil {
-		if b, err := json.Marshal(changes); err == nil && string(b) != "null" {
+		// Redact BEFORE marshalling — this is the single choke point every audit
+		// write passes through, so a secret cannot reach the trail even if a call
+		// site forgets to exclude the field (see audit_redact.go).
+		if b, err := json.Marshal(redactChanges(normalizeChanges(changes))); err == nil && string(b) != "null" {
 			changesArg = string(b)
 		}
 	}

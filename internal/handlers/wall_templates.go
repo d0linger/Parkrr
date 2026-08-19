@@ -86,6 +86,10 @@ func (h *Handler) CreateWallTemplate(w http.ResponseWriter, r *http.Request) {
 	_, _ = h.Pool.Exec(r.Context(),
 		`DELETE FROM wall_templates WHERE id IN (SELECT id FROM wall_templates ORDER BY created_at DESC OFFSET $1)`,
 		maxWallTemplates)
+	// The walls payload is opaque planner geometry, not business data — record the
+	// identifying fields only, so the trail stays readable.
+	h.auditChange(r, "create", "wall_template", t.ID, "Wand-Vorlage angelegt: "+t.Name,
+		map[string]any{"name": map[string]any{"old": nil, "new": t.Name}})
 	writeJSON(w, http.StatusCreated, t)
 }
 
@@ -96,9 +100,14 @@ func (h *Handler) DeleteWallTemplate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+	// Read the name first so the trail says WHAT was deleted, not just an id.
+	var name string
+	_ = h.Pool.QueryRow(r.Context(), `SELECT name FROM wall_templates WHERE id=$1`, id).Scan(&name)
 	if _, err := h.Pool.Exec(r.Context(), `DELETE FROM wall_templates WHERE id=$1`, id); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete template")
 		return
 	}
+	h.auditChange(r, "delete", "wall_template", id, "Wand-Vorlage gelöscht: "+name,
+		map[string]any{"name": map[string]any{"old": name, "new": nil}})
 	w.WriteHeader(http.StatusNoContent)
 }
