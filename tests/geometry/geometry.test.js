@@ -99,3 +99,152 @@ test('pointInPoly + ringAreaS basics', () => {
     assert.equal(PG.pointInPoly(-1, 2.5, rect5.N), false);
     assert.ok(near(Math.abs(PG.ringAreaS(rect5.N)), 25.0));
 });
+
+// FE3 — minimal ASCII-DXF reader: LINE, LWPOLYLINE (open/closed), legacy
+// POLYLINE/VERTEX and CIRCLE become polylines; bbox spans every point; unknown
+// entities (TEXT/INSERT) are ignored.
+const dxf = (body) => '0\nSECTION\n2\nENTITIES\n' + body + '0\nENDSEC\n0\nEOF\n';
+
+test('parseDXF — LINE entity → one 2-point segment + bbox', () => {
+    const r = PG.parseDXF(dxf('0\nLINE\n8\n0\n10\n1\n20\n2\n11\n4\n21\n6\n'));
+    assert.equal(r.polylines.length, 1);
+    assert.deepEqual(r.polylines[0], [[1, 2], [4, 6]]);
+    assert.deepEqual(r.bbox, { minX: 1, minY: 2, maxX: 4, maxY: 6 });
+});
+
+test('parseDXF — closed LWPOLYLINE repeats first vertex; open does not', () => {
+    const verts = '10\n0\n20\n0\n10\n10\n20\n0\n10\n10\n20\n5\n';
+    const open = PG.parseDXF(dxf('0\nLWPOLYLINE\n90\n3\n70\n0\n' + verts));
+    assert.equal(open.polylines[0].length, 3);
+    const shut = PG.parseDXF(dxf('0\nLWPOLYLINE\n90\n3\n70\n1\n' + verts));
+    assert.equal(shut.polylines[0].length, 4);
+    assert.deepEqual(shut.polylines[0][3], shut.polylines[0][0]);
+    assert.deepEqual(shut.bbox, { minX: 0, minY: 0, maxX: 10, maxY: 5 });
+});
+
+test('parseDXF — legacy POLYLINE/VERTEX/SEQEND collected; TEXT ignored', () => {
+    const body = '0\nTEXT\n10\n99\n20\n99\n1\nHELLO\n'
+        + '0\nPOLYLINE\n70\n0\n0\nVERTEX\n10\n0\n20\n0\n0\nVERTEX\n10\n3\n20\n4\n0\nSEQEND\n';
+    const r = PG.parseDXF(dxf(body));
+    assert.equal(r.polylines.length, 1);
+    assert.deepEqual(r.polylines[0], [[0, 0], [3, 4]]);
+    assert.deepEqual(r.bbox, { minX: 0, minY: 0, maxX: 3, maxY: 4 }); // TEXT's 99/99 excluded
+});
+
+test('parseDXF — CIRCLE becomes a closed-ish ring within radius bounds; empty stays empty', () => {
+    const r = PG.parseDXF(dxf('0\nCIRCLE\n10\n5\n20\n5\n40\n2\n'));
+    assert.ok(r.polylines[0].length > 8, 'circle sampled into a ring');
+    assert.ok(r.polylines[0].every((p) => Math.hypot(p[0] - 5, p[1] - 5) <= 2 + 1e-6), 'points on radius');
+    assert.ok(near(r.bbox.minX, 3) && near(r.bbox.maxX, 7), 'bbox = centre ± r');
+    const empty = PG.parseDXF(dxf(''));
+    assert.equal(empty.polylines.length, 0);
+});
+
+// FE1 — Auto-Arrange packer (PG.packRects): best-fit-decreasing + 90° rotation + SAT collision.
+const noOverlap = (place, dims) => { // no two OK placements collide
+    const ok = place.filter((p) => p.ok).map((p) => ({ ...p, ...dims[p.id] }));
+    for (let i = 0; i < ok.length; i++) for (let j = i + 1; j < ok.length; j++)
+        if (PG.rectsCollide(ok[i], ok[j])) return false;
+    return true;
+};
+
+test('packRects — all fit in an empty box, none overlap, all in bounds', () => {
+    const items = [{ id: 'a', w: 4, h: 4 }, { id: 'b', w: 4, h: 4 }, { id: 'c', w: 4, h: 4 }, { id: 'd', w: 4, h: 4 }];
+    const b = { minX: 0, minY: 0, maxX: 20, maxY: 20 };
+    const r = PG.packRects(items, [], b, null, { step: 0.5, margin: 0.2, gap: 0 });
+    assert.equal(r.placed, 4); assert.equal(r.failed, 0);
+    const dims = Object.fromEntries(items.map((it) => [it.id, { w: it.w, h: it.h }]));
+    assert.ok(noOverlap(r.placements, dims), 'no two vehicles overlap');
+    for (const p of r.placements) { assert.ok(p.x >= 0 && p.y >= 0 && p.x + 4 <= 20 + 1e-9 && p.y + 4 <= 20 + 1e-9, 'placement in bounds: ' + JSON.stringify(p)); } // items are 4×4 squares (rot 0)
+});
+
+test('packRects — obstacle is never overlapped', () => {
+    const items = [{ id: 'a', w: 3, h: 3 }, { id: 'b', w: 3, h: 3 }, { id: 'c', w: 3, h: 3 }];
+    const obstacle = { x: 8, y: 0, w: 4, h: 20, rot: 0 }; // a wall/column splitting a 20×20 box
+    const r = PG.packRects(items, [obstacle], { minX: 0, minY: 0, maxX: 20, maxY: 20 }, null, { step: 0.5, margin: 0.2 });
+    for (const p of r.placements) if (p.ok) assert.ok(!PG.rectsCollide({ x: p.x, y: p.y, w: 3, h: 3, rot: p.rot }, obstacle), 'no vehicle on the obstacle');
+});
+
+test('packRects — a wide item is rotated 90° to fit a narrow bay', () => {
+    // Bay 3 wide × 12 tall: an 8×2 item only fits rotated (footprint 2×8).
+    const r = PG.packRects([{ id: 'w', w: 8, h: 2 }], [], { minX: 0, minY: 0, maxX: 3, maxY: 12 }, null, { step: 0.25, margin: 0.1 });
+    assert.equal(r.placed, 1);
+    assert.equal(r.placements[0].rot, 90, 'placed rotated to fit the narrow bay');
+});
+
+test('packRects — overflow marks the surplus as not-placeable, survivors do not overlap', () => {
+    const items = [{ id: 'a', w: 5, h: 5 }, { id: 'b', w: 5, h: 5 }, { id: 'c', w: 5, h: 5 }, { id: 'd', w: 5, h: 5 }, { id: 'e', w: 5, h: 5 }];
+    const r = PG.packRects(items, [], { minX: 0, minY: 0, maxX: 10, maxY: 10 }, null, { step: 0.5, margin: 0.1, gap: 0 });
+    assert.ok(r.failed >= 1, 'at least one surplus vehicle marked not-placeable');
+    assert.equal(r.placed + r.failed, 5);
+    const dims = Object.fromEntries(items.map((it) => [it.id, { w: it.w, h: it.h }]));
+    assert.ok(noOverlap(r.placements, dims), 'placed vehicles never overlap');
+});
+
+test('packRects — big item is placed (BFD keeps the big area for the big vehicle)', () => {
+    // 10×6 box: one full-width strip (10×3) + three 2×2. Small-first could fragment the strip;
+    // decreasing-area places the strip first, so it must fit.
+    const items = [{ id: 'strip', w: 10, h: 3 }, { id: 's1', w: 2, h: 2 }, { id: 's2', w: 2, h: 2 }, { id: 's3', w: 2, h: 2 }];
+    const r = PG.packRects(items, [], { minX: 0, minY: 0, maxX: 10, maxY: 6 }, null, { step: 0.5, margin: 0, gap: 0 });
+    assert.ok(r.placements.find((p) => p.id === 'strip').ok, 'the big strip gets placed');
+});
+
+// FE1 — MaxRects specifics: placements hug an edge/neighbour (never float), and never land on an
+// obstacle's or another vehicle's coordinates.
+test('packRects (MaxRects) — first item hugs the top-left corner, does not float', () => {
+    const r = PG.packRects([{ id: 'a', w: 3, h: 2 }], [], { minX: 0, minY: 0, maxX: 20, maxY: 20 }, null, { margin: 0.2, gap: 0 });
+    const p = r.placements[0];
+    assert.ok(p.ok);
+    assert.ok(near(p.x, 0.2, 0.01) && near(p.y, 0.2, 0.01), 'placed flush to the margin corner, not mid-room: ' + p.x + ',' + p.y);
+});
+
+test('packRects (MaxRects) — second item sits flush against the first, not on its coordinates', () => {
+    const items = [{ id: 'a', w: 4, h: 3 }, { id: 'b', w: 4, h: 3 }];
+    const r = PG.packRects(items, [], { minX: 0, minY: 0, maxX: 20, maxY: 20 }, null, { margin: 0, gap: 0 });
+    const A = r.placements.find((p) => p.id === 'a'), Bp = r.placements.find((p) => p.id === 'b');
+    assert.ok(A.ok && Bp.ok);
+    assert.ok(!(near(A.x, Bp.x) && near(A.y, Bp.y)), 'B not stacked on A\'s coordinates');
+    assert.ok(!PG.rectsCollide({ x: A.x, y: A.y, w: 4, h: 3, rot: A.rot }, { x: Bp.x, y: Bp.y, w: 4, h: 3, rot: Bp.rot }), 'no overlap');
+    // flush: they share an edge (touching within a couple cm) on some axis
+    const touchX = near(A.x + 4, Bp.x, 0.05) || near(Bp.x + 4, A.x, 0.05);
+    const touchY = near(A.y + 3, Bp.y, 0.05) || near(Bp.y + 3, A.y, 0.05);
+    assert.ok(touchX || touchY, 'B is flush against A');
+});
+
+test('packRects (MaxRects) — a large item still fits after obstacles split the space', () => {
+    // 20×10 with a central pillar 8..12 × full height: two 6-wide bays remain either side.
+    const pillar = { x: 8, y: 0, w: 4, h: 10, rot: 0 };
+    const items = [{ id: 'big', w: 5, h: 8 }, { id: 'm1', w: 2, h: 2 }, { id: 'm2', w: 2, h: 2 }];
+    const r = PG.packRects(items, [pillar], { minX: 0, minY: 0, maxX: 20, maxY: 10 }, null, { margin: 0.1, gap: 0 });
+    const big = r.placements.find((p) => p.id === 'big');
+    assert.ok(big.ok, 'the big item finds a bay');
+    assert.ok(!PG.rectsCollide({ x: big.x, y: big.y, w: 5, h: 8, rot: big.rot }, pillar), 'big item clears the pillar');
+});
+
+// FE1 — niche-first (BSSF): a small item prefers the tighter free region over a large open one,
+// and padding=0 lets it use the full pocket (no hidden inflation).
+test('packRects (MaxRects/BSSF) — small item fills the tight niche, not the open area', () => {
+    // A pillar at x3..5 splits a 12×4 bin into a snug 3-wide left pocket and a roomy 7-wide right area.
+    const pillar = { x: 3, y: 0, w: 2, h: 4, rot: 0 };
+    const r = PG.packRects([{ id: 's', w: 2.5, h: 2.5 }], [pillar], { minX: 0, minY: 0, maxX: 12, maxY: 4 }, null, { margin: 0, gap: 0 });
+    const p = r.placements[0];
+    assert.ok(p.ok);
+    assert.ok(p.x + 2.5 <= 3 + 0.01, 'placed in the tight left pocket (BSSF), not the open right area: x=' + p.x);
+});
+
+test('packRects — padding 0 lets a 2.0×1.0 car fit a 2.7×1.7 niche (Problem A regression)', () => {
+    // niche as a 2.7×1.7 pocket walled off on three sides; the car must fit with padding 0.
+    const obs = [{ x: 2.7, y: 0, w: 0.2, h: 1.7, rot: 0 }, { x: 0, y: 1.7, w: 2.9, h: 0.2, rot: 0 }];
+    const r0 = PG.packRects([{ id: 'car', w: 2.0, h: 1.0 }], obs, { minX: 0, minY: 0, maxX: 2.9, maxY: 1.9 }, null, { margin: 0, gap: 0 });
+    assert.ok(r0.placements[0].ok, 'car fits the niche with padding 0');
+    // with a big margin it would be (correctly) rejected — proving the margin, not the packer, was the culprit
+    const rBig = PG.packRects([{ id: 'car', w: 2.0, h: 1.0 }], obs, { minX: 0, minY: 0, maxX: 2.9, maxY: 1.9 }, null, { margin: 0.5, gap: 0.5 });
+    assert.equal(rBig.placements[0].ok, false, 'oversized margin rejects it — the mechanism the bug relied on');
+});
+
+// FE3 — a malformed group value must not leak NaN/Infinity into the parsed polylines.
+test('parseDXF — malformed coordinate is skipped, output has no NaN', () => {
+    const r = PG.parseDXF('0\nSECTION\n2\nENTITIES\n0\nLINE\n10\n1\n20\nBAD\n11\n4\n21\n6\n0\nLINE\n10\n0\n20\n0\n11\n2\n21\n3\n0\nENDSEC\n0\nEOF\n');
+    for (const pl of r.polylines) for (const pt of pl) assert.ok(Number.isFinite(pt[0]) && Number.isFinite(pt[1]), 'no NaN/Inf coord: ' + pt);
+    for (const k of ['minX', 'minY', 'maxX', 'maxY']) assert.ok(Number.isFinite(r.bbox[k]), 'finite bbox');
+});

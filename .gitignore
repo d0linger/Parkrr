@@ -48,6 +48,11 @@ Thumbs.db
 # Node (not used, but guard against tooling artifacts)
 node_modules/
 
+# Playwright run artifacts (E2E)
+test-results/
+playwright-report/
+/tests/a11y/node_modules/
+
 # Coverage artifacts
 coverage.out
 cover

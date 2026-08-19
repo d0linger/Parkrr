@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/preining/parkrr/internal/auth"
 	"github.com/preining/parkrr/internal/models"
 )
 
@@ -1061,10 +1062,17 @@ type hallOccupancy struct {
 // occupancyResponse answers "how full is the garage" for the dashboard. The plan
 // is free-form (area-based, no fixed slots), so occupancy is expressed as how many
 // active vehicles are positioned in a hall vs. how many exist.
+type occDay struct {
+	Day    string `json:"day"` // YYYY-MM-DD
+	Placed int    `json:"placed"`
+	Active int    `json:"active"`
+}
+
 type occupancyResponse struct {
 	Active int             `json:"active"` // non-archived vehicles
 	Placed int             `json:"placed"` // …of those, positioned in a hall
 	Halls  []hallOccupancy `json:"halls"`
+	Trend  []occDay        `json:"trend"` // daily snapshots, last ~30 days (FE4)
 }
 
 // Occupancy returns placement KPIs: total active vehicles, how many are placed in
@@ -1104,6 +1112,27 @@ func (h *Handler) Occupancy(w http.ResponseWriter, r *http.Request) {
 	if rows.Err() != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
+	}
+	// FE4: record today's snapshot (idempotent per day — a bounded, per-day upsert; best-effort
+	// telemetry) and return the recent daily trend for the sparkline. Only writers (admin/editor)
+	// trigger the write, so a read-only reader never mutates the DB on this GET (safe-GET / least-privilege).
+	if u, ok := auth.UserFrom(r.Context()); ok && (u.IsAdmin || u.Role == models.RoleEditor) {
+		_, _ = h.Pool.Exec(ctx,
+			`INSERT INTO occupancy_snapshots (day, placed, active) VALUES (CURRENT_DATE, $1, $2)
+			 ON CONFLICT (day) DO UPDATE SET placed = EXCLUDED.placed, active = EXCLUDED.active, taken_at = now()`,
+			resp.Placed, resp.Active)
+	}
+	resp.Trend = []occDay{}
+	if trows, terr := h.Pool.Query(ctx,
+		`SELECT to_char(day, 'YYYY-MM-DD'), placed, active FROM occupancy_snapshots
+		  WHERE day >= CURRENT_DATE - INTERVAL '29 days' ORDER BY day`); terr == nil {
+		defer trows.Close()
+		for trows.Next() {
+			var d occDay
+			if trows.Scan(&d.Day, &d.Placed, &d.Active) == nil {
+				resp.Trend = append(resp.Trend, d)
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

@@ -205,27 +205,36 @@
     // convention (the source string IS the key): today German passes straight
     // through (t returns the key when untranslated), and a future language just
     // adds MESSAGES.<lang>['<german phrase>'] = '<translation>' — no call-site edits.
-    function toast(msg, kind = '') {
-        const box = $('#toast');
-        box.innerHTML = '';
-        box.append(document.createTextNode(t(msg)));
-        box.className = 'toast' + (kind ? ' ' + kind : '');
-        box.hidden = false;
-        clearTimeout(toastTimer);
-        toastTimer = setTimeout(() => { box.hidden = true; }, 3200);
+    // Toasts run through a small FIFO queue so several messages in quick succession are shown one
+    // after another instead of the last one clobbering the rest. Rapid repeats of the same plain
+    // message are deduped, and the backlog is capped so it can never flood (QW3).
+    let toastQ = [], toastCur = null;
+    function hideToast() { $('#toast').hidden = true; toastCur = null; clearTimeout(toastTimer); setTimeout(pumpToast, 150); }
+    function pumpToast() {
+        if (toastCur || !toastQ.length) return;
+        const it = toastQ.shift(); toastCur = it; const box = $('#toast');
+        box.innerHTML = ''; box.className = 'toast' + (it.kind ? ' ' + it.kind : ''); box.hidden = false;
+        box.append(document.createTextNode(it.text + (it.action ? '  ' : '')));
+        if (it.action) { const btn = el('button', { class: 'toast-undo', type: 'button' }, it.actionLabel); btn.addEventListener('click', () => { it.action(); hideToast(); }); box.append(btn); }
+        clearTimeout(toastTimer); toastTimer = setTimeout(hideToast, it.ms);
+        if (it.onShow) { const f = it.onShow; it.onShow = null; f(); } // fire once, when the toast is actually visible
     }
-    function toastAction(msg, actionLabel, onAction, ms = 4500) {
-        const box = $('#toast');
-        clearTimeout(toastTimer);
-        box.innerHTML = '';
-        box.className = 'toast';
-        box.hidden = false;
-        box.append(document.createTextNode(t(msg) + '  '));
-        const btn = el('button', { class: 'toast-undo', type: 'button' }, t(actionLabel));
-        btn.addEventListener('click', () => { box.hidden = true; onAction(); });
-        box.append(btn);
-        toastTimer = setTimeout(() => { box.hidden = true; }, ms);
+    function enqueueToast(it) {
+        const last = toastQ.length ? toastQ[toastQ.length - 1] : toastCur;
+        if (!it.action && last && last.text === it.text && !last.action) return; // skip an immediate repeat
+        // Action (undo) toasts jump ahead of plain toasts so the undo window isn't buried behind a
+        // queue; plain toasts append. The 4-item cap trims only the OLDEST PLAIN toasts — never an
+        // action toast (they sit at the front, so a plain splice-from-front must skip them).
+        if (it.action) { toastQ.unshift(it); }
+        else {
+            toastQ.push(it);
+            let plain = toastQ.filter((t) => !t.action).length;
+            for (let i = 0; i < toastQ.length && plain > 4;) { if (!toastQ[i].action) { toastQ.splice(i, 1); plain--; } else i++; }
+        }
+        pumpToast();
     }
+    function toast(msg, kind = '') { enqueueToast({ text: t(msg), kind, ms: 3000 }); }
+    function toastAction(msg, actionLabel, onAction, ms = 4500, onShow = null) { enqueueToast({ text: t(msg), action: onAction, actionLabel: t(actionLabel), ms, onShow }); }
 
     // ---------- confirm ----------
     function confirmDialog(title, message, okLabel = 'Löschen') {
@@ -287,12 +296,16 @@
         // Optimistic: the entry disappears immediately; the API call only runs
         // once the undo window has passed. Undo (or a failure) brings it back.
         if (node) node.hidden = true;
-        const timer = setTimeout(async () => {
+        // Start the 4500ms commit timer only once the undo toast is actually VISIBLE (onShow), so a
+        // queued/delayed undo can never appear after the delete already fired — the undo window and
+        // the commit are always aligned.
+        let timer = null;
+        const start = () => { if (cancelled) return; timer = setTimeout(async () => {
             if (cancelled) return;
             try { await doDelete(); toast('Gelöscht', 'success'); onDone && onDone(); }
             catch (e) { toast(e.message, 'error'); if (node) node.hidden = false; onDone && onDone(); }
-        }, 4500);
-        toastAction('Wird gelöscht …', 'Rückgängig', () => { cancelled = true; clearTimeout(timer); if (node) node.hidden = false; toast('Abgebrochen'); });
+        }, 4500); };
+        toastAction('Wird gelöscht …', 'Rückgängig', () => { cancelled = true; clearTimeout(timer); if (node) node.hidden = false; toast('Abgebrochen'); }, 4500, start);
     }
 
     // ---------- form modal ----------
@@ -678,7 +691,7 @@
         page.append(head);
 
         const search = el('input', { class: 'search', type: 'search', placeholder: 'Suche …', value: q });
-        const sortSel = el('select', {}, ...opts.sorts.map((s, i) => el('option', { value: i, selected: i === sortIdx }, s.label)));
+        const sortSel = el('select', { 'aria-label': 'Sortierung' }, ...opts.sorts.map((s, i) => el('option', { value: i, selected: i === sortIdx }, s.label)));
         const toolbar = el('div', { class: 'toolbar' }, search, sortSel);
         const controlState = {};
         if (opts.controls) for (const c of opts.controls(() => { pageNum = 1; refresh(); }, controlState)) toolbar.append(c);
@@ -943,13 +956,25 @@
             occCard.append(el('div', { class: 'stat-grid' },
                 stat(occ.placed + ' / ' + occ.active, 'Gefährte platziert', { icon: 'warehouse', tone: 'teal' }),
                 stat(Math.max(0, occ.active - occ.placed), 'noch nicht platziert', { icon: 'car' })));
+            // FE4 — placement trend sparkline over the daily snapshots (last ~30 days).
+            const tr = (occ.trend || []).filter((d) => d && Number.isFinite(d.placed));
+            if (tr.length >= 2) {
+                const W = 260, H = 46, pad = 4, n = tr.length, mx = Math.max(1, ...tr.map((d) => d.placed));
+                const px = (i) => pad + i / (n - 1) * (W - 2 * pad), py = (v) => H - pad - (v / mx) * (H - 2 * pad);
+                const spark = svgEl('svg', { class: 'dash-spark', viewBox: '0 0 ' + W + ' ' + H, width: '100%', height: String(H), preserveAspectRatio: 'none', role: 'img', 'aria-label': 'Belegungs-Trend: letzte ' + n + ' Aufnahmen, maximal ' + mx + ' platziert' });
+                spark.append(svgEl('polyline', { points: tr.map((d, i) => px(i).toFixed(1) + ',' + py(d.placed).toFixed(1)).join(' '), fill: 'none', class: 'dash-spark-line' }));
+                spark.append(svgEl('circle', { cx: String(px(n - 1)), cy: String(py(tr[n - 1].placed)), r: '2.6', class: 'dash-spark-dot' }));
+                occCard.append(el('div', { class: 'dash-spark-wrap' },
+                    el('div', { class: 'muted', style: 'font-size:.72rem;margin:.4rem 0 .12rem' }, 'Trend · platziert (letzte ' + n + ' Aufnahmen, max ' + mx + ')'), spark));
+            }
             // UX4 — per-hall occupancy as a small proportional bar chart (inline SVG-free, CSP-safe).
             const halls = (occ.halls || []).filter((hh) => hh.placed > 0);
             const maxP = Math.max(1, ...halls.map((hh) => hh.placed || 0));
             halls.forEach((hh) => {
                 occCard.append(el('div', { class: 'status-row dash-occrow' },
-                    el('div', { class: 'status-name' }, esc(hh.name),
-                        el('span', { class: 'muted', style: 'font-weight:400;font-size:.72rem;margin-left:.4rem' }, esc(hh.garage_name))),
+                    el('div', { class: 'status-name' },
+                        el('span', { class: 'occ-hallnm' }, esc(hh.name)),
+                        el('span', { class: 'muted occ-garnm', style: 'font-weight:400;font-size:.72rem;margin-left:.4rem' }, esc(hh.garage_name))),
                     el('div', { class: 'dash-bar', title: hh.placed + ' platziert' }, el('div', { class: 'dash-bar-fill', style: 'width:' + Math.round((hh.placed || 0) / maxP * 100) + '%' })),
                     el('div', { class: 'bar-val' }, String(hh.placed))));
             });
@@ -1046,7 +1071,8 @@
                 expLink('outstanding', 'Offene Posten'),
                 expLink('payments', 'Zahlungen'),
                 expLink('persons', 'Personen'),
-                expLink('vehicles', 'Gefährte'))));
+                expLink('vehicles', 'Gefährte'),
+                expLink('occupancy', 'Belegung'))));
     };
 
     // ================= PERSONS =================
@@ -1828,10 +1854,10 @@
             ],
             controls: (refresh, cs) => {
                 cs.status = ''; cs.person = ''; cs.showArchived = false;
-                const stSel = el('select', {}, el('option', { value: '' }, 'Alle Status'),
+                const stSel = el('select', { 'aria-label': 'Status filtern' }, el('option', { value: '' }, 'Alle Status'),
                     ...['stored', 'reserved', 'collected', 'cancelled'].map((s) => el('option', { value: s }, STATUS_LABEL[s])));
                 stSel.addEventListener('change', () => { cs.status = stSel.value; refresh(); });
-                const peSel = el('select', {}, el('option', { value: '' }, 'Alle Personen'),
+                const peSel = el('select', { 'aria-label': 'Person filtern' }, el('option', { value: '' }, 'Alle Personen'),
                     ...state.persons.map((p) => el('option', { value: p.id }, personName(p))));
                 peSel.addEventListener('change', () => { cs.person = peSel.value; refresh(); });
                 const arChk = el('input', { type: 'checkbox' });
@@ -1927,7 +1953,7 @@
                 el('span', {}, '📍 ' + (v.hall_name ? 'Halle „' + v.hall_name + '"' : 'im Plan')),
                 el('span', { class: 'veh-loc-go' }, 'Im Plan zeigen →'));
         }
-        if (compact) return el('span', { class: 'veh-loc veh-loc-ic empty', title: 'Nicht platziert', 'aria-label': 'Nicht platziert' }, icon('pin', 20));
+        if (compact) return el('span', { class: 'veh-loc veh-loc-ic empty', role: 'img', title: 'Nicht platziert', 'aria-label': 'Nicht platziert' }, icon('pin', 20));
         return el('span', { class: 'veh-loc empty' }, '○ Nicht platziert');
     }
     function vehicleCard(v, { linkable = true, chargeInfo = null } = {}) {
@@ -4508,7 +4534,7 @@
             floor, Wm, Hm, tor: num(geo.tor, 3), load: num(geo.load, 5), shape: geo.shape || 'rect',
             excl: (Array.isArray(geo.excl) ? geo.excl : []).map((e, i) => ({ id: 'x' + i, kind: e.kind || 'wall', x: num(e.x, 0), y: num(e.y, 0), w: num(e.w, 1), h: num(e.h, 1), rot: num(e.rot, 0), label: e.label || (EXCL[e.kind] ? EXCL[e.kind].label : 'Fläche'), mat: e.mat || (EXCL[e.kind] ? EXCL[e.kind].mat : undefined) })),
             // Optional Bauplan underlay: a downscaled image (data-URL) placed in metre space.
-            plan: (geo.plan && geo.plan.href) ? { href: geo.plan.href, x: num(geo.plan.x, 0), y: num(geo.plan.y, 0), w: num(geo.plan.w, Wm), h: num(geo.plan.h, Hm), opacity: num(geo.plan.opacity, 0.55), hidden: !!geo.plan.hidden } : null,
+            plan: (geo.plan && (geo.plan.href || (geo.plan.dxf && Array.isArray(geo.plan.dxf.pl) && geo.plan.dxf.pl.length))) ? { href: geo.plan.href, dxf: (geo.plan.dxf && Array.isArray(geo.plan.dxf.pl) && geo.plan.dxf.pl.length) ? geo.plan.dxf : undefined, x: num(geo.plan.x, 0), y: num(geo.plan.y, 0), w: num(geo.plan.w, Wm), h: num(geo.plan.h, Hm), opacity: num(geo.plan.opacity, 0.55), hidden: !!geo.plan.hidden } : null,
             // Wall node-graph (primary building structure — drawn interactively).
             walls: normalizeWalls(geo.walls),
             spots: (data.spots || []).map((s) => { const g = asObj(s.geometry); return {
@@ -4615,13 +4641,33 @@
         // FE4 — multi-select of the CURRENT subsystem's objects only: zones in the Garagenmanager
         // (plan), vehicles in the Stellplatzsystem (manage) — mirroring interactive(b). selSet holds
         // their ids; a marquee drag on empty floor fills it; group move/delete act on it.
-        let selSet = [], marq = null;
+        let selSet = [], marq = null, measure = null, measurePre = null; // measure = {a,{b|hover}} ruler (UX2); measurePre = start-point snap preview
         const findBlock = (id) => P.spots.find((x) => x._id == id) || P.excl.find((x) => x.id === id);
         const inSel = (id) => id != null && selSet.indexOf(id) >= 0;
         const clearSelSet = () => { if (selSet.length) { selSet = []; return true; } return false; };
         // point (metres) inside a possibly-rotated block?
         function pointInBlock(b, p) { const cx = b.x + b.w / 2, cy = b.y + b.h / 2, r = -(b.rot || 0) * Math.PI / 180, cos = Math.cos(r), sin = Math.sin(r); const dx = p.x - cx, dy = p.y - cy, lx = dx * cos - dy * sin, ly = dx * sin + dy * cos; return Math.abs(lx) <= b.w / 2 && Math.abs(ly) <= b.h / 2; }
         function createZone(kind, x, y, w, h) { const b = { id: 'e' + (P.uid++), kind, x: round2(x), y: round2(y), w: round2(w), h: round2(h), rot: 0, label: EXCL[kind].label, mat: EXCL[kind].mat }; P.excl.push(b); return b; }
+        // Copy/paste of the current zone/structure selection (Strg+C/V). Vehicles are backend-bound
+        // placements, so this covers P.excl blocks only. Paste keeps the group's shape, nudged by 0.5 m,
+        // and cascades on repeat (UX1).
+        let gpClip = null;
+        function copySel() {
+            const ids = selSet.length ? selSet : (P.sel != null ? [P.sel] : []);
+            const items = P.excl.filter((b) => ids.indexOf(b.id) >= 0);
+            if (!items.length) return;
+            const ox = Math.min(...items.map((b) => b.x)), oy = Math.min(...items.map((b) => b.y));
+            gpClip = { ox, oy, items: items.map((b) => ({ kind: b.kind, w: b.w, h: b.h, rot: b.rot || 0, dx: b.x - ox, dy: b.y - oy })) };
+            toast(items.length + (items.length === 1 ? ' Objekt kopiert' : ' Objekte kopiert'));
+        }
+        function pasteSel() {
+            if (!gpClip || !gpClip.items.length || P.mode !== 'plan' || !canManageNow) return;
+            const off = 0.5, bx = gpClip.ox + off, by = gpClip.oy + off, ids = [];
+            gpClip.items.forEach((it) => { const x = Math.max(0, Math.min(P.Wm - it.w, bx + it.dx)), y = Math.max(0, Math.min(P.Hm - it.h, by + it.dy)); const nb = createZone(it.kind, x, y, it.w, it.h); nb.rot = it.rot; ids.push(nb.id); });
+            gpClip.ox = bx; gpClip.oy = by; // cascade so a repeated paste doesn't land exactly on the last
+            selSet = ids.length > 1 ? ids : []; P.sel = ids.length === 1 ? ids[0] : null;
+            commitGeom('Eingefügt · ' + ids.length + (ids.length === 1 ? ' Objekt' : ' Objekte'));
+        }
         // Snap a zone/area's edges flush to the nearest axis-aligned wall FACE (inner surface).
         function snapZoneFaces(b) {
             if (!P.autoSnap) return; const SNAP = (P.snap ? (P.gridStep || 0.5) : 0.25) + 0.05, xs = [], ys = [];
@@ -4633,7 +4679,7 @@
             b.x += snap1(b.x, b.x + b.w, xs); b.y += snap1(b.y, b.y + b.h, ys);
         }
         // Cancel any in-progress drawing and drop back to the selection cursor (never deletes).
-        function cancelDrawing() { const had = P.chain; P.tool = null; P.chain = null; P.openStart = null; P.preview = null; P.chainAnchor = null; P.snapHint = null; P.guide = null; P.attach = null; zoneDraw = null; if (had) pruneNodes(); refreshFloorFromWalls(); fitView(); }
+        function cancelDrawing() { const had = P.chain; P.tool = null; P.chain = null; P.openStart = null; P.preview = null; P.chainAnchor = null; P.snapHint = null; P.guide = null; P.attach = null; zoneDraw = null; measure = null; measurePre = null; if (had) pruneNodes(); refreshFloorFromWalls(); fitView(); }
         // Inline quick-edit popover for a selected wall segment OR opening: length/width + delete.
         const wallPopLabel = el('span', { class: 'gp-wallpop-lab' }, 'Länge');
         const wallLenIn = el('input', { type: 'number', step: '0.01', min: '0.1', class: 'gp-lenin' });
@@ -4797,6 +4843,8 @@
             const m = e.ctrlKey || e.metaKey, tag = (e.target.tagName || '').toLowerCase(), typing = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable;
             if (m && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); }
             else if (m && e.key.toLowerCase() === 'y') { e.preventDefault(); doRedo(); }
+            else if (m && !typing && e.key.toLowerCase() === 'c' && P.mode === 'plan' && canManageNow && (selSet.length || P.sel != null)) { e.preventDefault(); copySel(); } // Strg+C = Auswahl kopieren
+            else if (m && !typing && e.key.toLowerCase() === 'v' && P.mode === 'plan' && canManageNow && gpClip && gpClip.items.length) { e.preventDefault(); pasteSel(); } // Strg+V = einfügen
             else if (e.key === 'Escape') { if (shortcutModal) { e.preventDefault(); toggleShortcutHelp(); } else if (P.tool || P.chain || P.openStart || zoneDraw) { e.preventDefault(); cancelDrawing(); } else if (selSet.length) { e.preventDefault(); clearSelSet(); draw(); } else if (P.structSel || P.sel != null) { e.preventDefault(); P.structSel = null; P.sel = null; draw(); } else if (P.maxed) { toggleMax(false); } }
             else if (!typing && !m && e.key === '?') { e.preventDefault(); toggleShortcutHelp(); } // ? = Tastaturkürzel-Hilfe (QW3)
             else if (!typing && (e.key === 'Delete' || e.key === 'Backspace') && (selSet.length || (P.mode === 'plan' && (P.structSel || P.sel != null)))) { e.preventDefault(); deleteSel(); }
@@ -4816,6 +4864,7 @@
             const rows = [
                 ['Ctrl / ⌘ + Z', 'Rückgängig'],
                 ['Ctrl / ⌘ + ⇧ + Z · Ctrl + Y', 'Wiederholen'],
+                ['Ctrl / ⌘ + C · V', 'Auswahl (Flächen/Bauteile) kopieren / einfügen'],
                 ['F', 'Einpassen (Zoom-to-fit) — bei ausgewählter Tür: spiegeln'],
                 ['Leertaste (halten) + ziehen', 'Ansicht verschieben — bei ausgewählter Tür: Anschlag wechseln'],
                 ['Mittlere Maustaste + ziehen', 'Ansicht verschieben (Pan)'],
@@ -4920,20 +4969,37 @@
         }
 
         // ---- FE3: reusable wall-layout templates (the building shape), stored client-side. ----
+        // Wall templates: server-backed (AR3) with a localStorage mirror as offline fallback. Same
+        // {id, name, walls} shape either way — a numeric id means it lives in the DB.
         const TPL_KEY = 'parkrr.wallTemplates';
-        const loadTemplates = () => { try { const a = JSON.parse(localStorage.getItem(TPL_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } };
-        const saveTemplates = (a) => { try { localStorage.setItem(TPL_KEY, JSON.stringify(a.slice(0, 30))); } catch (e) { /* quota */ } };
+        const lsLoad = () => { try { const a = JSON.parse(localStorage.getItem(TPL_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } };
+        const lsSave = (a) => { try { localStorage.setItem(TPL_KEY, JSON.stringify(a.slice(0, 30))); } catch (e) { /* quota */ } };
+        let tplCache = null;
+        async function fetchTemplates() {
+            try { const a = await api.get('/wall-templates'); if (Array.isArray(a)) { tplCache = a.map((t) => ({ id: t.id, name: t.name, walls: t.walls })); lsSave(tplCache); return tplCache; } }
+            catch (e) { /* offline / no server → local mirror */ }
+            tplCache = lsLoad(); return tplCache;
+        }
+        const loadTemplates = () => tplCache || lsLoad();
         async function saveCurrentTemplate() {
             if (!P.walls.edges.length) { toast('Keine Wände zum Speichern', 'warn'); return; }
             const data = await formModal({ title: 'Wand-Vorlage speichern', submitLabel: 'Speichern', fields: [{ name: 'name', label: 'Name der Vorlage', type: 'text', required: true, value: (P.hallName || 'Vorlage') + ' ' + (loadTemplates().length + 1) }] });
             if (!data || !data.name) return;
-            const tpls = loadTemplates(); tpls.unshift({ id: Date.now(), name: String(data.name).slice(0, 60), walls: JSON.parse(JSON.stringify(P.walls)) }); saveTemplates(tpls); toast('Vorlage gespeichert', 'ok');
+            const name = String(data.name).slice(0, 60), walls = JSON.parse(JSON.stringify(P.walls));
+            try { await api.post('/wall-templates', { name, walls }); await fetchTemplates(); toast('Vorlage gespeichert', 'ok'); }
+            catch (e) { const tpls = lsLoad(); tpls.unshift({ id: Date.now(), name, walls, local: true }); lsSave(tpls); tplCache = tpls; toast('Vorlage lokal gespeichert (offline)', 'warn'); }
+        }
+        async function deleteTemplate(t) {
+            if (t.local) { const tpls = lsLoad().filter((x) => x.id !== t.id); lsSave(tpls); tplCache = tpls; return; } // local-only: remove from storage, no server call
+            try { await api.del('/wall-templates/' + t.id); await fetchTemplates(); }
+            catch (e) { const tpls = lsLoad().filter((x) => x.id !== t.id); lsSave(tpls); tplCache = tpls; }
         }
         async function applyTemplate(t) {
             if (P.walls.edges.length && !(await confirmDialog('Vorlage laden', 'Aktuelle Wände durch die Vorlage „' + t.name + '" ersetzen?', 'Ersetzen'))) return;
             P.walls = normalizeWalls(t.walls); P.structSel = null; P.sel = null; refreshFloorFromWalls(); pushUndo(); markDirty(); fitView(); toast('Vorlage geladen: ' + t.name, 'ok');
         }
-        function openTemplateMenu() {
+        async function openTemplateMenu() {
+            await fetchTemplates();
             const modal = el('div', { class: 'gp-help-backdrop' });
             const card = el('div', { class: 'gp-help-card', style: 'max-width:380px' });
             card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '▤ Wand-Vorlagen'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => modal.remove() }, '✕')));
@@ -4944,7 +5010,7 @@
             tpls.forEach((t) => {
                 const row = el('div', { style: 'display:flex;gap:.4rem;align-items:center' });
                 row.append(el('button', { class: 'gp-tbtn', style: 'flex:1;justify-content:flex-start', onclick: () => { modal.remove(); applyTemplate(t); } }, '▤ ' + t.name + ' · ' + (t.walls && t.walls.edges ? t.walls.edges.length : 0) + ' Wände'));
-                row.append(el('button', { class: 'gp-help-x', title: 'Löschen', onclick: () => { saveTemplates(loadTemplates().filter((x) => x.id !== t.id)); modal.remove(); openTemplateMenu(); } }, '🗑'));
+                row.append(el('button', { class: 'gp-help-x', title: 'Löschen', onclick: async () => { await deleteTemplate(t); modal.remove(); openTemplateMenu(); } }, '🗑'));
                 body.append(row);
             });
             card.append(body); modal.append(card); modal.addEventListener('click', (ev) => { if (ev.target === modal) modal.remove(); }); (root || document.body).append(modal);
@@ -5056,6 +5122,18 @@
                 if (!P.calib) im.setAttribute('clip-path', 'url(#gpclip)');
                 im.setAttribute('href', P.plan.href); im.setAttribute('preserveAspectRatio', 'none');
                 svg.append(im);
+            } else if (P.plan && !P.plan.hidden && P.plan.dxf) {
+                // DXF vector underlay: re-rendered from the parsed polylines each draw, so it stays
+                // crisp at any zoom. Mapped from the DXF bbox into the placement box (x,y,w,h) with the
+                // y-flip (DXF y-up → screen y-down); the same calibration frame moves/scales it.
+                const d = P.plan.dxf, sx = P.plan.w / (d.dw || 1), sy = P.plan.h / (d.dh || 1);
+                const gv = svgEl('g', { class: 'gp-planvec', opacity: P.calib ? Math.max(0.75, P.plan.opacity) : P.plan.opacity });
+                if (!P.calib) gv.setAttribute('clip-path', 'url(#gpclip)');
+                for (const pl of d.pl) {
+                    const pts = pl.map((pt) => ((P.plan.x + (pt[0] - d.minX) * sx) * CELL).toFixed(1) + ',' + ((P.plan.y + (d.dh - (pt[1] - d.minY)) * sy) * CELL).toFixed(1)).join(' ');
+                    gv.append(svgEl('polyline', { points: pts, fill: 'none', class: 'gp-planvec-l' }));
+                }
+                svg.append(gv);
             }
             if (P.grid !== false) svg.append(svgEl('rect', { width: P.Wm * CELL, height: P.Hm * CELL, fill: 'url(#gpgrid)' }));
             drawEnclosure(); // shade the wall-enclosed parking area (+ m² label)
@@ -5201,6 +5279,32 @@
             };
             rd.onerror = () => toast('Datei konnte nicht gelesen werden', 'error');
             rd.readAsDataURL(file);
+        }
+        // Load a DXF vector drawing (FE3): parse LINE/POLYLINE/CIRCLE entities and keep them as
+        // VECTOR polylines in the Bauplan underlay (placement, calibration, opacity, hide,
+        // persistence reused), so the CAD floor plan stays crisp at any zoom while it's traced over.
+        function loadDxf(file) {
+            if (!file) return;
+            if (file.size > 8 * 1024 * 1024) { toast('DXF-Datei zu groß (max 8 MB)', 'error'); return; } // reject before reading the whole file
+            const rd = new FileReader();
+            rd.onerror = () => toast('Datei konnte nicht gelesen werden', 'error');
+            rd.onload = () => {
+                let dxf; try { dxf = PG.parseDXF(String(rd.result)); } catch (e) { toast('DXF konnte nicht gelesen werden', 'error'); return; }
+                if (!dxf.polylines.length) { toast('Keine Linien/Polylinien im DXF gefunden', 'error'); return; }
+                const { minX, minY, maxX, maxY } = dxf.bbox, dw = maxX - minX, dh = maxY - minY;
+                if (!(dw > 0 && dh > 0)) { toast('DXF hat keine gültige Ausdehnung', 'error'); return; }
+                const ptCount = dxf.polylines.reduce((s, pl) => s + pl.length, 0);
+                if (ptCount > 12000) { toast('DXF zu detailliert (' + ptCount + ' Punkte) — bitte vereinfachen', 'error'); return; } // keep the geometry blob under its size cap
+                // Store the polylines (2-dp) + bbox; the renderer maps them into the placement box.
+                const vec = { pl: dxf.polylines.map((pl) => pl.map((p) => [round2(p[0]), round2(p[1])])), minX: round2(minX), minY: round2(minY), dw: round2(dw), dh: round2(dh) };
+                if (JSON.stringify(vec).length > 230000) { toast('DXF zu detailliert — bitte eine einfachere Zeichnung verwenden', 'error'); return; } // keep the serialized plan under the 256 KiB geometry-blob cap
+                // Fit the drawing into the floor bounding box, aspect-preserving (letterbox), then calibrate.
+                const bb = floorBB(), fw = bb.maxX - bb.minX, fh = bb.maxY - bb.minY, fit = Math.min(fw / dw, fh / dh);
+                const pw = Math.max(1, dw * fit), ph = Math.max(1, dh * fit);
+                P.plan = { dxf: vec, x: bb.minX + (fw - pw) / 2, y: bb.minY + (fh - ph) / 2, w: pw, h: ph, opacity: 0.7, hidden: false };
+                P.calib = true; markDirty(); draw(); renderRail(); toast('DXF geladen (Vektor) — jetzt an einem bekannten Maß kalibrieren (ziehen / Ecke)', 'ok');
+            };
+            rd.readAsText(file);
         }
         // ---- wall node-graph geometry ----
         function edgeVec(e) { const a = P.walls.nodes[e.a], b = P.walls.nodes[e.b]; const dx = b.x - a.x, dy = b.y - a.y; return { a, b, dx, dy, len: Math.hypot(dx, dy) }; }
@@ -5716,13 +5820,12 @@
                 if (P.mode === 'plan' && vd.len > 0.3) {
                     let nx = -vd.dy, ny = vd.dx; const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
                     const mid = P0(0.5), off = th / 2 + 11;
-                    // With openings, place the total on the SAME outer side as the sub-segment labels,
-                    // not the inner side: zone/vehicle DOM blocks paint ABOVE this SVG text, so a total
-                    // sitting at the mid-wall opening was hidden behind the lane (verified against real
-                    // data: lane y6.4–10.4, x→38.1 covered the inner-side total at the y8.4 gate). Its
-                    // mid-wall position sits between the two segment labels, so they don't clash. No
-                    // openings → keep the inner side as before (no regression on plain walls).
-                    const tsg = spans.length ? -1 : 1;
+                    // Total always on the INNER side; sub-segment labels go on the OUTER side (see below),
+                    // so the two never collide — with two openings a solid piece can sit AT the wall
+                    // midpoint (u≈0.5), and an outer-side total would overlap that piece's caption. Both
+                    // labels live on the labelSvg overlay (z above the zone/vehicle DOM), so the inner
+                    // total is no longer hidden behind a lane — the reason the old code forced it outward.
+                    const tsg = 1;
                     const tl = svgEl('text', { x: mid[0] + tsg * nx * off, y: mid[1] + tsg * ny * off + 3, 'text-anchor': 'middle', class: 'gp-walllab' }); tl.textContent = labelLen(ei).toFixed(2).replace('.', ',') + ' m'; labelSvg.append(tl); // dimension per Bezug (Innen/Achse/Außen)
                     if (spans.length) { // clear sub-segment lengths — measured on the DRAWN edge (v0)
                         // and trimmed to the SAME Bezug reference as the total (labelLen), so the pieces
@@ -5744,6 +5847,22 @@
         function drawWallPreview() {
             if (P.mode !== 'plan') return;
             const CELL = P.CELL;
+            // ruler (UX2): line + distance + angle between the two measured points (or A → cursor)
+            if (measure && measure.a) { const b2 = measure.b || measure.hover;
+                if (b2) { const ax = measure.a.x * CELL, ay = measure.a.y * CELL, bx = b2.x * CELL, by = b2.y * CELL;
+                    svg.append(svgEl('line', { x1: ax, y1: ay, x2: bx, y2: by, class: 'gp-measure' }));
+                    svg.append(svgEl('circle', { cx: ax, cy: ay, r: 4, class: 'gp-measure-pt' }));
+                    svg.append(svgEl('circle', { cx: bx, cy: by, r: 4, class: 'gp-measure-pt' }));
+                    if (b2.snap === 'node' || b2.snap === 'edge') svg.append(svgEl('circle', { cx: bx, cy: by, r: 8, fill: 'none', class: 'gp-measure-snap' })); // magnet caught a wall corner / edge
+                    const d = Math.hypot(b2.x - measure.a.x, b2.y - measure.a.y), ang = ((Math.atan2(b2.y - measure.a.y, b2.x - measure.a.x) * 180 / Math.PI) % 180 + 180) % 180;
+                    const tl = svgEl('text', { x: (ax + bx) / 2, y: (ay + by) / 2 - 9, 'text-anchor': 'middle', class: 'gp-measurelab' });
+                    tl.textContent = d.toFixed(2).replace('.', ',') + ' m · ' + Math.min(ang, 180 - ang).toFixed(0) + '°'; labelSvg.append(tl); } }
+            // Start-point (A) snap preview: show the magnet cue before the first click, too.
+            if (P.tool === 'measure' && !(measure && measure.a && !measure.b) && measurePre && measurePre.snap) {
+                const hx = measurePre.x * CELL, hy = measurePre.y * CELL;
+                svg.append(svgEl('circle', { cx: hx, cy: hy, r: 3, class: 'gp-measure-pt' }));
+                svg.append(svgEl('circle', { cx: hx, cy: hy, r: 8, fill: 'none', class: 'gp-measure-snap' }));
+            }
             // orthogonal snap guide-line (spans the canvas)
             if (P.guide && (P.chain || nodeDrag)) {
                 if (P.guide.kind === 'h') svg.append(svgEl('line', { x1: 0, y1: P.guide.y * CELL, x2: P.Wm * CELL, y2: P.guide.y * CELL, class: 'gp-guide' }));
@@ -5849,6 +5968,7 @@
             // Auto-Snap: objects fang flush against each other (in addition to the floor line).
             if (canManageNow) toolbar.append(tb('🧲', 'Auto-Snap: Objekte fangen aneinander', () => { P.autoSnap = !P.autoSnap; renderToolbar(); toast(P.autoSnap ? 'Auto-Snap an' : 'Auto-Snap aus'); }, P.autoSnap));
             if (canManageNow) toolbar.append(tb('🛡', 'Pufferzonen zwischen Fahrzeugen (Taste P)', () => { P.buffer = !P.buffer; renderToolbar(); draw(); toast(P.buffer ? 'Pufferzonen an · ' + P.bufferM.toFixed(1).replace('.', ',') + ' m' : 'Pufferzonen aus'); }, P.buffer));
+            if (canManageNow && P.mode === 'plan') toolbar.append(tb('📏', 'Messen: Punkt A klicken, Punkt B klicken (Distanz + Winkel). Fängt an Wand-Ecken und -Kanten (Rand); ⇧ oder achsennah = waagrecht/senkrecht. Nochmal klicken = neu.', () => setTool(P.tool === 'measure' ? null : 'measure'), P.tool === 'measure'));
             // Adjustable buffer distance (vehicle↔vehicle), shown only while buffers are on. 0.5 m steps,
             // 0–5 m. draw() re-runs the bands + collision uses P.bufferM live. Session-only, like the toggle.
             if (canManageNow && P.buffer) { const bseg = el('div', { class: 'gp-seg', title: 'Pufferdistanz zwischen Fahrzeugen' });
@@ -5914,7 +6034,7 @@
         function currentWalls() {
             return { nodes: P.walls.nodes.map((n) => ({ x: round2(n.x), y: round2(n.y) })), edges: P.walls.edges.map((e) => ({ a: e.a, b: e.b, kind: e.kind, thick: round2(e.thick), ops: (e.ops && e.ops.length) ? e.ops.map((o) => ({ c: round2(o.c), w: round2(o.w), kind: o.kind, side: o.side, hinge: o.hinge, frame: o.frame })) : undefined })) };
         }
-        function currentGeometry() { return { floor: P.floor, Wm: P.Wm, Hm: P.Hm, tor: P.tor, load: P.load, shape: P.shape, excl: P.excl.map((e) => ({ kind: e.kind, x: round2(e.x), y: round2(e.y), w: round2(e.w), h: round2(e.h), rot: Math.round(e.rot || 0), label: e.label, mat: e.mat || undefined })), walls: (P.walls.edges.length ? currentWalls() : undefined), wallRef: P.wallRef !== 'axis' ? P.wallRef : undefined, plan: P.plan ? { href: P.plan.href, x: round2(P.plan.x), y: round2(P.plan.y), w: round2(P.plan.w), h: round2(P.plan.h), opacity: round2(P.plan.opacity), hidden: P.plan.hidden || undefined } : undefined }; }
+        function currentGeometry() { return { floor: P.floor, Wm: P.Wm, Hm: P.Hm, tor: P.tor, load: P.load, shape: P.shape, excl: P.excl.map((e) => ({ kind: e.kind, x: round2(e.x), y: round2(e.y), w: round2(e.w), h: round2(e.h), rot: Math.round(e.rot || 0), label: e.label, mat: e.mat || undefined })), walls: (P.walls.edges.length ? currentWalls() : undefined), wallRef: P.wallRef !== 'axis' ? P.wallRef : undefined, plan: P.plan ? { href: P.plan.href, dxf: P.plan.dxf, x: round2(P.plan.x), y: round2(P.plan.y), w: round2(P.plan.w), h: round2(P.plan.h), opacity: round2(P.plan.opacity), hidden: P.plan.hidden || undefined } : undefined }; }
         async function doSaveGeom(silent) {
             P.dirty = false; renderToolbar(); // optimistic; a change during the save re-flags it
             try {
@@ -6008,6 +6128,68 @@
             } else { c.append(el('span', { class: 'gp-vst' }, '⠿')); }
             return c;
         }
+        // FE1: Auto-Arrange via the MaxRects packer (PG.packRects). `padding` is the ONLY clearance the
+        // maths uses — margin from walls AND gap between vehicles — and it defaults to 0 (flush), so a
+        // vehicle fits any niche its true footprint fits (no hidden inflation shrinking small pockets).
+        // The buffer toggle raises it to P.bufferM when the user wants breathing room. Two phases:
+        //   1) re-pack the already-placed vehicles (largest first; BSSF fills tight niches),
+        //   2) pack the "Nicht platziert" staging vehicles into the space that's left — those that fit
+        //      become real spots, the rest simply stay in staging (no error, no collision).
+        async function autoArrange(padding) {
+            const pad = (typeof padding === 'number') ? padding : (P.buffer ? P.bufferM : 0); // allowZeroMargin: 0 ⇒ flush (ignore a stray event arg)
+            const spots = P.spots.slice(), pals = P.palette.slice();
+            if (!spots.length && !pals.length) { toast('Keine Gefährte zum Anordnen', 'warn'); return; }
+            const msg = spots.length + ' platzierte' + (pals.length ? ' + ' + pals.length + ' aus „Nicht platziert"' : '') + ' anordnen (größte zuerst, mit Drehung, Abstand ' + pad.toFixed(2).replace('.', ',') + ' m)?';
+            if (!(await confirmDialog('Auto-Anordnen', msg, 'Anordnen'))) return;
+            // Hard obstacles: walls, blocking structures (columns/Stützen) and driving lanes /
+            // maintenance / exits. Stellflächen are parkable markings → NOT obstacles.
+            const baseObs = wallRects()
+                .concat(P.excl.filter((e) => !isZoneKind(e.kind)))
+                .concat(P.excl.filter((e) => isZoneKind(e.kind) && e.kind !== 'stell'));
+            const bb = floorBB(), opts = { margin: pad, gap: pad };
+
+            // Phase 1 — re-pack existing spots.
+            const orig = new Map(spots.map((b) => [b._id, { x: b.x, y: b.y, rot: b.rot || 0 }]));
+            const r1 = PG.packRects(spots.map((b) => ({ id: b._id, w: b.w, h: b.h })), baseObs, bb, P.floor, opts);
+            const by1 = new Map(r1.placements.map((p) => [p.id, p]));
+            for (const b of spots) {
+                const p = by1.get(b._id);
+                if (p && p.ok) { b.x = p.x; b.y = p.y; b.rot = p.rot; b._invalid = false; }
+                else { const o = orig.get(b._id); b.x = o.x; b.y = o.y; b.rot = o.rot; }
+                b._dirty = true;
+            }
+            // Flag validity against the FINAL layout, not a mid-loop snapshot (spots move as we go).
+            spots.forEach((b) => { b._invalid = !validVeh(b, b._id); });
+            spots.forEach((b) => { if (!b._invalid) persistSpot(b); }); // don't persist a blockiert spot; it stays _dirty for a later valid move
+
+            // Phase 2 — staging vehicles into the remaining free space (placed spots become obstacles,
+            // inflated by pad so the clearance holds). Unplaceable ones silently stay in the palette.
+            const palFoot = (p) => { const d = catFoot(p.type); return { w: num(p.length_m, d[0]), h: num(p.width_m, d[1]) }; };
+            let staged = 0, stageErr = 0;
+            if (pals.length) {
+                const placedObs = baseObs.concat(spots.filter((b) => !b._invalid).map((b) => ({ x: b.x - pad, y: b.y - pad, w: b.w + 2 * pad, h: b.h + 2 * pad, rot: b.rot || 0 })));
+                const r2 = PG.packRects(pals.map((p) => ({ id: p.id, ...palFoot(p) })), placedObs, bb, P.floor, opts);
+                const by2 = new Map(r2.placements.map((p) => [p.id, p]));
+                for (const p of pals) {
+                    const pl = by2.get(p.id); if (!pl || !pl.ok) continue; // no room → stays in staging
+                    const f = palFoot(p);
+                    try {
+                        const spot = await api.post('/halls/' + P.hallId + '/spots', { label: (p.label + ' #' + p.id).slice(0, 90), geometry: { x: round2(pl.x), y: round2(pl.y), w: round2(f.w), h: round2(f.h), rot: pl.rot || 0, status: 'busy' } });
+                        try { await api.put('/spots/' + spot.id + '/vehicle', { vehicle_id: p.id }); }
+                        catch (linkErr) { try { await api.del('/spots/' + spot.id); } catch (e2) { /* best effort */ } throw linkErr; }
+                        P.spots.push({ _id: spot.id, kind: 'veh', label: p.label, spotLabel: spot.label, type: p.type || '', vehId: p.id, personId: p.person_id || null, personName: p.person_name || '', L: p.length_m, W: p.width_m, H: p.height_m, t: p.weight_t, x: pl.x, y: pl.y, w: f.w, h: f.h, rot: pl.rot || 0, status: 'busy', _dirty: false });
+                        P.palette = P.palette.filter((x) => x.id !== p.id); staged++;
+                    } catch (err) { stageErr++; } // keep in staging on failure
+                }
+            }
+
+            markDirty(); pushUndo(); draw(); renderRail();
+            const parts = [r1.placed + ' angeordnet'];
+            if (staged) parts.push(staged + ' aus „Nicht platziert" gesetzt');
+            const left = r1.failed + (pals.length - staged);
+            if (left) parts.push(left + ' ohne Platz (in „Nicht platziert")');
+            toast(parts.join(' · ') + (pad > 0 ? ' · Abstand ' + pad.toFixed(2).replace('.', ',') + ' m' : ''), (r1.failed || stageErr) ? 'warn' : 'ok');
+        }
         function renderManageRail() {
             rail.append(hallSwitchCard(false));
             const palCard = el('div', { class: 'gp-rcard card' }, el('h3', {}, 'Nicht platziert', el('span', { class: 'eyebrow' }, P.palette.length + ' · ziehen →')));
@@ -6023,6 +6205,7 @@
             search.addEventListener('input', () => { P.palQuery = search.value; fillPal(); });
             palCard.append(search, pal); rail.append(palCard);
             fillPal();
+            if (canManageNow && (P.spots.length || P.palette.length)) rail.append(el('div', { class: 'gp-rcard card', style: 'padding:.55rem .7rem' }, el('button', { class: 'btn btn-ghost btn-block', title: 'Platzierte + „Nicht platzierte" Gefährte anordnen (Abstand = Puffer, wenn aktiv; sonst bündig)', onclick: () => autoArrange() }, '⊞ Auto-Anordnen')));
             rail.append(renderVehDetail());
         }
         // Partial update of the Garagenplaner display attributes straight from the detail
@@ -6179,7 +6362,10 @@
             // ---- Bauplan (Unterlage) ----
             const planCard = el('div', { class: 'gp-rcard card' }, el('h3', {}, 'Bauplan', el('span', { class: 'eyebrow' }, 'Unterlage')));
             const fileIn = el('input', { type: 'file', accept: 'image/*', style: 'display:none', onchange: (e) => { loadBauplan(e.target.files && e.target.files[0]); e.target.value = ''; } });
-            planCard.append(fileIn, el('div', { class: 'gp-addrow' }, el('button', { class: 'btn btn-sm', onclick: () => fileIn.click() }, P.plan ? '↻ Bild ersetzen' : '⤒ Bauplan laden')));
+            const dxfIn = el('input', { type: 'file', accept: '.dxf', style: 'display:none', onchange: (e) => { loadDxf(e.target.files && e.target.files[0]); e.target.value = ''; } });
+            planCard.append(fileIn, dxfIn, el('div', { class: 'gp-addrow' },
+                el('button', { class: 'btn btn-sm', onclick: () => fileIn.click() }, P.plan ? '↻ Bild ersetzen' : '⤒ Bauplan laden'),
+                el('button', { class: 'btn btn-sm', title: 'CAD-Grundriss (DXF) als Unterlage laden', onclick: () => dxfIn.click() }, '⧉ DXF laden')));
             if (P.plan) {
                 const showBtn = el('button', { class: 'btn btn-sm gp-toggle' + (!P.plan.hidden ? ' on' : ''), onclick: () => { P.plan.hidden = !P.plan.hidden; markDirty(); draw(); renderRail(); } }, P.plan.hidden ? '⦸ Ausgeblendet' : '👁 Sichtbar');
                 const calBtn = el('button', { class: 'btn btn-sm gp-toggle' + (P.calib ? ' on' : ''), onclick: () => { P.calib = !P.calib; draw(); renderRail(); } }, '⤡ Kalibrieren');
@@ -6247,7 +6433,7 @@
         }
 
         // ---- mode / maximize ----
-        function setMode(m) { P.mode = m; root.dataset.mode = m; P.sel = null; selSet = []; P.calib = false; P.tool = null; P.chain = null; P.openStart = null; P.preview = null; P.structSel = null; P.chainAnchor = null; P.guide = null; P.attach = null; hideLen(); hideVertMenu(); ctitle.textContent = m === 'plan' ? 'Garagenplaner' : 'Digitaler Zwilling'; rebuildSwitch(); draw(); }
+        function setMode(m) { P.mode = m; root.dataset.mode = m; P.sel = null; selSet = []; P.calib = false; P.tool = null; P.chain = null; P.openStart = null; P.preview = null; P.structSel = null; P.chainAnchor = null; P.guide = null; P.attach = null; measure = null; measurePre = null; hideLen(); hideVertMenu(); ctitle.textContent = m === 'plan' ? 'Garagenplaner' : 'Digitaler Zwilling'; rebuildSwitch(); draw(); }
         // Re-fit on enter AND exit so the plan fills whichever viewport we land in (entering
         // fullscreen used to keep the small windowed scale → a tiny plan marooned in a huge canvas).
         function toggleMax(force) { P.maxed = force == null ? !P.maxed : force; root.classList.toggle('maxed', P.maxed); maxBtn.textContent = P.maxed ? '⤢' : '⛶'; if (!P.maxed) { rail.style.left = ''; rail.style.top = ''; rail.style.right = ''; } setTimeout(() => { if (P.walls.edges.length) fitView(); else layout(); }, 20); }
@@ -6378,7 +6564,7 @@
         });
 
         // ---- interactive wall drawing / node editing (overlay in plan mode) ----
-        function setTool(kind) { P.tool = kind || null; P.chain = null; P.openStart = null; P.preview = null; P.snapHint = null; P.guide = null; P.attach = null; P.chainAnchor = null; if (P.tool) { P.structSel = null; } draw(); }
+        function setTool(kind) { P.tool = kind || null; P.chain = null; P.openStart = null; P.preview = null; P.snapHint = null; P.guide = null; P.attach = null; P.chainAnchor = null; measure = null; measurePre = null; if (P.tool) { P.structSel = null; } draw(); }
         function evWorld(ev) { const r = planEl.getBoundingClientRect(); return { x: (ev.clientX - r.left) / P.CELL, y: (ev.clientY - r.top) / P.CELL }; }
         // Snap a drawing point: existing node > point on an existing wall (Anbau, records the
         // attach split for the distance readout) > grid, with automatic orthogonal (H/V) snap
@@ -6490,9 +6676,34 @@
             if (isNode) deleteNode(P.structSel.idx); else deleteEdge(P.structSel.idx);
             P.structSel = null; refreshFloorFromWalls(); pushUndo(); markDirty(); equalizePadding(); toast(isNode ? 'Punkt aufgelöst' : 'Segment entfernt');
         }
+        // Snap a measure endpoint. Priority: (1) magnet to a corner — a wall graph node OR a visible
+        // wall-rectangle corner (Wandanfang/-ende at the drawn face); (2) project onto the nearest
+        // visible wall edge (the "Rand"), so you can start anywhere along a wall; (3) relative to the
+        // fixed point A, lock to horizontal/vertical (hard with Shift, soft magnet within ~17° of an
+        // axis). Free points otherwise stay exact so arbitrary distances remain measurable.
+        function snapMeasure(p, from, shift) {
+            const TH = Math.max(0.1, Math.min(1.0, 14 / P.CELL)); // ~14 px on screen at any zoom (CELL = px/m)
+            const rects = P.walls.edges.length ? wallRects() : [];
+            let best = null, bd = TH;
+            const corner = (x, y) => { const d = Math.hypot(x - p.x, y - p.y); if (d < bd) { bd = d; best = { x, y }; } };
+            for (const nd of P.walls.nodes) corner(nd.x, nd.y);
+            for (const r of rects) for (const c of quad(r)) corner(c[0], c[1]);
+            if (best) return { x: round2(best.x), y: round2(best.y), snap: 'node' };
+            const proj = (ax, ay, bx, by) => { const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy; let t = L ? ((p.x - ax) * dx + (p.y - ay) * dy) / L : 0; t = Math.max(0, Math.min(1, t)); return { x: ax + t * dx, y: ay + t * dy }; };
+            let ep = null, ed = TH;
+            for (const r of rects) { const q = quad(r); for (let i = 0; i < 4; i++) { const a = q[i], b = q[(i + 1) % 4], pr = proj(a[0], a[1], b[0], b[1]), d = Math.hypot(pr.x - p.x, pr.y - p.y); if (d < ed) { ed = d; ep = pr; } } }
+            if (ep) return { x: round2(ep.x), y: round2(ep.y), snap: 'edge' };
+            let x = p.x, y = p.y, snap = null;
+            if (from) {
+                const dx = x - from.x, dy = y - from.y, ang = Math.atan2(Math.abs(dy), Math.abs(dx)) * 180 / Math.PI;
+                if (shift || ang < 17 || ang > 73) { if (Math.abs(dx) >= Math.abs(dy)) { y = from.y; } else { x = from.x; } snap = 'ortho'; }
+            }
+            return { x, y, snap };
+        }
         drawOverlay.addEventListener('pointerdown', (ev) => {
             if (ev.button !== 0 || spaceDown || P.mode !== 'plan' || P.calib || !canManageNow) return;
             ev.preventDefault(); const p = evWorld(ev);
+            if (P.tool === 'measure') { const s = snapMeasure(p, (measure && measure.a && !measure.b) ? measure.a : null, ev.shiftKey); if (!measure || measure.b) measure = { a: { x: s.x, y: s.y, snap: s.snap } }; else measure.b = { x: s.x, y: s.y, snap: s.snap }; drawFloor(); return; } // ruler: click A, click B, click again = restart
             if (isWallDraw(P.tool)) { wallClick(snapDraw(p, ev.shiftKey)); return; }
             if (isOpenKind(P.tool)) { openClick(p); return; }
             if (isZoneTool(P.tool) || P.tool === 'column') { const x = gsnap(p.x), y = gsnap(p.y); zoneDraw = { x0: x, y0: y, x1: x, y1: y }; try { drawOverlay.setPointerCapture(ev.pointerId); } catch (er) { /* ignore */ } return; }
@@ -6501,6 +6712,11 @@
         drawOverlay.addEventListener('pointermove', (ev) => {
             let p = evWorld(ev);
             if ((P.chain || nodeDrag || zoneDraw || zoneDrag) && maybeExpand(p)) p = evWorld(ev); // auto-expand while drawing/dragging
+            if (P.tool === 'measure') {
+                if (measure && measure.a && !measure.b) { const s = snapMeasure(p, measure.a, ev.shiftKey); measure.hover = { x: s.x, y: s.y, snap: s.snap }; }
+                else { const s = snapMeasure(p, null, ev.shiftKey); measurePre = { x: s.x, y: s.y, snap: s.snap }; } // preview where the start point A will snap
+                drawFloor(); return;
+            }
             if (zoneDraw) { zoneDraw.x1 = gsnap(p.x); zoneDraw.y1 = gsnap(p.y); drawFloor(); return; }
             if (zoneDrag) {
                 const b = P.excl.find((x) => x.id === zoneDrag.id); if (!b) { zoneDrag = null; return; }
@@ -6624,8 +6840,8 @@
             const pc = calcPlace(e), rr = planEl.getBoundingClientRect(), over = e.clientX >= rr.left && e.clientX <= rr.right && e.clientY >= rr.top && e.clientY <= rr.bottom;
             drag.g.remove(); if (prev) { prev.remove(); prev = null; } const p = drag.p; drag = null;
             if (!over) { toast('Auf die Fläche ziehen', 'warn'); return; }
-            if (!rectInPoly(pc, P.floor)) { toast('Außerhalb der Hallenfläche', 'error'); return; }
-            if (collide({ kind: 'veh', x: pc.x, y: pc.y, w: pc.w, h: pc.h }, null)) { toast('Kein Platz frei — belegt/ausgenommen', 'error'); return; }
+            if (!rectInPoly(pc, P.floor)) { toast('Außerhalb der Hallenfläche — bleibt in „Nicht platziert"', 'warn'); return; }
+            if (collide({ kind: 'veh', x: pc.x, y: pc.y, w: pc.w, h: pc.h }, null)) { toast('Kein Platz frei hier — bleibt in „Nicht platziert“ · „Auto-Anordnen“ packt es automatisch', 'warn'); return; }
             try {
                 const geom = { x: round2(pc.x), y: round2(pc.y), w: round2(pc.w), h: round2(pc.h), rot: 0, status: 'busy' };
                 // Hall-unique persisted spot label (uq_spots_hall_label) — suffix the vehicle id

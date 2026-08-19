@@ -180,6 +180,50 @@ func (h *Handler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+	case "occupancy":
+		name = "belegung"
+		header = []string{"garage", "halle", "stellplaetze", "belegt", "frei", "auslastung_prozent"}
+		rr, err := h.Pool.Query(r.Context(),
+			`SELECT g.name, h.name,
+			        count(DISTINCT s.id) AS spots,
+			        count(v.id) FILTER (WHERE v.archived = false) AS placed
+			   FROM halls h
+			   JOIN garages g ON g.id = h.garage_id
+			   LEFT JOIN spots s ON s.hall_id = h.id
+			   LEFT JOIN vehicles v ON v.spot_id = s.id
+			  GROUP BY g.name, h.name
+			  ORDER BY g.name, h.name`)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Export fehlgeschlagen")
+			return
+		}
+		defer rr.Close()
+		for rr.Next() {
+			var garage, halle string
+			var spots, placed int64
+			if err := rr.Scan(&garage, &halle, &spots, &placed); err != nil {
+				writeError(w, http.StatusInternalServerError, "Export fehlgeschlagen")
+				return
+			}
+			free := spots - placed
+			if free < 0 {
+				free = 0
+			}
+			pct := 0.0
+			if spots > 0 {
+				pct = float64(placed) / float64(spots) * 100
+			}
+			rows = append(rows, []string{
+				garage, halle,
+				strconv.FormatInt(spots, 10), strconv.FormatInt(placed, 10), strconv.FormatInt(free, 10),
+				strconv.FormatFloat(pct, 'f', 0, 64),
+			})
+		}
+		if rr.Err() != nil {
+			writeError(w, http.StatusInternalServerError, "Export fehlgeschlagen")
+			return
+		}
+
 	default:
 		writeError(w, http.StatusNotFound, "unbekannter Export")
 		return

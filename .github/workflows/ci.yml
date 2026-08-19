@@ -108,3 +108,16 @@ jobs:
             exit 1
           fi
           echo "All external actions are SHA-pinned."
+
+  geometry:
+    name: Planner geometry tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Pure geometry unit tests for web/static/js/geometry.js via Node's built-in test
+      # runner (preinstalled on the runner — no extra action). Guards the planner's
+      # area / wall-offset / collinear-inheritance maths on every PR.
+      - name: Run geometry unit tests
+        run: node --test tests/geometry/geometry.test.js
