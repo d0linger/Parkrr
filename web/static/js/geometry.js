@@ -270,8 +270,54 @@
             }
             return s;
         };
+        // ---- BAY (parking-row) pass ----------------------------------------------------------------
+        // A bay is one row along a wall. Its orientation is decided ONCE (perpendicular to that wall =
+        // the dense comb/Kamm pattern) and every vehicle in it is laid out by explicit cursor
+        // arithmetic — nextCursor = cursor + footprint + gap — so a row is flush and uniform BY
+        // CONSTRUCTION instead of emerging from competing score terms (which produced mixed rotations
+        // and scattered rows). An obstacle in the row is skipped by advancing the cursor, so a bay
+        // survives a column or a driveway crossing the wall. Anything a bay can't take falls through to
+        // the MaxRects free-rect placement below, so odd shapes and inner space still get filled.
+        const r2 = (v) => Math.round(v * 100) / 100;
+        const clearOfPlaced = (cand) => {
+            const probe = gap > 0 ? _quad({ x: cand.x - gap, y: cand.y - gap, w: cand.w + 2 * gap, h: cand.h + 2 * gap, rot: cand.rot }) : _quad(cand);
+            return !placedBlocks.some((pb) => _sat(probe, _quad(pb)));
+        };
+        const bays = ['top', 'bottom', 'left', 'right'].map((edge) => ({
+            edge, cursor: (edge === 'top' || edge === 'bottom') ? bounds.minX + m : bounds.minY + m,
+        }));
+        const bayPlace = (bay, it) => {
+            const horiz = bay.edge === 'top' || bay.edge === 'bottom';
+            // Perpendicular to the wall: the vehicle's LONG side runs across the row, the narrow side
+            // sits on the wall, which is what fits the most vehicles per metre of wall.
+            const rot = horiz ? (it.w >= it.h ? 90 : 0) : (it.w >= it.h ? 0 : 90);
+            const fw = rot === 90 ? it.h : it.w, fh = rot === 90 ? it.w : it.h;
+            const loX = bounds.minX + m, hiX = bounds.maxX - m, loY = bounds.minY + m, hiY = bounds.maxY - m;
+            if (fw > hiX - loX + _EPS || fh > hiY - loY + _EPS) return null; // does not fit the hall at all
+            const limit = horiz ? hiX : hiY, span = horiz ? fw : fh;
+            for (let c = bay.cursor; c + span <= limit + _EPS; c += 0.25) {
+                const ax = horiz ? c : (bay.edge === 'left' ? loX : hiX - fw);
+                const ay = horiz ? (bay.edge === 'top' ? loY : hiY - fh) : c;
+                if (ax < loX - _EPS || ay < loY - _EPS || ax + fw > hiX + _EPS || ay + fh > hiY + _EPS) continue;
+                // anchor→block offset, same convention as the MaxRects path: the FOOTPRINT's top-left
+                // must land on (ax, ay), so the block origin shifts by (footprint − item)/2.
+                const cand = { x: r2(ax + (fw - it.w) / 2), y: r2(ay + (fh - it.h) / 2), w: it.w, h: it.h, rot };
+                // feasible() only covers floor + obstacles; the free-rect carving that normally keeps
+                // vehicles apart is bypassed here, so check the placed vehicles explicitly (plus gap).
+                if (feasible(cand) && clearOfPlaced(cand) && canAllExit(cand)) return { cand, next: c + span + gap };
+            }
+            return null;
+        };
         const placements = []; let placed = 0, failed = 0;
         for (const { it } of order) {
+            let bayHit = null;
+            for (const bay of bays) { const r = bayPlace(bay, it); if (r) { bay.cursor = r.next; bayHit = r.cand; break; } }
+            if (bayHit) {
+                placements.push({ id: it.id, x: bayHit.x, y: bayHit.y, rot: bayHit.rot, ok: true });
+                placedBlocks.push({ id: it.id, x: bayHit.x, y: bayHit.y, w: it.w, h: it.h, rot: bayHit.rot });
+                const fpb = _aabb(bayHit); free = _carve(free, { x: fpb.x - gap, y: fpb.y - gap, w: fpb.w + 2 * gap, h: fpb.h + 2 * gap });
+                placed++; continue;
+            }
             const oris = Math.abs(it.w - it.h) < 1e-3 ? [0] : [0, 90]; // 180°/270° share a rectangle's footprint
             const cands = [];
             for (const rot of oris) {
@@ -367,7 +413,7 @@
         // Stage 3 — BFS fallback (paths that need more than one turn).
         const W = bounds.maxX - bounds.minX, H = bounds.maxY - bounds.minY;
         if (!(W > 0 && H > 0)) return true;
-        const cell = o.cell > 0 ? o.cell : Math.max(0.25, Math.sqrt((W * H) / 2500));
+        const cell = o.cell > 0 ? o.cell : Math.max(0.2, Math.sqrt((W * H) / 10000));
         const nx = Math.max(1, Math.ceil(W / cell)), ny = Math.max(1, Math.ceil(H / cell));
         const obs = (obstacles || []).map((b) => { const a = _aabb(b); return [a.x - clr, a.y - clr, a.x + a.w + clr, a.y + a.h + clr]; });
         const tgt = targets.map((b) => { const a = _aabb(b); return [a.x, a.y, a.x + a.w, a.y + a.h]; });

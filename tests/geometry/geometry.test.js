@@ -191,23 +191,29 @@ test('packRects — big item is placed (BFD keeps the big area for the big vehic
 
 // FE1 — MaxRects specifics: placements hug an edge/neighbour (never float), and never land on an
 // obstacle's or another vehicle's coordinates.
-test('packRects (MaxRects) — first item hugs the top-left corner, does not float', () => {
+// A placement's block {x,y} is the UNROTATED rect origin; what is visually placed is its footprint
+// AABB, so these assertions are made on the footprint (rotation shifts the block origin by design).
+const foot = (p, w, h) => { const W = p.rot === 90 ? h : w, H = p.rot === 90 ? w : h; return { x: p.x + (w - W) / 2, y: p.y + (h - H) / 2, w: W, h: H }; };
+
+test('packRects — first item hugs the margin corner, does not float', () => {
     const r = PG.packRects([{ id: 'a', w: 3, h: 2 }], [], { minX: 0, minY: 0, maxX: 20, maxY: 20 }, null, { margin: 0.2, gap: 0 });
     const p = r.placements[0];
     assert.ok(p.ok);
-    assert.ok(near(p.x, 0.2, 0.01) && near(p.y, 0.2, 0.01), 'placed flush to the margin corner, not mid-room: ' + p.x + ',' + p.y);
+    const f = foot(p, 3, 2);
+    assert.ok(near(f.x, 0.2, 0.01) && near(f.y, 0.2, 0.01), 'footprint flush to the margin corner, not mid-room: ' + f.x + ',' + f.y);
 });
 
-test('packRects (MaxRects) — second item sits flush against the first, not on its coordinates', () => {
+test('packRects — second item sits flush against the first, not on its coordinates', () => {
     const items = [{ id: 'a', w: 4, h: 3 }, { id: 'b', w: 4, h: 3 }];
     const r = PG.packRects(items, [], { minX: 0, minY: 0, maxX: 20, maxY: 20 }, null, { margin: 0, gap: 0 });
     const A = r.placements.find((p) => p.id === 'a'), Bp = r.placements.find((p) => p.id === 'b');
     assert.ok(A.ok && Bp.ok);
     assert.ok(!(near(A.x, Bp.x) && near(A.y, Bp.y)), 'B not stacked on A\'s coordinates');
     assert.ok(!PG.rectsCollide({ x: A.x, y: A.y, w: 4, h: 3, rot: A.rot }, { x: Bp.x, y: Bp.y, w: 4, h: 3, rot: Bp.rot }), 'no overlap');
-    // flush: they share an edge (touching within a couple cm) on some axis
-    const touchX = near(A.x + 4, Bp.x, 0.05) || near(Bp.x + 4, A.x, 0.05);
-    const touchY = near(A.y + 3, Bp.y, 0.05) || near(Bp.y + 3, A.y, 0.05);
+    // flush: their footprints share an edge (touching within a couple cm) on some axis
+    const fa = foot(A, 4, 3), fb = foot(Bp, 4, 3);
+    const touchX = near(fa.x + fa.w, fb.x, 0.05) || near(fb.x + fb.w, fa.x, 0.05);
+    const touchY = near(fa.y + fa.h, fb.y, 0.05) || near(fb.y + fb.h, fa.y, 0.05);
     assert.ok(touchX || touchY, 'B is flush against A');
 });
 
@@ -276,11 +282,14 @@ test('hasExitPath — a gap only passes a vehicle that actually fits through it'
 });
 
 test('packRects routing — allowBlocking gates a "verparken" placement', () => {
-    const bounds = { minX: 0, minY: 0, maxX: 4, maxY: 6 };
-    const gate = { x: 0, y: 0, w: 4, h: 0.5, rot: 0 }; // driveway along the top
-    const items = [{ id: 'a', w: 3, h: 2 }, { id: 'b', w: 3, h: 2 }];
-    const strict = PG.packRects(items, [], bounds, null, { margin: 0, gap: 0, gates: [gate], routeObstacles: [], allowBlocking: false, route: { cell: 0.25 } });
-    const loose = PG.packRects(items, [], bounds, null, { margin: 0, gap: 0, gates: [gate], routeObstacles: [], allowBlocking: true });
+    // A dead-end corridor only one car wide: the aisle is at the top, so a second car can only go
+    // BEHIND the first and would be boxed in. Exactly the case allowBlocking is meant to decide.
+    const bounds = { minX: 0, minY: 0, maxX: 2.5, maxY: 10 };
+    const lane = { x: 0, y: 0, w: 2.5, h: 1, rot: 0 }; // driveway across the top; also a no-park obstacle
+    const items = [{ id: 'a', w: 4, h: 2 }, { id: 'b', w: 4, h: 2 }];
+    const opts = { margin: 0, gap: 0, gates: [lane], routeObstacles: [], route: { cell: 0.25 } };
+    const strict = PG.packRects(items, [lane], bounds, null, Object.assign({ allowBlocking: false }, opts));
+    const loose = PG.packRects(items, [lane], bounds, null, Object.assign({ allowBlocking: true }, opts));
     assert.equal(loose.placed, 2, 'allowBlocking:true packs both (verparken allowed)');
     assert.equal(strict.placed, 1, 'allowBlocking:false places only the car that keeps an exit');
     assert.ok(strict.placements.some((p) => !p.ok), 'the boxed-in car is marked not-placeable');
