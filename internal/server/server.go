@@ -95,6 +95,12 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/passkeys/register/finish", authed(hf(ah.PasskeyRegisterFinish)))
 	mux.Handle("DELETE /api/passkeys/{id}", authed(hf(ah.DeletePasskey)))
 
+	// Globale Suche für die Befehlspalette. authed wie die Listen, die sie durchsucht:
+	// sie zeigt nur, was derselbe Benutzer über GET /api/persons, /vehicles, /garages,
+	// /categories, /services und /invoices/{id} ohnehin abrufen kann — kein neuer Zugang
+	// zu Daten, nur ein schnellerer Weg dorthin.
+	mux.Handle("GET /api/search", authed(hf(h.Search)))
+
 	// --- Persons (read: any; write: manager/admin) ---
 	mux.Handle("GET /api/persons", authed(hf(h.ListPersons)))
 	mux.Handle("GET /api/persons/outstanding", authed(hf(h.OutstandingByPerson)))

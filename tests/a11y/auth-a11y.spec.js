@@ -46,3 +46,40 @@ for (const [label, route] of views) {
     expect(serious, `${label}: serious/critical a11y violations`).toEqual([]);
   });
 }
+
+// Die Befehlspalette war bisher in keinem axe-Lauf: sie ist erst nach einem Klick da,
+// und die Prüfungen oben sehen nur die Seite darunter. Dieser Test schließt die Lücke.
+//
+// Was er NICHT leistet, damit sich niemand darauf verlässt: den ungültigen Baum, den
+// die Palette vorher hatte — role="listbox" mit einem Hinweistext als Kind statt
+// lauter Optionen — meldet axe unter wcag2a/wcag2aa nicht. Nachgemessen: mit dem
+// Hinweis zurück im listbox bleibt dieser Test grün. Die Struktur wurde trotzdem
+// korrigiert, weil sie der ARIA-Spezifikation widerspricht; belegt ist sie hier aber
+// nicht. Was der Test wirklich absichert, sind die Regeln, die axe abdeckt (Kontrast,
+// Namen, Rollen) plus die combobox-Verdrahtung unten — die vorher komplett fehlte.
+test('a11y (auth): Befehlspalette hat keine serious/critical violations', async ({ page }) => {
+  await login(page);
+  await page.locator('#search-btn').click();
+  await expect(page.locator('#cmdk')).toBeVisible();
+
+  // Einmal ohne Treffer (Hinweiszustand) und einmal mit offener Liste prüfen — die
+  // beiden Zustände haben verschiedene Bäume.
+  for (const [zustand, eingabe] of [['leer', ''], ['mit Liste', 'Person']]) {
+    if (eingabe) {
+      await page.locator('.cmdk-input').fill(eingabe);
+      await expect(page.locator('.cmdk-row').first()).toBeVisible({ timeout: 10000 });
+    }
+    const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
+    const serious = results.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical');
+    if (serious.length) {
+      console.log(`\n[Palette ${zustand}] ` + JSON.stringify(serious.map((v) => ({ id: v.id, nodes: v.nodes.map((n) => n.target) })), null, 2));
+    }
+    expect(serious, `Palette (${zustand}): serious/critical a11y violations`).toEqual([]);
+  }
+
+  // Die Auswahl muss ansagbar sein, nicht nur sichtbar: ohne aria-activedescendant
+  // verschieben die Pfeiltasten für Hilfstechnik gar nichts.
+  await page.keyboard.press('ArrowDown');
+  await expect(page.locator('.cmdk-input')).toHaveAttribute('aria-activedescendant', /^cmdk-opt-/);
+  await expect(page.locator('.cmdk-input')).toHaveAttribute('aria-expanded', 'true');
+});
