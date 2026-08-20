@@ -1237,7 +1237,11 @@
                                 overdueByPerson[p.id] ? el('span', { class: 'badge', style: 'background:var(--danger);color:#fff;margin-top:.25rem', title: 'Überfällige Rechnung' }, overdueByPerson[p.id] + ' Tg. überfällig') : null) : null,
                             el('div', { class: 'card-actions' },
                                 el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': personName(p) + ' öffnen', onclick: () => navigate('persons/' + p.id) }, '›'),
-                                canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' bearbeiten', 'aria-label': personName(p) + ' bearbeiten', onclick: () => personForm(p) }, icon('edit')),
+                                // Bearbeiten entfällt bei einer anonymisierten Person: der Server
+                                // lehnt das Wiederbefüllen ohnehin ab (AND NOT anonymized), ein
+                                // sichtbares Formular würde also nur einen stillen Fehlschlag anbieten.
+                                canManage() && !p.anonymized && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' bearbeiten', 'aria-label': personName(p) + ' bearbeiten', onclick: () => personForm(p) }, icon('edit')),
+                                canManage() && !p.anonymized && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' anonymisieren (DSGVO)', 'aria-label': personName(p) + ' anonymisieren', onclick: () => anonymizePerson(p) }, icon('shield')),
                                 canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' löschen', 'aria-label': personName(p) + ' löschen', onclick: (e) => delPerson(p, e.currentTarget.closest('.card')) }, icon('trash')),
                             ))));
             },
@@ -1265,6 +1269,27 @@
     function delPerson(p, node) {
         deleteWithUndo('Person löschen?', `„${personName(p)}“ und alle zugehörigen Gefährte werden gelöscht.`,
             () => api.del('/persons/' + p.id), () => render(), node);
+    }
+
+    // DSGVO Art. 17, wenn Löschen nicht geht: sobald Rechnungen an einer Person
+    // hängen, lehnt der Server das Löschen ab (FK-RESTRICT + Aufbewahrungspflicht).
+    // Anonymisieren leert stattdessen den Stammsatz und lässt die Belege stehen.
+    // Bewusst NICHT über deleteWithUndo: ein Rückgängig-Knopf wäre hier eine
+    // Lüge — die Daten sind nach dem OK unwiederbringlich weg.
+    async function anonymizePerson(p) {
+        const ok = await confirmDialog('Person anonymisieren?',
+            `Name, E-Mail, Telefon, Adresse und Notiz von „${personName(p)}“ werden unwiderruflich gelöscht. `
+            + 'Gefährte, Zahlungen und Rechnungen bleiben erhalten — Belege sind sieben Jahre '
+            + 'aufbewahrungspflichtig und dürfen nicht verändert werden. Nicht umkehrbar.',
+            'Anonymisieren');
+        if (!ok) return;
+        try {
+            await api.post('/persons/' + p.id + '/anonymize', {});
+            toast('Person anonymisiert · Belege bleiben erhalten', 'success');
+            render();
+        } catch (e) {
+            toast(e.message || 'Anonymisieren fehlgeschlagen', 'error');
+        }
     }
 
     // Import dialog: offer an example-file download or pick a CSV to import.

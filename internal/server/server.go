@@ -107,6 +107,9 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/portal-links/{id}/revoke", editor(hf(h.RevokePortalLink)))
 	mux.Handle("PUT /api/persons/{id}", editor(hf(h.UpdatePerson)))
 	mux.Handle("DELETE /api/persons/{id}", editor(hf(h.DeletePerson)))
+	// Anonymisieren ist der Ausweg, wenn DeletePerson wegen bestehender Rechnungen
+	// ablehnt — dieselbe Rolle wie das Löschen, weil es dieselbe Entscheidung ist.
+	mux.Handle("POST /api/persons/{id}/anonymize", editor(hf(h.AnonymizePerson)))
 	mux.Handle("GET /api/persons/{id}/stats", authed(hf(h.PersonStats)))
 
 	// --- Payments (recorded money-in / Kontoauszug) ---

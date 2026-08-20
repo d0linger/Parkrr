@@ -1,0 +1,11 @@
+-- DSGVO Art. 17 (Recht auf Löschung) für eine Person, die wegen bestehender
+-- Rechnungen NICHT gelöscht werden kann: invoices.person_id ist FK-RESTRICTed, und
+-- die Belege unterliegen der 7-jährigen Aufbewahrungspflicht (BAO §132).
+--
+-- Anonymisieren löscht die personenbezogenen Daten im LEBENDEN Stammsatz, während
+-- die eingefrorenen Rechnungs-Snapshots (invoices.buyer_snapshot, beim Ausstellen
+-- mit Name und Adresse festgeschrieben) unangetastet bleiben — sie sind Teil des
+-- Belegs und dürfen nicht nachträglich verändert werden.
+--
+-- Additives Flag mit Default false, bestehende Zeilen bleiben unberührt.
+ALTER TABLE persons ADD COLUMN IF NOT EXISTS anonymized BOOLEAN NOT NULL DEFAULT FALSE;
