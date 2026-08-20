@@ -241,3 +241,26 @@ test('dashboard: Backup-Health-Kachel erscheint für Admins (Ops)', async ({ pag
   await expect(page).toHaveURL(/#\/backup$/);
   expect(errors, 'keine Fehler beim Laden der Übersicht').toEqual([]);
 });
+
+test('header: Backup-Ampel neben dem Design-Umschalter (Bearbeiter-Signal)', async ({ page }) => {
+  await login(page);
+  const dot = page.locator('#bkdot');
+  await expect(dot).toBeVisible({ timeout: 10000 });
+  // Eine der drei Ampelstufen, nie ohne.
+  await expect(dot).toHaveClass(/bkdot--(ok|warn|bad)/);
+  // Position ist die halbe Anforderung: direkt vor dem Design-Umschalter, NICHT im Menü.
+  const order = await page.locator('.app-user > *').evaluateAll((els) => els.map((e) => e.id));
+  expect(order.indexOf('bkdot')).toBeGreaterThanOrEqual(0);
+  expect(order.indexOf('bkdot')).toBeLessThan(order.indexOf('theme-btn'));
+  // Der Status muss ohne Öffnen vorlesbar sein, nicht nur sichtbar.
+  await expect(page.locator('#bkdot-btn')).toHaveAttribute('aria-label', /^Backup: /);
+  // Kurzinfo beim Tap (Hover/Fokus macht CSS; auf Touch gibt es kein Hover).
+  await page.locator('#bkdot-btn').click();
+  const pop = page.locator('#bkdot-pop');
+  await expect(pop).toBeVisible();
+  await expect(pop.locator('.bkdot__pop-title')).not.toBeEmpty();
+  await expect(pop.locator('.bkdot__pop-meta')).not.toBeEmpty();
+  // Escape schließt wieder — sonst bleibt das Popover auf Touch hängen.
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#bkdot-btn')).toHaveAttribute('aria-expanded', 'false');
+});

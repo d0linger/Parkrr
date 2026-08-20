@@ -7055,8 +7055,47 @@
     async function showApp() {
         $('#login-view').hidden = true;
         $('#app-view').hidden = false;
+        refreshBackupDot();
         if (!location.hash || location.hash === '#') location.hash = '#/dashboard';
         else render();
+    }
+
+    // Backup-Ampel im Header. Nur für Bearbeiter und Admins: Nur-Leser können auf
+    // einen Backup-Ausfall ohnehin nicht reagieren, und der Endpunkt ist editor+.
+    // Bewusst ein eigener, schlanker Aufruf — /backup/status wäre admin-only und
+    // trüge Verzeichnis, Bucket und Dateiliste mit, die hier nichts zu suchen haben.
+    const BKDOT_MARK = { ok: '✓', warn: '!', bad: '✕' };
+    async function refreshBackupDot() {
+        const wrap = $('#bkdot');
+        if (!wrap) return;
+        if (!canManage()) { wrap.hidden = true; return; }
+        let hh;
+        try { hh = await api.get('/backup/health'); } catch (e) { wrap.hidden = true; return; }
+        if (!hh || !hh.tone) { wrap.hidden = true; return; }
+        wrap.hidden = false;
+        wrap.className = 'bkdot bkdot--' + hh.tone;
+        const mark = wrap.querySelector('.bkdot__mark');
+        if (mark) mark.textContent = BKDOT_MARK[hh.tone] || '';
+        // Die Kurzinfo steht im Popover UND im aria-label, damit sie per Screenreader
+        // ohne Öffnen vorgelesen wird.
+        const meta = hh.age_label
+            ? 'Letztes Backup ' + hh.age_label
+                + (hh.s3 === 'ok' ? ' · S3 ok' : hh.s3 === 'fehlgeschlagen' ? ' · S3 fehlgeschlagen' : '')
+                + (hh.encrypted ? ' · verschlüsselt' : '')
+            : 'Automatische Backups sind nicht aktiviert.';
+        const btn = $('#bkdot-btn');
+        if (btn) btn.setAttribute('aria-label', 'Backup: ' + hh.title + (hh.age_label ? ', ' + hh.age_label : ''));
+        const pop = $('#bkdot-pop');
+        if (!pop) return;
+        pop.innerHTML = '';
+        pop.append(el('span', { class: 'bkdot__pop-title' }, hh.title),
+            el('span', { class: 'bkdot__pop-meta' }, meta));
+        // Der Weg zur Verwaltung nur für Admins — Bearbeiter sehen den Zustand,
+        // können ihn aber nicht ändern, und ein Link ins Nichts hilft niemandem.
+        if (isAdmin()) {
+            pop.append(el('button', { class: 'bkdot__pop-link', type: 'button',
+                onclick: () => { wrap.classList.remove('is-open'); navigate('backup'); } }, 'Backup-Verwaltung ›'));
+        }
     }
     const EYE_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
     const EYE_OFF_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7c1.7 0 3.2.5 4.5 1.2M22 12s-3.6 7-10 7c-1.7 0-3.2-.5-4.5-1.2"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M3 3l18 18"/></svg>';
@@ -7310,6 +7349,20 @@
         $('#login-pw-toggle').addEventListener('click', () => setPwVisible($('#login-password').type === 'password'));
         $('#login-backup-toggle').addEventListener('click', () => setTotpMode(!totpBackupMode));
         $('#theme-btn').addEventListener('click', toggleTheme);
+        // Backup-Ampel neben dem Design-Umschalter. Tap schaltet das Popover um —
+        // Hover und Fokus erledigt das CSS, aber auf Touch gibt es kein Hover.
+        (function () {
+            const wrap = $('#bkdot'), btn = $('#bkdot-btn');
+            if (!wrap || !btn) return;
+            const close = () => { wrap.classList.remove('is-open'); btn.setAttribute('aria-expanded', 'false'); };
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const open = wrap.classList.toggle('is-open');
+                btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+            });
+            document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) close(); });
+            document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+        })();
         $('#menu-btn').addEventListener('click', openMenu);
         $$('.tab').forEach((t) => t.addEventListener('click', () => navigate(t.dataset.route)));
         for (const id of ['#modal', '#confirm', '#menu']) {

@@ -237,6 +237,10 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/users/{id}/reset-2fa", admin(hf(h.ResetUserTOTP)))
 	mux.Handle("GET /api/audit", admin(hf(h.ListAudit)))
 	mux.Handle("POST /api/backup", admin(hf(h.CreateBackup)))
+	// Nur die Ampel, bewusst editor+ statt admin: Bearbeiter arbeiten den ganzen Tag
+	// in der App und sollen ein totes Backup sehen, ohne Admin zu sein. Liefert weder
+	// Verzeichnis noch Bucket noch Dateiliste — dafür bleibt /status admin-only.
+	mux.Handle("GET /api/backup/health", editor(hf(h.BackupHealth)))
 	mux.Handle("GET /api/backup/status", admin(hf(h.BackupStatus)))
 	mux.Handle("POST /api/backup/schedule", admin(hf(h.SaveBackupSchedule)))
 	mux.Handle("POST /api/backup/run", admin(hf(h.RunScheduledBackup)))

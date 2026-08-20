@@ -63,6 +63,16 @@
                 </a>
                 <div class="app-user">
                     <button id="search-btn" class="btn-icon" type="button" aria-label="Suche" title="Suche · ⌘K"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg></button>
+                    <!-- Backup-Ampel: nur die Farbe, Details erst beim Hover/Tap. Steht bewusst
+                         neben dem Design-Umschalter und nicht im Menü, damit der Zustand ohne
+                         Klick sichtbar ist. Wird per JS befüllt und bleibt für Nur-Leser leer. -->
+                    <div id="bkdot" class="bkdot" hidden>
+                        <button id="bkdot-btn" class="btn-icon bkdot__btn" type="button"
+                                aria-expanded="false" aria-controls="bkdot-pop" aria-label="Backup-Status">
+                            <span class="bkdot__mark" aria-hidden="true"></span>
+                        </button>
+                        <div id="bkdot-pop" class="bkdot__pop" role="status"></div>
+                    </div>
                     <button id="theme-btn" class="btn-icon" type="button" aria-label="Design wechseln" title="Hell/Dunkel"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9Z"/></svg></button>
                     <button id="menu-btn" class="btn-icon" type="button" aria-label="Menü"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
                 </div>

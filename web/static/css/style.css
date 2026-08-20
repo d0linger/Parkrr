@@ -1726,3 +1726,30 @@ a.portal-row.link:hover { color: var(--accent-text); }
 .dash-spark{display:block;overflow:visible}
 .dash-spark-line{fill:none;stroke:var(--gpteal2,#22d3ee);stroke-width:1.8;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}
 .dash-spark-dot{fill:var(--gpteal2,#22d3ee)}
+
+/* --- Backup-Ampel im Header (analog zu Treckrrs .bkdot) ------------------------
+   Nur ein farbiger Punkt: der Zustand muss ohne Klick lesbar sein, die Erklärung
+   erst beim Hover/Fokus/Tap. Hover UND focus-within, damit die Info auch per
+   Tastatur erreichbar ist; .is-open deckt Touch ab, wo es kein Hover gibt. */
+.bkdot { position: relative; display: inline-flex; }
+.bkdot__btn { display: grid; place-items: center; }
+.bkdot__mark { width: 11px; height: 11px; border-radius: 50%; display: block;
+    box-shadow: 0 0 0 2px var(--card-bg), 0 0 0 3px currentColor; }
+.bkdot--ok .bkdot__mark { background: var(--success); color: color-mix(in srgb, var(--success) 45%, transparent); }
+.bkdot--warn .bkdot__mark { background: var(--warning); color: color-mix(in srgb, var(--warning) 45%, transparent); }
+.bkdot--bad .bkdot__mark { background: var(--danger); color: color-mix(in srgb, var(--danger) 45%, transparent); }
+/* Der schlechte Zustand pulsiert dezent — er soll auffallen, ohne zu blinken. */
+@media (prefers-reduced-motion: no-preference) {
+    .bkdot--bad .bkdot__mark { animation: bkdot-pulse 2.4s ease-in-out infinite; }
+}
+@keyframes bkdot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+.bkdot__pop { position: absolute; top: calc(100% + 8px); right: 0; z-index: 60;
+    min-width: 230px; max-width: 80vw; display: none; flex-direction: column; gap: 0.15rem;
+    text-align: left; background: var(--card-bg); border: 1px solid var(--card-border);
+    border-radius: var(--radius); box-shadow: var(--shadow); padding: 0.6rem 0.7rem; }
+.bkdot:hover .bkdot__pop, .bkdot:focus-within .bkdot__pop, .bkdot.is-open .bkdot__pop { display: flex; }
+.bkdot__pop-title { font-weight: 700; font-size: 0.85rem; }
+.bkdot__pop-meta { font-size: 0.78rem; color: var(--text-muted); }
+.bkdot__pop-link { font-size: 0.78rem; margin-top: 0.25rem; font-weight: 600;
+    background: none; border: 0; padding: 0; cursor: pointer; color: var(--primary); text-align: left; }
+.bkdot__pop-link:hover { text-decoration: underline; }
