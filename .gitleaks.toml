@@ -16,6 +16,12 @@ useDefault = true
 # einen eigenen, sichtbaren Eintrag hier — genau die Reibung, die eine Ausnahme
 # haben soll.
 #
+# OHNE regexTarget, also gegen das EXTRAHIERTE Secret statt gegen die ganze Zeile.
+# Der Unterschied ist nicht theoretisch: mit regexTarget = "line" ist jeder Fund in
+# einer Zeile entschuldigt, die den Wert irgendwo enthält — ein echter GitHub-Token
+# im Kommentar hinter dem Testwert wurde so nachweislich übersehen. Gegen das Secret
+# selbst gilt die Ausnahme nur für den Fund, der WIRKLICH dieser Wert ist.
+#
 # EINZAHL mit Absicht: gitleaks 8.24.3 (die Version in der Action) ignoriert die
 # Mehrzahlform [[allowlists]] auf oberster Ebene stillschweigend — sie greift nur
 # unter [[rules.allowlists]]. Ein Umbau auf die Mehrzahl sähe moderner aus und
@@ -23,5 +29,4 @@ useDefault = true
 # Bedingungen wirken als ODER (nachgemessen), deshalb steht hier genau eine.
 [allowlist]
 description = "Erfundener Secret-Wert in den Audit-Redaction-Tests (internal/handlers/audit_redact_test.go)"
-regexTarget = "line"
 regexes = ['''sk-live-4f9c2b7a-DIESER-WERT-DARF-NIE-AUFTAUCHEN''']
