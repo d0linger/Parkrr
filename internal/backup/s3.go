@@ -174,6 +174,33 @@ func DownloadS3(ctx context.Context, c S3Config, name string) ([]byte, error) {
 	return data, nil
 }
 
+// DeleteS3 entfernt ein einzelnes Objekt. Gebraucht, um ein Archiv wieder
+// wegzuräumen, das die Prüfung nicht bestanden hat: es darf im Bucket nicht als
+// jüngster — und damit naheliegendster — Wiederherstellungspunkt liegen bleiben.
+func DeleteS3(ctx context.Context, c S3Config, name string) error {
+	cl, err := c.client()
+	if err != nil {
+		return err
+	}
+	return cl.RemoveObject(ctx, c.Bucket, c.objectKey(name), minio.RemoveObjectOptions{})
+}
+
+// PruneS3 entfernt alte Objekte bis auf die neuesten `keep`. Getrennt von UploadS3
+// aufrufbar, weil ein Upload erst NACH bestandener Prüfung etwas verdrängen
+// darf: sonst räumt ein abgebrochener Upload einen guten alten Stand weg und
+// hinterlässt an dessen Stelle ein kaputtes Objekt.
+func PruneS3(ctx context.Context, c S3Config, keep int) error {
+	if keep < 1 {
+		return nil
+	}
+	cl, err := c.client()
+	if err != nil {
+		return err
+	}
+	pruneS3(ctx, cl, c, keep)
+	return nil
+}
+
 func pruneS3(ctx context.Context, cl *minio.Client, c S3Config, keep int) {
 	objs, err := listWith(ctx, cl, c)
 	if err != nil {

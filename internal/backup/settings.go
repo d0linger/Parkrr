@@ -59,7 +59,12 @@ func targetHealth(configured bool, cron string, lastAt *time.Time, lastOK bool, 
 	if !configured {
 		return h
 	}
-	if lastAt != nil {
+	// Alter NUR bei einem erfolgreichen letzten Lauf. recordVolume/recordS3 stempeln
+	// last_*_at auf JEDEM Pfad, auch bei Fehlschlag — der Zeitstempel ist also der
+	// des letzten VERSUCHS. Ihn als "Letztes Backup vor 5 Min." zu melden, während
+	// der jüngste brauchbare Wiederherstellungspunkt neun Tage alt ist, wäre die
+	// gefährlichste Falschaussage, die diese Anzeige machen kann.
+	if lastAt != nil && lastOK {
 		age := int64(now.Sub(*lastAt).Seconds())
 		h.AgeSeconds = &age
 	}
@@ -71,6 +76,15 @@ func targetHealth(configured bool, cron string, lastAt *time.Time, lastOK bool, 
 	if lastAt == nil {
 		h.Never = true
 		h.Overdue = true // scheduled but never produced a backup — the worst case, silently
+		return h
+	}
+	if !lastOK {
+		// Der letzte Versuch ist gescheitert: wann zuletzt etwas Brauchbares entstand,
+		// steht nirgends. "failed" ist ohnehin der schlechteste Zustand, aber Overdue
+		// darf hier nicht false bleiben — ein Job, der JEDE Nacht scheitert, würde
+		// sonst durch den ständig neu gesetzten Zeitstempel für immer als pünktlich
+		// gelten.
+		h.Overdue = true
 		return h
 	}
 	next := CronNext(cron, *lastAt)

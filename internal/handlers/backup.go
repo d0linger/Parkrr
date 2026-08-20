@@ -620,13 +620,19 @@ func (h *Handler) BackupHealth(w http.ResponseWriter, r *http.Request) {
 
 // backupStateOf classifies one target: failed beats never beats stale beats ok.
 func backupStateOf(th backup.TargetHealth) string {
+	// Reihenfolge ist entscheidend und war falsch herum: last_volume_ok hat in der
+	// Migration den Default FALSE, ein noch nie gelaufenes Backup kam also über
+	// !LastOK zuerst und wurde als "fehlgeschlagen" gemeldet — jede frische
+	// Installation zeigte Rot für etwas, das schlicht noch nicht dran war.
+	// Never (= es gibt keinen einzigen Lauf) muss vorher greifen; LastOK sagt nur
+	// dann etwas aus, wenn überhaupt ein Versuch stattgefunden hat.
 	switch {
 	case !th.Configured:
 		return "off"
-	case !th.LastOK:
-		return "failed"
 	case th.Never:
 		return "never"
+	case !th.LastOK:
+		return "failed"
 	case th.Overdue:
 		return "stale"
 	default:
@@ -634,7 +640,10 @@ func backupStateOf(th backup.TargetHealth) string {
 	}
 }
 
-var backupStateRank = map[string]int{"ok": 0, "stale": 1, "never": 2, "off": 3, "failed": 4}
+// Rangfolge für "das schlechteste Ziel gewinnt". "off" steht bewusst UNTER "never":
+// ein nicht eingerichtetes Ziel ist eine Einrichtungslücke, ein eingerichtetes ohne
+// einen einzigen Lauf ist dringender. Vorher war es umgekehrt.
+var backupStateRank = map[string]int{"ok": 0, "off": 1, "stale": 2, "never": 3, "failed": 4}
 
 func worstBackupState(states []string) string {
 	worst := "ok"

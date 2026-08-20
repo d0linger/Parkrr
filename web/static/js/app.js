@@ -685,11 +685,16 @@
     //   ok      = grün
     // "Überfällig" wäre als Rot gleichbedeutend mit "fehlgeschlagen" — dann sagt die
     // Farbe nicht mehr, ob man etwas reparieren oder etwas einrichten muss.
-    const BACKUP_RANK = { ok: 0, stale: 1, never: 2, off: 3, failed: 4 };
+    // off unter never: eine Einrichtungslücke ist weniger dringend als ein
+    // eingerichtetes Ziel, das noch nie gelaufen ist.
+    const BACKUP_RANK = { ok: 0, off: 1, stale: 2, never: 3, failed: 4 };
+    // Reihenfolge wie serverseitig: never MUSS vor !last_ok geprüft werden. Die
+    // Spalte last_*_ok hat den Default FALSE, ein noch nie gelaufenes Backup käme
+    // sonst als "fehlgeschlagen" heraus — jede frische Installation zeigte Rot.
     const backupState = (th) => {
         if (!th || !th.configured) return 'off';
-        if (!th.last_ok) return 'failed';   // vor "never": ein fehlgeschlagener Versuch ist konkreter
         if (th.never) return 'never';
+        if (!th.last_ok) return 'failed';
         if (th.overdue) return 'stale';
         return 'ok';
     };
@@ -1006,6 +1011,10 @@
                         : 'kein Backup-Schlüssel gesetzt';
                     const t0 = stat(txt, 'Backup', { icon: 'shield', tone: 'amber', onClick: () => navigate('backup') });
                     t0.append(el('div', { class: 'stat-note' }, note));
+                    // Auch dieser Zweig braucht einen Titel: sonst hängt die Zusicherung
+                    // im E2E daran, dass die Testumgebung zufällig ein Backup-Ziel
+                    // konfiguriert hat, und schlägt ohne Produktfehler fehl.
+                    t0.setAttribute('title', 'Zeitplan: kein Ziel konfiguriert — klicken für die Backup-Verwaltung');
                     slot.append(t0);
                     return;
                 }
@@ -7079,9 +7088,10 @@
         warn: '<path class="bkico__glyph" d="M12 7.7v4.7"/><path class="bkico__glyph" d="M12 15.7h.01"/>',
         bad: '<path class="bkico__glyph" d="M9.4 9.4l5.2 5.2"/><path class="bkico__glyph" d="M14.6 9.4l-5.2 5.2"/>',
     };
-    // Ring: Spur (schwach) + Bogen. Bei "warn" ist der Bogen offen und pulsiert —
-    // bewusst KEIN Dauer-Spinner: ein endlos drehendes Icon behauptet "läuft gerade",
-    // und der gelbe Zustand heißt hier "veraltet / einrichten", nicht "in Arbeit".
+    // Ring: Spur (schwach) + Bogen. Bei "warn" ist der Bogen offen und dreht sich
+    // langsam und ungleichmäßig; der echte Laufzustand (.is-running) nutzt dieselbe
+    // Keyframe zügig und linear. Tempo und Kurve trennen die beiden Bedeutungen —
+    // die Animation selbst ist in beiden Fällen eine Drehung (siehe style.css).
     const BK_RING = (state) => '<svg class="bkico" viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true">'
         + '<circle class="bkico__track" cx="12" cy="12" r="9"/>'
         + '<circle class="bkico__arc" cx="12" cy="12" r="9"/>'
@@ -7106,11 +7116,16 @@
         if (mark) mark.innerHTML = (BK_ICON[BKDOT_STYLE] || BK_RING)(hh.tone);
         // Die Kurzinfo steht im Popover UND im aria-label, damit sie per Screenreader
         // ohne Öffnen vorgelesen wird.
+        // Ein fehlendes Alter heißt NICHT "nicht aktiviert": ein eingerichtetes Ziel,
+        // das nur noch nie gelaufen ist, hat ebenfalls keins. Vorher stand dann
+        // "Automatische Backups sind nicht aktiviert." neben dem Titel "Noch kein
+        // automatisches Backup" — zwei Aussagen, die sich widersprechen.
+        // Ob etwas eingerichtet ist, sagt allein der Titel vom Server.
         const meta = hh.age_label
             ? 'Letztes Backup ' + hh.age_label
                 + (hh.s3 === 'ok' ? ' · S3 ok' : hh.s3 === 'fehlgeschlagen' ? ' · S3 fehlgeschlagen' : '')
                 + (hh.encrypted ? ' · verschlüsselt' : '')
-            : 'Automatische Backups sind nicht aktiviert.';
+            : (hh.encrypted ? 'Noch kein erfolgreicher Lauf · verschlüsselt' : 'Noch kein erfolgreicher Lauf');
         const btn = $('#bkdot-btn');
         if (btn) btn.setAttribute('aria-label', 'Backup: ' + hh.title + (hh.age_label ? ', ' + hh.age_label : ''));
         const pop = $('#bkdot-pop');
@@ -7382,11 +7397,23 @@
         (function () {
             const wrap = $('#bkdot'), btn = $('#bkdot-btn');
             if (!wrap || !btn) return;
-            const close = () => { wrap.classList.remove('is-open'); btn.setAttribute('aria-expanded', 'false'); };
+            // blur() ist hier nicht kosmetisch: das CSS öffnet das Popover auch bei
+            // :focus-within. Nach einem Klick liegt der Fokus auf dem Button, also
+            // bliebe es sichtbar offen, während aria-expanded bereits "false" meldet —
+            // sichtbarer Zustand und angesagter Zustand liefen auseinander.
+            const close = () => {
+                wrap.classList.remove('is-open');
+                btn.setAttribute('aria-expanded', 'false');
+                if (document.activeElement === btn) btn.blur();
+            };
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                const open = wrap.classList.toggle('is-open');
-                btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+                // Beim SCHLIESSEN über close() gehen, nicht nur die Klasse umschalten:
+                // sonst bleibt der Fokus auf dem Button, :focus-within hält das Popover
+                // sichtbar offen und aria-expanded meldet gleichzeitig "false".
+                if (wrap.classList.contains('is-open')) { close(); return; }
+                wrap.classList.add('is-open');
+                btn.setAttribute('aria-expanded', 'true');
             });
             document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) close(); });
             document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });

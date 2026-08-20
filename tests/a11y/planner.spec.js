@@ -232,6 +232,8 @@ test('dashboard: Backup-Health-Kachel erscheint für Admins (Ops)', async ({ pag
   // nicht, ob gehandelt werden muss.
   await expect(tile.locator('.stat-note')).not.toBeEmpty();
   // Der Zeitplan gehört in den Tooltip, damit die Schwelle nachvollziehbar ist.
+  // Beide Zweige der Kachel setzen ihn — auch der ohne konfiguriertes Ziel, sonst
+  // hinge dieser Test daran, ob die CI-Umgebung zufällig ein Backup eingerichtet hat.
   await expect(tile).toHaveAttribute('title', /Zeitplan/);
   // Genau eine Backup-Kachel — die Übersicht soll das Risiko zeigen, nicht die
   // Backup-Verwaltung nachbauen.
@@ -261,6 +263,20 @@ test('header: Backup-Ampel neben dem Design-Umschalter (Bearbeiter-Signal)', asy
   await expect(pop.locator('.bkdot__pop-title')).not.toBeEmpty();
   await expect(pop.locator('.bkdot__pop-meta')).not.toBeEmpty();
   // Escape schließt wieder — sonst bleibt das Popover auf Touch hängen.
+  // Die Maus MUSS dabei weggeführt werden: das CSS öffnet auch bei :hover, ein Test
+  // mit dem Zeiger auf dem Button würde also immer "offen" sehen und nie etwas prüfen.
   await page.keyboard.press('Escape');
+  await page.mouse.move(20, 400);
   await expect(page.locator('#bkdot-btn')).toHaveAttribute('aria-expanded', 'false');
+  // Und wirklich UNSICHTBAR, nicht nur laut ARIA geschlossen. Genau das lief vorher
+  // auseinander: :focus-within hielt das Popover offen, während aria-expanded schon
+  // "false" meldete.
+  await expect(pop).toBeHidden();
+  // Zweiter Klick schließt ebenso — der Umschaltpfad ging vorher nicht über close().
+  await page.locator('#bkdot-btn').click();
+  await page.mouse.move(20, 400);
+  await expect(pop).toBeVisible();
+  await page.locator('#bkdot-btn').click();
+  await page.mouse.move(20, 400);
+  await expect(pop).toBeHidden();
 });

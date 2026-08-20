@@ -44,6 +44,8 @@ func TestWorstStateWins(t *testing.T) {
 		{[]string{"failed", "ok"}, "failed"},
 		{[]string{"ok", "stale"}, "stale"},
 		{[]string{"stale", "never"}, "never"},
+		// never ist dringender als eine reine Einrichtungslücke.
+		{[]string{"off", "never"}, "never"},
 		{[]string{"never", "failed"}, "failed"},
 		{nil, "ok"},
 	} {
@@ -62,7 +64,12 @@ func TestBackupStateOfClassifiesOneTarget(t *testing.T) {
 	}{
 		{"nicht eingerichtet", backup.TargetHealth{Configured: false}, "off"},
 		{"letzter Lauf fehlgeschlagen", backup.TargetHealth{Configured: true, LastOK: false}, "failed"},
-		{"nie gelaufen", backup.TargetHealth{Configured: true, LastOK: true, Never: true}, "never"},
+		// LastOK ist hier bewusst FALSE: genau so kommt es aus der Datenbank, denn
+		// last_*_ok hat den Default FALSE und ein nie gelaufener Job hat ihn nie
+		// gesetzt. Der frühere Test konstruierte {LastOK: true, Never: true} — ein
+		// Zustand, den es nicht geben kann — und verdeckte damit, dass die Einstufung
+		// jede frische Installation als "fehlgeschlagen" meldete.
+		{"nie gelaufen (so wie es wirklich aus der DB kommt)", backup.TargetHealth{Configured: true, LastOK: false, Never: true}, "never"},
 		{"überfällig", backup.TargetHealth{Configured: true, LastOK: true, Overdue: true}, "stale"},
 		{"gesund", backup.TargetHealth{Configured: true, LastOK: true, LastAt: &past}, "ok"},
 	} {
@@ -70,10 +77,11 @@ func TestBackupStateOfClassifiesOneTarget(t *testing.T) {
 			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
 		}
 	}
-	// failed schlägt never: ein gescheiterter Versuch ist die konkretere Aussage.
-	both := backup.TargetHealth{Configured: true, LastOK: false, Never: true}
-	if got := backupStateOf(both); got != "failed" {
-		t.Errorf("fehlgeschlagen UND nie gelaufen -> %q, want failed", got)
+	// never schlägt !LastOK, nicht umgekehrt. Die Reihenfolge ist der eigentliche
+	// Prüfgegenstand: sie entscheidet, was eine frische Installation anzeigt.
+	attempted := backup.TargetHealth{Configured: true, LastOK: false, LastAt: &past}
+	if got := backupStateOf(attempted); got != "failed" {
+		t.Errorf("ein gescheiterter VERSUCH (LastAt gesetzt) -> %q, want failed", got)
 	}
 }
 

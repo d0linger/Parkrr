@@ -1006,10 +1006,9 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
    --danger 1,46:1 gegen den transluzenten Chip. WCAG 1.4.11 verlangt 3:1 für
    grafische Elemente; Rot hatte gegen reines Teal sogar exakt dieselbe Helligkeit
    (1,00:1) und war damit nur noch über den Farbton zu erkennen — für Farbfehlsichtige
-   also gar nicht.
-   Lösung: ein deckend weißer Chip (3,04:1 gegen die Kopfzeile) und darauf kräftige,
-   dunkle Zustandstöne (4,6–6,0:1 gegen Weiß). Der Indikator hebt sich damit bewusst
-   von den transluzenten Aktions-Buttons ab — er ist ein Status, kein Knopf. */
+   also gar nicht. Die Lösung steht im Block direkt darunter: der Chip bleibt der der
+   Geschwister-Buttons, nur die ICON-Farbe wird dunkel. (Eine Zwischenfassung setzte
+   hier einen deckend weißen Chip; die ist zurückgenommen.) */
 /* Der Chip bleibt exakt wie bei den Geschwister-Buttons (.btn-icon, siehe oben) —
    der Indikator soll sich optisch einreihen. Angepasst wird nur die ICON-Farbe.
    Auf dem hellen, transluzenten Chip müssen die Zustandsfarben deshalb DUNKEL sein:
@@ -1790,8 +1789,11 @@ a.portal-row.link:hover { color: var(--accent-text); }
 .bkdot--warn .bkico__arc { stroke-dasharray: 22 35; stroke-dashoffset: 0; }
 
 @media (prefers-reduced-motion: no-preference) {
-    /* Aufmerksamkeit statt Aktivität: langsamer Puls. Ein Dauer-Spinner würde
-       "läuft gerade" behaupten — der gelbe Zustand heißt aber "veraltet". */
+    /* Der offene Bogen dreht sich langsam und ungleichmäßig (3,2 s, weiche Kurve) —
+       deutlich als "hier stimmt etwas nicht" lesbar und klar unterscheidbar von der
+       zügigen, gleichmäßigen Drehung des echten Laufzustands unten (1,1 s, linear).
+       Ein früherer Kommentar behauptete hier "kein Dauer-Spinner"; das war falsch,
+       es IST dieselbe Keyframe — nur Tempo und Kurve trennen die beiden Bedeutungen. */
     .bkdot--warn .bkico__arc { animation: bkico-turn 3.2s cubic-bezier(.6, 0, .4, 1) infinite; }
     .bkdot--bad .bkico { animation: bkico-pulse 2.4s ease-in-out infinite; }
     /* Für einen echten Laufzustand später: .bkdot.is-running dreht zügig durch. */
