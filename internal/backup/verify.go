@@ -48,6 +48,16 @@ import (
 // ist leer" erkennen, nicht das Schema nachbilden. Ein Test hält sie aktuell.
 var coreTables = []string{"persons", "vehicles", "invoices", "payments", "audit_log"}
 
+// minArchiveObjects ist die Untergrenze für ein glaubwürdiges Archiv.
+//
+// "Nicht leer" reicht als Prüfung nicht: ein abgeschnittener oder fremder Dump kann
+// eine Handvoll Objekte enthalten und käme durch. Ein echter Parkrr-Dump trägt das
+// vollständige migrierte Schema — live gemessen 306 Objekte, auch ohne nennenswerte
+// Geschäftsdaten. 40 ist deshalb sehr großzügig gewählt (rund 87 % Abstand): eine
+// Fehlablehnung wäre teurer als ein zu niedriger Wert, denn sie würde JEDES künftige
+// Backup als ungültig verwerfen und damit den letzten guten Stand einfrieren.
+const minArchiveObjects = 40
+
 // VerifyReport hält fest, WAS geprüft wurde — nicht nur, dass es geklappt hat.
 // Bei einem Fehlschlag steht in Stage, wie weit es kam.
 type VerifyReport struct {
@@ -83,10 +93,12 @@ func VerifyArchive(ctx context.Context, enc []byte, key string) (VerifyReport, e
 	}
 	info := parseTOC(toc)
 	rep.Entries, rep.Created = info.Entries, info.Created
-	if info.Entries == 0 {
-		// Lesbar, aber ohne Inhalt — genau der Fall, den ein reiner Formatcheck
-		// durchwinkt und der beim Ernstfall auffliegt.
-		return rep, fmt.Errorf("archive has an empty table of contents")
+	if info.Entries < minArchiveObjects {
+		// Lesbar, aber zu dünn: leer, abgeschnitten oder eine fremde Datenbank —
+		// genau die Fälle, die ein reiner Formatcheck durchwinkt und die erst beim
+		// Ernstfall auffliegen.
+		return rep, fmt.Errorf("archive holds only %d objects (< %d) — looks truncated, empty or foreign",
+			info.Entries, minArchiveObjects)
 	}
 
 	rep.Stage = "content"
@@ -141,7 +153,7 @@ func tablesInTOC(toc string) (found, missing []string) {
 //
 // wantSHA und wantBytes stammen aus dem Upload, nicht aus dem Objekt selbst —
 // sonst würde man das Ergebnis mit sich selbst vergleichen.
-func VerifyS3Object(ctx context.Context, c S3Config, name, wantSHA string, wantBytes int64) error {
+func VerifyS3Object(ctx context.Context, c S3Config, name, key, wantSHA string, wantBytes int64) error {
 	objs, err := ListS3(ctx, c)
 	if err != nil {
 		return fmt.Errorf("s3 list failed: %w", err)
@@ -169,6 +181,13 @@ func VerifyS3Object(ctx context.Context, c S3Config, name, wantSHA string, wantB
 	}
 	if sum := Checksum(got); sum != wantSHA {
 		return fmt.Errorf("checksum mismatch: bucket has %s, expected %s", short(sum), short(wantSHA))
+	}
+	// Und auf den GESPEICHERTEN Bytes noch die Stufen 3+4. Die Prüfsumme beweist nur,
+	// dass im Bucket dasselbe liegt wie lokal erzeugt — nicht, dass das Erzeugte ein
+	// brauchbarer Dump war. Beim S3-Ziel gibt es keinen zweiten Prüfpfad: ohne dies
+	// bliebe eine reine S3-Installation inhaltlich völlig ungeprüft.
+	if _, verr := VerifyArchive(ctx, got, key); verr != nil {
+		return fmt.Errorf("stored object failed the archive check: %w", verr)
 	}
 	return nil
 }

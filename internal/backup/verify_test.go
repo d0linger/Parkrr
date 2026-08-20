@@ -134,3 +134,40 @@ func TestKerntabellenDeckenDieGeldpfadeAb(t *testing.T) {
 		}
 	}
 }
+
+// Die Untergrenze ist der Unterschied zwischen "nicht leer" und "glaubwürdig". Ein
+// abgeschnittener oder fremder Dump kann eine Handvoll Objekte tragen und käme durch
+// eine reine Leerprüfung.
+func TestUntergrenzeMitGrossemAbstandZumEchtwert(t *testing.T) {
+	// Ein echter Parkrr-Dump wurde live mit 306 Objekten gemessen. Die Grenze muss
+	// deutlich darunter liegen: eine Fehlablehnung verwirft JEDES künftige Backup
+	// und friert damit den letzten guten Stand ein — teurer als ein zu tiefer Wert.
+	if minArchiveObjects >= 150 {
+		t.Errorf("minArchiveObjects = %d liegt zu nah am Echtwert (~306) — ein legitimer, "+
+			"frisch installierter Bestand könnte fälschlich abgelehnt werden", minArchiveObjects)
+	}
+	if minArchiveObjects < 10 {
+		t.Errorf("minArchiveObjects = %d ist so niedrig, dass ein abgeschnittener Dump "+
+			"durchkäme — dann wäre die Grenze wirkungslos", minArchiveObjects)
+	}
+}
+
+// Prefix-Kollision: "vehicle_photos" darf nicht als "vehicles" durchgehen. Treckrr
+// verankert dafür den vollen Namen im TOC-Text; Parkrr vergleicht das Namensfeld
+// exakt. Dieser Test hält fest, dass das so bleibt.
+func TestKeinePrefixKollisionBeiKerntabellen(t *testing.T) {
+	toc := `;
+; Archive created at 2026-08-20 03:00:00
+;
+215; 1259 16400 TABLE public vehicle_photos parkrr
+216; 1259 16410 TABLE public persons_archive parkrr
+217; 1259 16420 TABLE public invoices_old parkrr
+`
+	found, missing := tablesInTOC(toc)
+	if len(found) != 0 {
+		t.Errorf("Tabellen mit ähnlichem Namen dürfen keine Kerntabelle erfüllen, gefunden: %v", found)
+	}
+	if len(missing) != len(coreTables) {
+		t.Errorf("alle %d Kerntabellen müssen als fehlend gelten, gemeldet: %v", len(coreTables), missing)
+	}
+}
