@@ -216,10 +216,29 @@ test('wall templates: create → list → delete round-trip (AR3)', async ({ pag
   expect(del.ok(), 'delete template ' + del.status()).toBeTruthy();
 });
 
-test('dashboard: Backup-Health-Kachel erscheint für Admins (Ops)', async ({ page }) => {
+test('dashboard: Backup-Health-Kachel erscheint für Admins (Ops)', async ({ page, context }) => {
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   await login(page);
+
+  // Ohne eine einzige Person zeigt die Übersicht ihren Onboarding-Leerzustand und
+  // kehrt VOR jeder Kachel zurück — die Backup-Kachel gibt es dort bewusst nicht,
+  // eine Installation ohne Daten hat nichts zu verlieren. Der Test lief deshalb
+  // lokal (gefüllte Datenbank) und fiel auf der frischen CI-Datenbank um. Also
+  // selbst eine Person säen, statt sich auf fremde Testrückstände zu verlassen.
+  const cookies = await context.cookies();
+  const csrf = (cookies.find((c) => c.name === 'parkrr_csrf') || {}).value;
+  const pRes = await page.request.post('/api/persons', {
+    headers: { 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' },
+    data: { first_name: 'E2E', last_name: 'Backup ' + Date.now() },
+  });
+  expect(pRes.ok(), 'seed person ' + pRes.status()).toBeTruthy();
+  track(page, csrf, '/api/persons/' + (await pRes.json()).id);
+  // reload(), NICHT goto('/#/dashboard'): die Seite steht nach dem Login schon auf
+  // genau dieser Adresse, ein goto darauf wäre eine Navigation im selben Dokument
+  // — kein Neuladen, kein neuer /overview-Aufruf, der Leerzustand bliebe stehen.
+  await page.reload();
+  await page.waitForSelector('#app-view:not([hidden])', { timeout: 15000 });
 
   // Die Kachel wird nachgereicht (eigener Fetch), damit ein langsamer S3-Bucket die
   // Übersicht nicht ausbremst — daher auf sie warten statt sofort zu prüfen.
