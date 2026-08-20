@@ -86,6 +86,34 @@ func TestUnscheduledTargetIsNeverOverdue(t *testing.T) {
 	}
 }
 
+// Eingerichtet, KEIN Zeitplan, noch nie gelaufen — die Zeile, die Migration 022 so
+// anlegt (last_*_at NULL, last_*_ok DEFAULT FALSE). Vorher kehrte targetHealth beim
+// leeren Cron zurück, bevor Never gesetzt war; damit entschied allein das
+// Default-FALSE von LastOK, und die Einstufung machte daraus "letzter Lauf
+// fehlgeschlagen": Rot für einen Versuch, den es nie gab. Für den GEPLANTEN Fall war
+// genau dieser Fehler schon behoben, für den ungeplanten stand er noch.
+func TestEingerichtetOhneZeitplanUndNieGelaufenIstKeinFehlschlag(t *testing.T) {
+	for _, cron := range []string{"", "kein cron", "* * *"} {
+		h := targetHealth(true, cron, nil, false, at("2026-08-19T12:00:00Z"))
+		if !h.Never {
+			t.Errorf("cron %q: Never muss gesetzt sein, sonst entscheidet das Default-FALSE "+
+				"von LastOK und die Anzeige meldet einen Fehlschlag, den es nie gab", cron)
+		}
+		if h.Overdue {
+			t.Errorf("cron %q: ohne Zeitplan gibt es keine Frist, also nie überfällig", cron)
+		}
+		if h.AgeSeconds != nil {
+			t.Errorf("cron %q: ohne Lauf gibt es kein Alter", cron)
+		}
+	}
+	// Gegenprobe: ein Ziel ohne Zeitplan, das SCHON EINMAL gescheitert ist, bleibt ein
+	// Fehlschlag. Never darf nicht zum Freibrief für jeden ungeplanten Zustand werden.
+	versuch := at("2026-08-18T03:00:00Z")
+	if h := targetHealth(true, "", &versuch, false, at("2026-08-19T12:00:00Z")); h.Never {
+		t.Error("es gab einen Versuch — Never wäre hier eine Falschaussage")
+	}
+}
+
 func TestUnconfiguredTargetReportsNothing(t *testing.T) {
 	h := targetHealth(false, "0 3 * * *", nil, false, at("2026-08-19T12:00:00Z"))
 	if h.Overdue || h.Never || h.AgeSeconds != nil {

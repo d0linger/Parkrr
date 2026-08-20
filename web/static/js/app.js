@@ -699,8 +699,10 @@
         return 'ok';
     };
     const BACKUP_TONE = { ok: 'green', stale: 'amber', never: 'amber', off: 'amber', failed: 'red' };
+    // "never" gilt seit der Korrektur in targetHealth auch für ein Ziel OHNE Zeitplan,
+    // deshalb ohne "geplant": der Text muss für beide Fälle stimmen.
     const BACKUP_TEXT = { ok: 'Backup aktuell', stale: 'überfällig laut Zeitplan',
-        never: 'geplant, aber nie gelaufen', off: 'kein Ziel aktiviert', failed: 'letzter Lauf fehlgeschlagen' };
+        never: 'noch nie gelaufen', off: 'kein Ziel aktiviert', failed: 'letzter Lauf fehlgeschlagen' };
     const backupWorst = (states) => states.reduce((a, b) => (BACKUP_RANK[b] > BACKUP_RANK[a] ? b : a), 'ok');
     const personName = (p) => (`${p.first_name || ''} ${p.last_name || ''}`).trim() || '(ohne Namen)';
     const vehicleTitle = (v) => v.label || v.license_plate || v.category_name;
@@ -7128,6 +7130,22 @@
         + '<g class="bkico__badge-fg" transform="translate(17.6 17.6) scale(.42) translate(-12 -12)">'
         + BK_GLYPH[state] + '</g></svg>';
     const BK_ICON = { ring: BK_RING, badge: BK_BADGE };
+    // EIN Schließweg für alle Auslöser: Tap auf die Ampel, Klick daneben, Escape und
+    // der Weg in die Backup-Verwaltung. blur() ist dabei nicht kosmetisch — das CSS
+    // öffnet das Popover auch bei :focus-within. Wer nur die Klasse entfernt, lässt
+    // den Fokus auf dem Button: sichtbar offen, während aria-expanded "false" meldet.
+    function closeBackupPop() {
+        const wrap = $('#bkdot'), btn = $('#bkdot-btn');
+        if (!wrap) return;
+        wrap.classList.remove('is-open');
+        if (btn) btn.setAttribute('aria-expanded', 'false');
+        // Den Fokus aus dem GANZEN Bereich nehmen, nicht nur vom Button: nach einem
+        // Klick auf den Link im Popover liegt er auf dem Link. Nur den Button zu
+        // blurren ließ das Popover offen stehen, während aria-expanded schon "false"
+        // meldete — derselbe Auseinanderlauf wie zuvor, eine Ebene tiefer.
+        const act = document.activeElement;
+        if (act && wrap.contains(act) && typeof act.blur === 'function') act.blur();
+    }
     async function refreshBackupDot() {
         const wrap = $('#bkdot');
         if (!wrap) return;
@@ -7162,7 +7180,7 @@
         // können ihn aber nicht ändern, und ein Link ins Nichts hilft niemandem.
         if (isAdmin()) {
             pop.append(el('button', { class: 'bkdot__pop-link', type: 'button',
-                onclick: () => { wrap.classList.remove('is-open'); navigate('backup'); } }, 'Backup-Verwaltung ›'));
+                onclick: () => { closeBackupPop(); navigate('backup'); } }, 'Backup-Verwaltung ›'));
         }
     }
     const EYE_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
@@ -7422,15 +7440,7 @@
         (function () {
             const wrap = $('#bkdot'), btn = $('#bkdot-btn');
             if (!wrap || !btn) return;
-            // blur() ist hier nicht kosmetisch: das CSS öffnet das Popover auch bei
-            // :focus-within. Nach einem Klick liegt der Fokus auf dem Button, also
-            // bliebe es sichtbar offen, während aria-expanded bereits "false" meldet —
-            // sichtbarer Zustand und angesagter Zustand liefen auseinander.
-            const close = () => {
-                wrap.classList.remove('is-open');
-                btn.setAttribute('aria-expanded', 'false');
-                if (document.activeElement === btn) btn.blur();
-            };
+            const close = closeBackupPop; // derselbe Weg wie für den Link im Popover
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 // Beim SCHLIESSEN über close() gehen, nicht nur die Klasse umschalten:

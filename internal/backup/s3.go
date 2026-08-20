@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"path"
 	"sort"
 	"strings"
@@ -117,6 +118,30 @@ func listWith(ctx context.Context, cl *minio.Client, c S3Config) ([]S3Object, er
 	}
 	sort.Slice(objs, func(i, j int) bool { return objs[i].Name > objs[j].Name }) // timestamped -> newest first
 	return objs, nil
+}
+
+// ErrS3ObjectMissing meldet, dass ein benanntes Objekt nicht im Bucket liegt —
+// abgegrenzt von "der Bucket war nicht erreichbar", was etwas ganz anderes bedeutet.
+var ErrS3ObjectMissing = errors.New("object is not in the bucket")
+
+// StatS3 liefert die Größe EINES Objekts über einen HEAD-Aufruf, ohne den Bucket zu
+// listen. Für die Prüfung nach dem Hochladen ist das nicht nur billiger: listWith
+// bricht oberhalb von maxS3ListObjects mit einem Fehler ab, und in einem Bucket über
+// dieser Grenze wäre damit JEDE Prüfung fehlgeschlagen — samt anschließendem
+// DeleteS3 auf ein Objekt, dem nichts fehlte.
+func StatS3(ctx context.Context, c S3Config, name string) (int64, error) {
+	cl, err := c.client()
+	if err != nil {
+		return 0, err
+	}
+	st, err := cl.StatObject(ctx, c.Bucket, c.objectKey(name), minio.StatObjectOptions{})
+	if err != nil {
+		if re := minio.ToErrorResponse(err); re.Code == minio.NoSuchKey || re.StatusCode == http.StatusNotFound {
+			return 0, ErrS3ObjectMissing
+		}
+		return 0, err
+	}
+	return st.Size, nil
 }
 
 // TestS3 checks that the configured bucket is reachable — the backup panel's

@@ -179,13 +179,25 @@ func (h *Handler) UpdatePerson(w http.ResponseWriter, r *http.Request) {
 		// zweiten Fall falsch und verwirrend — die Person existiert ja, sie darf nur
 		// nicht wiederbefüllt werden.
 		var anon bool
-		if qerr := h.Pool.QueryRow(r.Context(),
-			`SELECT anonymized FROM persons WHERE id=$1`, id).Scan(&anon); qerr == nil && anon {
+		qerr := h.Pool.QueryRow(r.Context(),
+			`SELECT anonymized FROM persons WHERE id=$1`, id).Scan(&anon)
+		switch {
+		case errors.Is(qerr, pgx.ErrNoRows):
+			writeError(w, http.StatusNotFound, "person not found")
+		case qerr != nil:
+			// Jeder ANDERE Fehler dieser Rückfrage — abgebrochener Context, Datenbank
+			// weg — sagt nichts darüber aus, ob es die Person gibt. Vorher lief er in
+			// dasselbe 404 wie "nicht gefunden": eine Falschaussage, die den Aufrufer
+			// zur falschen Reaktion führt (löschen statt erneut versuchen).
+			writeError(w, http.StatusInternalServerError, "could not update person")
+		case anon:
 			writeError(w, http.StatusConflict,
 				"person is anonymized (DSGVO Art. 17) and cannot be edited")
-			return
+		default:
+			// Zeile da, nicht anonymisiert, trotzdem nicht getroffen: nur über ein
+			// Rennen erreichbar. Bleibt wie bisher 404.
+			writeError(w, http.StatusNotFound, "person not found")
 		}
-		writeError(w, http.StatusNotFound, "person not found")
 		return
 	}
 	newP, _ := h.getPerson(r.Context(), id)
@@ -279,16 +291,21 @@ func (h *Handler) AnonymizePerson(w http.ResponseWriter, r *http.Request) {
 		// Kein Treffer heißt: Person existiert nicht ODER war schon anonymisiert.
 		// Für den Aufrufer sind das zwei verschiedene Antworten.
 		var exists, already bool
-		if qerr := h.Pool.QueryRow(r.Context(),
-			`SELECT TRUE, anonymized FROM persons WHERE id=$1`, id).Scan(&exists, &already); qerr != nil {
+		qerr := h.Pool.QueryRow(r.Context(),
+			`SELECT TRUE, anonymized FROM persons WHERE id=$1`, id).Scan(&exists, &already)
+		switch {
+		case errors.Is(qerr, pgx.ErrNoRows):
 			writeError(w, http.StatusNotFound, "person not found")
-			return
-		}
-		if already {
+		case qerr != nil:
+			// Nur "keine Zeile" heißt "gibt es nicht". Ein abgebrochener Context oder
+			// eine weggebrochene Datenbank lief vorher ebenfalls in 404 — der Aufrufer
+			// hätte daraus geschlossen, die Person sei weg, statt es zu wiederholen.
+			writeError(w, http.StatusInternalServerError, "could not anonymize person")
+		case already:
 			writeError(w, http.StatusConflict, "person is already anonymized")
-			return
+		default:
+			writeError(w, http.StatusInternalServerError, "could not anonymize person")
 		}
-		writeError(w, http.StatusInternalServerError, "could not anonymize person")
 		return
 	}
 	if err != nil {

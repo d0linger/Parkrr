@@ -168,18 +168,62 @@ func TestSecretFeldnameGiltUnabhaengigVonDerWertform(t *testing.T) {
 		{"Liste unter einem Secret-Feld",
 			map[string]any{"backup_code": map[string]any{"werte": []any{secret, secret}}}},
 	} {
-		out := redactChanges(normalizeChanges(tc.in))
-		blob, err := json.Marshal(out)
-		if err != nil {
-			t.Fatalf("%s: nicht serialisierbar: %v", tc.name, err)
-		}
-		if strings.Contains(string(blob), secret) {
-			t.Errorf("%s: das Secret steht im Klartext im Ergebnis:\n%s", tc.name, blob)
-		}
-		if !strings.Contains(string(blob), redactedMark) {
-			t.Errorf("%s: nichts wurde maskiert — die Einstufung hat gar nicht gegriffen:\n%s", tc.name, blob)
+		checkRedacted(t, tc.name, tc.in, secret)
+	}
+}
+
+// Bankkennungen laufen über denselben Zweig, werden aber nur TEILWEISE maskiert. Die
+// Einstufung muss auch hier am äußeren Feldnamen hängen: unter einem fremden inneren
+// Schlüssel wie "prod" griffe sonst keine Regel und die volle IBAN stünde im Klartext
+// im Trail. Der Rest der Kennung darf bleiben — er beweist, um welches Konto es ging.
+func TestBankfeldnameGiltUnabhaengigVonDerWertform(t *testing.T) {
+	const iban = "AT611904300234573201"
+	const bic = "GIBAATWWXXX"
+	for _, tc := range []struct {
+		name  string
+		in    any
+		voll  string
+		sicht string // was sichtbar bleiben DARF
+	}{
+		{"IBAN unter einem fremden Schlüssel",
+			map[string]any{"iban": map[string]any{"prod": iban}}, iban, "3201"},
+		{"BIC unter einem fremden Schlüssel",
+			map[string]any{"bic": map[string]any{"prod": bic}}, bic, "WXXX"},
+		{"IBAN, mehrere Ebenen tief",
+			map[string]any{"iban": map[string]any{"env": map[string]any{"live": iban}}}, iban, ""},
+		{"gemischt: old/new plus ein Fremdschlüssel",
+			map[string]any{"iban": map[string]any{"old": nil, "new": iban, "quelle": iban}}, iban, "3201"},
+		{"Liste unter einem Bankfeld",
+			map[string]any{"iban": map[string]any{"werte": []any{iban, iban}}}, iban, ""},
+	} {
+		blob := checkRedacted(t, tc.name, tc.in, tc.voll)
+		if tc.sicht != "" && !strings.Contains(blob, tc.sicht) {
+			t.Errorf("%s: der Schluss %q ist weg — dann sagt der Eintrag nicht mehr, welches "+
+				"Konto gemeint war:\n%s", tc.name, tc.sicht, blob)
 		}
 	}
+}
+
+// checkRedacted redigiert in und belegt zweierlei: der vollständige Wert taucht
+// nirgends mehr auf, und es wurde überhaupt maskiert. Beide Marker zählen — Secrets
+// werden ganz ersetzt (redactedMark), Bankkennungen nur vorne beschnitten ("…") —
+// denn "nichts gefunden" wäre sonst von "Regel hat gar nicht gegriffen" nicht zu
+// unterscheiden. Gibt das Ergebnis als JSON zurück.
+func checkRedacted(t *testing.T, name string, in any, voll string) string {
+	t.Helper()
+	out := redactChanges(normalizeChanges(in))
+	blob, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("%s: nicht serialisierbar: %v", name, err)
+	}
+	s := string(blob)
+	if strings.Contains(s, voll) {
+		t.Errorf("%s: der vollständige Wert steht im Klartext im Ergebnis:\n%s", name, s)
+	}
+	if !strings.Contains(s, redactedMark) && !strings.Contains(s, "…") {
+		t.Errorf("%s: nichts wurde maskiert — die Einstufung hat gar nicht gegriffen:\n%s", name, s)
+	}
+	return s
 }
 
 // Die Gegenprobe: ein harmloses Feld mit derselben Wertform darf NICHT maskiert

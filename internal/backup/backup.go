@@ -61,6 +61,16 @@ func archiveTOC(ctx context.Context, enc []byte, key string) (string, error) {
 	// path we created, not user input.
 	out, err := exec.CommandContext(ctx, "pg_restore", "--list", tmp.Name()).Output()
 	if err != nil {
+		// Den GRUND mitnehmen. pg_restore schreibt ihn auf stderr ("did not find magic
+		// string in file header", "unsupported version"), Output() legt ihn in
+		// ExitError.Stderr ab — ohne ihn blieb im Audit-Eintrag und im Log nur
+		// "exit status 1" stehen, womit niemand etwas anfangen kann. Ein Fehler, der
+		// gar kein ExitError ist (pg_restore fehlt im PATH, Context abgelaufen), hat
+		// keine stderr und behält seine eigene Meldung.
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
+			return "", fmt.Errorf("not a valid pg_dump archive: %w: %s", err, strings.TrimSpace(string(ee.Stderr)))
+		}
 		return "", fmt.Errorf("not a valid pg_dump archive: %w", err)
 	}
 	return string(out), nil

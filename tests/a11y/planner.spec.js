@@ -298,4 +298,18 @@ test('header: Backup-Ampel neben dem Design-Umschalter (Bearbeiter-Signal)', asy
   await page.locator('#bkdot-btn').click();
   await page.mouse.move(20, 400);
   await expect(pop).toBeHidden();
+  // Der dritte Auslöser: der Weg in die Backup-Verwaltung. Er entfernte nur die
+  // Klasse und ging NICHT über den gemeinsamen Schließpfad — der Fokus blieb damit
+  // auf dem Button, :focus-within hielt das Popover sichtbar offen, und aria-expanded
+  // meldete gleichzeitig "false". Dieselbe Auseinanderentwicklung wie oben, nur an
+  // einer dritten Stelle; deshalb wird sie hier genauso geprüft.
+  await page.locator('#bkdot-btn').click();
+  await expect(pop).toBeVisible();
+  const verwaltung = pop.locator('.bkdot__pop-link');
+  await expect(verwaltung, 'als Admin führt das Popover in die Verwaltung').toBeVisible();
+  await verwaltung.click();
+  await page.mouse.move(20, 400);
+  await expect(page).toHaveURL(/#\/backup$/);
+  await expect(page.locator('#bkdot-btn')).toHaveAttribute('aria-expanded', 'false');
+  await expect(pop).toBeHidden();
 });

@@ -85,6 +85,24 @@ func TestBackupStateOfClassifiesOneTarget(t *testing.T) {
 	}
 }
 
+// Derselbe Zustand quer durch beide Schichten, weil erst ihr Zusammenspiel die Farbe
+// ergibt: Ziel eingerichtet, Zeitplan leer, noch nie gelaufen. backup.Status{} ist
+// hier nicht "leer für den Test", sondern genau das, was Migration 022 anlegt.
+func TestEingerichtetOhneZeitplanMeldetKeinenFehlschlag(t *testing.T) {
+	hh := backup.BackupHealth(
+		backup.Settings{VolumeCron: ""},
+		backup.Status{}, // LastVolumeAt nil, LastVolumeOK false — der DB-Default
+		true, false, time.Now())
+	got := backupStateOf(hh.Volume)
+	if got != "never" {
+		t.Errorf("eingerichtet, kein Zeitplan, nie gelaufen -> %q, want never", got)
+	}
+	if tone := backupToneOf(got); tone == "bad" {
+		t.Error("ein nie gelaufenes Backup darf nicht als Störung erscheinen — Rot heißt " +
+			"reparieren, hier ist aber nur etwas einzurichten")
+	}
+}
+
 func TestHumanAgeDEReadsAtAGlance(t *testing.T) {
 	// Der Punkt hat Platz für einen Blick, nicht für einen Zeitstempel.
 	for _, tc := range []struct {

@@ -39,7 +39,7 @@ type TargetHealth struct {
 	LastOK     bool       `json:"last_ok"` // the most recent attempt succeeded
 	AgeSeconds *int64     `json:"age_seconds"`
 	Overdue    bool       `json:"overdue"`
-	Never      bool       `json:"never"` // configured and scheduled, but never ran
+	Never      bool       `json:"never"` // configured, but never produced a backup (with or without a schedule)
 }
 
 // Health summarizes both targets for the dashboard tile.
@@ -68,13 +68,21 @@ func targetHealth(configured bool, cron string, lastAt *time.Time, lastOK bool, 
 		age := int64(now.Sub(*lastAt).Seconds())
 		h.AgeSeconds = &age
 	}
+	// "Es gab noch keinen einzigen Lauf" gilt für JEDES eingerichtete Ziel, nicht nur
+	// für ein geplantes — und muss deshalb VOR dem Zeitplan-Zweig gesetzt werden.
+	// last_*_ok hat in der Migration den Default FALSE: ohne dieses Flag kam ein Ziel
+	// ohne Cron über !LastOK als "fehlgeschlagen" heraus und meldete Rot für etwas,
+	// das nie versucht wurde. Für den geplanten Fall war genau dieser Fehler schon
+	// behoben, für den ungeplanten stand er noch.
+	if lastAt == nil {
+		h.Never = true
+	}
 	// No (or invalid) cron means the target is not scheduled: an old backup is then a
 	// deliberate state, not a fault, so it is never reported as overdue.
 	if !ValidCron(cron) || cron == "" {
 		return h
 	}
-	if lastAt == nil {
-		h.Never = true
+	if h.Never {
 		h.Overdue = true // scheduled but never produced a backup — the worst case, silently
 		return h
 	}

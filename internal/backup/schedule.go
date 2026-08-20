@@ -123,18 +123,20 @@ func RunVolume(ctx context.Context, pool *pgxpool.Pool, dbURL, key, dir string, 
 	// sonst jede Nacht einen einwandfreien Dump erzeugen und sofort wieder löschen —
 	// der letzte gute Stand friert ein, ohne dass jemand etwas sieht.
 	// Die .part bleibt also liegen: nicht als Backup gelistet (das Glob-Muster
-	// greift nicht), aber für den Betreiber vorhanden. Aufgeräumt wird sie über das
-	// Alter, siehe sweepStaleParts weiter unten.
+	// greift nicht), aber für den Betreiber vorhanden. Weggeräumt wird sie erst vom
+	// nächsten Lauf, siehe sweepStaleParts weiter unten.
 	promoted := false
 	defer func() {
 		if !promoted {
 			slog.Warn("backup: keeping the unverified archive for inspection", "path", part)
 		}
 	}()
-	// Reste früherer Abbrüche wegräumen (OOM-Kill, Neustart zwischen Schreiben und
-	// Prüfen). Ohne das sammeln sich Dumps in voller Größe an, die weder in der
-	// Übersicht noch beim Aufräumen auftauchen und irgendwann das Volume füllen.
-	sweepStaleParts(dir)
+	// Reste früherer Läufe wegräumen (OOM-Kill oder Neustart zwischen Schreiben und
+	// Prüfen, und die Zwischendatei eines durchgefallenen Laufs). Ohne das sammeln
+	// sich Dumps in voller Größe an, die weder in der Übersicht noch beim Aufräumen
+	// auftauchen und irgendwann das Volume füllen. Die gerade geschriebene Datei ist
+	// ausgenommen — sie wird gleich geprüft.
+	sweepStaleParts(dir, part)
 	// Wiederherstellungsprüfung. Erst Stufe 1 gegen die DATEI auf der Platte: os.WriteFile
 	// kann bei vollem Dateisystem ohne Fehler zurückkommen, und dann läge dort ein
 	// abgeschnittenes Archiv, das jede spätere Prüfung im Speicher nicht bemerkt.
@@ -365,32 +367,40 @@ func fireDue(cron string, last *time.Time, now time.Time) bool {
 	return CronDue(cron, *last, now)
 }
 
-// stalePartAge ist die Frist, nach der eine liegengebliebene Zwischendatei als
-// Abbruchrest gilt. Großzügig, damit die Datei eines gerade erst durchgefallenen
-// Laufs zur Untersuchung erhalten bleibt — sie soll nicht verschwinden, bevor
-// jemand hingesehen hat.
-const stalePartAge = 14 * 24 * time.Hour
-
-// sweepStaleParts entfernt alte *.part-Reste. Sie entstehen, wenn der Prozess
-// zwischen Schreiben und Prüfen stirbt, und werden von keinem anderen Pfad erfasst:
-// pruneDir und die Backup-Übersicht filtern beide auf parkrr-*.dump.enc, worauf
-// *.part nicht passt.
-func sweepStaleParts(dir string) {
+// sweepStaleParts entfernt *.part-Reste und behält GENAU EINEN: den, den der
+// laufende Vorgang gerade geschrieben hat (keep). Sie entstehen, wenn der Prozess
+// zwischen Schreiben und Prüfen stirbt oder wenn die Prüfung nicht besteht, und
+// werden von keinem anderen Pfad erfasst: pruneDir und die Backup-Übersicht filtern
+// beide auf parkrr-*.dump.enc, worauf *.part nicht passt.
+//
+// Vorher lief das über eine Altersfrist von 14 Tagen. Genau im Fall, für den die
+// Zwischendatei überhaupt liegen bleibt — eine Prüfung, die JEDE Nacht scheitert,
+// etwa weil pg_restore im Image fehlt — sammelten sich damit bis zu vierzehn
+// vollständige Dumps an, unsichtbar in der Übersicht und im Aufräumen. Bei einer
+// Datenbank von einigen Gigabyte füllt das ein Volume, und das nächste Backup
+// scheitert dann am Platz statt am ursprünglichen Fehler.
+//
+// Die Untersuchbarkeit bleibt: der zuletzt durchgefallene Dump liegt bis zum
+// nächsten Lauf bereit. Bei einem wiederkehrenden Fehler ist der neueste ohnehin so
+// aussagekräftig wie der von vor zwei Wochen.
+//
+// keep wird ausdrücklich übergeben und nicht als "der neueste Name" erraten: bei
+// einer rückwärts gestellten Uhr sortierte die gerade geschriebene Datei nicht mehr
+// zuletzt und würde unter den Händen des eigenen Laufs gelöscht.
+func sweepStaleParts(dir, keep string) {
 	parts, err := filepath.Glob(filepath.Join(dir, "parkrr-*.dump.enc.part"))
 	if err != nil {
 		return
 	}
-	cutoff := time.Now().Add(-stalePartAge)
 	for _, f := range parts {
-		fi, serr := os.Stat(f)
-		if serr != nil || fi.ModTime().After(cutoff) {
+		if filepath.Base(f) == filepath.Base(keep) {
 			continue
 		}
 		if rerr := os.Remove(f); rerr != nil {
-			slog.Warn("backup: could not remove a stale .part file", "path", f, "err", rerr)
+			slog.Warn("backup: could not remove a leftover .part file", "path", f, "err", rerr)
 			continue
 		}
-		slog.Info("backup: removed a stale .part file from an interrupted run", "path", f)
+		slog.Info("backup: removed a leftover .part file from an earlier run", "path", f)
 	}
 }
 

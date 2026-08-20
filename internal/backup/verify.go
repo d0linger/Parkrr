@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -143,30 +144,26 @@ func tablesInTOC(toc string) (found, missing []string) {
 // VerifyS3Object ist Stufe 2: prüft, dass im Bucket wirklich das liegt, was
 // hochgeladen wurde.
 //
-// Drei Schritte mit steigenden Kosten, damit der häufigste Fehler — ein
-// abgebrochener Upload — schon am billigsten Schritt auffällt:
+// Zwei Schritte mit steigenden Kosten, damit der häufigste Fehler — ein
+// abgebrochener Upload — schon am billigsten auffällt:
 //
-//	a) Größe über die Objektliste: erkennt Abbruch und Nullbytes sofort.
-//	b) Kopf- und Fußbytes: erkennt ein Objekt, das zwar die richtige Länge hat,
-//	   aber am Anfang oder Ende beschädigt ist, ohne alles zu laden.
-//	c) Vollständiges Lesen und Prüfsummenvergleich: der abschließende Beweis.
+//	a) Größe über einen HEAD-Aufruf: erkennt Abbruch und Nullbytes sofort.
+//	b) Vollständiges Lesen und Prüfsummenvergleich: der abschließende Beweis.
+//
+// Hier stand einmal eine Zwischenstufe "Kopf- und Fußbytes über Byte-Bereiche".
+// Sie war nie geschrieben, und ein Kommentar, der eine nicht vorhandene Prüfung
+// beschreibt, ist schlimmer als gar keiner: er lässt eine Lücke geprüft aussehen.
+// Zwischen a) und b) läge sie ohnehin nur bei sehr großen Archiven dazwischen.
 //
 // wantSHA und wantBytes stammen aus dem Upload, nicht aus dem Objekt selbst —
 // sonst würde man das Ergebnis mit sich selbst vergleichen.
 func VerifyS3Object(ctx context.Context, c S3Config, name, key, wantSHA string, wantBytes int64) error {
-	objs, err := ListS3(ctx, c)
+	size, err := StatS3(ctx, c, name)
 	if err != nil {
-		return fmt.Errorf("s3 list failed: %w", err)
-	}
-	var size int64 = -1
-	for _, o := range objs {
-		if o.Name == name {
-			size = o.Size
-			break
+		if errors.Is(err, ErrS3ObjectMissing) {
+			return fmt.Errorf("uploaded object %q is not in the bucket", name)
 		}
-	}
-	if size < 0 {
-		return fmt.Errorf("uploaded object %q is not in the bucket", name)
+		return fmt.Errorf("s3 stat failed: %w", err)
 	}
 	if size != wantBytes {
 		return fmt.Errorf("object %q is %d bytes, expected %d (incomplete upload?)", name, size, wantBytes)
