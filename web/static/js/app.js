@@ -7064,7 +7064,35 @@
     // einen Backup-Ausfall ohnehin nicht reagieren, und der Endpunkt ist editor+.
     // Bewusst ein eigener, schlanker Aufruf — /backup/status wäre admin-only und
     // trüge Verzeichnis, Bucket und Dateiliste mit, die hier nichts zu suchen haben.
-    const BKDOT_MARK = { ok: '✓', warn: '!', bad: '✕' };
+    // --- Backup-Status-Indikator ------------------------------------------------
+    // Zwei Ausbaustufen, umschaltbar über BKDOT_STYLE:
+    //   'ring'  — feiner Vektor-Ring mit Zustandsglyph (Standard, kompakt, 20px)
+    //   'badge' — Schild-Icon mit kleinem Eck-Badge (expliziter, etwas größer)
+    // Beide nutzen currentColor, die Farbe setzt die .bkdot--*-Klasse. Dadurch
+    // stimmen Hell- und Dunkelmodus automatisch, ohne zweite Farbtabelle.
+    const BKDOT_STYLE = 'ring';
+    // Glyphen als Pfade statt als Textzeichen: ein Unicode-Häkchen in einem 11px
+    // Kreis skaliert nicht mit, wird von der Schriftart bestimmt und lief über den
+    // Kreis hinaus. Als Vektor sitzt es bei 16 wie bei 24 px exakt.
+    const BK_GLYPH = {
+        ok: '<path class="bkico__glyph" d="M8.4 12.4l2.5 2.5 4.7-5.2"/>',
+        warn: '<path class="bkico__glyph" d="M12 7.7v4.7"/><path class="bkico__glyph" d="M12 15.7h.01"/>',
+        bad: '<path class="bkico__glyph" d="M9.4 9.4l5.2 5.2"/><path class="bkico__glyph" d="M14.6 9.4l-5.2 5.2"/>',
+    };
+    // Ring: Spur (schwach) + Bogen. Bei "warn" ist der Bogen offen und pulsiert —
+    // bewusst KEIN Dauer-Spinner: ein endlos drehendes Icon behauptet "läuft gerade",
+    // und der gelbe Zustand heißt hier "veraltet / einrichten", nicht "in Arbeit".
+    const BK_RING = (state) => '<svg class="bkico" viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true">'
+        + '<circle class="bkico__track" cx="12" cy="12" r="9"/>'
+        + '<circle class="bkico__arc" cx="12" cy="12" r="9"/>'
+        + BK_GLYPH[state] + '</svg>';
+    // Badge: Schild (Backup = Schutz) mit Zustandspunkt unten rechts.
+    const BK_BADGE = (state) => '<svg class="bkico bkico--badge" viewBox="0 0 24 24" width="22" height="22" fill="none" aria-hidden="true">'
+        + '<path class="bkico__shield" d="M12 3.2l6.4 2.4v5.2c0 3.9-2.6 6.6-6.4 7.8-3.8-1.2-6.4-3.9-6.4-7.8V5.6Z"/>'
+        + '<circle class="bkico__badge-bg" cx="17.6" cy="17.6" r="4.6"/>'
+        + '<g class="bkico__badge-fg" transform="translate(17.6 17.6) scale(.42) translate(-12 -12)">'
+        + BK_GLYPH[state] + '</g></svg>';
+    const BK_ICON = { ring: BK_RING, badge: BK_BADGE };
     async function refreshBackupDot() {
         const wrap = $('#bkdot');
         if (!wrap) return;
@@ -7073,9 +7101,9 @@
         try { hh = await api.get('/backup/health'); } catch (e) { wrap.hidden = true; return; }
         if (!hh || !hh.tone) { wrap.hidden = true; return; }
         wrap.hidden = false;
-        wrap.className = 'bkdot bkdot--' + hh.tone;
+        wrap.className = 'bkdot bkdot--' + hh.tone + ' bkdot--style-' + BKDOT_STYLE;
         const mark = wrap.querySelector('.bkdot__mark');
-        if (mark) mark.textContent = BKDOT_MARK[hh.tone] || '';
+        if (mark) mark.innerHTML = (BK_ICON[BKDOT_STYLE] || BK_RING)(hh.tone);
         // Die Kurzinfo steht im Popover UND im aria-label, damit sie per Screenreader
         // ohne Öffnen vorgelesen wird.
         const meta = hh.age_label
