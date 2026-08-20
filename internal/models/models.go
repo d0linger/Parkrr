@@ -144,6 +144,12 @@ type Person struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 
+	// Anonymized markiert einen nach DSGVO Art. 17 geleerten Stammsatz. Die Zeile
+	// bleibt bestehen, weil Rechnungen per FK daran hängen und aufbewahrungs-
+	// pflichtig sind; die Oberfläche blendet das Bearbeiten aus, und der Server
+	// verweigert jedes Wiederbefüllen.
+	Anonymized bool `json:"anonymized"`
+
 	// Derived (not stored): whether the person has any Pauschale.
 	HasFlatRate bool `json:"has_flat_rate"`
 }

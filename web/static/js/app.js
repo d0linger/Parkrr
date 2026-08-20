@@ -656,12 +656,54 @@
     // A KPI tile: big tabular value + uppercase label, an optional muted icon, and
     // an optional tone (teal/green/amber) that tints the value + a left accent bar.
     const stat = (value, label, opts = {}) => {
-        const t = el('div', { class: 'stat' + (opts.tone ? ' tone-' + opts.tone : '') });
+        // Mit opts.onClick wird die Kachel ein echter <button>: anklickbar UND per Tab
+        // erreichbar. Ein div mit onclick sähe gleich aus, wäre aber für Tastatur und
+        // Screenreader unsichtbar.
+        const cls = 'stat' + (opts.tone ? ' tone-' + opts.tone : '') + (opts.onClick ? ' stat-click' : '');
+        const t = opts.onClick
+            ? el('button', { class: cls, type: 'button', onclick: opts.onClick })
+            : el('div', { class: cls });
         const ic = statIcon(opts.icon);
         if (ic) t.append(ic);
         t.append(el('div', { class: 'value' }, esc(value)), el('div', { class: 'label' }, label));
         return t;
     };
+    // Backup-Health — Alter des jüngsten ERFOLGREICHEN Laufs, plus das serverseitige
+    // Urteil "überfällig". Die Schwelle kommt aus dem Cron des jeweiligen Ziels und
+    // wird bewusst NICHT hier gerechnet: ein wöchentlicher Plan darf nach zwei Tagen
+    // nicht rot werden, ein stündlicher nach zwei Tagen nicht mehr grün sein.
+    const backupAge = (sec) => {
+        if (sec == null) return 'nie';
+        const m = Math.floor(sec / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+        if (d >= 1) return d + (d === 1 ? ' Tag' : ' Tage');
+        if (h >= 1) return h + (h === 1 ? ' Stunde' : ' Stunden');
+        return Math.max(1, m) + ' Min.';
+    };
+    // Drei Stufen statt zwei, weil sie unterschiedliche Handlungen auslösen:
+    //   failed  = rot   -> etwas ist KAPUTT, der Lauf hat es versucht und ist gescheitert
+    //   never / stale / off = gelb -> Handlungsaufforderung (Zeitplan oder Einrichtung prüfen)
+    //   ok      = grün
+    // "Überfällig" wäre als Rot gleichbedeutend mit "fehlgeschlagen" — dann sagt die
+    // Farbe nicht mehr, ob man etwas reparieren oder etwas einrichten muss.
+    // off unter never: eine Einrichtungslücke ist weniger dringend als ein
+    // eingerichtetes Ziel, das noch nie gelaufen ist.
+    const BACKUP_RANK = { ok: 0, off: 1, stale: 2, never: 3, failed: 4 };
+    // Reihenfolge wie serverseitig: never MUSS vor !last_ok geprüft werden. Die
+    // Spalte last_*_ok hat den Default FALSE, ein noch nie gelaufenes Backup käme
+    // sonst als "fehlgeschlagen" heraus — jede frische Installation zeigte Rot.
+    const backupState = (th) => {
+        if (!th || !th.configured) return 'off';
+        if (th.never) return 'never';
+        if (!th.last_ok) return 'failed';
+        if (th.overdue) return 'stale';
+        return 'ok';
+    };
+    const BACKUP_TONE = { ok: 'green', stale: 'amber', never: 'amber', off: 'amber', failed: 'red' };
+    // "never" gilt seit der Korrektur in targetHealth auch für ein Ziel OHNE Zeitplan,
+    // deshalb ohne "geplant": der Text muss für beide Fälle stimmen.
+    const BACKUP_TEXT = { ok: 'Backup aktuell', stale: 'überfällig laut Zeitplan',
+        never: 'noch nie gelaufen', off: 'kein Ziel aktiviert', failed: 'letzter Lauf fehlgeschlagen' };
+    const backupWorst = (states) => states.reduce((a, b) => (BACKUP_RANK[b] > BACKUP_RANK[a] ? b : a), 'ok');
     const personName = (p) => (`${p.first_name || ''} ${p.last_name || ''}`).trim() || '(ohne Namen)';
     const vehicleTitle = (v) => v.label || v.license_plate || v.category_name;
     const catById = (id) => state.categories.find((c) => c.id === Number(id));
@@ -948,6 +990,66 @@
             stat(ov.total_categories, 'Tarife', { icon: 'tag' }),
         ));
 
+        // Backup-Health. Nur für Admins: /api/backup/status ist admin-only, ein
+        // Bearbeiter bekäme hier bloß einen 403. Der Aufruf ist bewusst NICHT Teil des
+        // Übersichts-Ladens, damit ein langsamer S3-Bucket das Dashboard nicht ausbremst
+        // — die Kachel wird nachgereicht, sobald die Antwort da ist.
+        if (isAdmin()) {
+            const slot = el('div', { class: 'stat-grid', 'aria-live': 'polite' });
+            page.append(slot);
+            api.get('/backup/status').then((bs) => {
+                const hh = bs && bs.health;
+                if (!hh) return;
+                const targets = [['Volume', hh.volume], ['S3', hh.s3]].filter(([, th]) => th && th.configured);
+
+                // Ohne konfiguriertes Ziel gibt es zwei sehr verschiedene Zustände, und der
+                // gefährlichere war bisher der stumme: PARKRR_BACKUP_KEY gesetzt, aber weder
+                // Verzeichnis noch S3 — Backups sind eingeschaltet und laufen ins Leere.
+                // Ganz ohne Key ist es dagegen eine bewusst nicht eingerichtete Funktion.
+                if (!targets.length) {
+                    const txt = bs.enabled ? 'Ziel fehlt' : 'nicht eingerichtet';
+                    const note = bs.enabled
+                        ? 'Backup aktiviert, aber weder Verzeichnis noch S3 konfiguriert'
+                        : 'kein Backup-Schlüssel gesetzt';
+                    const t0 = stat(txt, 'Backup', { icon: 'shield', tone: 'amber', onClick: () => navigate('backup') });
+                    t0.append(el('div', { class: 'stat-note' }, note));
+                    // Auch dieser Zweig braucht einen Titel: sonst hängt die Zusicherung
+                    // im E2E daran, dass die Testumgebung zufällig ein Backup-Ziel
+                    // konfiguriert hat, und schlägt ohne Produktfehler fehl.
+                    t0.setAttribute('title', 'Zeitplan: kein Ziel konfiguriert — klicken für die Backup-Verwaltung');
+                    slot.append(t0);
+                    return;
+                }
+
+                // EINE Kachel für alle Ziele: die Übersicht soll das Risiko zeigen, nicht die
+                // Backup-Verwaltung nachbauen. Die Farbe folgt dem SCHLECHTESTEN Ziel, damit
+                // ein grünes Volume ein totes S3 nicht überdeckt.
+                const states = targets.map(([, th]) => backupState(th));
+                const worst = backupWorst(states);
+                // Der Wert ist das Alter des JÜNGSTEN erfolgreichen Laufs über alle Ziele —
+                // die Frage lautet "wie alt ist mein neuester Wiederherstellungspunkt?".
+                const ages = targets.map(([, th]) => th.age_seconds).filter((a) => a != null);
+                const newest = ages.length ? Math.min(...ages) : null;
+                const tile = stat(newest == null ? 'nie' : 'vor ' + backupAge(newest), 'Backup',
+                    { icon: 'shield', tone: BACKUP_TONE[worst], onClick: () => navigate('backup') });
+
+                // Begründungszeile: Zustand, dann je Ziel ein Kurzbefund, dann die
+                // Verschlüsselung — sie ist der Grund, warum die Archive überhaupt
+                // ausgelagert werden dürfen, und gehört sichtbar dazu.
+                const parts = [BACKUP_TEXT[worst]];
+                targets.forEach(([name, th], i) => {
+                    const st2 = states[i];
+                    parts.push(name + ' ' + (st2 === 'ok' ? 'ok' : BACKUP_TEXT[st2]));
+                });
+                if (bs.enabled) parts.push('verschlüsselt');
+                tile.append(el('div', { class: 'stat-note' }, parts.join(' · ')));
+                tile.setAttribute('title', targets.map(([name, th]) => name + ': Zeitplan ' + (th.cron || 'aus')
+                    + ', letzter Erfolg ' + (th.last_at ? new Date(th.last_at).toLocaleString('de-AT') : 'nie')).join(' | ')
+                    + ' — klicken für die Backup-Verwaltung');
+                slot.append(tile);
+            }).catch(() => { /* Backup-Status ist Zusatzinfo, nie ein Grund die Übersicht zu stören */ });
+        }
+
         // Belegung — how many active Gefährte are positioned in a hall plan, plus a
         // per-hall breakdown. The plan is area-based (no fixed slots), so this is a
         // placement count, not "free slots".
@@ -1137,7 +1239,11 @@
                                 overdueByPerson[p.id] ? el('span', { class: 'badge', style: 'background:var(--danger);color:#fff;margin-top:.25rem', title: 'Überfällige Rechnung' }, overdueByPerson[p.id] + ' Tg. überfällig') : null) : null,
                             el('div', { class: 'card-actions' },
                                 el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': personName(p) + ' öffnen', onclick: () => navigate('persons/' + p.id) }, '›'),
-                                canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' bearbeiten', 'aria-label': personName(p) + ' bearbeiten', onclick: () => personForm(p) }, icon('edit')),
+                                // Bearbeiten entfällt bei einer anonymisierten Person: der Server
+                                // lehnt das Wiederbefüllen ohnehin ab (AND NOT anonymized), ein
+                                // sichtbares Formular würde also nur einen stillen Fehlschlag anbieten.
+                                canManage() && !p.anonymized && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' bearbeiten', 'aria-label': personName(p) + ' bearbeiten', onclick: () => personForm(p) }, icon('edit')),
+                                canManage() && !p.anonymized && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' anonymisieren (DSGVO)', 'aria-label': personName(p) + ' anonymisieren', onclick: () => anonymizePerson(p) }, icon('shield')),
                                 canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' löschen', 'aria-label': personName(p) + ' löschen', onclick: (e) => delPerson(p, e.currentTarget.closest('.card')) }, icon('trash')),
                             ))));
             },
@@ -1165,6 +1271,27 @@
     function delPerson(p, node) {
         deleteWithUndo('Person löschen?', `„${personName(p)}“ und alle zugehörigen Gefährte werden gelöscht.`,
             () => api.del('/persons/' + p.id), () => render(), node);
+    }
+
+    // DSGVO Art. 17, wenn Löschen nicht geht: sobald Rechnungen an einer Person
+    // hängen, lehnt der Server das Löschen ab (FK-RESTRICT + Aufbewahrungspflicht).
+    // Anonymisieren leert stattdessen den Stammsatz und lässt die Belege stehen.
+    // Bewusst NICHT über deleteWithUndo: ein Rückgängig-Knopf wäre hier eine
+    // Lüge — die Daten sind nach dem OK unwiederbringlich weg.
+    async function anonymizePerson(p) {
+        const ok = await confirmDialog('Person anonymisieren?',
+            `Name, E-Mail, Telefon, Adresse und Notiz von „${personName(p)}“ werden unwiderruflich gelöscht. `
+            + 'Gefährte, Zahlungen und Rechnungen bleiben erhalten — Belege sind sieben Jahre '
+            + 'aufbewahrungspflichtig und dürfen nicht verändert werden. Nicht umkehrbar.',
+            'Anonymisieren');
+        if (!ok) return;
+        try {
+            await api.post('/persons/' + p.id + '/anonymize', {});
+            toast('Person anonymisiert · Belege bleiben erhalten', 'success');
+            render();
+        } catch (e) {
+            toast(e.message || 'Anonymisieren fehlgeschlagen', 'error');
+        }
     }
 
     // Import dialog: offer an example-file download or pick a CSV to import.
@@ -6964,8 +7091,97 @@
     async function showApp() {
         $('#login-view').hidden = true;
         $('#app-view').hidden = false;
+        refreshBackupDot();
         if (!location.hash || location.hash === '#') location.hash = '#/dashboard';
         else render();
+    }
+
+    // Backup-Ampel im Header. Nur für Bearbeiter und Admins: Nur-Leser können auf
+    // einen Backup-Ausfall ohnehin nicht reagieren, und der Endpunkt ist editor+.
+    // Bewusst ein eigener, schlanker Aufruf — /backup/status wäre admin-only und
+    // trüge Verzeichnis, Bucket und Dateiliste mit, die hier nichts zu suchen haben.
+    // --- Backup-Status-Indikator ------------------------------------------------
+    // Zwei Ausbaustufen, umschaltbar über BKDOT_STYLE:
+    //   'ring'  — feiner Vektor-Ring mit Zustandsglyph (Standard, kompakt, 20px)
+    //   'badge' — Schild-Icon mit kleinem Eck-Badge (expliziter, etwas größer)
+    // Beide nutzen currentColor, die Farbe setzt die .bkdot--*-Klasse. Dadurch
+    // stimmen Hell- und Dunkelmodus automatisch, ohne zweite Farbtabelle.
+    const BKDOT_STYLE = 'ring';
+    // Glyphen als Pfade statt als Textzeichen: ein Unicode-Häkchen in einem 11px
+    // Kreis skaliert nicht mit, wird von der Schriftart bestimmt und lief über den
+    // Kreis hinaus. Als Vektor sitzt es bei 16 wie bei 24 px exakt.
+    const BK_GLYPH = {
+        ok: '<path class="bkico__glyph" d="M8.4 12.4l2.5 2.5 4.7-5.2"/>',
+        warn: '<path class="bkico__glyph" d="M12 7.7v4.7"/><path class="bkico__glyph" d="M12 15.7h.01"/>',
+        bad: '<path class="bkico__glyph" d="M9.4 9.4l5.2 5.2"/><path class="bkico__glyph" d="M14.6 9.4l-5.2 5.2"/>',
+    };
+    // Ring: Spur (schwach) + Bogen. Bei "warn" ist der Bogen offen und dreht sich
+    // langsam und ungleichmäßig; der echte Laufzustand (.is-running) nutzt dieselbe
+    // Keyframe zügig und linear. Tempo und Kurve trennen die beiden Bedeutungen —
+    // die Animation selbst ist in beiden Fällen eine Drehung (siehe style.css).
+    const BK_RING = (state) => '<svg class="bkico" viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true">'
+        + '<circle class="bkico__track" cx="12" cy="12" r="9"/>'
+        + '<circle class="bkico__arc" cx="12" cy="12" r="9"/>'
+        + BK_GLYPH[state] + '</svg>';
+    // Badge: Schild (Backup = Schutz) mit Zustandspunkt unten rechts.
+    const BK_BADGE = (state) => '<svg class="bkico bkico--badge" viewBox="0 0 24 24" width="22" height="22" fill="none" aria-hidden="true">'
+        + '<path class="bkico__shield" d="M12 3.2l6.4 2.4v5.2c0 3.9-2.6 6.6-6.4 7.8-3.8-1.2-6.4-3.9-6.4-7.8V5.6Z"/>'
+        + '<circle class="bkico__badge-bg" cx="17.6" cy="17.6" r="4.6"/>'
+        + '<g class="bkico__badge-fg" transform="translate(17.6 17.6) scale(.42) translate(-12 -12)">'
+        + BK_GLYPH[state] + '</g></svg>';
+    const BK_ICON = { ring: BK_RING, badge: BK_BADGE };
+    // EIN Schließweg für alle Auslöser: Tap auf die Ampel, Klick daneben, Escape und
+    // der Weg in die Backup-Verwaltung. blur() ist dabei nicht kosmetisch — das CSS
+    // öffnet das Popover auch bei :focus-within. Wer nur die Klasse entfernt, lässt
+    // den Fokus auf dem Button: sichtbar offen, während aria-expanded "false" meldet.
+    function closeBackupPop() {
+        const wrap = $('#bkdot'), btn = $('#bkdot-btn');
+        if (!wrap) return;
+        wrap.classList.remove('is-open');
+        if (btn) btn.setAttribute('aria-expanded', 'false');
+        // Den Fokus aus dem GANZEN Bereich nehmen, nicht nur vom Button: nach einem
+        // Klick auf den Link im Popover liegt er auf dem Link. Nur den Button zu
+        // blurren ließ das Popover offen stehen, während aria-expanded schon "false"
+        // meldete — derselbe Auseinanderlauf wie zuvor, eine Ebene tiefer.
+        const act = document.activeElement;
+        if (act && wrap.contains(act) && typeof act.blur === 'function') act.blur();
+    }
+    async function refreshBackupDot() {
+        const wrap = $('#bkdot');
+        if (!wrap) return;
+        if (!canManage()) { wrap.hidden = true; return; }
+        let hh;
+        try { hh = await api.get('/backup/health'); } catch (e) { wrap.hidden = true; return; }
+        if (!hh || !hh.tone) { wrap.hidden = true; return; }
+        wrap.hidden = false;
+        wrap.className = 'bkdot bkdot--' + hh.tone + ' bkdot--style-' + BKDOT_STYLE;
+        const mark = wrap.querySelector('.bkdot__mark');
+        if (mark) mark.innerHTML = (BK_ICON[BKDOT_STYLE] || BK_RING)(hh.tone);
+        // Die Kurzinfo steht im Popover UND im aria-label, damit sie per Screenreader
+        // ohne Öffnen vorgelesen wird.
+        // Ein fehlendes Alter heißt NICHT "nicht aktiviert": ein eingerichtetes Ziel,
+        // das nur noch nie gelaufen ist, hat ebenfalls keins. Vorher stand dann
+        // "Automatische Backups sind nicht aktiviert." neben dem Titel "Noch kein
+        // automatisches Backup" — zwei Aussagen, die sich widersprechen.
+        // Ob etwas eingerichtet ist, sagt allein der Titel vom Server.
+        const meta = hh.age_label
+            ? 'Letztes Backup ' + hh.age_label
+                + (hh.s3 === 'ok' ? ' · S3 ok' : hh.s3 === 'fehlgeschlagen' ? ' · S3 fehlgeschlagen' : '')
+                + (hh.encrypted ? ' · verschlüsselt' : '')
+            : (hh.encrypted ? 'Noch kein erfolgreicher Lauf · verschlüsselt' : 'Noch kein erfolgreicher Lauf');
+        const btn = $('#bkdot-btn');
+        if (btn) btn.setAttribute('aria-label', 'Backup: ' + hh.title + (hh.age_label ? ', ' + hh.age_label : ''));
+        const pop = $('#bkdot-pop');
+        if (!pop) return;
+        pop.innerHTML = '';
+        pop.append(el('span', { class: 'bkdot__pop-title' }, hh.title),
+            el('span', { class: 'bkdot__pop-meta' }, meta));
+        // Der Weg zur Verwaltung nur für Admins — Bearbeiter sehen den Zustand,
+        // können ihn aber nicht ändern, und ein Link ins Nichts hilft niemandem.
+        if (isAdmin()) {
+            pop.append(el('button', { class: 'bkdot__pop-link', type: 'button',
+                onclick: () => { closeBackupPop(); navigate('backup'); } }, 'Backup-Verwaltung ›'));
+        }
     }
     const EYE_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
     const EYE_OFF_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7c1.7 0 3.2.5 4.5 1.2M22 12s-3.6 7-10 7c-1.7 0-3.2-.5-4.5-1.2"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M3 3l18 18"/></svg>';
@@ -7219,6 +7435,24 @@
         $('#login-pw-toggle').addEventListener('click', () => setPwVisible($('#login-password').type === 'password'));
         $('#login-backup-toggle').addEventListener('click', () => setTotpMode(!totpBackupMode));
         $('#theme-btn').addEventListener('click', toggleTheme);
+        // Backup-Ampel neben dem Design-Umschalter. Tap schaltet das Popover um —
+        // Hover und Fokus erledigt das CSS, aber auf Touch gibt es kein Hover.
+        (function () {
+            const wrap = $('#bkdot'), btn = $('#bkdot-btn');
+            if (!wrap || !btn) return;
+            const close = closeBackupPop; // derselbe Weg wie für den Link im Popover
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                // Beim SCHLIESSEN über close() gehen, nicht nur die Klasse umschalten:
+                // sonst bleibt der Fokus auf dem Button, :focus-within hält das Popover
+                // sichtbar offen und aria-expanded meldet gleichzeitig "false".
+                if (wrap.classList.contains('is-open')) { close(); return; }
+                wrap.classList.add('is-open');
+                btn.setAttribute('aria-expanded', 'true');
+            });
+            document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) close(); });
+            document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+        })();
         $('#menu-btn').addEventListener('click', openMenu);
         $$('.tab').forEach((t) => t.addEventListener('click', () => navigate(t.dataset.route)));
         for (const id of ['#modal', '#confirm', '#menu']) {

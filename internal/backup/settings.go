@@ -28,6 +28,86 @@ type Status struct {
 	LastS3OK        bool       `json:"last_s3_ok"`
 }
 
+// TargetHealth is the answer to "is this backup target actually still working?".
+// Age is what an operator reads; Overdue is the verdict, derived from the target's
+// OWN cron rather than a fixed threshold — a weekly schedule must not be reported as
+// late after two days, and an hourly one must not stay green for a week.
+type TargetHealth struct {
+	Configured bool       `json:"configured"`
+	Cron       string     `json:"cron"`
+	LastAt     *time.Time `json:"last_at"` // last SUCCESSFUL run, nil if never
+	LastOK     bool       `json:"last_ok"` // the most recent attempt succeeded
+	AgeSeconds *int64     `json:"age_seconds"`
+	Overdue    bool       `json:"overdue"`
+	Never      bool       `json:"never"` // configured, but never produced a backup (with or without a schedule)
+}
+
+// Health summarizes both targets for the dashboard tile.
+type Health struct {
+	Volume TargetHealth `json:"volume"`
+	S3     TargetHealth `json:"s3"`
+}
+
+// overdueGrace is added to the next scheduled time before a target counts as late,
+// so a run that is merely in progress — or a scheduler tick that fired a minute
+// after midnight — does not flip the tile to red.
+const overdueGrace = 90 * time.Minute
+
+// targetHealth evaluates one target. lastAt is its last successful run.
+func targetHealth(configured bool, cron string, lastAt *time.Time, lastOK bool, now time.Time) TargetHealth {
+	h := TargetHealth{Configured: configured, Cron: cron, LastAt: lastAt, LastOK: lastOK}
+	if !configured {
+		return h
+	}
+	// Alter NUR bei einem erfolgreichen letzten Lauf. recordVolume/recordS3 stempeln
+	// last_*_at auf JEDEM Pfad, auch bei Fehlschlag — der Zeitstempel ist also der
+	// des letzten VERSUCHS. Ihn als "Letztes Backup vor 5 Min." zu melden, während
+	// der jüngste brauchbare Wiederherstellungspunkt neun Tage alt ist, wäre die
+	// gefährlichste Falschaussage, die diese Anzeige machen kann.
+	if lastAt != nil && lastOK {
+		age := int64(now.Sub(*lastAt).Seconds())
+		h.AgeSeconds = &age
+	}
+	// "Es gab noch keinen einzigen Lauf" gilt für JEDES eingerichtete Ziel, nicht nur
+	// für ein geplantes — und muss deshalb VOR dem Zeitplan-Zweig gesetzt werden.
+	// last_*_ok hat in der Migration den Default FALSE: ohne dieses Flag kam ein Ziel
+	// ohne Cron über !LastOK als "fehlgeschlagen" heraus und meldete Rot für etwas,
+	// das nie versucht wurde. Für den geplanten Fall war genau dieser Fehler schon
+	// behoben, für den ungeplanten stand er noch.
+	if lastAt == nil {
+		h.Never = true
+	}
+	// No (or invalid) cron means the target is not scheduled: an old backup is then a
+	// deliberate state, not a fault, so it is never reported as overdue.
+	if !ValidCron(cron) || cron == "" {
+		return h
+	}
+	if h.Never {
+		h.Overdue = true // scheduled but never produced a backup — the worst case, silently
+		return h
+	}
+	if !lastOK {
+		// Der letzte Versuch ist gescheitert: wann zuletzt etwas Brauchbares entstand,
+		// steht nirgends. "failed" ist ohnehin der schlechteste Zustand, aber Overdue
+		// darf hier nicht false bleiben — ein Job, der JEDE Nacht scheitert, würde
+		// sonst durch den ständig neu gesetzten Zeitstempel für immer als pünktlich
+		// gelten.
+		h.Overdue = true
+		return h
+	}
+	next := CronNext(cron, *lastAt)
+	h.Overdue = !next.IsZero() && now.After(next.Add(overdueGrace))
+	return h
+}
+
+// BackupHealth combines schedule and status into the per-target verdicts.
+func BackupHealth(s Settings, st Status, volumeConfigured, s3Configured bool, now time.Time) Health {
+	return Health{
+		Volume: targetHealth(volumeConfigured, s.VolumeCron, st.LastVolumeAt, st.LastVolumeOK, now),
+		S3:     targetHealth(s3Configured, s.S3Cron, st.LastS3At, st.LastS3OK, now),
+	}
+}
+
 // LoadSettings reads the single backup_settings row.
 func LoadSettings(ctx context.Context, pool *pgxpool.Pool) (Settings, error) {
 	var s Settings

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"path"
 	"sort"
 	"strings"
@@ -119,6 +120,30 @@ func listWith(ctx context.Context, cl *minio.Client, c S3Config) ([]S3Object, er
 	return objs, nil
 }
 
+// ErrS3ObjectMissing meldet, dass ein benanntes Objekt nicht im Bucket liegt —
+// abgegrenzt von "der Bucket war nicht erreichbar", was etwas ganz anderes bedeutet.
+var ErrS3ObjectMissing = errors.New("object is not in the bucket")
+
+// StatS3 liefert die Größe EINES Objekts über einen HEAD-Aufruf, ohne den Bucket zu
+// listen. Für die Prüfung nach dem Hochladen ist das nicht nur billiger: listWith
+// bricht oberhalb von maxS3ListObjects mit einem Fehler ab, und in einem Bucket über
+// dieser Grenze wäre damit JEDE Prüfung fehlgeschlagen — samt anschließendem
+// DeleteS3 auf ein Objekt, dem nichts fehlte.
+func StatS3(ctx context.Context, c S3Config, name string) (int64, error) {
+	cl, err := c.client()
+	if err != nil {
+		return 0, err
+	}
+	st, err := cl.StatObject(ctx, c.Bucket, c.objectKey(name), minio.StatObjectOptions{})
+	if err != nil {
+		if re := minio.ToErrorResponse(err); re.Code == minio.NoSuchKey || re.StatusCode == http.StatusNotFound {
+			return 0, ErrS3ObjectMissing
+		}
+		return 0, err
+	}
+	return st.Size, nil
+}
+
 // TestS3 checks that the configured bucket is reachable — the backup panel's
 // "Verbindung testen". A read-only BucketExists probe: it neither writes nor lists
 // objects, so it's a safe, fast connectivity/credentials check.
@@ -172,6 +197,33 @@ func DownloadS3(ctx context.Context, c S3Config, name string) ([]byte, error) {
 		return nil, fmt.Errorf("backup: S3 object %q exceeds the %d-byte limit", name, maxS3DownloadBytes)
 	}
 	return data, nil
+}
+
+// DeleteS3 entfernt ein einzelnes Objekt. Gebraucht, um ein Archiv wieder
+// wegzuräumen, das die Prüfung nicht bestanden hat: es darf im Bucket nicht als
+// jüngster — und damit naheliegendster — Wiederherstellungspunkt liegen bleiben.
+func DeleteS3(ctx context.Context, c S3Config, name string) error {
+	cl, err := c.client()
+	if err != nil {
+		return err
+	}
+	return cl.RemoveObject(ctx, c.Bucket, c.objectKey(name), minio.RemoveObjectOptions{})
+}
+
+// PruneS3 entfernt alte Objekte bis auf die neuesten `keep`. Getrennt von UploadS3
+// aufrufbar, weil ein Upload erst NACH bestandener Prüfung etwas verdrängen
+// darf: sonst räumt ein abgebrochener Upload einen guten alten Stand weg und
+// hinterlässt an dessen Stelle ein kaputtes Objekt.
+func PruneS3(ctx context.Context, c S3Config, keep int) error {
+	if keep < 1 {
+		return nil
+	}
+	cl, err := c.client()
+	if err != nil {
+		return err
+	}
+	pruneS3(ctx, cl, c, keep)
+	return nil
 }
 
 func pruneS3(ctx context.Context, cl *minio.Client, c S3Config, keep int) {

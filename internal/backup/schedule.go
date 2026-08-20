@@ -100,27 +100,85 @@ func RunVolume(ctx context.Context, pool *pgxpool.Pool, dbURL, key, dir string, 
 
 	enc, err := dumpEncrypt(ctx, dbURL, key)
 	if err != nil {
-		_ = recordVolume(ctx, pool, time.Now(), 0, false, false)
+		recordVolumeSafe(ctx, pool, 0, false, false)
 		return 0, false, err
 	}
 	_ = os.MkdirAll(dir, 0o700) // ensure the target exists; WriteFile surfaces real errors
+	// Erst prüfen, dann sichtbar machen. Geschrieben wird nach *.part; erst nach
+	// bestandener Prüfung wird umbenannt. Vorher landete das Archiv sofort unter
+	// seinem endgültigen Namen — ein durchgefallenes blieb liegen, erschien in der
+	// Backup-Übersicht als wiederherstellbar und war als NEUESTE Datei sogar
+	// bevorzugt. Das Glob-Muster parkrr-*.dump.enc greift bei *.part nicht, die
+	// Zwischendatei taucht also weder in der Liste noch beim Aufräumen auf.
 	p := filepath.Join(dir, backupName(time.Now()))
-	if err := os.WriteFile(p, enc, 0o600); err != nil {
-		_ = recordVolume(ctx, pool, time.Now(), 0, false, false)
+	part := p + ".part"
+	if err := os.WriteFile(part, enc, 0o600); err != nil {
+		recordVolumeSafe(ctx, pool, 0, false, false)
 		return 0, false, err
 	}
-	// Verify the just-written archive is decryptable and structurally restorable.
+	// Die Zwischendatei wird bei einer nicht bestandenen Prüfung BEWUSST NICHT
+	// gelöscht. Ein Prüffehler heißt nicht zwingend "Archiv kaputt": archiveTOC
+	// meldet auch "pg_restore nicht im PATH", "kein Platz für die temporäre Datei"
+	// und einen abgelaufenen Context als Fehler. Ein Image ohne pg_restore würde
+	// sonst jede Nacht einen einwandfreien Dump erzeugen und sofort wieder löschen —
+	// der letzte gute Stand friert ein, ohne dass jemand etwas sieht.
+	// Die .part bleibt also liegen: nicht als Backup gelistet (das Glob-Muster
+	// greift nicht), aber für den Betreiber vorhanden. Weggeräumt wird sie erst vom
+	// nächsten Lauf, siehe sweepStaleParts weiter unten.
+	promoted := false
+	defer func() {
+		if !promoted {
+			slog.Warn("backup: keeping the unverified archive for inspection", "path", part)
+		}
+	}()
+	// Reste früherer Läufe wegräumen (OOM-Kill oder Neustart zwischen Schreiben und
+	// Prüfen, und die Zwischendatei eines durchgefallenen Laufs). Ohne das sammeln
+	// sich Dumps in voller Größe an, die weder in der Übersicht noch beim Aufräumen
+	// auftauchen und irgendwann das Volume füllen. Die gerade geschriebene Datei ist
+	// ausgenommen — sie wird gleich geprüft.
+	sweepStaleParts(dir, part)
+	// Wiederherstellungsprüfung. Erst Stufe 1 gegen die DATEI auf der Platte: os.WriteFile
+	// kann bei vollem Dateisystem ohne Fehler zurückkommen, und dann läge dort ein
+	// abgeschnittenes Archiv, das jede spätere Prüfung im Speicher nicht bemerkt.
 	size := int64(len(enc))
-	if _, verr := Validate(ctx, enc, key); verr != nil {
+	if onDisk, rerr := os.ReadFile(part); rerr != nil { // #nosec G304 -- selbst erzeugter Pfad
+		slog.Warn("backup: read-back failed – discarding the new archive", "path", part, "err", rerr)
+		recordVolumeSafe(ctx, pool, size, false, false)
+		audit(ctx, actionBackupFailed, "Volume-Backup: Rücklesen der Datei fehlgeschlagen",
+			map[string]any{"target": "volume", "stage": "readback", "error": rerr.Error()})
+		return size, false, nil
+	} else if verr := VerifyLocalBytes(onDisk, enc); verr != nil {
+		slog.Warn("backup: written file differs – discarding the new archive", "path", part, "err", verr)
+		recordVolumeSafe(ctx, pool, size, false, false)
+		audit(ctx, actionBackupFailed, "Volume-Backup: Datei weicht vom Erzeugten ab",
+			map[string]any{"target": "volume", "stage": "checksum", "error": verr.Error()})
+		return size, false, nil
+	}
+	// Stufen 3+4: Archivkopf und Kerntabellen.
+	if _, verr := VerifyArchive(ctx, enc, key); verr != nil {
 		// Do NOT rotate the older (verified) archives out behind an UNVERIFIED new
 		// one, and record the run as not-OK — otherwise a persistent verify failure
 		// would prune away the last good backup while last_volume_ok stayed green.
-		slog.Warn("backup: archive verify failed – keeping older archives", "path", p, "err", verr)
-		_ = recordVolume(ctx, pool, time.Now(), size, false, false)
+		slog.Warn("backup: archive verify failed – discarding the new archive", "path", part, "err", verr)
+		recordVolumeSafe(ctx, pool, size, false, false)
+		audit(ctx, actionBackupFailed, "Volume-Backup: Wiederherstellungsprüfung fehlgeschlagen",
+			map[string]any{"target": "volume", "stage": "archive", "error": verr.Error()})
 		return size, false, nil
 	}
+	// Bestanden: jetzt erst sichtbar machen. Rename ist auf einem Dateisystem atomar,
+	// es gibt also keinen Moment, in dem eine halbe Datei unter dem echten Namen liegt.
+	if err := os.Rename(part, p); err != nil {
+		slog.Error("backup: promoting the verified archive failed", "path", p, "err", err)
+		recordVolumeSafe(ctx, pool, size, false, false)
+		audit(ctx, actionBackupFailed, "Volume-Backup: geprüftes Archiv konnte nicht übernommen werden",
+			map[string]any{"target": "volume", "stage": "promote", "error": err.Error()})
+		return size, false, nil
+	}
+	promoted = true
+	// Aufräumen erst NACH der Übernahme: sonst würde ein durchgefallener Lauf die
+	// alten, geprüften Archive wegräumen, ohne einen gültigen Ersatz zu hinterlassen.
 	pruneDir(ctx, dir, keep)
-	_ = recordVolume(ctx, pool, time.Now(), size, true, true)
+	recordVolumeSafe(ctx, pool, size, true, true)
 	return size, true, nil
 }
 
@@ -132,16 +190,66 @@ func RunS3(ctx context.Context, pool *pgxpool.Pool, dbURL, key string, s3 S3Conf
 
 	enc, err := dumpEncrypt(ctx, dbURL, key)
 	if err != nil {
-		_ = recordS3(ctx, pool, time.Now(), false)
+		recordS3Safe(ctx, pool, false)
 		return "", err
 	}
 	name := backupName(time.Now())
-	if err := UploadS3(ctx, s3, name, enc, keep); err != nil {
-		_ = recordS3(ctx, pool, time.Now(), false)
+	// keep=0: beim Hochladen NICHT aufräumen. UploadS3 rief pruneS3 direkt nach
+	// PutObject auf — ein abgebrochener Upload verdrängte damit einen guten alten
+	// Stand, bevor überhaupt jemand das neue Objekt geprüft hatte. Aufgeräumt wird
+	// unten, erst nach bestandener Prüfung; dieselbe Reihenfolge wie beim
+	// Volume-Ziel.
+	if err := UploadS3(ctx, s3, name, enc, 0); err != nil {
+		recordS3Safe(ctx, pool, false)
 		return "", err
 	}
-	_ = recordS3(ctx, pool, time.Now(), true)
+	// Bis hierher hieß "erfolgreich" nur, dass PutObject zurückkam. Ein
+	// Verbindungsabbruch mitten im Upload hinterlässt ein kürzeres Objekt, das
+	// genauso aussieht. Deshalb Stufe 2: Größe, dann zurücklesen und Prüfsumme
+	// vergleichen — gegen die Summe des ERZEUGTEN Archivs, nicht gegen die des
+	// Objekts, sonst prüft man das Ergebnis mit sich selbst.
+	if verr := VerifyS3Object(ctx, s3, name, key, Checksum(enc), int64(len(enc))); verr != nil {
+		slog.Error("backup: S3 object failed verification", "object", name, "err", verr)
+		// Das durchgefallene Objekt wieder entfernen, sonst steht es im Bucket als
+		// NEUESTES und damit naheliegendstes Archiv zur Wiederherstellung bereit —
+		// genau der Zustand, gegen den das Volume-Ziel abgesichert wurde.
+		if derr := DeleteS3(ctx, s3, name); derr != nil {
+			slog.Warn("backup: could not remove the unverified S3 object", "object", name, "err", derr)
+		}
+		recordS3Safe(ctx, pool, false)
+		audit(ctx, actionBackupFailed, "S3-Backup: Objekt hat die Prüfung nicht bestanden",
+			map[string]any{"target": "s3", "stage": "s3-readback", "object": name,
+				"bucket": s3.Bucket, "error": verr.Error()})
+		return name, verr
+	}
+	// Erst jetzt aufräumen: bis hierher ist bewiesen, dass ein gültiger Ersatz da ist.
+	if perr := PruneS3(ctx, s3, keep); perr != nil {
+		slog.Warn("backup: S3 prune failed", "err", perr)
+	}
+	recordS3Safe(ctx, pool, true)
 	return name, nil
+}
+
+// recordVolumeSafe/recordS3Safe schreiben den Status über einen vom Aufrufer
+// ABGEKOPPELTEN Context. Scheitert ein Lauf, WEIL der Context ablief (30-Minuten-
+// Budget des Planers, Shutdown), dann würde der Status-Schreibvorgang durch denselben
+// toten Context ebenfalls abgewiesen — und last_*_ok bliebe auf dem alten `true`
+// stehen. Die Anzeige zeigte weiter Grün für einen Lauf, der nichts produziert hat.
+// Der audit()-Helfer oben verteidigt sich seit Längerem genauso; hier fehlte es.
+func recordVolumeSafe(ctx context.Context, pool *pgxpool.Pool, size int64, ok, tested bool) {
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if err := recordVolume(wctx, pool, time.Now(), size, ok, tested); err != nil {
+		slog.Warn("backup: could not record volume status", "err", err)
+	}
+}
+
+func recordS3Safe(ctx context.Context, pool *pgxpool.Pool, ok bool) {
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if err := recordS3(wctx, pool, time.Now(), ok); err != nil {
+		slog.Warn("backup: could not record S3 status", "err", err)
+	}
 }
 
 // StartScheduler runs scheduled backups driven by the DB-stored cron schedule
@@ -257,6 +365,43 @@ func fireDue(cron string, last *time.Time, now time.Time) bool {
 		return true // never run: take an initial backup, then follow the schedule
 	}
 	return CronDue(cron, *last, now)
+}
+
+// sweepStaleParts entfernt *.part-Reste und behält GENAU EINEN: den, den der
+// laufende Vorgang gerade geschrieben hat (keep). Sie entstehen, wenn der Prozess
+// zwischen Schreiben und Prüfen stirbt oder wenn die Prüfung nicht besteht, und
+// werden von keinem anderen Pfad erfasst: pruneDir und die Backup-Übersicht filtern
+// beide auf parkrr-*.dump.enc, worauf *.part nicht passt.
+//
+// Vorher lief das über eine Altersfrist von 14 Tagen. Genau im Fall, für den die
+// Zwischendatei überhaupt liegen bleibt — eine Prüfung, die JEDE Nacht scheitert,
+// etwa weil pg_restore im Image fehlt — sammelten sich damit bis zu vierzehn
+// vollständige Dumps an, unsichtbar in der Übersicht und im Aufräumen. Bei einer
+// Datenbank von einigen Gigabyte füllt das ein Volume, und das nächste Backup
+// scheitert dann am Platz statt am ursprünglichen Fehler.
+//
+// Die Untersuchbarkeit bleibt: der zuletzt durchgefallene Dump liegt bis zum
+// nächsten Lauf bereit. Bei einem wiederkehrenden Fehler ist der neueste ohnehin so
+// aussagekräftig wie der von vor zwei Wochen.
+//
+// keep wird ausdrücklich übergeben und nicht als "der neueste Name" erraten: bei
+// einer rückwärts gestellten Uhr sortierte die gerade geschriebene Datei nicht mehr
+// zuletzt und würde unter den Händen des eigenen Laufs gelöscht.
+func sweepStaleParts(dir, keep string) {
+	parts, err := filepath.Glob(filepath.Join(dir, "parkrr-*.dump.enc.part"))
+	if err != nil {
+		return
+	}
+	for _, f := range parts {
+		if filepath.Base(f) == filepath.Base(keep) {
+			continue
+		}
+		if rerr := os.Remove(f); rerr != nil {
+			slog.Warn("backup: could not remove a leftover .part file", "path", f, "err", rerr)
+			continue
+		}
+		slog.Info("backup: removed a leftover .part file from an earlier run", "path", f)
+	}
 }
 
 // pruneDir keeps only the newest `keep` timestamped backups in dir (0 = keep all).

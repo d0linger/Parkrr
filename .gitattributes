@@ -4,3 +4,12 @@ graphify-out/graph.json merge=graphify
 *.go text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
+
+# Web-Assets von jeder Zeilenenden-Umschreibung ausnehmen. Ein Editor auf Windows
+# hatte web/static/index.html komplett von CRLF auf LF umgeschrieben: aus einer
+# Einfügung von 12 Zeilen wurde ein Diff über 278, und jede Zeile zeigte seither auf
+# den falschen Commit. `-text` heißt: Git fasst die Bytes nicht an, egal wer editiert
+# und mit welcher core.autocrlf-Einstellung.
+*.html -text
+*.css  -text
+*.js   -text

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -75,6 +76,7 @@ func (h *Handler) BackupStatus(w http.ResponseWriter, r *http.Request) {
 		S3            bool            `json:"s3"` // an S3 target is configured
 		S3Bucket      string          `json:"s3_bucket"`
 		S3Files       []file          `json:"s3_files"`
+		Health        backup.Health   `json:"health"`
 	}{Enabled: h.BackupKey != "", Scheduled: h.BackupDir != "", Dir: h.BackupDir, Files: []file{},
 		S3: h.S3.Enabled(), S3Bucket: h.S3.Bucket, S3Files: []file{},
 		SchemaVersion: backup.SchemaVersion(r.Context(), h.Pool)}
@@ -112,6 +114,11 @@ func (h *Handler) BackupStatus(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("backup: S3 list failed", "err", err)
 		}
 	}
+	// Verdict last, once settings and status are both loaded. Computed server-side
+	// because the threshold comes from the target's own cron expression, and the cron
+	// parser lives here — the browser must not reimplement it.
+	resp.Health = backup.BackupHealth(resp.Settings, resp.Status,
+		h.BackupKey != "" && h.BackupDir != "", h.BackupKey != "" && h.S3.Enabled(), time.Now())
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -511,4 +518,158 @@ func streamBackup(w http.ResponseWriter, name string, data []byte) {
 	// #nosec G705 -- data is an encrypted backup blob streamed as an octet-stream
 	// attachment (Content-Disposition + nosniff), never interpreted as HTML.
 	_, _ = w.Write(data)
+}
+
+// backupHealthView is the compact header indicator: enough for an editor to see
+// that backups are alive, and deliberately nothing more.
+//
+// It exists as its own view because GET /api/backup/status is admin-only for good
+// reason — it carries the backup directory, the bucket name and the full archive
+// listing. None of that belongs in a header dot, so this returns only the verdict,
+// the age and two booleans. Modeled on Treckrr's header indicator, which draws the
+// same line between "may see the state" and "may see the storage".
+type backupHealthView struct {
+	Tone      string `json:"tone"`  // "ok" | "warn" | "bad"
+	Title     string `json:"title"` // "Backup aktuell", "Backup veraltet", …
+	AgeLabel  string `json:"age_label"`
+	S3        string `json:"s3"` // "ok" | "fehlgeschlagen" | "" (nicht konfiguriert)
+	Encrypted bool   `json:"encrypted"`
+}
+
+// backupToneOf maps one target's state onto the three header tones. Overdue and
+// never-run are "warn" (etwas einrichten), a failed run is "bad" (etwas reparieren).
+func backupToneOf(st string) string {
+	switch st {
+	case "ok":
+		return "ok"
+	case "failed":
+		return "bad"
+	default:
+		return "warn"
+	}
+}
+
+// BackupHealth reports backup health for the header indicator (editor+).
+//
+// Editors cannot open the backup panel, but they are the ones working in the app
+// all day — if the nightly backup died, they should not have to be an admin to
+// notice. Viewers are excluded: they cannot act on it.
+func (h *Handler) BackupHealth(w http.ResponseWriter, r *http.Request) {
+	if h.BackupKey == "" {
+		writeJSON(w, http.StatusOK, backupHealthView{Tone: "warn", Title: "Backups nicht aktiviert"})
+		return
+	}
+	settings, serr := backup.LoadSettings(r.Context(), h.Pool)
+	status, sterr := backup.LoadStatus(r.Context(), h.Pool)
+	if serr != nil || sterr != nil {
+		// Unknown is not "fine": a status we cannot read must not show green.
+		writeJSON(w, http.StatusOK, backupHealthView{Tone: "warn", Title: "Backup-Status unklar"})
+		return
+	}
+	hh := backup.BackupHealth(settings, status,
+		h.BackupDir != "", h.S3.Enabled(), time.Now())
+
+	volCfg, s3Cfg := hh.Volume.Configured, hh.S3.Configured
+	if !volCfg && !s3Cfg {
+		writeJSON(w, http.StatusOK, backupHealthView{
+			Tone: "warn", Title: "Kein Backup-Ziel eingerichtet", Encrypted: true})
+		return
+	}
+	// Worst of the configured targets, so a healthy volume cannot mask a dead S3.
+	states := []string{}
+	if volCfg {
+		states = append(states, backupStateOf(hh.Volume))
+	}
+	if s3Cfg {
+		states = append(states, backupStateOf(hh.S3))
+	}
+	worst := worstBackupState(states)
+
+	v := backupHealthView{Tone: backupToneOf(worst), Encrypted: true}
+	switch worst {
+	case "ok":
+		v.Title = "Backup aktuell"
+	case "failed":
+		v.Title = "Letztes Backup fehlgeschlagen"
+	case "never":
+		v.Title = "Noch kein automatisches Backup"
+	case "off":
+		v.Title = "Kein Zeitplan aktiv"
+	default:
+		v.Title = "Backup veraltet"
+	}
+	// Age of the NEWEST successful run across targets — "wie alt ist mein neuester
+	// Wiederherstellungspunkt?" is the question the dot answers.
+	var newest *int64
+	for _, th := range []backup.TargetHealth{hh.Volume, hh.S3} {
+		if th.Configured && th.AgeSeconds != nil && (newest == nil || *th.AgeSeconds < *newest) {
+			newest = th.AgeSeconds
+		}
+	}
+	if newest != nil {
+		v.AgeLabel = humanAgeDE(*newest)
+	}
+	if s3Cfg {
+		v.S3 = "ok"
+		if backupStateOf(hh.S3) != "ok" {
+			v.S3 = "fehlgeschlagen"
+		}
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+// backupStateOf classifies one target: failed beats never beats stale beats ok.
+func backupStateOf(th backup.TargetHealth) string {
+	// Reihenfolge ist entscheidend und war falsch herum: last_volume_ok hat in der
+	// Migration den Default FALSE, ein noch nie gelaufenes Backup kam also über
+	// !LastOK zuerst und wurde als "fehlgeschlagen" gemeldet — jede frische
+	// Installation zeigte Rot für etwas, das schlicht noch nicht dran war.
+	// Never (= es gibt keinen einzigen Lauf) muss vorher greifen; LastOK sagt nur
+	// dann etwas aus, wenn überhaupt ein Versuch stattgefunden hat.
+	switch {
+	case !th.Configured:
+		return "off"
+	case th.Never:
+		return "never"
+	case !th.LastOK:
+		return "failed"
+	case th.Overdue:
+		return "stale"
+	default:
+		return "ok"
+	}
+}
+
+// Rangfolge für "das schlechteste Ziel gewinnt". "off" steht bewusst UNTER "never":
+// ein nicht eingerichtetes Ziel ist eine Einrichtungslücke, ein eingerichtetes ohne
+// einen einzigen Lauf ist dringender. Vorher war es umgekehrt.
+var backupStateRank = map[string]int{"ok": 0, "off": 1, "stale": 2, "never": 3, "failed": 4}
+
+func worstBackupState(states []string) string {
+	worst := "ok"
+	for _, s := range states {
+		if backupStateRank[s] > backupStateRank[worst] {
+			worst = s
+		}
+	}
+	return worst
+}
+
+// humanAgeDE renders an age in seconds as "vor 3 Std." — the header has room for a
+// glance, not for a timestamp.
+func humanAgeDE(sec int64) string {
+	switch {
+	case sec >= 48*3600:
+		return fmt.Sprintf("vor %d Tagen", sec/(24*3600))
+	case sec >= 24*3600:
+		return "vor 1 Tag"
+	case sec >= 2*3600:
+		return fmt.Sprintf("vor %d Std.", sec/3600)
+	case sec >= 3600:
+		return "vor 1 Std."
+	case sec >= 120:
+		return fmt.Sprintf("vor %d Min.", sec/60)
+	default:
+		return "gerade eben"
+	}
 }

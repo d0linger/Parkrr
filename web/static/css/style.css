@@ -494,7 +494,22 @@ textarea { resize: vertical; min-height: 72px; }
 .stat.tone-teal .value { color: var(--primary-ink); }
 .stat.tone-green .value { color: var(--success-text); }
 .stat.tone-amber .value { color: var(--accent-text); }
-.stat.tone-teal .stat-ic, .stat.tone-green .stat-ic, .stat.tone-amber .stat-ic { opacity: 0.85; }
+/* Rot ist der Störungszustand (Backup überfällig oder letzter Lauf fehlgeschlagen).
+   Bewusst dieselbe Anatomie wie die anderen Tönungen — die Kachel soll auffallen,
+   ohne aus dem Raster zu fallen. */
+.stat.tone-red::after { background: var(--danger); }
+.stat.tone-red .value { color: var(--danger); }
+.stat.tone-red .stat-ic { color: var(--danger); }
+.stat.tone-red { border-color: color-mix(in srgb, var(--danger) 40%, var(--card-border)); }
+/* Klickbare Kachel: sieht aus wie die anderen, verhält sich aber wie ein Button —
+   inklusive sichtbarem Fokus, sonst ist sie per Tastatur nicht auffindbar. */
+.stat.stat-click { cursor: pointer; text-align: left; width: 100%; font: inherit; color: inherit; appearance: none; }
+.stat.stat-click:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.stat.stat-click:hover { border-color: color-mix(in srgb, var(--primary) 55%, var(--border)); }
+/* Zusatzzeile unter dem Label: erklärt, WARUM die Kachel diese Farbe hat. */
+.stat .stat-note { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.3rem; line-height: 1.3; }
+.stat.tone-red .stat-note { color: var(--danger); font-weight: 600; }
+.stat.tone-teal .stat-ic, .stat.tone-green .stat-ic, .stat.tone-amber .stat-ic, .stat.tone-red .stat-ic { opacity: 0.85; }
 .stat.tone-teal .stat-ic { color: var(--primary-ink); }
 .stat.tone-green .stat-ic { color: var(--success-text); }
 .stat.tone-amber .stat-ic { color: var(--accent-text); }
@@ -984,6 +999,32 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .app-title,.app-title span{ color:#effffb !important; font-weight:800; }
 .app-header .btn-icon{ color:#effffb; background:rgba(255,255,255,.16); border-radius:11px; }
 .app-header .btn-icon:hover{ background:rgba(255,255,255,.28); }
+
+/* Backup-Indikator in der Kopfzeile.
+   Die Kopfzeile ist in BEIDEN Themes teal (#0d9488 → #22d3ee), und auf diesem Grund
+   versagen die normalen Zustandsfarben messbar: --success 1,12:1, --warning 1,19:1,
+   --danger 1,46:1 gegen den transluzenten Chip. WCAG 1.4.11 verlangt 3:1 für
+   grafische Elemente; Rot hatte gegen reines Teal sogar exakt dieselbe Helligkeit
+   (1,00:1) und war damit nur noch über den Farbton zu erkennen — für Farbfehlsichtige
+   also gar nicht. Die Lösung steht im Block direkt darunter: der Chip bleibt der der
+   Geschwister-Buttons, nur die ICON-Farbe wird dunkel. (Eine Zwischenfassung setzte
+   hier einen deckend weißen Chip; die ist zurückgenommen.) */
+/* Der Chip bleibt exakt wie bei den Geschwister-Buttons (.btn-icon, siehe oben) —
+   der Indikator soll sich optisch einreihen. Angepasst wird nur die ICON-Farbe.
+   Auf dem hellen, transluzenten Chip müssen die Zustandsfarben deshalb DUNKEL sein:
+   die hellen Varianten liegen dort bei 1,35–1,77:1 und sind praktisch unsichtbar.
+   Gemessen an BEIDEN Enden des Verlaufs, denn die Icons sitzen rechts im Cyan —
+   das Teal-Ende ist für dunkle Töne der engere Fall:
+     #14532d grün    3,57:1 (teal) … 5,45:1 (cyan)
+     #78350f amber   3,55:1 (teal) … 5,42:1 (cyan)
+     #7f1d1d rot     3,92:1 (teal) … 5,99:1 (cyan)
+   Alle über den 3:1 aus WCAG 1.4.11 für grafische Elemente. */
+.app-header .bkdot--ok .bkico, .app-header .bkdot--ok .bkdot__btn:hover .bkico { color: #14532d; }
+.app-header .bkdot--warn .bkico, .app-header .bkdot--warn .bkdot__btn:hover .bkico { color: #78350f; }
+.app-header .bkdot--bad .bkico, .app-header .bkdot--bad .bkdot__btn:hover .bkico { color: #7f1d1d; }
+/* Die Ringspur ist eine abgeschwächte Fassung derselben Farbe und würde auf dem
+   hellen Chip verschwinden — hier etwas kräftiger. */
+.app-header .bkico__track { opacity: 0.38; }
 
 /* Cards → flat surface + 14px */
 .card{ background:var(--card-bg) !important; border-radius:14px; }
@@ -1711,3 +1752,75 @@ a.portal-row.link:hover { color: var(--accent-text); }
 .dash-spark{display:block;overflow:visible}
 .dash-spark-line{fill:none;stroke:var(--gpteal2,#22d3ee);stroke-width:1.8;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}
 .dash-spark-dot{fill:var(--gpteal2,#22d3ee)}
+
+/* --- Backup-Status-Indikator im Header ----------------------------------------
+   Flat, rein vektoriell, eine Farbe pro Zustand über currentColor: Hell- und
+   Dunkelmodus brauchen dadurch keine zweite Farbtabelle, und der Indikator bleibt
+   bei 16 wie bei 24 px scharf (Strichstärke skaliert mit dem viewBox).
+   Die Erklärung erscheint erst bei Hover/Fokus/Tap — in der Leiste steht nur der
+   Zustand. */
+.bkdot { position: relative; display: inline-flex; }
+.bkdot__btn { display: grid; place-items: center; padding: 0.3rem; }
+.bkdot__mark { display: grid; place-items: center; line-height: 0; }
+
+/* Zustandsfarbe direkt AUF dem Icon, nicht auf dem Wrapper: der Button dazwischen
+   trägt .btn-icon mit color: var(--text-muted) und säße näher am SVG — currentColor
+   hätte dann immer Grau geliefert, egal welchen Zustand der Wrapper meldet.
+   Auch auf :hover erzwingen, weil .btn-icon:hover die Farbe ebenfalls setzt.
+   Werte siehe .app-header-Block weiter unten: in der Kopfzeile gelten eigene,
+   dunklere Töne, weil dort ein weißer Chip statt der Seitenfläche hinterliegt. */
+.bkdot--ok .bkico, .bkdot--ok .bkdot__btn:hover .bkico { color: var(--success); }
+.bkdot--warn .bkico, .bkdot--warn .bkdot__btn:hover .bkico { color: var(--warning); }
+.bkdot--bad .bkico, .bkdot--bad .bkdot__btn:hover .bkico { color: var(--danger); }
+
+/* --- Variante A: Status-Ring (Standard) --- */
+.bkico { display: block; overflow: visible; }
+.bkico__track { stroke: currentColor; stroke-width: 2; opacity: 0.2; }
+.bkico__arc { stroke: currentColor; stroke-width: 2; stroke-linecap: round;
+    transform-origin: 12px 12px; }
+.bkico__glyph { stroke: currentColor; stroke-width: 2.1; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Grün: geschlossener Ring — abgeschlossen, nichts offen. */
+.bkdot--ok .bkico__arc { stroke-dasharray: none; }
+/* Rot: ebenfalls geschlossen, der Glyph trägt die Aussage; ein dezenter Puls holt
+   den Blick, ohne zu blinken. */
+.bkdot--bad .bkico__arc { stroke-dasharray: none; }
+/* Gelb: offener Bogen (~40 %) — sichtbar unvollständig, auch ohne Farbe erkennbar. */
+.bkdot--warn .bkico__arc { stroke-dasharray: 22 35; stroke-dashoffset: 0; }
+
+@media (prefers-reduced-motion: no-preference) {
+    /* Der offene Bogen dreht sich langsam und ungleichmäßig (3,2 s, weiche Kurve) —
+       deutlich als "hier stimmt etwas nicht" lesbar und klar unterscheidbar von der
+       zügigen, gleichmäßigen Drehung des echten Laufzustands unten (1,1 s, linear).
+       Ein früherer Kommentar behauptete hier "kein Dauer-Spinner"; das war falsch,
+       es IST dieselbe Keyframe — nur Tempo und Kurve trennen die beiden Bedeutungen. */
+    .bkdot--warn .bkico__arc { animation: bkico-turn 3.2s cubic-bezier(.6, 0, .4, 1) infinite; }
+    .bkdot--bad .bkico { animation: bkico-pulse 2.4s ease-in-out infinite; }
+    /* Für einen echten Laufzustand später: .bkdot.is-running dreht zügig durch. */
+    .bkdot.is-running .bkico__arc { animation: bkico-turn 1.1s linear infinite; }
+}
+@keyframes bkico-turn { to { transform: rotate(360deg); } }
+/* Der Puls dimmt nur leicht (1 -> 0.72). Ein Tief bei 0.5 machte ausgerechnet den
+   Fehlerzustand in jedem zweiten Moment zum unauffälligsten der drei — genau
+   verkehrt herum. Jetzt bleibt Rot durchgehend das dominanteste Signal. */
+@keyframes bkico-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.72; } }
+
+/* --- Variante B: Icon + Badge (BKDOT_STYLE = 'badge') --- */
+.bkico--badge .bkico__shield { stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round;
+    opacity: 0.55; }
+.bkico--badge .bkico__badge-bg { fill: currentColor; stroke: var(--card-bg); stroke-width: 1.6; }
+.bkico--badge .bkico__badge-fg .bkico__glyph { stroke: var(--card-bg); stroke-width: 4.5; }
+.bkdot--style-badge .bkico__track, .bkdot--style-badge .bkico__arc { display: none; }
+
+/* --- Popover --- */
+.bkdot__pop { position: absolute; top: calc(100% + 8px); right: 0; z-index: 60;
+    min-width: 230px; max-width: 80vw; display: none; flex-direction: column; gap: 0.15rem;
+    text-align: left; background: var(--card-bg); border: 1px solid var(--card-border);
+    border-radius: var(--radius); box-shadow: var(--shadow); padding: 0.6rem 0.7rem;
+    color: var(--text); }
+.bkdot:hover .bkdot__pop, .bkdot:focus-within .bkdot__pop, .bkdot.is-open .bkdot__pop { display: flex; }
+.bkdot__pop-title { font-weight: 700; font-size: 0.85rem; }
+.bkdot__pop-meta { font-size: 0.78rem; color: var(--text-muted); }
+.bkdot__pop-link { font-size: 0.78rem; margin-top: 0.25rem; font-weight: 600;
+    background: none; border: 0; padding: 0; cursor: pointer; color: var(--primary); text-align: left; }
+.bkdot__pop-link:hover { text-decoration: underline; }

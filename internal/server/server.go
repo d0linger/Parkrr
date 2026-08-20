@@ -107,6 +107,9 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/portal-links/{id}/revoke", editor(hf(h.RevokePortalLink)))
 	mux.Handle("PUT /api/persons/{id}", editor(hf(h.UpdatePerson)))
 	mux.Handle("DELETE /api/persons/{id}", editor(hf(h.DeletePerson)))
+	// Anonymisieren ist der Ausweg, wenn DeletePerson wegen bestehender Rechnungen
+	// ablehnt — dieselbe Rolle wie das Löschen, weil es dieselbe Entscheidung ist.
+	mux.Handle("POST /api/persons/{id}/anonymize", editor(hf(h.AnonymizePerson)))
 	mux.Handle("GET /api/persons/{id}/stats", authed(hf(h.PersonStats)))
 
 	// --- Payments (recorded money-in / Kontoauszug) ---
@@ -237,6 +240,10 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/users/{id}/reset-2fa", admin(hf(h.ResetUserTOTP)))
 	mux.Handle("GET /api/audit", admin(hf(h.ListAudit)))
 	mux.Handle("POST /api/backup", admin(hf(h.CreateBackup)))
+	// Nur die Ampel, bewusst editor+ statt admin: Bearbeiter arbeiten den ganzen Tag
+	// in der App und sollen ein totes Backup sehen, ohne Admin zu sein. Liefert weder
+	// Verzeichnis noch Bucket noch Dateiliste — dafür bleibt /status admin-only.
+	mux.Handle("GET /api/backup/health", editor(hf(h.BackupHealth)))
 	mux.Handle("GET /api/backup/status", admin(hf(h.BackupStatus)))
 	mux.Handle("POST /api/backup/schedule", admin(hf(h.SaveBackupSchedule)))
 	mux.Handle("POST /api/backup/run", admin(hf(h.RunScheduledBackup)))

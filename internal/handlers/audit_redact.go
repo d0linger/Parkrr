@@ -165,10 +165,22 @@ func redactChanges(changes any) any {
 		}
 		// {"old":…, "new":…} — redact both sides under the OUTER field name.
 		red := make(map[string]any, len(inner))
+		outerIsSecret := isSecretField(field) || bankFieldNames[strings.ToLower(field)]
 		for side, sv := range inner {
-			if side == "old" || side == "new" {
+			switch {
+			case side == "old" || side == "new":
 				red[side] = redactValue(field, sv)
-			} else {
+			case outerIsSecret:
+				// Ein Feldname, der als Secret gilt, behält seine Einstufung auch dann,
+				// wenn sein Wert eine Map mit ANDEREN Schlüsseln als old/new ist. Vorher
+				// entschied hier allein der innere Schlüssel — bei
+				// {"api_key": {"prod": "sk-live-…"}} wurde also "prod" geprüft, das auf
+				// keine Regel passt, und das Secret landete im Klartext im Trail.
+				// Kein heutiger Aufrufer erzeugt diese Form; die Zusage im Dateikopf
+				// ("ein neuer Handler KANN kein Secret über changes durchreichen") gilt
+				// aber nur, wenn sie formunabhängig hält.
+				red[side] = redactValue(field, sv)
+			default:
 				red[side] = redactValue(side, sv)
 			}
 		}

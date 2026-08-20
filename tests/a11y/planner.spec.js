@@ -215,3 +215,101 @@ test('wall templates: create → list → delete round-trip (AR3)', async ({ pag
   const del = await page.request.delete('/api/wall-templates/' + tpl.id, { headers: hdr });
   expect(del.ok(), 'delete template ' + del.status()).toBeTruthy();
 });
+
+test('dashboard: Backup-Health-Kachel erscheint für Admins (Ops)', async ({ page, context }) => {
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  await login(page);
+
+  // Ohne eine einzige Person zeigt die Übersicht ihren Onboarding-Leerzustand und
+  // kehrt VOR jeder Kachel zurück — die Backup-Kachel gibt es dort bewusst nicht,
+  // eine Installation ohne Daten hat nichts zu verlieren. Der Test lief deshalb
+  // lokal (gefüllte Datenbank) und fiel auf der frischen CI-Datenbank um. Also
+  // selbst eine Person säen, statt sich auf fremde Testrückstände zu verlassen.
+  const cookies = await context.cookies();
+  const csrf = (cookies.find((c) => c.name === 'parkrr_csrf') || {}).value;
+  const pRes = await page.request.post('/api/persons', {
+    headers: { 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' },
+    data: { first_name: 'E2E', last_name: 'Backup ' + Date.now() },
+  });
+  expect(pRes.ok(), 'seed person ' + pRes.status()).toBeTruthy();
+  track(page, csrf, '/api/persons/' + (await pRes.json()).id);
+  // reload(), NICHT goto('/#/dashboard'): die Seite steht nach dem Login schon auf
+  // genau dieser Adresse, ein goto darauf wäre eine Navigation im selben Dokument
+  // — kein Neuladen, kein neuer /overview-Aufruf, der Leerzustand bliebe stehen.
+  await page.reload();
+  await page.waitForSelector('#app-view:not([hidden])', { timeout: 15000 });
+
+  // Die Kachel wird nachgereicht (eigener Fetch), damit ein langsamer S3-Bucket die
+  // Übersicht nicht ausbremst — daher auf sie warten statt sofort zu prüfen.
+  const tile = page.locator('.stat', { hasText: 'Backup' }).first();
+  await expect(tile).toBeVisible({ timeout: 15000 });
+  // Ein echter <button>, nicht ein div mit onclick: sonst ist die Kachel per Tastatur
+  // nicht erreichbar und für Screenreader kein Bedienelement.
+  await expect(tile).toHaveJSProperty('tagName', 'BUTTON');
+  // Die Begründungszeile ist der eigentliche Nutzen: eine Zahl ohne "warum" sagt
+  // nicht, ob gehandelt werden muss.
+  await expect(tile.locator('.stat-note')).not.toBeEmpty();
+  // Der Zeitplan gehört in den Tooltip, damit die Schwelle nachvollziehbar ist.
+  // Beide Zweige der Kachel setzen ihn — auch der ohne konfiguriertes Ziel, sonst
+  // hinge dieser Test daran, ob die CI-Umgebung zufällig ein Backup eingerichtet hat.
+  await expect(tile).toHaveAttribute('title', /Zeitplan/);
+  // Genau eine Backup-Kachel — die Übersicht soll das Risiko zeigen, nicht die
+  // Backup-Verwaltung nachbauen.
+  await expect(page.locator('.stat', { hasText: 'Backup' })).toHaveCount(1);
+  // Und sie führt dorthin, wo man etwas tun kann.
+  await tile.click();
+  await expect(page).toHaveURL(/#\/backup$/);
+  expect(errors, 'keine Fehler beim Laden der Übersicht').toEqual([]);
+});
+
+test('header: Backup-Ampel neben dem Design-Umschalter (Bearbeiter-Signal)', async ({ page }) => {
+  await login(page);
+  const dot = page.locator('#bkdot');
+  await expect(dot).toBeVisible({ timeout: 10000 });
+  // Eine der drei Ampelstufen, nie ohne.
+  await expect(dot).toHaveClass(/bkdot--(ok|warn|bad)/);
+  // Position ist die halbe Anforderung: direkt vor dem Design-Umschalter, NICHT im Menü.
+  const order = await page.locator('.app-user > *').evaluateAll((els) => els.map((e) => e.id));
+  expect(order.indexOf('bkdot')).toBeGreaterThanOrEqual(0);
+  expect(order.indexOf('bkdot')).toBeLessThan(order.indexOf('theme-btn'));
+  // Der Status muss ohne Öffnen vorlesbar sein, nicht nur sichtbar.
+  await expect(page.locator('#bkdot-btn')).toHaveAttribute('aria-label', /^Backup: /);
+  // Kurzinfo beim Tap (Hover/Fokus macht CSS; auf Touch gibt es kein Hover).
+  await page.locator('#bkdot-btn').click();
+  const pop = page.locator('#bkdot-pop');
+  await expect(pop).toBeVisible();
+  await expect(pop.locator('.bkdot__pop-title')).not.toBeEmpty();
+  await expect(pop.locator('.bkdot__pop-meta')).not.toBeEmpty();
+  // Escape schließt wieder — sonst bleibt das Popover auf Touch hängen.
+  // Die Maus MUSS dabei weggeführt werden: das CSS öffnet auch bei :hover, ein Test
+  // mit dem Zeiger auf dem Button würde also immer "offen" sehen und nie etwas prüfen.
+  await page.keyboard.press('Escape');
+  await page.mouse.move(20, 400);
+  await expect(page.locator('#bkdot-btn')).toHaveAttribute('aria-expanded', 'false');
+  // Und wirklich UNSICHTBAR, nicht nur laut ARIA geschlossen. Genau das lief vorher
+  // auseinander: :focus-within hielt das Popover offen, während aria-expanded schon
+  // "false" meldete.
+  await expect(pop).toBeHidden();
+  // Zweiter Klick schließt ebenso — der Umschaltpfad ging vorher nicht über close().
+  await page.locator('#bkdot-btn').click();
+  await page.mouse.move(20, 400);
+  await expect(pop).toBeVisible();
+  await page.locator('#bkdot-btn').click();
+  await page.mouse.move(20, 400);
+  await expect(pop).toBeHidden();
+  // Der dritte Auslöser: der Weg in die Backup-Verwaltung. Er entfernte nur die
+  // Klasse und ging NICHT über den gemeinsamen Schließpfad — der Fokus blieb damit
+  // auf dem Button, :focus-within hielt das Popover sichtbar offen, und aria-expanded
+  // meldete gleichzeitig "false". Dieselbe Auseinanderentwicklung wie oben, nur an
+  // einer dritten Stelle; deshalb wird sie hier genauso geprüft.
+  await page.locator('#bkdot-btn').click();
+  await expect(pop).toBeVisible();
+  const verwaltung = pop.locator('.bkdot__pop-link');
+  await expect(verwaltung, 'als Admin führt das Popover in die Verwaltung').toBeVisible();
+  await verwaltung.click();
+  await page.mouse.move(20, 400);
+  await expect(page).toHaveURL(/#\/backup$/);
+  await expect(page.locator('#bkdot-btn')).toHaveAttribute('aria-expanded', 'false');
+  await expect(pop).toBeHidden();
+});
