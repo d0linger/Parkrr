@@ -1010,13 +1010,20 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
    Lösung: ein deckend weißer Chip (3,04:1 gegen die Kopfzeile) und darauf kräftige,
    dunkle Zustandstöne (4,6–6,0:1 gegen Weiß). Der Indikator hebt sich damit bewusst
    von den transluzenten Aktions-Buttons ab — er ist ein Status, kein Knopf. */
-.app-header .bkdot__btn { background: #ffffff; }
-.app-header .bkdot__btn:hover { background: #ffffff; }
-.app-header .bkdot--ok .bkico, .app-header .bkdot--ok .bkdot__btn:hover .bkico { color: #15803d; }
-.app-header .bkdot--warn .bkico, .app-header .bkdot--warn .bkdot__btn:hover .bkico { color: #b45309; }
-.app-header .bkdot--bad .bkico, .app-header .bkdot--bad .bkdot__btn:hover .bkico { color: #b91c1c; }
-/* Der Ring-Track darf auf Weiß etwas kräftiger sein, sonst verschwindet er. */
-.app-header .bkico__track { opacity: 0.28; }
+/* Gleiche Chip-Geometrie wie die Geschwister-Buttons (Radius, Größe, Transluzenz),
+   nur invertiert: dunkel statt hell. Das hält die Optik zusammen und schafft
+   trotzdem Kontrast — heller Chip + helle Zustandsfarbe geht auf diesem Verlauf
+   rechnerisch nicht (grün 1,47:1, gelb 1,77:1, rot 1,35:1 gegen den hellen Chip).
+   Gemessen an BEIDEN Enden des Verlaufs, denn die Icons sitzen rechts im Cyan:
+     Chip gegen Grund   4,1:1 (teal) … 5,5:1 (cyan)
+     schwächste Glyphe  4,6:1 (teal) … 3,6:1 (cyan) */
+.app-header .bkdot__btn { background: rgba(0, 0, 0, 0.65); }
+.app-header .bkdot__btn:hover { background: rgba(0, 0, 0, 0.75); }
+.app-header .bkdot--ok .bkico, .app-header .bkdot--ok .bkdot__btn:hover .bkico { color: #4ade80; }
+.app-header .bkdot--warn .bkico, .app-header .bkdot--warn .bkdot__btn:hover .bkico { color: #fbbf24; }
+.app-header .bkdot--bad .bkico, .app-header .bkdot--bad .bkdot__btn:hover .bkico { color: #f87171; }
+/* Auf dem dunklen Chip darf die Ringspur kräftiger sein, sonst verschwindet sie. */
+.app-header .bkico__track { opacity: 0.32; }
 
 /* Cards → flat surface + 14px */
 .card{ background:var(--card-bg) !important; border-radius:14px; }
