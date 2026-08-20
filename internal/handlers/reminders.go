@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -58,7 +59,8 @@ func (h *Handler) RemindInvoice(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	if err := h.Mail.Send(ctx, []string{email}, subject, body); err != nil {
-		writeError(w, http.StatusBadGateway, "E-Mail konnte nicht gesendet werden: "+err.Error())
+		slog.Error("remind invoice email failed", "invoice_id", iv.ID, "err", err)
+		writeError(w, http.StatusBadGateway, "E-Mail konnte nicht gesendet werden")
 		return
 	}
 	h.audit(r, "remind", "invoice", iv.ID, "Zahlungserinnerung an "+email+" für Rechnung "+iv.Number)
