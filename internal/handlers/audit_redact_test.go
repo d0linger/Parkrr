@@ -147,3 +147,52 @@ func TestMaskTailIsRuneSafe(t *testing.T) {
 		t.Errorf("maskTail produced invalid UTF-8: %q", got)
 	}
 }
+
+// Die Einstufung hängt am FELDNAMEN, nicht an der Form seines Wertes. Ein Secret-Feld,
+// dessen Wert eine verschachtelte Map mit anderen Schlüsseln als old/new ist, wurde
+// vorher nach dem INNEREN Schlüssel beurteilt — der auf keine Regel passt — und kam
+// im Klartext durch. Kein heutiger Aufrufer erzeugt diese Form; die Zusage im
+// Dateikopf gilt aber nur, wenn sie formunabhängig hält.
+func TestSecretFeldnameGiltUnabhaengigVonDerWertform(t *testing.T) {
+	const secret = "sk-live-4f9c2b7a-DIESER-WERT-DARF-NIE-AUFTAUCHEN"
+	for _, tc := range []struct {
+		name string
+		in   any
+	}{
+		{"verschachtelte Map unter einem Secret-Feld",
+			map[string]any{"api_key": map[string]any{"prod": secret}}},
+		{"mehrere Ebenen",
+			map[string]any{"password": map[string]any{"env": map[string]any{"live": secret}}}},
+		{"gemischt: old/new plus ein Fremdschlüssel",
+			map[string]any{"totp_secret": map[string]any{"old": nil, "new": secret, "quelle": secret}}},
+		{"Liste unter einem Secret-Feld",
+			map[string]any{"backup_code": map[string]any{"werte": []any{secret, secret}}}},
+	} {
+		out := redactChanges(normalizeChanges(tc.in))
+		blob, err := json.Marshal(out)
+		if err != nil {
+			t.Fatalf("%s: nicht serialisierbar: %v", tc.name, err)
+		}
+		if strings.Contains(string(blob), secret) {
+			t.Errorf("%s: das Secret steht im Klartext im Ergebnis:\n%s", tc.name, blob)
+		}
+		if !strings.Contains(string(blob), redactedMark) {
+			t.Errorf("%s: nichts wurde maskiert — die Einstufung hat gar nicht gegriffen:\n%s", tc.name, blob)
+		}
+	}
+}
+
+// Die Gegenprobe: ein harmloses Feld mit derselben Wertform darf NICHT maskiert
+// werden, sonst wäre der Trail leer statt sicher.
+func TestGewoehnlichesFeldMitVerschachtelterMapBleibtLesbar(t *testing.T) {
+	out := redactChanges(normalizeChanges(map[string]any{
+		"adresse": map[string]any{"strasse": "Hauptplatz 1", "ort": "Graz"},
+	}))
+	blob, _ := json.Marshal(out)
+	if strings.Contains(string(blob), redactedMark) {
+		t.Errorf("ein gewöhnliches Feld darf nicht maskiert werden:\n%s", blob)
+	}
+	if !strings.Contains(string(blob), "Hauptplatz 1") {
+		t.Errorf("der Wert muss erhalten bleiben:\n%s", blob)
+	}
+}
