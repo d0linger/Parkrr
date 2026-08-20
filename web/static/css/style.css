@@ -501,6 +501,11 @@ textarea { resize: vertical; min-height: 72px; }
 .stat.tone-red .value { color: var(--danger); }
 .stat.tone-red .stat-ic { color: var(--danger); }
 .stat.tone-red { border-color: color-mix(in srgb, var(--danger) 40%, var(--card-border)); }
+/* Klickbare Kachel: sieht aus wie die anderen, verhält sich aber wie ein Button —
+   inklusive sichtbarem Fokus, sonst ist sie per Tastatur nicht auffindbar. */
+.stat.stat-click { cursor: pointer; text-align: left; width: 100%; font: inherit; color: inherit; appearance: none; }
+.stat.stat-click:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.stat.stat-click:hover { border-color: color-mix(in srgb, var(--primary) 55%, var(--border)); }
 /* Zusatzzeile unter dem Label: erklärt, WARUM die Kachel diese Farbe hat. */
 .stat .stat-note { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.3rem; line-height: 1.3; }
 .stat.tone-red .stat-note { color: var(--danger); font-weight: 600; }

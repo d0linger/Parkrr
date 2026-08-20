@@ -223,12 +223,21 @@ test('dashboard: Backup-Health-Kachel erscheint für Admins (Ops)', async ({ pag
 
   // Die Kachel wird nachgereicht (eigener Fetch), damit ein langsamer S3-Bucket die
   // Übersicht nicht ausbremst — daher auf sie warten statt sofort zu prüfen.
-  const tile = page.locator('.stat', { hasText: 'Backup Volume' });
+  const tile = page.locator('.stat', { hasText: 'Backup' }).first();
   await expect(tile).toBeVisible({ timeout: 15000 });
+  // Ein echter <button>, nicht ein div mit onclick: sonst ist die Kachel per Tastatur
+  // nicht erreichbar und für Screenreader kein Bedienelement.
+  await expect(tile).toHaveJSProperty('tagName', 'BUTTON');
   // Die Begründungszeile ist der eigentliche Nutzen: eine Zahl ohne "warum" sagt
   // nicht, ob gehandelt werden muss.
   await expect(tile.locator('.stat-note')).not.toBeEmpty();
   // Der Zeitplan gehört in den Tooltip, damit die Schwelle nachvollziehbar ist.
-  await expect(tile).toHaveAttribute('title', /Zeitplan:/);
+  await expect(tile).toHaveAttribute('title', /Zeitplan/);
+  // Genau eine Backup-Kachel — die Übersicht soll das Risiko zeigen, nicht die
+  // Backup-Verwaltung nachbauen.
+  await expect(page.locator('.stat', { hasText: 'Backup' })).toHaveCount(1);
+  // Und sie führt dorthin, wo man etwas tun kann.
+  await tile.click();
+  await expect(page).toHaveURL(/#\/backup$/);
   expect(errors, 'keine Fehler beim Laden der Übersicht').toEqual([]);
 });

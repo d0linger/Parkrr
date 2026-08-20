@@ -656,7 +656,13 @@
     // A KPI tile: big tabular value + uppercase label, an optional muted icon, and
     // an optional tone (teal/green/amber) that tints the value + a left accent bar.
     const stat = (value, label, opts = {}) => {
-        const t = el('div', { class: 'stat' + (opts.tone ? ' tone-' + opts.tone : '') });
+        // Mit opts.onClick wird die Kachel ein echter <button>: anklickbar UND per Tab
+        // erreichbar. Ein div mit onclick sähe gleich aus, wäre aber für Tastatur und
+        // Screenreader unsichtbar.
+        const cls = 'stat' + (opts.tone ? ' tone-' + opts.tone : '') + (opts.onClick ? ' stat-click' : '');
+        const t = opts.onClick
+            ? el('button', { class: cls, type: 'button', onclick: opts.onClick })
+            : el('div', { class: cls });
         const ic = statIcon(opts.icon);
         if (ic) t.append(ic);
         t.append(el('div', { class: 'value' }, esc(value)), el('div', { class: 'label' }, label));
@@ -673,15 +679,24 @@
         if (h >= 1) return h + (h === 1 ? ' Stunde' : ' Stunden');
         return Math.max(1, m) + ' Min.';
     };
-    // tone entscheidet die Ampel: rot bei überfällig ODER wenn der letzte Versuch
-    // fehlschlug (ein frisches, aber kaputtes Backup ist kein grüner Zustand).
-    const backupTargetTone = (th) => (th.overdue || !th.last_ok) ? 'red' : 'green';
-    const backupTargetNote = (th) => {
-        if (th.never) return 'geplant, aber nie gelaufen';
-        if (!th.last_ok) return 'letzter Lauf fehlgeschlagen';
-        if (th.overdue) return 'überfällig laut Zeitplan';
-        return 'planmäßig';
+    // Drei Stufen statt zwei, weil sie unterschiedliche Handlungen auslösen:
+    //   failed  = rot   -> etwas ist KAPUTT, der Lauf hat es versucht und ist gescheitert
+    //   never / stale / off = gelb -> Handlungsaufforderung (Zeitplan oder Einrichtung prüfen)
+    //   ok      = grün
+    // "Überfällig" wäre als Rot gleichbedeutend mit "fehlgeschlagen" — dann sagt die
+    // Farbe nicht mehr, ob man etwas reparieren oder etwas einrichten muss.
+    const BACKUP_RANK = { ok: 0, stale: 1, never: 2, off: 3, failed: 4 };
+    const backupState = (th) => {
+        if (!th || !th.configured) return 'off';
+        if (!th.last_ok) return 'failed';   // vor "never": ein fehlgeschlagener Versuch ist konkreter
+        if (th.never) return 'never';
+        if (th.overdue) return 'stale';
+        return 'ok';
     };
+    const BACKUP_TONE = { ok: 'green', stale: 'amber', never: 'amber', off: 'amber', failed: 'red' };
+    const BACKUP_TEXT = { ok: 'Backup aktuell', stale: 'überfällig laut Zeitplan',
+        never: 'geplant, aber nie gelaufen', off: 'kein Ziel aktiviert', failed: 'letzter Lauf fehlgeschlagen' };
+    const backupWorst = (states) => states.reduce((a, b) => (BACKUP_RANK[b] > BACKUP_RANK[a] ? b : a), 'ok');
     const personName = (p) => (`${p.first_name || ''} ${p.last_name || ''}`).trim() || '(ohne Namen)';
     const vehicleTitle = (v) => v.label || v.license_plate || v.category_name;
     const catById = (id) => state.categories.find((c) => c.id === Number(id));
@@ -979,21 +994,48 @@
                 const hh = bs && bs.health;
                 if (!hh) return;
                 const targets = [['Volume', hh.volume], ['S3', hh.s3]].filter(([, th]) => th && th.configured);
+
+                // Ohne konfiguriertes Ziel gibt es zwei sehr verschiedene Zustände, und der
+                // gefährlichere war bisher der stumme: PARKRR_BACKUP_KEY gesetzt, aber weder
+                // Verzeichnis noch S3 — Backups sind eingeschaltet und laufen ins Leere.
+                // Ganz ohne Key ist es dagegen eine bewusst nicht eingerichtete Funktion.
                 if (!targets.length) {
-                    // Kein Ziel eingerichtet: eine stumme Kachel wäre irreführend, eine rote
-                    // falsch — es ist eine Einrichtungslücke, keine Störung.
-                    if (bs.enabled) return;
-                    slot.append(stat('nicht eingerichtet', 'Backup', { icon: 'shield', tone: 'amber' }));
+                    const txt = bs.enabled ? 'Ziel fehlt' : 'nicht eingerichtet';
+                    const note = bs.enabled
+                        ? 'Backup aktiviert, aber weder Verzeichnis noch S3 konfiguriert'
+                        : 'kein Backup-Schlüssel gesetzt';
+                    const t0 = stat(txt, 'Backup', { icon: 'shield', tone: 'amber', onClick: () => navigate('backup') });
+                    t0.append(el('div', { class: 'stat-note' }, note));
+                    slot.append(t0);
                     return;
                 }
-                targets.forEach(([name, th]) => {
-                    const tile = stat(backupAge(th.age_seconds), 'Backup ' + name,
-                        { icon: 'shield', tone: backupTargetTone(th) });
-                    tile.append(el('div', { class: 'stat-note' }, backupTargetNote(th)));
-                    tile.setAttribute('title', 'Zeitplan: ' + (th.cron || 'aus')
-                        + ' · letzter Erfolg: ' + (th.last_at ? new Date(th.last_at).toLocaleString('de-AT') : 'nie'));
-                    slot.append(tile);
+
+                // EINE Kachel für alle Ziele: die Übersicht soll das Risiko zeigen, nicht die
+                // Backup-Verwaltung nachbauen. Die Farbe folgt dem SCHLECHTESTEN Ziel, damit
+                // ein grünes Volume ein totes S3 nicht überdeckt.
+                const states = targets.map(([, th]) => backupState(th));
+                const worst = backupWorst(states);
+                // Der Wert ist das Alter des JÜNGSTEN erfolgreichen Laufs über alle Ziele —
+                // die Frage lautet "wie alt ist mein neuester Wiederherstellungspunkt?".
+                const ages = targets.map(([, th]) => th.age_seconds).filter((a) => a != null);
+                const newest = ages.length ? Math.min(...ages) : null;
+                const tile = stat(newest == null ? 'nie' : 'vor ' + backupAge(newest), 'Backup',
+                    { icon: 'shield', tone: BACKUP_TONE[worst], onClick: () => navigate('backup') });
+
+                // Begründungszeile: Zustand, dann je Ziel ein Kurzbefund, dann die
+                // Verschlüsselung — sie ist der Grund, warum die Archive überhaupt
+                // ausgelagert werden dürfen, und gehört sichtbar dazu.
+                const parts = [BACKUP_TEXT[worst]];
+                targets.forEach(([name, th], i) => {
+                    const st2 = states[i];
+                    parts.push(name + ' ' + (st2 === 'ok' ? 'ok' : BACKUP_TEXT[st2]));
                 });
+                if (bs.enabled) parts.push('verschlüsselt');
+                tile.append(el('div', { class: 'stat-note' }, parts.join(' · ')));
+                tile.setAttribute('title', targets.map(([name, th]) => name + ': Zeitplan ' + (th.cron || 'aus')
+                    + ', letzter Erfolg ' + (th.last_at ? new Date(th.last_at).toLocaleString('de-AT') : 'nie')).join(' | ')
+                    + ' — klicken für die Backup-Verwaltung');
+                slot.append(tile);
             }).catch(() => { /* Backup-Status ist Zusatzinfo, nie ein Grund die Übersicht zu stören */ });
         }
 
