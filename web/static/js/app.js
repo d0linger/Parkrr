@@ -66,11 +66,17 @@
     // \p{Diacritic} entfernt letztere. Wirkt auf JEDES Suchfeld der Anwendung, weil
     // alle Listen und die Palette über diese eine Funktion gehen.
     //
-    // Serverseitig macht unaccent genau dieselbe Faltung, beide Seiten bleiben also
-    // gleich streng. Und wie dort bleibt "ß" stehen und die deutsche ue-Schreibweise
-    // fällt NICHT: dafür müssten ue/oe/ae ebenfalls fallen, und dann fielen auch
-    // "Bauer" und "Baur" zusammen — eine Lockerung, die niemand bestellt hat.
-    const norm = (s) => String(s ?? '').normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
+    // Das "ß" fällt AUSDRÜCKLICH mit auf "ss". NFD zerlegt es nicht, Postgres'
+    // unaccent macht daraus aber 'ss' (nachgemessen). Ohne diesen Zusatz fände die
+    // Server-Suche mit "Strasse" die "Straße", die Listenfilter daneben aber nicht —
+    // zwei Suchfelder in derselben Anwendung mit verschiedenen Regeln.
+    //
+    // Die deutsche ue-Schreibweise fällt weiterhin NICHT ("Doebler" findet kein
+    // "Döbler"): dafür müssten ue/oe/ae ebenfalls fallen, und dann fielen auch "Bauer"
+    // und "Baur" zusammen. Postgres' unaccent hält es genauso.
+    const norm = (s) => String(s ?? '')
+        .normalize('NFD').replace(/\p{Diacritic}/gu, '')
+        .replace(/ß/g, 'ss').toLowerCase();
 
     // ---------- icons ----------
     // Consistent stroke icons (inline SVG, themable via currentColor) instead
@@ -7579,11 +7585,21 @@
     // .includes() — das kannte nur zwei Objektarten und verzieh keinen Vertipper.
     function openCommandPalette() {
         if (!state.user || document.getElementById('cmdk')) return;
+        const opener = document.activeElement;
         const overlay = el('div', { id: 'cmdk', class: 'cmdk', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Suche' });
-        const input = el('input', { class: 'cmdk-input', type: 'search', autocomplete: 'off', 'aria-label': 'Suche',
+        // Combobox-Muster: der Fokus bleibt im Eingabefeld, die Auswahl wandert über
+        // aria-activedescendant. Vorher trug das Eingabefeld gar keine Rolle — die
+        // Pfeiltasten verschoben zwar sichtbar die Auswahl, für Hilfstechnik passierte
+        // dabei aber schlicht nichts.
+        const input = el('input', { class: 'cmdk-input', type: 'search', autocomplete: 'off',
+            'aria-label': 'Suche', role: 'combobox', 'aria-expanded': 'false',
+            'aria-controls': 'cmdk-list', 'aria-autocomplete': 'list',
             placeholder: 'Person, Kennzeichen, Rechnung, Halle …' });
-        const results = el('div', { class: 'cmdk-results', role: 'listbox' });
-        overlay.append(el('div', { class: 'cmdk-box' }, input, results));
+        const results = el('div', { class: 'cmdk-results', id: 'cmdk-list', role: 'listbox', 'aria-label': 'Treffer' });
+        // Der Hinweistext steht NEBEN der Liste, nicht darin: ein listbox darf nur
+        // option-Kinder haben, sonst ist der Baum ungültig (aria-required-children).
+        const hint = el('div', { class: 'cmdk-hint', role: 'status' });
+        overlay.append(el('div', { class: 'cmdk-box' }, input, results, hint));
         document.body.append(overlay);
         input.focus();
 
@@ -7595,6 +7611,9 @@
             seq++; clearTimeout(timer);
             overlay.remove();
             document.removeEventListener('keydown', onKey, true);
+            // Fokus zurück, wo er herkam. Ohne das landet er nach dem Schließen auf
+            // <body>, und die Tastaturbedienung fängt oben auf der Seite wieder an.
+            if (opener && opener.focus && document.contains(opener)) opener.focus();
         };
         overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
         // EIN Weg zum Ziel für Klick und Enter. navigate() statt location.href, damit
@@ -7605,35 +7624,61 @@
             .filter((c) => norm(c.label + ' ' + c.sub + ' ' + c.kw).includes(q))
             .map((c) => ({ kind: 'nav', label: c.label, sub: c.sub, url: c.url }));
 
+        const rowId = (i) => 'cmdk-opt-' + i;
+        // Leerer Hinweis heißt weg, nicht "leere Zeile mit Innenabstand".
+        const setHint = (text) => { hint.textContent = text; hint.hidden = !text; };
         const highlight = () => {
             Array.prototype.forEach.call(results.children, (row, i) => {
-                if (!row.classList.contains('cmdk-row')) return;
                 row.classList.toggle('on', i === sel);
                 row.setAttribute('aria-selected', String(i === sel));
             });
             const cur = results.children[sel];
-            if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest' });
+            // aria-activedescendant ist der Teil, der die Auswahl überhaupt ansagbar
+            // macht — der Fokus selbst bleibt im Eingabefeld.
+            if (cur) {
+                input.setAttribute('aria-activedescendant', cur.id);
+                if (cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest' });
+            } else {
+                input.removeAttribute('aria-activedescendant');
+            }
         };
-        const show = (list) => {
+        // pending: die Anfrage läuft noch. Ohne diesen Zustand stand bei jedem
+        // Tastendruck 180 ms lang "Keine Treffer." da, bevor die echten Treffer kamen —
+        // bei einem Personennamen trifft kein einziges Sprungziel, also genau im
+        // häufigsten Fall. Der Hinweis behauptete damit das Gegenteil des Ergebnisses.
+        const show = (list, pending) => {
             items = list;
             if (sel >= items.length) sel = Math.max(0, items.length - 1);
             results.innerHTML = '';
+            input.setAttribute('aria-expanded', String(items.length > 0));
             if (!items.length) {
-                results.append(el('div', { class: 'cmdk-hint' }, input.value.trim().length >= 2
-                    ? 'Keine Treffer.' : '↑↓ wählen · Enter öffnen · Esc schließen'));
+                setHint(input.value.trim().length < 2
+                    ? '↑↓ wählen · Enter öffnen · Esc schließen'
+                    : (pending ? 'Suche läuft …' : 'Keine Treffer.'));
+                input.removeAttribute('aria-activedescendant');
                 return;
             }
-            // Echte <a href>: mit Tastatur erreichbar, mit mittlerer Maustaste zu öffnen
-            // und als Verweis vorlesbar. Ein div mit onclick sähe gleich aus und wäre
-            // für alles davon unsichtbar.
+            setHint(pending ? 'Suche läuft …' : '');
+            // <a href> mit tabindex=-1: der Verweis bleibt (mittlere Maustaste, Adresse
+            // kopieren), aber der Fokus wandert nicht hinein. Fokussierbare Zeilen und
+            // ein Enter-Handler auf Dokumentebene liefen auseinander — Tab auf die
+            // dritte Zeile, Enter, und die ERSTE wurde geöffnet.
             items.forEach((it, i) => results.append(el('a', {
-                class: 'cmdk-row' + (i === sel ? ' on' : ''), href: it.url,
-                role: 'option', 'aria-selected': String(i === sel),
-                onclick: (e) => { e.preventDefault(); go(it); },
+                class: 'cmdk-row' + (i === sel ? ' on' : ''), href: it.url, id: rowId(i),
+                role: 'option', 'aria-selected': String(i === sel), tabindex: '-1',
+                onclick: (e) => {
+                    // Strg/Cmd/Umschalt und die mittlere Maustaste dem Browser lassen:
+                    // sonst nimmt preventDefault genau das "in neuem Tab öffnen" wieder
+                    // weg, für das die Zeile überhaupt ein <a href> geworden ist.
+                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                    e.preventDefault();
+                    go(it);
+                },
             },
             el('span', { class: 'cmdk-type' }, CMDK_KIND[it.kind] || it.kind),
             el('span', { class: 'cmdk-lbl' }, it.label),
             it.sub ? el('span', { class: 'cmdk-sub' }, it.sub) : null)));
+            highlight();
         };
 
         const run = () => {
@@ -7641,17 +7686,20 @@
             const raw = input.value.trim();
             sel = 0;
             // Unter zwei Zeichen antwortet der Server ohnehin leer; gar nicht erst fragen.
-            if (raw.length < 2) { show([]); return; }
+            // seq MUSS auch hier hochzählen: sonst füllt eine noch laufende Antwort zur
+            // vorigen, längeren Eingabe die Liste wieder — mit Treffern zu einem Text,
+            // den der Benutzer gerade weggelöscht hat.
+            if (raw.length < 2) { seq++; show([]); return; }
             // Die Sprungziele stehen sofort da, die Datentreffer kommen nach; sonst
             // flackert die Liste bei jedem Tastendruck auf leer.
             const local = navHits(norm(raw));
-            show(local);
+            show(local, true);
             const mine = ++seq;
             timer = setTimeout(async () => {
                 let hits = [];
                 try { hits = await api.get('/search?q=' + encodeURIComponent(raw)); }
                 catch (e) { /* die Sprungziele stehen schon — lieber weniger als nichts */ }
-                if (mine === seq) show(local.concat(hits || []));
+                if (mine === seq) show(local.concat(hits || []), false);
             }, 180);
         };
         const onKey = (e) => {

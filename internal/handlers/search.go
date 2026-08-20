@@ -50,8 +50,9 @@ const (
 )
 
 // searchResult ist ein Treffer für die Palette. URL ist eine fertige Hash-Adresse,
-// damit die Zeile ein echtes <a href> sein kann (Tastatur, mittlere Maustaste,
-// Screenreader) und nicht ein div mit onclick.
+// damit die Zeile ein echtes <a href> sein kann: mit mittlerer Maustaste in einem
+// neuen Tab zu öffnen und als Adresse kopierbar. Bedient wird sie über die Tastatur
+// aus dem Eingabefeld heraus (Combobox-Muster), nicht durch Hineintabben.
 type searchResult struct {
 	Kind  string `json:"kind"`  // person | vehicle | invoice | garage | hall | category | service
 	Label string `json:"label"` // Haupttext
@@ -64,16 +65,24 @@ type searchResult struct {
 // nachgesehen statt vorausgesetzt.
 type searchCaps struct{ unaccent, trigram bool }
 
-// searchCapabilities fragt den Katalog bei JEDER Suche ab, statt das Ergebnis zu
-// merken. Die Abfrage ist ein Blick in pg_extension und verschwindet neben den sieben
-// Objektabfragen, die gleich folgen; dafür wirkt ein nachträglich installiertes
-// unaccent sofort, ohne Neustart. Bei einem Fehler gilt "nicht vorhanden": lieber
+// searchCapabilities fragt bei JEDER Suche nach, statt das Ergebnis zu merken. Die
+// Abfrage ist ein Katalog-Blick und verschwindet neben den sieben Objektabfragen, die
+// gleich folgen; dafür wirkt ein nachträglich installiertes unaccent sofort, ohne
+// Neustart. Bei einem Fehler gilt "nicht vorhanden": lieber
 // unschärfer suchen als gar nicht.
 func (h *Handler) searchCapabilities(ctx context.Context) searchCaps {
 	var c searchCaps
+	// Gefragt wird, ob die FUNKTION auflösbar ist, nicht ob die Erweiterung in
+	// pg_extension steht. Das ist nicht dasselbe: liegt sie in einem eigenen Schema
+	// außerhalb des search_path — auf gehärteten Installationen üblich, und
+	// CREATE EXTENSION IF NOT EXISTS in Migration 049 tut dann nichts —, dann meldet
+	// pg_extension "installiert", während unaccent('x') mit 42883 scheitert. Die
+	// Suche hätte damit bei JEDER Anfrage 500 geliefert, statt auf ILIKE
+	// zurückzufallen. Nachgemessen: CREATE EXTENSION unaccent SCHEMA ext ->
+	// pg_extension true, to_regprocedure NULL.
 	if err := h.Pool.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'unaccent'),
-		       EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm')`).
+		SELECT to_regprocedure('unaccent(text)') IS NOT NULL,
+		       to_regprocedure('word_similarity(text,text)') IS NOT NULL`).
 		Scan(&c.unaccent, &c.trigram); err != nil {
 		slog.Warn("search: could not read extension catalog", "err", err)
 		return searchCaps{}
@@ -82,8 +91,8 @@ func (h *Handler) searchCapabilities(ctx context.Context) searchCaps {
 }
 
 // fold legt unaccent() um einen SQL-Ausdruck, wenn die Erweiterung da ist.
-// $1::text / $2::text müssen dabei gecastet sein: unaccent ist überladen (text vs.
-// regdictionary), ein ungecasteter Platzhalter ist ein mehrdeutiger Parametertyp (42P18).
+// $1::text muss dabei gecastet sein: unaccent ist überladen (text vs. regdictionary),
+// ein ungecasteter Platzhalter ist ein mehrdeutiger Parametertyp (42P18).
 func (c searchCaps) fold(expr string) string {
 	if !c.unaccent {
 		return expr
@@ -91,15 +100,35 @@ func (c searchCaps) fold(expr string) string {
 	return "unaccent(" + expr + ")"
 }
 
+// pattern baut das ILIKE-Muster IN SQL — aus GENAU der gefalteten Zeichenkette, gegen
+// die anschließend verglichen wird.
+//
+// Vorher entstand das Muster in Go (escapen), und die Faltung kam erst danach in SQL
+// dazu. Diese Reihenfolge war eine Lücke: unaccent faltet nicht nur Diakritika,
+// sondern auch Vollbreiten-Zeichen. Nachgemessen ist unaccent('％') = '%'. Eine
+// Eingabe aus zwei Vollbreiten-Prozentzeichen kam also als harmloser Text durch das
+// Go-seitige Escapen und wurde in SQL wieder zu einem echten Platzhalter — jede
+// ILIKE-Bedingung traf jede Zeile, und eine Zwei-Zeichen-Eingabe lieferte je sechs
+// Namen, E-Mail-Adressen, Telefonnummern und Rechnungsnummern aus allen sieben
+// Objektarten. Der Test dazu prüfte nur ASCII-'%' und war deshalb grün.
+//
+// Escapen NACH dem Falten schließt das grundsätzlich: was verglichen wird, ist auch
+// das, was entschärft wurde. Die Reihenfolge der drei replace() ist zwingend — erst
+// der Backslash, sonst verdoppelt der zweite Durchgang die gerade gesetzten Escapes.
+func (c searchCaps) pattern() string {
+	esc := "replace(replace(replace(" + c.fold("$1::text") + `, '\', '\\'), '%', '\%'), '_', '\_')`
+	return "('%' || " + esc + " || '%')"
+}
+
 // where baut das Prädikat über den SQL-Textausdruck expr. expr ist vertrauenswürdig
 // (eine Konstante aus dieser Datei, nie Benutzereingabe), es zusammenzusetzen ist also
-// unbedenklich; die Eingabe selbst hängt an $1/$2.
+// unbedenklich; die Eingabe selbst hängt an $1.
 //
-//	$1 = rohe Eingabe   → tsquery (Stemming) und Trigramm-Ähnlichkeit
-//	$2 = '%eingabe%'    → gefalteter Teilstring
+//	$1 = rohe Eingabe → tsquery (Stemming), Trigramm-Ähnlichkeit und Muster
+//	$2 = Limit je Objektart
 func (c searchCaps) where(expr string, fuzzy bool) string {
 	w := "to_tsvector('german', " + c.fold(expr) + ") @@ websearch_to_tsquery('german', " + c.fold("$1::text") + ")" +
-		" OR " + c.fold(expr) + " ILIKE " + c.fold("$2::text") + ` ESCAPE '\'`
+		" OR " + c.fold(expr) + " ILIKE " + c.pattern() + ` ESCAPE '\'`
 	if fuzzy && c.trigram {
 		w += " OR word_similarity(" + c.fold("$1::text") + ", " + c.fold(expr) + ") >= 0.4"
 	}
@@ -109,27 +138,20 @@ func (c searchCaps) where(expr string, fuzzy bool) string {
 // rank ist der ORDER-BY-Vorspann: erst der Teilstring-Treffer, dann nach
 // Trigramm-Nähe. Steht vor dem jeweils eigenen Tiebreak der Objektart.
 func (c searchCaps) rank(expr string) string {
-	r := "(" + c.fold(expr) + " ILIKE " + c.fold("$2::text") + ` ESCAPE '\') DESC`
+	r := "(" + c.fold(expr) + " ILIKE " + c.pattern() + ` ESCAPE '\') DESC`
 	if c.trigram {
 		r += ", word_similarity(" + c.fold("$1::text") + ", " + c.fold(expr) + ") DESC"
 	}
 	return r
 }
 
-// likeEscape entschärft ILIKE-Platzhalter in der Eingabe, damit "50%" wörtlich
-// gesucht wird und nicht als Muster.
-func likeEscape(q string) string {
-	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
-	return "%" + r.Replace(q) + "%"
-}
-
-// searchSub führt eine Objektabfrage aus ($1 = Eingabe, $2 = ILIKE-Muster,
-// $3 = Limit) und hängt je Zeile ein Ergebnis an. Bündelt Abfrage, Scan und Schließen,
+// searchSub führt eine Objektabfrage aus ($1 = Eingabe, $2 = Limit) und hängt je
+// Zeile ein Ergebnis an. Bündelt Abfrage, Scan und Schließen,
 // damit jede Objektart ein paar Zeilen bleibt und rows auch bei einem Scan-Fehler
 // geschlossen wird.
-func (h *Handler) searchSub(ctx context.Context, out *[]searchResult, query, q, pat string,
+func (h *Handler) searchSub(ctx context.Context, out *[]searchResult, query, q string,
 	mk func(pgx.Rows) (searchResult, error)) error {
-	rows, err := h.Pool.Query(ctx, query, q, pat, searchPerKind)
+	rows, err := h.Pool.Query(ctx, query, q, searchPerKind)
 	if err != nil {
 		return err
 	}
@@ -147,7 +169,11 @@ func (h *Handler) searchSub(ctx context.Context, out *[]searchResult, query, q, 
 // dotJoin fügt die nicht-leeren Teile mit " · " zusammen — der Beitext soll keine
 // führenden oder doppelten Trennzeichen zeigen, wenn ein Feld leer ist.
 func dotJoin(parts ...string) string {
-	keep := parts[:0]
+	// Eigene Scheibe statt parts[:0]: das filterte über dem Speicher des Aufrufers und
+	// würde dessen Scheibe überschreiben, sobald jemand dotJoin(felder...) aufruft —
+	// der naheliegendste Weg, den Helfer wiederzuverwenden. Bei drei Elementen ist die
+	// Zuteilung umsonst.
+	keep := make([]string, 0, len(parts))
 	for _, p := range parts {
 		if s := strings.TrimSpace(p); s != "" {
 			keep = append(keep, s)
@@ -183,7 +209,6 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 // der Rückfallpfad ohne Erweiterungen zwar dokumentiert, aber nie gelaufen — und
 // könnte schlicht kaputte SQL erzeugen, ohne dass es jemandem auffällt.
 func (h *Handler) searchWith(ctx context.Context, q string, caps searchCaps) ([]searchResult, error) {
-	pat := likeEscape(q)
 	fuzzy := utf8.RuneCountInString(q) >= searchFuzzyMinRunes
 	out := make([]searchResult, 0, searchPerKind*7)
 
@@ -198,7 +223,7 @@ func (h *Handler) searchWith(ctx context.Context, q string, caps searchCaps) ([]
 		  FROM persons p
 		 WHERE `+caps.where(pExpr, fuzzy)+`
 		 ORDER BY p.anonymized, `+caps.rank(pExpr)+`, p.last_name, p.first_name
-		 LIMIT $3`, q, pat, func(rows pgx.Rows) (searchResult, error) {
+		 LIMIT $2`, q, func(rows pgx.Rows) (searchResult, error) {
 		var id int64
 		var first, last, email, phone string
 		var anon bool
@@ -231,7 +256,7 @@ func (h *Handler) searchWith(ctx context.Context, q string, caps searchCaps) ([]
 		  JOIN categories c ON c.id = v.category_id
 		 WHERE `+caps.where(vExpr, fuzzy)+`
 		 ORDER BY v.archived, `+caps.rank(vExpr)+`, v.label, v.license_plate
-		 LIMIT $3`, q, pat, func(rows pgx.Rows) (searchResult, error) {
+		 LIMIT $2`, q, func(rows pgx.Rows) (searchResult, error) {
 		var id int64
 		var label, plate, cat, owner string
 		var archived bool
@@ -263,7 +288,7 @@ func (h *Handler) searchWith(ctx context.Context, q string, caps searchCaps) ([]
 		  JOIN persons p ON p.id = iv.person_id
 		 WHERE `+caps.where("iv.number", fuzzy)+`
 		 ORDER BY `+caps.rank("iv.number")+`, iv.issued_on DESC
-		 LIMIT $3`, q, pat, func(rows pgx.Rows) (searchResult, error) {
+		 LIMIT $2`, q, func(rows pgx.Rows) (searchResult, error) {
 		var id int64
 		var number, owner string
 		var issued time.Time
@@ -282,7 +307,7 @@ func (h *Handler) searchWith(ctx context.Context, q string, caps searchCaps) ([]
 		SELECT id, name FROM garages
 		 WHERE `+caps.where("name", fuzzy)+`
 		 ORDER BY `+caps.rank("name")+`, sort_order, name
-		 LIMIT $3`, q, pat, func(rows pgx.Rows) (searchResult, error) {
+		 LIMIT $2`, q, func(rows pgx.Rows) (searchResult, error) {
 		var id int64
 		var name string
 		if err := rows.Scan(&id, &name); err != nil {
@@ -302,7 +327,7 @@ func (h *Handler) searchWith(ctx context.Context, q string, caps searchCaps) ([]
 		  JOIN garages g ON g.id = h.garage_id
 		 WHERE `+caps.where(hExpr, fuzzy)+`
 		 ORDER BY `+caps.rank(hExpr)+`, g.name, h.sort_order, h.name
-		 LIMIT $3`, q, pat, func(rows pgx.Rows) (searchResult, error) {
+		 LIMIT $2`, q, func(rows pgx.Rows) (searchResult, error) {
 		var id int64
 		var name, garage string
 		if err := rows.Scan(&id, &name, &garage); err != nil {
@@ -316,30 +341,45 @@ func (h *Handler) searchWith(ctx context.Context, q string, caps searchCaps) ([]
 
 	// Tarife und Dienste führen beide auf dieselbe Seite (dort zwei Reiter), tragen
 	// aber verschiedene Kennungen, damit die Palette sie auseinanderhält.
+	//
+	// Archivierte stehen hinten und sagen es auch — wie anonymisierte Personen und
+	// archivierte Gefährte. Ohne das ist ein stillgelegter Tarif von einem gültigen
+	// nicht zu unterscheiden, und bei sechs Treffern je Objektart können mehrere
+	// archivierte den gesuchten aktiven ganz aus der Liste drängen.
 	if err := h.searchSub(ctx, &out, `
-		SELECT name FROM categories
+		SELECT name, archived FROM categories
 		 WHERE `+caps.where("name", fuzzy)+`
-		 ORDER BY `+caps.rank("name")+`, name
-		 LIMIT $3`, q, pat, func(rows pgx.Rows) (searchResult, error) {
+		 ORDER BY archived, `+caps.rank("name")+`, name
+		 LIMIT $2`, q, func(rows pgx.Rows) (searchResult, error) {
 		var name string
-		if err := rows.Scan(&name); err != nil {
+		var archived bool
+		if err := rows.Scan(&name, &archived); err != nil {
 			return searchResult{}, err
 		}
-		return searchResult{Kind: "category", Label: name, Sub: "Tarif", URL: "#/tariffs"}, nil
+		sub := "Tarif"
+		if archived {
+			sub = dotJoin(sub, "archiviert")
+		}
+		return searchResult{Kind: "category", Label: name, Sub: sub, URL: "#/tariffs"}, nil
 	}); err != nil {
 		return nil, err
 	}
 
 	if err := h.searchSub(ctx, &out, `
-		SELECT name FROM service_types
+		SELECT name, archived FROM service_types
 		 WHERE `+caps.where("name", fuzzy)+`
-		 ORDER BY `+caps.rank("name")+`, name
-		 LIMIT $3`, q, pat, func(rows pgx.Rows) (searchResult, error) {
+		 ORDER BY archived, `+caps.rank("name")+`, name
+		 LIMIT $2`, q, func(rows pgx.Rows) (searchResult, error) {
 		var name string
-		if err := rows.Scan(&name); err != nil {
+		var archived bool
+		if err := rows.Scan(&name, &archived); err != nil {
 			return searchResult{}, err
 		}
-		return searchResult{Kind: "service", Label: name, Sub: "Dienst", URL: "#/tariffs"}, nil
+		sub := "Dienst"
+		if archived {
+			sub = dotJoin(sub, "archiviert")
+		}
+		return searchResult{Kind: "service", Label: name, Sub: sub, URL: "#/tariffs"}, nil
 	}); err != nil {
 		return nil, err
 	}

@@ -29,6 +29,21 @@ func seedPerson(t *testing.T, h *Handler) int64 {
 	if err != nil {
 		t.Fatalf("Person anlegen: %v", err)
 	}
+	// Selbst wegräumen. cleanupPersons greift nur bei last_name = 'Integration' — und
+	// nach dem Anonymisieren heißt die Person '#<id>', fällt also erst recht durch.
+	// Ohne das blieben je Lauf vier "Anonymisiert #N" plus ihre Rechnung liegen, und
+	// eine Rechnung ist ON DELETE RESTRICT: einmal da, wäre die Person ohne die
+	// Purge-Hintertür nie wieder zu entfernen. Gemessen an einer Testdatenbank, die
+	// nach einem vollen Lauf vier solcher Personen trug.
+	t.Cleanup(func() {
+		c := context.Background()
+		if err := purgeExec(c, h.Pool, `DELETE FROM invoices WHERE person_id=$1`, id); err != nil {
+			t.Logf("Aufräumen Rechnung: %v", err)
+		}
+		if err := purgeExec(c, h.Pool, `DELETE FROM persons WHERE id=$1`, id); err != nil {
+			t.Logf("Aufräumen Person: %v", err)
+		}
+	})
 	return id
 }
 

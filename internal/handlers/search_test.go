@@ -18,20 +18,6 @@ import (
 
 // --- ohne Datenbank: der Prädikatbau -----------------------------------------
 
-func TestLikeEscapeMachtPlatzhalterWoertlich(t *testing.T) {
-	// "50%" muss den Tarif "Rabatt 50%" finden — und nicht als Muster jede Zeile.
-	got := likeEscape("50%")
-	if got != `%50\%%` {
-		t.Errorf("likeEscape(\"50%%\") = %q, want %q", got, `%50\%%`)
-	}
-	if got := likeEscape("a_b"); got != `%a\_b%` {
-		t.Errorf("der Unterstrich ist ein Einzelzeichen-Platzhalter und muss entschärft werden, got %q", got)
-	}
-	if got := likeEscape(`c:\tmp`); got != `%c:\\tmp%` {
-		t.Errorf("der Backslash ist das Escape-Zeichen selbst und muss verdoppelt werden, got %q", got)
-	}
-}
-
 // Ohne die Erweiterungen darf kein unaccent()/word_similarity() in der SQL stehen —
 // sonst wirft die Datenbank 42883 und die Suche fällt komplett aus, statt nur
 // unschärfer zu sein.
@@ -126,12 +112,25 @@ func seedSearchData(t *testing.T, h *Handler) searchSeed {
 		 VALUES ($1, $2, now(), 100, 0, 0, 100, true, '{}', '{}')`, s.invoiceNo, s.personID); err != nil {
 		t.Fatalf("Rechnung anlegen: %v", err)
 	}
+	// Alles selbst wegräumen. cleanupPersons greift NUR bei last_name = 'Integration'
+	// — die hier gesäten Namen tragen einen Zeitstempel, fielen also durch und blieben
+	// je Testlauf als sieben Personen, Gefährte, Tarife und Rechnungen liegen. Und
+	// Rechnungen sind ON DELETE RESTRICT plus unveränderlich: einmal liegengeblieben,
+	// wären diese Personen ohne die Purge-Hintertür nie wieder zu entfernen.
+	// Reihenfolge: Kinder vor Eltern.
 	t.Cleanup(func() {
 		c := context.Background()
 		_, _ = h.Pool.Exec(c, `DELETE FROM halls WHERE id=$1`, s.hallID)
 		_, _ = h.Pool.Exec(c, `DELETE FROM garages WHERE id=$1`, s.garageID)
 		_, _ = h.Pool.Exec(c, `DELETE FROM service_types WHERE name=$1`, s.serviceNm)
-		// Personen, Gefährte, Rechnungen und der Tarif räumt cleanupPersons ab.
+		if err := purgeExec(c, h.Pool, `DELETE FROM invoices WHERE person_id=$1`, s.personID); err != nil {
+			t.Logf("Aufräumen Rechnung: %v", err)
+		}
+		// Gefährte hängen per CASCADE an der Person; der Tarif erst danach.
+		if err := purgeExec(c, h.Pool, `DELETE FROM persons WHERE id=$1`, s.personID); err != nil {
+			t.Logf("Aufräumen Person: %v", err)
+		}
+		_, _ = h.Pool.Exec(c, `DELETE FROM categories WHERE id=$1`, catID)
 	})
 	return s
 }
@@ -248,11 +247,16 @@ func TestSucheLaeuftAuchOhneErweiterungen(t *testing.T) {
 	h := testHandler(t)
 	s := seedSearchData(t, h)
 
-	res, err := h.searchWith(context.Background(), "Nordgarage"+" "+s.suffix, searchCaps{})
+	// Mehrere durch Leerzeichen getrennte Wörter: der Pfad durch websearch_to_tsquery,
+	// bei dem eine falsch gebaute Rückfall-SQL am ehesten auffiele. Vorher wurde das
+	// Ergebnis hier weggeworfen und der Aufruf prüfte nur "kein Fehler".
+	res, err := h.searchWith(context.Background(), "Nordgarage "+s.suffix, searchCaps{})
 	if err != nil {
 		t.Fatalf("ohne Erweiterungen muss die Suche laufen, nicht scheitern: %v", err)
 	}
-	_ = res
+	if find(res, "garage", s.garageNm) == nil {
+		t.Errorf("mehrteilige Eingabe fand die Garage nicht: %v", kinds(res))
+	}
 	// Der Teilstring trägt weiterhin — nur eben ungefaltet.
 	plain, err := h.searchWith(context.Background(), s.garageNm, searchCaps{})
 	if err != nil {
@@ -293,6 +297,28 @@ func TestPlatzhalterInDerEingabeFindetNichtAlles(t *testing.T) {
 	res := runSearch(t, h, "%%%%")
 	if len(res) != 0 {
 		t.Errorf("eine Eingabe aus lauter Platzhaltern lieferte %d Treffer: %v", len(res), kinds(res))
+	}
+	// Der Fall, den die alte Fassung durchließ: unaccent faltet nicht nur Diakritika,
+	// sondern auch Vollbreiten-Zeichen — unaccent('％') ist '%'. Das Muster wurde in Go
+	// entschärft und ERST DANACH in SQL gefaltet, aus dem harmlosen Zeichen wurde also
+	// wieder ein echter Platzhalter und jede ILIKE-Bedingung traf jede Zeile. Der Test
+	// oben prüfte nur ASCII und war deshalb grün.
+	for _, q := range []string{"％％", "＿＿", "％a", "a＿"} {
+		if res := runSearch(t, h, q); len(res) != 0 {
+			t.Errorf("Vollbreiten-Platzhalter %q lieferte %d Treffer — das Muster wird gefaltet, "+
+				"muss also auch NACH dem Falten entschärft werden: %v", q, len(res), kinds(res))
+		}
+	}
+	// Und die Gegenprobe: ein echter Prozentsatz im Namen bleibt auffindbar.
+	if _, err := h.Pool.Exec(context.Background(),
+		`INSERT INTO categories (name, default_monthly_cost) VALUES ($1, 5)`, "Rabatt 50% Sonder"); err != nil {
+		t.Fatalf("Tarif anlegen: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = h.Pool.Exec(context.Background(), `DELETE FROM categories WHERE name=$1`, "Rabatt 50% Sonder")
+	})
+	if find(runSearch(t, h, "50%"), "category", "Rabatt 50%") == nil {
+		t.Error(`"50%" muss den Tarif "Rabatt 50% Sonder" wörtlich finden`)
 	}
 }
 
