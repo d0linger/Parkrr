@@ -60,7 +60,17 @@
         const d = new Date();
         return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
     };
-    const norm = (s) => String(s ?? '').toLowerCase();
+    // Diakritika falten, nicht bloß kleinschreiben. Vorher fand "Muller" kein
+    // "Müller" und "Doebler" kein "Döbler" — in einem österreichischen Bestand der
+    // häufigste Fehlschlag überhaupt. NFD zerlegt "ü" in "u" plus Kombinationszeichen,
+    // \p{Diacritic} entfernt letztere. Wirkt auf JEDES Suchfeld der Anwendung, weil
+    // alle Listen und die Palette über diese eine Funktion gehen.
+    //
+    // Serverseitig macht unaccent genau dieselbe Faltung, beide Seiten bleiben also
+    // gleich streng. Und wie dort bleibt "ß" stehen und die deutsche ue-Schreibweise
+    // fällt NICHT: dafür müssten ue/oe/ae ebenfalls fallen, und dann fielen auch
+    // "Bauer" und "Baur" zusammen — eine Lockerung, die niemand bestellt hat.
+    const norm = (s) => String(s ?? '').normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
 
     // ---------- icons ----------
     // Consistent stroke icons (inline SVG, themable via currentColor) instead
@@ -7537,51 +7547,122 @@
         document.head.appendChild(link);
     }
 
-    // Global command palette (⌘K / search button): fuzzy jump to a person or
-    // Gefährt. Works over the loaded lists (small dataset) — no backend needed.
-    async function openCommandPalette() {
+    // Sprungziele, die keine Datenzeilen sind: Abschnittsnamen kann /api/search nicht
+    // liefern, sie stehen in keiner Tabelle. Also lokal, über Bezeichnung plus
+    // Stichwörter — damit "kennzeichen" auf der Gefährte-Seite landet und "preis" bei
+    // den Tarifen.
+    const CMDK_NAV = [
+        { label: 'Übersicht', sub: 'Dashboard', url: '#/dashboard', kw: 'start home uebersicht zahlen kennzahlen' },
+        { label: 'Personen', sub: 'Stammdaten', url: '#/persons', kw: 'kunde halter mieter adresse kontakt' },
+        { label: 'Gefährte', sub: 'Fahrzeuge', url: '#/vehicles', kw: 'auto wohnwagen wohnmobil boot anhaenger kennzeichen' },
+        { label: 'Zusatzkosten', sub: 'Buchungen', url: '#/finance', kw: 'kosten strom reinigung leistung' },
+        { label: 'Tarife & Dienste', sub: 'Preise', url: '#/tariffs', kw: 'preis kategorie tarif dienst miete' },
+        { label: 'Stellplätze', sub: 'Garagen, Hallen & Planer', url: '#/garages', kw: 'garage halle planer plan stellplatz' },
+        { label: 'Einstellungen', sub: '', url: '#/settings', kw: 'optionen konfiguration profil passwort' },
+    ];
+    // Nur für Admins — ein Sprungziel, das mit 403 endet, hilft niemandem.
+    const CMDK_NAV_ADMIN = [
+        { label: 'Rechnungen', sub: 'Nummernkreis & Ausstellung', url: '#/billing', kw: 'rechnung beleg ust nummer' },
+        { label: 'Benutzer', sub: 'Zugänge', url: '#/users', kw: 'konto rolle admin bearbeiter' },
+        { label: 'Audit-Log', sub: 'Verlauf', url: '#/audit', kw: 'protokoll verlauf wer wann' },
+        { label: 'Backup', sub: 'Sicherung', url: '#/backup', kw: 'sicherung archiv wiederherstellen s3' },
+    ];
+    const CMDK_KIND = { person: 'Person', vehicle: 'Gefährt', invoice: 'Rechnung', garage: 'Garage',
+        hall: 'Halle', category: 'Tarif', service: 'Dienst', nav: 'Gehe zu' };
+
+    // Globale Befehlspalette (⌘K / Lupe): springt zu Personen, Gefährten, Rechnungen,
+    // Garagen, Hallen, Tarifen und Diensten.
+    //
+    // Der Vergleich läuft seit der Umstellung im Server (/api/search): dort wird
+    // gestemmt, diakritika-gefaltet und ab vier Zeichen auch auf Tippfehler geprüft.
+    // Vorher lud diese Funktion /persons und /vehicles vollständig und filterte mit
+    // .includes() — das kannte nur zwei Objektarten und verzieh keinen Vertipper.
+    function openCommandPalette() {
         if (!state.user || document.getElementById('cmdk')) return;
-        const overlay = el('div', { id: 'cmdk', class: 'cmdk' });
-        const input = el('input', { class: 'cmdk-input', type: 'search', placeholder: 'Person, Gefährt, Kennzeichen …', autocomplete: 'off', 'aria-label': 'Suche' });
-        const results = el('div', { class: 'cmdk-results' });
+        const overlay = el('div', { id: 'cmdk', class: 'cmdk', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Suche' });
+        const input = el('input', { class: 'cmdk-input', type: 'search', autocomplete: 'off', 'aria-label': 'Suche',
+            placeholder: 'Person, Kennzeichen, Rechnung, Halle …' });
+        const results = el('div', { class: 'cmdk-results', role: 'listbox' });
         overlay.append(el('div', { class: 'cmdk-box' }, input, results));
         document.body.append(overlay);
         input.focus();
 
-        let items = [], sel = 0;
-        const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey, true); };
+        let items = [], sel = 0, timer = null, seq = 0;
+        // seq beim Schließen hochzählen: eine noch laufende Antwort darf die Liste
+        // eines bereits geschlossenen Fensters nicht mehr füllen — sonst zeigte ein
+        // erneutes Öffnen Treffer zu einer Eingabe, die niemand mehr sieht.
+        const close = () => {
+            seq++; clearTimeout(timer);
+            overlay.remove();
+            document.removeEventListener('keydown', onKey, true);
+        };
         overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+        // EIN Weg zum Ziel für Klick und Enter. navigate() statt location.href, damit
+        // ein Sprung auf die bereits offene Adresse trotzdem neu zeichnet.
+        const go = (it) => { close(); navigate(String(it.url).replace(/^#\/?/, '')); };
 
-        let persons = state.persons || [], vehicles = [];
-        try { [persons, vehicles] = await Promise.all([persons.length ? Promise.resolve(persons) : api.get('/persons'), api.get('/vehicles')]); }
-        catch (e) { /* search what we already have */ }
+        const navHits = (q) => CMDK_NAV.concat(isAdmin() ? CMDK_NAV_ADMIN : [])
+            .filter((c) => norm(c.label + ' ' + c.sub + ' ' + c.kw).includes(q))
+            .map((c) => ({ kind: 'nav', label: c.label, sub: c.sub, url: c.url }));
 
-        const build = () => {
-            const q = norm(input.value.trim());
-            items = [];
-            if (q) {
-                persons.forEach((p) => { if (norm(personName(p) + ' ' + (p.email || '') + ' ' + (p.phone || '')).includes(q)) items.push({ type: 'Person', label: personName(p), sub: [p.email, p.phone].filter(Boolean).join(' · '), nav: 'persons/' + p.id }); });
-                vehicles.forEach((v) => { if (norm(vehicleTitle(v) + ' ' + (v.license_plate || '') + ' ' + (v.person_name || '') + ' ' + (v.category_name || '')).includes(q)) items.push({ type: 'Gefährt', label: vehicleTitle(v), sub: [v.license_plate, v.person_name].filter(Boolean).join(' · '), nav: 'vehicles/' + v.id }); });
-            }
-            items = items.slice(0, 12);
+        const highlight = () => {
+            Array.prototype.forEach.call(results.children, (row, i) => {
+                if (!row.classList.contains('cmdk-row')) return;
+                row.classList.toggle('on', i === sel);
+                row.setAttribute('aria-selected', String(i === sel));
+            });
+            const cur = results.children[sel];
+            if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest' });
+        };
+        const show = (list) => {
+            items = list;
             if (sel >= items.length) sel = Math.max(0, items.length - 1);
             results.innerHTML = '';
-            if (!q) { results.append(el('div', { class: 'cmdk-hint' }, '↑↓ wählen · Enter öffnen · Esc schließen')); return; }
-            if (!items.length) { results.append(el('div', { class: 'cmdk-hint' }, 'Keine Treffer.')); return; }
-            items.forEach((it, i) => results.append(el('div', { class: 'cmdk-row' + (i === sel ? ' on' : ''), onclick: () => { close(); navigate(it.nav); } },
-                el('span', { class: 'cmdk-type' }, it.type),
-                el('span', { class: 'cmdk-lbl' }, it.label),
-                it.sub ? el('span', { class: 'cmdk-sub' }, it.sub) : null)));
+            if (!items.length) {
+                results.append(el('div', { class: 'cmdk-hint' }, input.value.trim().length >= 2
+                    ? 'Keine Treffer.' : '↑↓ wählen · Enter öffnen · Esc schließen'));
+                return;
+            }
+            // Echte <a href>: mit Tastatur erreichbar, mit mittlerer Maustaste zu öffnen
+            // und als Verweis vorlesbar. Ein div mit onclick sähe gleich aus und wäre
+            // für alles davon unsichtbar.
+            items.forEach((it, i) => results.append(el('a', {
+                class: 'cmdk-row' + (i === sel ? ' on' : ''), href: it.url,
+                role: 'option', 'aria-selected': String(i === sel),
+                onclick: (e) => { e.preventDefault(); go(it); },
+            },
+            el('span', { class: 'cmdk-type' }, CMDK_KIND[it.kind] || it.kind),
+            el('span', { class: 'cmdk-lbl' }, it.label),
+            it.sub ? el('span', { class: 'cmdk-sub' }, it.sub) : null)));
+        };
+
+        const run = () => {
+            clearTimeout(timer);
+            const raw = input.value.trim();
+            sel = 0;
+            // Unter zwei Zeichen antwortet der Server ohnehin leer; gar nicht erst fragen.
+            if (raw.length < 2) { show([]); return; }
+            // Die Sprungziele stehen sofort da, die Datentreffer kommen nach; sonst
+            // flackert die Liste bei jedem Tastendruck auf leer.
+            const local = navHits(norm(raw));
+            show(local);
+            const mine = ++seq;
+            timer = setTimeout(async () => {
+                let hits = [];
+                try { hits = await api.get('/search?q=' + encodeURIComponent(raw)); }
+                catch (e) { /* die Sprungziele stehen schon — lieber weniger als nichts */ }
+                if (mine === seq) show(local.concat(hits || []));
+            }, 180);
         };
         const onKey = (e) => {
             if (e.key === 'Escape') { e.preventDefault(); close(); }
-            else if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(items.length - 1, sel + 1); build(); }
-            else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(0, sel - 1); build(); }
-            else if (e.key === 'Enter') { e.preventDefault(); if (items[sel]) { close(); navigate(items[sel].nav); } }
+            else if (e.key === 'ArrowDown') { e.preventDefault(); if (items.length) { sel = (sel + 1) % items.length; highlight(); } }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); if (items.length) { sel = (sel - 1 + items.length) % items.length; highlight(); } }
+            else if (e.key === 'Enter') { e.preventDefault(); if (items[sel]) go(items[sel]); }
         };
         document.addEventListener('keydown', onKey, true);
-        input.addEventListener('input', () => { sel = 0; build(); });
-        build();
+        input.addEventListener('input', run);
+        show([]);
     }
 
     // Public self-service portal (no login): rendered when the hash is

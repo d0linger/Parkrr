@@ -1686,7 +1686,10 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .cmdk-input:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
 .cmdk-results { max-height: 52vh; overflow: auto; padding: .35rem; }
 .cmdk-hint { color: var(--muted); font-size: .82rem; padding: .8rem 1rem; }
-.cmdk-row { display: flex; align-items: center; gap: .6rem; padding: .55rem .7rem; border-radius: 9px; cursor: pointer; }
+/* Die Zeile ist ein <a href>, damit sie mit Tastatur und mittlerer Maustaste
+   funktioniert; color/text-decoration holen das Aussehen der früheren div-Zeile
+   zurück. */
+.cmdk-row { display: flex; align-items: center; gap: .6rem; padding: .55rem .7rem; border-radius: 9px; cursor: pointer; color: inherit; text-decoration: none; }
 .cmdk-row.on, .cmdk-row:hover { background: rgba(128,128,128,.15); }
 .cmdk-type { font-size: .6rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; color: var(--accent-text); border: 1px solid var(--card-border); border-radius: 5px; padding: .1rem .4rem; flex: none; }
 .cmdk-lbl { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
