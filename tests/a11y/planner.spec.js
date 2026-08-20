@@ -378,3 +378,68 @@ test('Befehlspalette: Escape schließt, kurze Eingabe fragt den Server gar nicht
   await page.keyboard.press('Escape');
   await expect(page.locator('#cmdk')).toHaveCount(0);
 });
+
+test('Befehlspalette: eine späte Antwort füllt die Liste nicht, wenn die Eingabe kürzer wurde', async ({ page, context }) => {
+  await login(page);
+  const cookies = await context.cookies();
+  const csrf = (cookies.find((c) => c.name === 'parkrr_csrf') || {}).value;
+  const tag = String(Date.now());
+  // "Qx" trifft diese Person und KEIN Sprungziel — was in der Liste landet, kann also
+  // nur aus der Serverantwort stammen. Ohne das wäre der Test leer.
+  const per = await (await page.request.post('/api/persons', {
+    headers: { 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' },
+    data: { first_name: 'Qx', last_name: 'Spaetantwort' + tag },
+  })).json();
+  track(page, csrf, '/api/persons/' + per.id);
+
+  // Die Antwort künstlich verzögern, damit sich die Eingabe unter ihr weg ändern kann.
+  await page.route('**/api/search*', async (route) => {
+    await new Promise((r) => setTimeout(r, 900));
+    await route.continue();
+  });
+
+  await page.locator('#search-btn').click();
+  const input = page.locator('.cmdk-input');
+  await input.fill('Qx');           // zwei Zeichen: die Anfrage geht raus
+  await page.waitForTimeout(350);   // Entprellung durch, Antwort unterwegs
+  await input.fill('Q');            // auf ein Zeichen zurückgelöscht
+  await expect(page.locator('.cmdk-row')).toHaveCount(0);
+
+  // Jetzt trifft die verzögerte Antwort zur alten, längeren Eingabe ein. Sie darf die
+  // Liste nicht mehr füllen: sonst stünden Treffer zu einem Text da, den der Benutzer
+  // gerade weggelöscht hat. Der kurze Zweig muss dafür die Sequenznummer hochzählen.
+  await page.waitForTimeout(1200);
+  await expect(page.locator('.cmdk-row'),
+    'die späte Antwort zur vorigen Eingabe darf die Liste nicht mehr füllen').toHaveCount(0);
+  await expect(page.locator('.cmdk-hint')).toContainText('↑↓');
+});
+
+test('Befehlspalette: Strg-Klick gehört dem Browser, nicht dem Handler', async ({ page, context }) => {
+  await login(page);
+  const cookies = await context.cookies();
+  const csrf = (cookies.find((c) => c.name === 'parkrr_csrf') || {}).value;
+  const tag = String(Date.now());
+  const per = await (await page.request.post('/api/persons', {
+    headers: { 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' },
+    data: { first_name: 'Strg', last_name: 'Klick' + tag },
+  })).json();
+  track(page, csrf, '/api/persons/' + per.id);
+
+  await page.locator('#search-btn').click();
+  await page.locator('.cmdk-input').fill('Klick' + tag);
+  const zeile = page.locator('.cmdk-row', { hasText: 'Klick' + tag });
+  await expect(zeile).toBeVisible({ timeout: 10000 });
+
+  // Ein unmodifizierter Klick wird abgefangen (eigene Navigation, Palette zu). Ein
+  // Strg-Klick NICHT: sonst nimmt preventDefault genau das "in neuem Tab öffnen" weg,
+  // wofür die Zeile überhaupt ein <a href> geworden ist.
+  const [neu] = await Promise.all([
+    context.waitForEvent('page'),
+    zeile.click({ modifiers: ['ControlOrMeta'] }),
+  ]);
+  await neu.waitForLoadState('domcontentloaded');
+  expect(neu.url(), 'der neue Tab zeigt den Datensatz').toContain('#/person/' + per.id);
+  await neu.close();
+  // Und die Palette bleibt offen — der Handler hat sich herausgehalten.
+  await expect(page.locator('#cmdk')).toBeVisible();
+});
