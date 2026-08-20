@@ -13,6 +13,7 @@ import (
 // sending it, so reminder composition can be asserted without a real relay.
 type captureSender struct {
 	enabled bool
+	err     error
 	calls   int
 	to      []string
 	subject string
@@ -25,7 +26,7 @@ func (c *captureSender) Send(_ context.Context, to []string, subject, body strin
 	c.to = to
 	c.subject = subject
 	c.body = body
-	return nil
+	return c.err
 }
 
 func TestRemindInvoice(t *testing.T) {
@@ -82,4 +83,28 @@ func TestRemindInvoice(t *testing.T) {
 	if fake.calls != 1 {
 		t.Errorf("must not send when person has no e-mail; calls=%d", fake.calls)
 	}
+
+	// Restore email for failure test.
+	if _, err := h.Pool.Exec(context.Background(),
+		`UPDATE persons SET email='reminder@example.com' WHERE id=$1`, pid); err != nil {
+		t.Fatal(err)
+	}
+
+	// A mailer error returns 502 and does NOT leak sensitive internal error details.
+	const secretErr = "dial tcp 10.0.0.5:25: connect: connection refused (internal-smtp.corp)"
+	fake.err = stdError(secretErr)
+	w = remind()
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("failing mail: want 502, got %d %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), secretErr) || strings.Contains(w.Body.String(), "10.0.0.5") {
+		t.Errorf("502 response leaked internal error details: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "E-Mail konnte nicht gesendet werden") {
+		t.Errorf("expected clean error message, got: %s", w.Body.String())
+	}
 }
+
+type stdError string
+
+func (e stdError) Error() string { return string(e) }
