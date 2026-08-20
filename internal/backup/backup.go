@@ -29,30 +29,47 @@ type ArchiveInfo struct {
 // Validate decrypts a backup and confirms it is a readable pg_dump custom-format
 // archive, returning header metadata — WITHOUT touching any database.
 func Validate(ctx context.Context, enc []byte, key string) (ArchiveInfo, error) {
-	var info ArchiveInfo
+	toc, err := archiveTOC(ctx, enc, key)
+	if err != nil {
+		return ArchiveInfo{}, err
+	}
+	return parseTOC(toc), nil
+}
+
+// archiveTOC entschlüsselt ein Archiv und gibt sein Inhaltsverzeichnis aus
+// (`pg_restore --list`), ohne eine Datenbank anzufassen. Ausgelagert, damit die
+// Wiederherstellungsprüfung Kopf- UND Inhaltsstufe aus einem einzigen Lauf ableiten
+// kann — sonst liefe pg_restore zweimal über dasselbe Archiv.
+func archiveTOC(ctx context.Context, enc []byte, key string) (string, error) {
 	plain, err := Decrypt(enc, key)
 	if err != nil {
-		return info, err
+		return "", err
 	}
 	tmp, err := os.CreateTemp("", "parkrr-validate-*.dump")
 	if err != nil {
-		return info, err
+		return "", err
 	}
 	defer os.Remove(tmp.Name())
 	if _, err := tmp.Write(plain); err != nil {
 		_ = tmp.Close()
-		return info, err
+		return "", err
 	}
 	if err := tmp.Close(); err != nil {
-		return info, err
+		return "", err
 	}
 	// #nosec G204 -- fixed command "pg_restore"; the only argument is a temp file
 	// path we created, not user input.
 	out, err := exec.CommandContext(ctx, "pg_restore", "--list", tmp.Name()).Output()
 	if err != nil {
-		return info, fmt.Errorf("not a valid pg_dump archive: %w", err)
+		return "", fmt.Errorf("not a valid pg_dump archive: %w", err)
 	}
-	for _, line := range strings.Split(string(out), "\n") {
+	return string(out), nil
+}
+
+// parseTOC liest die Kopfdaten aus einem Inhaltsverzeichnis.
+func parseTOC(toc string) ArchiveInfo {
+	var info ArchiveInfo
+	for _, line := range strings.Split(toc, "\n") {
 		if strings.HasPrefix(line, ";") {
 			if i := strings.Index(line, "created at "); i >= 0 {
 				info.Created = strings.TrimSpace(line[i+len("created at "):])
@@ -63,7 +80,7 @@ func Validate(ctx context.Context, enc []byte, key string) (ArchiveInfo, error) 
 			info.Entries++
 		}
 	}
-	return info, nil
+	return info
 }
 
 // keyContext domain-separates the backup key from any other SHA-256-derived key.

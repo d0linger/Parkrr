@@ -109,14 +109,32 @@ func RunVolume(ctx context.Context, pool *pgxpool.Pool, dbURL, key, dir string, 
 		_ = recordVolume(ctx, pool, time.Now(), 0, false, false)
 		return 0, false, err
 	}
-	// Verify the just-written archive is decryptable and structurally restorable.
+	// Wiederherstellungsprüfung. Erst Stufe 1 gegen die DATEI auf der Platte: os.WriteFile
+	// kann bei vollem Dateisystem ohne Fehler zurückkommen, und dann läge dort ein
+	// abgeschnittenes Archiv, das jede spätere Prüfung im Speicher nicht bemerkt.
 	size := int64(len(enc))
-	if _, verr := Validate(ctx, enc, key); verr != nil {
+	if onDisk, rerr := os.ReadFile(p); rerr != nil { // #nosec G304 -- selbst erzeugter Pfad
+		slog.Warn("backup: read-back failed – keeping older archives", "path", p, "err", rerr)
+		_ = recordVolume(ctx, pool, time.Now(), size, false, false)
+		audit(ctx, actionBackupFailed, "Volume-Backup: Rücklesen der Datei fehlgeschlagen",
+			map[string]any{"target": "volume", "stage": "readback", "error": rerr.Error()})
+		return size, false, nil
+	} else if verr := VerifyLocalBytes(onDisk, enc); verr != nil {
+		slog.Warn("backup: written file differs – keeping older archives", "path", p, "err", verr)
+		_ = recordVolume(ctx, pool, time.Now(), size, false, false)
+		audit(ctx, actionBackupFailed, "Volume-Backup: Datei weicht vom Erzeugten ab",
+			map[string]any{"target": "volume", "stage": "checksum", "error": verr.Error()})
+		return size, false, nil
+	}
+	// Stufen 3+4: Archivkopf und Kerntabellen.
+	if _, verr := VerifyArchive(ctx, enc, key); verr != nil {
 		// Do NOT rotate the older (verified) archives out behind an UNVERIFIED new
 		// one, and record the run as not-OK — otherwise a persistent verify failure
 		// would prune away the last good backup while last_volume_ok stayed green.
 		slog.Warn("backup: archive verify failed – keeping older archives", "path", p, "err", verr)
 		_ = recordVolume(ctx, pool, time.Now(), size, false, false)
+		audit(ctx, actionBackupFailed, "Volume-Backup: Wiederherstellungsprüfung fehlgeschlagen",
+			map[string]any{"target": "volume", "stage": "archive", "error": verr.Error()})
 		return size, false, nil
 	}
 	pruneDir(ctx, dir, keep)
@@ -139,6 +157,19 @@ func RunS3(ctx context.Context, pool *pgxpool.Pool, dbURL, key string, s3 S3Conf
 	if err := UploadS3(ctx, s3, name, enc, keep); err != nil {
 		_ = recordS3(ctx, pool, time.Now(), false)
 		return "", err
+	}
+	// Bis hierher hieß "erfolgreich" nur, dass PutObject zurückkam. Ein
+	// Verbindungsabbruch mitten im Upload hinterlässt ein kürzeres Objekt, das
+	// genauso aussieht. Deshalb Stufe 2: Größe, dann zurücklesen und Prüfsumme
+	// vergleichen — gegen die Summe des ERZEUGTEN Archivs, nicht gegen die des
+	// Objekts, sonst prüft man das Ergebnis mit sich selbst.
+	if verr := VerifyS3Object(ctx, s3, name, Checksum(enc), int64(len(enc))); verr != nil {
+		slog.Error("backup: S3 object failed verification", "object", name, "err", verr)
+		_ = recordS3(ctx, pool, time.Now(), false)
+		audit(ctx, actionBackupFailed, "S3-Backup: Objekt hat die Prüfung nicht bestanden",
+			map[string]any{"target": "s3", "stage": "s3-readback", "object": name,
+				"bucket": s3.Bucket, "error": verr.Error()})
+		return name, verr
 	}
 	_ = recordS3(ctx, pool, time.Now(), true)
 	return name, nil
