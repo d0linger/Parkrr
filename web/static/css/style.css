@@ -1000,6 +1000,24 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .app-header .btn-icon{ color:#effffb; background:rgba(255,255,255,.16); border-radius:11px; }
 .app-header .btn-icon:hover{ background:rgba(255,255,255,.28); }
 
+/* Backup-Indikator in der Kopfzeile.
+   Die Kopfzeile ist in BEIDEN Themes teal (#0d9488 → #22d3ee), und auf diesem Grund
+   versagen die normalen Zustandsfarben messbar: --success 1,12:1, --warning 1,19:1,
+   --danger 1,46:1 gegen den transluzenten Chip. WCAG 1.4.11 verlangt 3:1 für
+   grafische Elemente; Rot hatte gegen reines Teal sogar exakt dieselbe Helligkeit
+   (1,00:1) und war damit nur noch über den Farbton zu erkennen — für Farbfehlsichtige
+   also gar nicht.
+   Lösung: ein deckend weißer Chip (3,04:1 gegen die Kopfzeile) und darauf kräftige,
+   dunkle Zustandstöne (4,6–6,0:1 gegen Weiß). Der Indikator hebt sich damit bewusst
+   von den transluzenten Aktions-Buttons ab — er ist ein Status, kein Knopf. */
+.app-header .bkdot__btn { background: #ffffff; }
+.app-header .bkdot__btn:hover { background: #ffffff; }
+.app-header .bkdot--ok .bkico, .app-header .bkdot--ok .bkdot__btn:hover .bkico { color: #15803d; }
+.app-header .bkdot--warn .bkico, .app-header .bkdot--warn .bkdot__btn:hover .bkico { color: #b45309; }
+.app-header .bkdot--bad .bkico, .app-header .bkdot--bad .bkdot__btn:hover .bkico { color: #b91c1c; }
+/* Der Ring-Track darf auf Weiß etwas kräftiger sein, sonst verschwindet er. */
+.app-header .bkico__track { opacity: 0.28; }
+
 /* Cards → flat surface + 14px */
 .card{ background:var(--card-bg) !important; border-radius:14px; }
 
@@ -1740,7 +1758,9 @@ a.portal-row.link:hover { color: var(--accent-text); }
 /* Zustandsfarbe direkt AUF dem Icon, nicht auf dem Wrapper: der Button dazwischen
    trägt .btn-icon mit color: var(--text-muted) und säße näher am SVG — currentColor
    hätte dann immer Grau geliefert, egal welchen Zustand der Wrapper meldet.
-   Auch auf :hover erzwingen, weil .btn-icon:hover die Farbe ebenfalls setzt. */
+   Auch auf :hover erzwingen, weil .btn-icon:hover die Farbe ebenfalls setzt.
+   Werte siehe .app-header-Block weiter unten: in der Kopfzeile gelten eigene,
+   dunklere Töne, weil dort ein weißer Chip statt der Seitenfläche hinterliegt. */
 .bkdot--ok .bkico, .bkdot--ok .bkdot__btn:hover .bkico { color: var(--success); }
 .bkdot--warn .bkico, .bkdot--warn .bkdot__btn:hover .bkico { color: var(--warning); }
 .bkdot--bad .bkico, .bkdot--bad .bkdot__btn:hover .bkico { color: var(--danger); }
