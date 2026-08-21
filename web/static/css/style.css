@@ -526,6 +526,36 @@ textarea { resize: vertical; min-height: 72px; }
 .tab.active .tab-pill { background: var(--primary-soft); }
 .tab:focus-visible { outline: 2px solid var(--primary); outline-offset: -3px; }
 
+/* Fahrwerk-Stufe 4: ab Desktop-Breite wird DIESELBE Tab-Leiste zur linken Schiene —
+   gleiche fünf Elemente, gleiche data-route-Verdrahtung, gleiches aktives Element,
+   nur anders gelegt. Kein JS, kein Markup; unter 1024px ändert sich nichts.
+   Die Verwaltungs-Rubriken bleiben wie bisher im Menü (☰) — bewusst: ein statisches
+   Markup kennt die Rolle nicht, und das Menü baut sich rollenabhängig in JS. */
+@media (min-width: 1024px) {
+    .tabbar {
+        top: calc(var(--header-h) + env(safe-area-inset-top));
+        bottom: 0; left: 0; right: auto;
+        width: 224px; height: auto;
+        flex-direction: column; justify-content: flex-start; align-items: stretch;
+        gap: 2px;
+        padding: 1rem 0.75rem calc(1rem + env(safe-area-inset-bottom)) max(0.75rem, env(safe-area-inset-left));
+        border-top: 0; border-right: 1px solid var(--glass-border);
+        box-shadow: none;
+    }
+    .tab {
+        flex: 0 0 auto; flex-direction: row; justify-content: flex-start;
+        gap: 0.65rem; font-size: 0.9rem; padding: 0.55rem 0.7rem;
+        border-radius: var(--radius-sm);
+    }
+    .tab .tab-pill { width: auto; height: auto; border-radius: 0; }
+    .tab.active .tab-pill { background: none; }
+    .tab.active { background: var(--primary-soft); }
+    .app-shell { padding-bottom: 2rem; padding-left: 224px; }
+    /* Toast und Offline-Banner hängen unten an der Tab-Leiste — die ist jetzt links. */
+    .toast { bottom: 1.2rem; left: calc(50% + 112px); }
+    .offline-banner { left: 224px; bottom: 0; }
+}
+
 /* ---------- Cards / lists ---------- */
 .card {
     background: var(--card-bg); border: 1px solid var(--card-border);
