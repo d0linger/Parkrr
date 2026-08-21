@@ -1753,6 +1753,23 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-block.gp-small .gp-rl-code,.gp-block.gp-small .gp-rl-dim{display:none}
 .gp-block.gp-tiny .gp-rlabel{display:none}
 
+/* ---------- Audit-Log: aktive Filter-Chips + Tagesgruppen ---------- */
+.audit-chips { display:flex; flex-wrap:wrap; gap:.4rem; margin:-0.15rem 0 .75rem; }
+.audit-chips[hidden] { display:none; }
+.audit-chip { display:inline-flex; align-items:center; gap:.45rem; font:500 .8rem var(--font);
+    background:var(--bg-elev); border:1px solid var(--border); color:var(--text);
+    border-radius:999px; padding:.3rem .4rem .3rem .7rem; }
+.audit-chip button { border:0; background:var(--bg-elev-2); color:var(--text-muted); border-radius:999px;
+    width:19px; height:19px; line-height:1; cursor:pointer; font-size:.68rem; flex:none; }
+.audit-chip button:hover { background:color-mix(in srgb, var(--danger) 16%, transparent); color:var(--danger-hover); }
+.audit-chip button:focus-visible { outline:2px solid var(--primary); outline-offset:1px; }
+.timeline .t-day { border-left-color:transparent; padding:.65rem 0 .55rem 1.3rem;
+    font:600 .68rem var(--font); letter-spacing:.08em; text-transform:uppercase; color:var(--text-muted);
+    display:flex; align-items:center; gap:.6rem; list-style:none; }
+.timeline .t-day::before { display:none; }
+.timeline .t-day::after { content:""; flex:1; height:1px; background:var(--border); }
+.timeline .t-day:first-child { padding-top:0; }
+
 /* ---------- Stiller Sektions-Knopf (Karten-Kopf-Aktionen) ----------
    Fahrwerk-Regel: EIN Primärknopf pro Ansicht; gleichrangige Sektions-Aktionen
    (+ Foto, Kamera, + Protokoll) sind still — Markentinte, Fläche erst beim Zeigen. */

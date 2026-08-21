@@ -4129,14 +4129,34 @@
             el('div', { class: 'audit-filter-row' }, actSel, entSel),
             el('div', { class: 'audit-filter-row' }, fromIn, toIn)));
 
+        // Aktive Filter als Chips (Audit-Befund 3): sobald die Filterkarte aus dem
+        // Bild scrollt, war bisher unsichtbar, WAS gerade filtert. Jeder Chip räumt
+        // per ✕ genau sein Steuerelement — derselbe Weg, den das Element selbst
+        // gegangen wäre, keine zweite Filterlogik.
+        const chipsBar = el('div', { class: 'audit-chips' });
+        page.append(chipsBar);
+        const renderChips = () => {
+            chipsBar.innerHTML = '';
+            const mk = (label, clear) => el('span', { class: 'audit-chip' }, label,
+                el('button', { type: 'button', 'aria-label': 'Filter „' + label + '" entfernen', onclick: clear }, '✕'));
+            if (q.text) chipsBar.append(mk('„' + q.text + '"', () => { search.value = ''; q.text = ''; apply(); }));
+            if (q.action) chipsBar.append(mk('Aktion: ' + (AUDIT_ACTIONS[q.action] || q.action), () => { actSel.value = ''; q.action = ''; apply(); }));
+            if (q.entity) chipsBar.append(mk('Objekt: ' + (AUDIT_ENTITIES[q.entity] || q.entity), () => { entSel.value = ''; q.entity = ''; apply(); }));
+            if (q.from) chipsBar.append(mk('ab ' + fmtDate(q.from), () => { fromIn.value = ''; q.from = ''; apply(); }));
+            if (q.to) chipsBar.append(mk('bis ' + fmtDate(q.to), () => { toIn.value = ''; q.to = ''; apply(); }));
+            chipsBar.hidden = !chipsBar.children.length;
+        };
+        const apply = () => { renderChips(); load(true); };
+
         const ul = el('ul', { class: 'timeline' });
         page.append(el('div', { class: 'card' }, ul));
         const moreBtn = el('button', { class: 'btn btn-ghost btn-block', onclick: () => load(false) }, 'Mehr laden');
         moreBtn.hidden = true;
         page.append(moreBtn);
 
+        let lastDay = null;
         async function load(reset) {
-            if (reset) { q.offset = 0; ul.innerHTML = ''; }
+            if (reset) { q.offset = 0; ul.innerHTML = ''; lastDay = null; }
             const p = new URLSearchParams({ limit: String(q.limit), offset: String(q.offset) });
             if (q.text) p.set('q', q.text);
             if (q.action) p.set('action', q.action);
@@ -4145,17 +4165,27 @@
             if (q.to) p.set('to', q.to);
             let entries = [];
             try { entries = await api.get('/audit?' + p.toString()); } catch { /* ignore */ }
-            for (const a of entries) ul.append(auditItem(a));
+            for (const a of entries) {
+                const day = new Date(a.created_at).toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'long' });
+                if (day !== lastDay) {
+                    lastDay = day;
+                    const today = new Date().toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'long' });
+                    const gestern = new Date(Date.now() - 864e5).toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'long' });
+                    ul.append(el('li', { class: 't-day' }, day === today ? 'Heute · ' + day : (day === gestern ? 'Gestern · ' + day : day)));
+                }
+                ul.append(auditItem(a));
+            }
             q.offset += entries.length;
             moreBtn.hidden = entries.length < q.limit;
             if (!ul.children.length) ul.append(el('li', { class: 'muted' }, 'Keine Einträge.'));
         }
         let t;
-        search.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => { q.text = search.value.trim(); load(true); }, 300); });
-        actSel.addEventListener('change', () => { q.action = actSel.value; load(true); });
-        entSel.addEventListener('change', () => { q.entity = entSel.value; load(true); });
-        fromIn.addEventListener('change', () => { q.from = fromIn.value; load(true); });
-        toIn.addEventListener('change', () => { q.to = toIn.value; load(true); });
+        search.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => { q.text = search.value.trim(); apply(); }, 300); });
+        actSel.addEventListener('change', () => { q.action = actSel.value; apply(); });
+        entSel.addEventListener('change', () => { q.entity = entSel.value; apply(); });
+        fromIn.addEventListener('change', () => { q.from = fromIn.value; apply(); });
+        toIn.addEventListener('change', () => { q.to = toIn.value; apply(); });
+        renderChips();
         load(true);
     };
 
