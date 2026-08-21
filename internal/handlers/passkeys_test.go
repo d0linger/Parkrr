@@ -94,6 +94,39 @@ func TestPasskeyRegisterBegin_NameLength(t *testing.T) {
 	}
 }
 
+func TestPasskeyRegisterBegin_PasswordLength(t *testing.T) {
+	wa, err := auth.NewWebAuthnService(nil, "example.com", "Example", []string{"https://example.com"})
+	if err != nil {
+		t.Fatalf("failed to create webauthn service: %v", err)
+	}
+
+	ah := &AuthHandler{
+		Handler:  &Handler{},
+		WebAuthn: wa,
+	}
+
+	body := map[string]string{
+		"name":     "validName",
+		"password": strings.Repeat("p", maxPasswordLen+1),
+	}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/passkeys/register/begin", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+
+	ah.PasskeyRegisterBegin(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("got status %d, want %d", w.Code, http.StatusForbidden)
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if resp["error"] != "password is incorrect" {
+		t.Errorf("got error %q, want %q", resp["error"], "password is incorrect")
+	}
+}
+
 func TestPasskeyRegisterFinish_PerAccountRateLimit(t *testing.T) {
 	ah := &AuthHandler{
 		Handler:     &Handler{},

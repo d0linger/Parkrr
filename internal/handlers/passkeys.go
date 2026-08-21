@@ -150,6 +150,12 @@ func (h *AuthHandler) PasskeyRegisterBegin(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "name is too long")
 		return
 	}
+	// An over-long password can't match (bcrypt caps at 72 bytes), so
+	// reject it up front rather than spending a bcrypt compare on it.
+	if len(body.Password) > maxPasswordLen {
+		writeError(w, http.StatusForbidden, "password is incorrect")
+		return
+	}
 	// Step-up: registering a durable new factor requires a recent primary-factor
 	// login, or the account password if that window has closed (finding SH-02).
 	if !h.requireStepUp(w, r, u.Username, body.Password) {
