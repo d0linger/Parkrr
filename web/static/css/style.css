@@ -41,6 +41,7 @@
     --card-border: #24312E;
     --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 28px rgba(0, 0, 0, 0.35);
     --glow: rgba(47, 179, 168, 0.14);
+    --deco-plan: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='880' height='620' viewBox='0 0 880 620' fill='none' stroke='%2379CBC5' stroke-opacity='0.07' stroke-width='2'%3E%0A%3Cpath d='M60,80 H720 V540 H300 V470 H60 Z' stroke-width='2.5'/%3E%0A%3Cpath d='M100,470 H260' stroke-dasharray='14 10' stroke-width='2.5'/%3E%0A%3Crect x='110' y='130' width='200' height='84' rx='18'/%3E%0A%3Ccircle cx='190' cy='236' r='15'/%3E%0A%3Cpath d='M310,172 h46'/%3E%0A%3Crect x='400' y='130' width='150' height='84' rx='10'/%3E%0A%3Crect x='585' y='130' width='105' height='84' rx='10'/%3E%0A%3Crect x='110' y='300' width='165' height='76' rx='12'/%3E%0A%3Crect x='400' y='285' width='190' height='76' rx='14'/%3E%0A%3Cpath d='M400,430 H690 M400,422 V438 M690,422 V438'/%3E%0A%3Cpath d='M525,150 v-40 h60' stroke-dasharray='4 6'/%3E%0A%3Cpath d='M755,200 h18 M764,191 v18 M755,340 h18 M764,331 v18 M180,575 h18 M189,566 v18 M480,530 h18 M489,521 v18'/%3E%0A%3C/svg%3E");
     --glass: rgba(12, 19, 18, 0.7);
     --glass-border: rgba(232, 240, 238, 0.08);
     --tab-active: #5ED4C9;
@@ -80,6 +81,7 @@
         --card-border: #DCE5E3;
         --card-shadow: 0 1px 2px rgba(16, 34, 31, 0.05), 0 8px 24px rgba(16, 34, 31, 0.08);
         --glow: rgba(15, 122, 115, 0.10);
+        --deco-plan: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='880' height='620' viewBox='0 0 880 620' fill='none' stroke='%230F7A73' stroke-opacity='0.09' stroke-width='2'%3E%0A%3Cpath d='M60,80 H720 V540 H300 V470 H60 Z' stroke-width='2.5'/%3E%0A%3Cpath d='M100,470 H260' stroke-dasharray='14 10' stroke-width='2.5'/%3E%0A%3Crect x='110' y='130' width='200' height='84' rx='18'/%3E%0A%3Ccircle cx='190' cy='236' r='15'/%3E%0A%3Cpath d='M310,172 h46'/%3E%0A%3Crect x='400' y='130' width='150' height='84' rx='10'/%3E%0A%3Crect x='585' y='130' width='105' height='84' rx='10'/%3E%0A%3Crect x='110' y='300' width='165' height='76' rx='12'/%3E%0A%3Crect x='400' y='285' width='190' height='76' rx='14'/%3E%0A%3Cpath d='M400,430 H690 M400,422 V438 M690,422 V438'/%3E%0A%3Cpath d='M525,150 v-40 h60' stroke-dasharray='4 6'/%3E%0A%3Cpath d='M755,200 h18 M764,191 v18 M755,340 h18 M764,331 v18 M180,575 h18 M189,566 v18 M480,530 h18 M489,521 v18'/%3E%0A%3C/svg%3E");
         --glass: rgba(242, 246, 245, 0.78);
         --glass-border: rgba(20, 32, 30, 0.08);
         --tab-active: #0B615B;
@@ -116,6 +118,7 @@
     --card-border: #DCE5E3;
     --card-shadow: 0 1px 2px rgba(16, 34, 31, 0.05), 0 8px 24px rgba(16, 34, 31, 0.08);
     --glow: rgba(15, 122, 115, 0.10);
+    --deco-plan: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='880' height='620' viewBox='0 0 880 620' fill='none' stroke='%230F7A73' stroke-opacity='0.09' stroke-width='2'%3E%0A%3Cpath d='M60,80 H720 V540 H300 V470 H60 Z' stroke-width='2.5'/%3E%0A%3Cpath d='M100,470 H260' stroke-dasharray='14 10' stroke-width='2.5'/%3E%0A%3Crect x='110' y='130' width='200' height='84' rx='18'/%3E%0A%3Ccircle cx='190' cy='236' r='15'/%3E%0A%3Cpath d='M310,172 h46'/%3E%0A%3Crect x='400' y='130' width='150' height='84' rx='10'/%3E%0A%3Crect x='585' y='130' width='105' height='84' rx='10'/%3E%0A%3Crect x='110' y='300' width='165' height='76' rx='12'/%3E%0A%3Crect x='400' y='285' width='190' height='76' rx='14'/%3E%0A%3Cpath d='M400,430 H690 M400,422 V438 M690,422 V438'/%3E%0A%3Cpath d='M525,150 v-40 h60' stroke-dasharray='4 6'/%3E%0A%3Cpath d='M755,200 h18 M764,191 v18 M755,340 h18 M764,331 v18 M180,575 h18 M189,566 v18 M480,530 h18 M489,521 v18'/%3E%0A%3C/svg%3E");
     --glass: rgba(242, 246, 245, 0.78);
     --glass-border: rgba(20, 32, 30, 0.08);
     --tab-active: #0B615B;
@@ -149,6 +152,7 @@
     --card-border: #24312E;
     --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 28px rgba(0, 0, 0, 0.35);
     --glow: rgba(47, 179, 168, 0.14);
+    --deco-plan: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='880' height='620' viewBox='0 0 880 620' fill='none' stroke='%2379CBC5' stroke-opacity='0.07' stroke-width='2'%3E%0A%3Cpath d='M60,80 H720 V540 H300 V470 H60 Z' stroke-width='2.5'/%3E%0A%3Cpath d='M100,470 H260' stroke-dasharray='14 10' stroke-width='2.5'/%3E%0A%3Crect x='110' y='130' width='200' height='84' rx='18'/%3E%0A%3Ccircle cx='190' cy='236' r='15'/%3E%0A%3Cpath d='M310,172 h46'/%3E%0A%3Crect x='400' y='130' width='150' height='84' rx='10'/%3E%0A%3Crect x='585' y='130' width='105' height='84' rx='10'/%3E%0A%3Crect x='110' y='300' width='165' height='76' rx='12'/%3E%0A%3Crect x='400' y='285' width='190' height='76' rx='14'/%3E%0A%3Cpath d='M400,430 H690 M400,422 V438 M690,422 V438'/%3E%0A%3Cpath d='M525,150 v-40 h60' stroke-dasharray='4 6'/%3E%0A%3Cpath d='M755,200 h18 M764,191 v18 M755,340 h18 M764,331 v18 M180,575 h18 M189,566 v18 M480,530 h18 M489,521 v18'/%3E%0A%3C/svg%3E");
     --glass: rgba(12, 19, 18, 0.7);
     --glass-border: rgba(232, 240, 238, 0.08);
     --tab-active: #5ED4C9;
@@ -161,10 +165,17 @@
    overlay stays on top of the app after sign-in. */
 [hidden] { display: none !important; }
 
+html {
+    /* Der Seitengrund wohnt auf html, NICHT auf body: das Blaupause-Pseudo-Element
+       unten hat z-index -1, und die Malreihenfolge legt negative Ebenen UNTER die
+       Hintergründe der Blocknachfahren. Ein opaker body-Grund hat deshalb auch den
+       bisherigen --glow-Schein die ganze Zeit stillschweigend verdeckt — erst die
+       deutlich sichtbarere Blaupause hat das auffliegen lassen. */
+    background: var(--bg);
+}
 html, body {
     margin: 0;
     padding: 0;
-    background: var(--bg);
     color: var(--text);
     font-family: var(--font);
     font-size: 16px;
@@ -173,15 +184,22 @@ html, body {
     overscroll-behavior-y: contain;
 }
 
-/* Subtle radial brand glow at the top of every page (fixed pseudo-element so
-   mobile browsers don't repaint a fixed background-attachment on scroll). */
+/* Fahrwerk-Blaupause: der Petrol-Schein oben plus ein geisterhaft gepauster
+   Hallenplan unten rechts — das Motiv des Garagenplaners, in Petrol-Tinte unters
+   Papier durchgedrückt. Fixes Pseudo-Element statt background-attachment, damit
+   mobile Browser beim Scrollen nichts neu zeichnen. Nur Petrol, nie Kupfer;
+   Deckkraft 9 % hell / 7 % dunkel — Text direkt über einer Motivlinie bleibt
+   nachgemessen bei 13,6:1 (hell) bzw. 14,5:1 (dunkel). */
 body::before {
     content: "";
     position: fixed;
     inset: 0;
     z-index: -1;
     pointer-events: none;
-    background: radial-gradient(120% 75% at 50% -12%, var(--glow), transparent 58%);
+    background-image: radial-gradient(120% 75% at 50% -12%, var(--glow), transparent 58%), var(--deco-plan);
+    background-repeat: no-repeat, no-repeat;
+    background-position: 0 0, right -160px bottom -40px;
+    background-size: 100% 100%, 880px auto;
 }
 
 h1, h2, h3 { margin: 0 0 0.4em; font-weight: 650; letter-spacing: -0.01em; }
@@ -1034,7 +1052,7 @@ textarea { resize: vertical; min-height: 72px; }
   --grad: var(--primary);
 }
 
-body{ font-family:var(--font); }
+body{ font-family:var(--font); background:transparent; }
 h1,h2,h3,.sectitle,.mtitle,.bal-hero-num,.ag-accrued,.stat .value,.owe-amt,.amt{ font-family:var(--font-head); }
 h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 
@@ -1298,7 +1316,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .inv-footer{ margin-top:1.4rem; padding-top:.6rem; border-top:1px solid #e2e9f3; font-size:.76rem; color:#56657c; white-space:pre-line; }
 
 @media print{
-    body{ background:#fff !important; }
+    html, body{ background:#fff !important; }
     .app-header, .tabbar, .no-print, #page-title { display:none !important; }
     #page{ padding:0 !important; }
     .invoice-doc{ box-shadow:none; border-radius:0; max-width:none; padding:0; }
