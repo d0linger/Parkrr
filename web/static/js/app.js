@@ -3815,7 +3815,7 @@
     function backupStatRow(st) {
         const s = st.status || {};
         return el('div', { class: 'stat-grid', style: 'margin-top:1rem' },
-            stat(fmtWhen(s.last_volume_at), 'Letztes Volume-Backup', { icon: 'warehouse', tone: s.last_volume_ok ? 'green' : (s.last_volume_at ? 'amber' : undefined) }),
+            stat(fmtWhen(s.last_volume_at), 'Letztes Volume-Backup', { icon: 'warehouse', tone: s.last_volume_ok ? 'green' : (s.last_volume_at ? 'red' : undefined) }),
             stat(s.last_volume_size ? fmtBytes(s.last_volume_size) : '—', 'Größe', { icon: 'trend' }),
             stat(fmtWhen(s.restore_tested_at), 'Archiv geprüft', { icon: 'check', tone: s.restore_tested_at ? 'teal' : undefined }),
             stat(st.schema_version || '—', 'Schema-Stand', { icon: 'clock' }));
@@ -3896,20 +3896,44 @@
                 el('li', {}, 'Für beliebig große Backups: Restore per Kommandozeile ', el('code', {}, 'parkrr restore <datei.dump.enc>'), '.'))));
     };
     function backupRestoreCard() {
-        const fileIn = el('input', { type: 'file', accept: '.enc' });
+        const fileIn = el('input', { type: 'file', accept: '.enc', style: 'display:none' });
+        const dropLabel = el('b', {}, 'Backup-Datei wählen oder hierher ziehen');
+        const chipWrap = el('div', {});
+        const drop = el('div', { class: 'bk-drop', role: 'button', tabindex: '0',
+            'aria-label': 'Backup-Datei wählen oder hierher ziehen' },
+        el('span', { class: 'bk-drop-ic', 'aria-hidden': 'true', html: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m0 0 4 4m-4-4-4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>' }),
+        dropLabel,
+        el('span', { class: 'bk-drop-sub' }, '.dump.enc · verschlüsselt mit deinem PARKRR_BACKUP_KEY'));
+        const showFile = () => {
+            chipWrap.innerHTML = '';
+            const f = fileIn.files[0];
+            if (!f) return;
+            chipWrap.append(el('span', { class: 'bk-filechip' },
+                esc(f.name) + ' · ' + fmtBytes(f.size),
+                el('button', { type: 'button', 'aria-label': 'Auswahl entfernen',
+                    onclick: () => { fileIn.value = ''; fileIn.dispatchEvent(new Event('change')); } }, '✕')));
+        };
+        drop.addEventListener('click', () => fileIn.click());
+        drop.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileIn.click(); } });
+        drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('is-over'); });
+        drop.addEventListener('dragleave', () => drop.classList.remove('is-over'));
+        drop.addEventListener('drop', (e) => {
+            e.preventDefault(); drop.classList.remove('is-over');
+            if (e.dataTransfer.files.length) { fileIn.files = e.dataTransfer.files; fileIn.dispatchEvent(new Event('change')); }
+        });
         const keyIn = el('input', { type: 'password', placeholder: 'Backup-Schlüssel', autocomplete: 'off' });
         const confirmIn = el('input', { type: 'text', placeholder: 'RESTORE', autocomplete: 'off' });
         const result = el('div', { class: 'card-meta', style: 'margin:.5rem 0' });
         const restoreBtn = el('button', { class: 'btn btn-danger', disabled: true, onclick: (e) => restoreBackup(fileIn, keyIn, confirmIn, e.currentTarget) }, 'Wiederherstellen');
         const validateBtn = el('button', { class: 'btn btn-ghost', onclick: () => validateBackup(fileIn, keyIn, result, restoreBtn) }, 'Validieren');
         // Re-validation is required after any change, so the restore stays gated.
-        const invalidate = () => { restoreBtn.disabled = true; result.textContent = ''; };
+        const invalidate = () => { restoreBtn.disabled = true; result.textContent = ''; showFile(); };
         fileIn.addEventListener('change', invalidate); keyIn.addEventListener('input', invalidate);
         return el('div', { class: 'card', style: 'margin-top:1rem' },
             el('h3', {}, 'Wiederherstellen'),
             el('div', { class: 'card-meta', style: 'margin:.3rem 0 .6rem;color:var(--accent-text);font-weight:600' },
                 '⚠ Überschreibt die gesamte aktuelle Datenbank. Atomar (rollt bei Fehler komplett zurück). Erst validieren.'),
-            el('label', {}, 'Backup-Datei (.dump.enc)'), fileIn,
+            fileIn, drop, chipWrap,
             el('label', {}, 'Schlüssel'), keyIn,
             el('div', { style: 'margin-top:.6rem' }, validateBtn),
             result,

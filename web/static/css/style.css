@@ -1753,6 +1753,23 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-block.gp-small .gp-rl-code,.gp-block.gp-small .gp-rl-dim{display:none}
 .gp-block.gp-tiny .gp-rlabel{display:none}
 
+/* ---------- Backup: Fahrwerk-Ablagezone (statt nativem Datei-Input) ---------- */
+.bk-drop { border:1.5px dashed var(--border, #C2CFCC); border-radius:var(--radius-sm); padding:1.2rem;
+    text-align:center; color:var(--text-muted); background:var(--bg-elev-2); cursor:pointer;
+    display:grid; justify-items:center; gap:.25rem; margin:.5rem 0 .2rem;
+    transition:border-color .12s ease, color .12s ease; }
+.bk-drop:hover, .bk-drop.is-over, .bk-drop:focus-visible { border-color:var(--primary); color:var(--primary-ink); }
+.bk-drop:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+.bk-drop b { color:var(--text); font-size:.92rem; }
+.bk-drop-sub { font-size:.78rem; }
+.bk-drop-ic { display:flex; }
+.bk-filechip { display:inline-flex; align-items:center; gap:.5rem; margin-top:.45rem;
+    font:500 .78rem var(--font-mono); background:var(--bg-elev); border:1px solid var(--border);
+    border-radius:999px; padding:.35rem .5rem .35rem .75rem; word-break:break-all; }
+.bk-filechip button { border:0; background:var(--bg-elev-2); color:var(--text-muted); border-radius:999px;
+    width:20px; height:20px; line-height:1; cursor:pointer; font-size:.7rem; flex:none; }
+.bk-filechip button:hover { background:color-mix(in srgb, var(--danger) 16%, transparent); color:var(--danger-hover); }
+
 /* ---------- Command palette (⌘K global search) ---------- */
 .cmdk { position: fixed; inset: 0; z-index: 60; background: rgba(6,12,20,.5); display: flex; align-items: flex-start; justify-content: center; padding: 11vh 1rem 1rem; }
 .cmdk-box { width: min(560px, 96vw); background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 14px; box-shadow: 0 24px 60px -18px rgba(0,0,0,.5); overflow: hidden; }
