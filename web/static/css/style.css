@@ -1039,11 +1039,13 @@ textarea { resize: vertical; min-height: 72px; }
    =================================================================== */
 @font-face{font-family:'Hanken Grotesk';font-weight:400 700;font-style:normal;font-display:swap;src:url(/fonts/hanken.woff2) format('woff2')}
 @font-face{font-family:'JetBrains Mono';font-weight:500 700;font-style:normal;font-display:swap;src:url(/fonts/jbmono.woff2) format('woff2')}
-@font-face{font-family:'Manrope';font-weight:700 800;font-style:normal;font-display:swap;src:url(/fonts/manrope.woff2) format('woff2')}
+/* Bricolage Grotesque (variabel, Latin-Subset, OFL) ersetzt Manrope als
+   Display-Schrift — die Überschriften-Stimme des Fahrwerk-Systems. */
+@font-face{font-family:'Bricolage Grotesque';font-weight:200 800;font-style:normal;font-display:swap;src:url(/fonts/bricolage.woff2) format('woff2')}
 
 :root{
   --font:'Hanken Grotesk',system-ui,-apple-system,'Segoe UI',sans-serif;
-  --font-head:'Manrope','Segoe UI Variable Display','Segoe UI',system-ui,sans-serif;
+  --font-head:'Bricolage Grotesque','Segoe UI Variable Display','Segoe UI',system-ui,sans-serif;
   --font-mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;
   --radius:16px; --radius-sm:12px;
   /* --grad war der Teal→Cyan-Verlauf. Fahrwerk kennt keinen Verlauf mehr: der Alias
