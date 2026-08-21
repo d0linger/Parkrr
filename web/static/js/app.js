@@ -4194,8 +4194,12 @@
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' }, el('button', { class: 'back-btn', onclick: () => navigate('dashboard') }, '‹'), el('h2', { style: 'margin:0' }, 'Einstellungen')));
 
+        const colA = el('div', { class: 'set-col' });
+        const colB = el('div', { class: 'set-col' });
+        page.append(el('div', { class: 'set-grid' }, colA, colB));
+
         // account
-        page.append(el('div', { class: 'card' },
+        colA.append(el('div', { class: 'card' },
             el('div', { class: 'balance' }, el('span', {}, 'Angemeldet als'), el('strong', {}, esc(state.user.username))),
             el('div', { class: 'balance' }, el('span', {}, 'Rolle'), el('span', {}, ROLE_LABEL[state.user.role] || state.user.role)),
             el('button', { class: 'btn btn-ghost btn-block', style: 'margin-top:.7rem', onclick: changePasswordForm }, 'Passwort ändern')));
@@ -4269,11 +4273,11 @@
             twoFA.append(el('p', { class: 'tf-desc' }, 'Schütze dein Konto mit einer Authenticator-App: beim Anmelden ist dann zusätzlich ein 6-stelliger Code nötig.'));
             twoFA.append(el('button', { class: 'btn btn-primary btn-block', onclick: setup2FA }, '2FA einrichten'));
         }
-        page.append(twoFA);
+        colA.append(twoFA);
 
         // passkeys
         if (state.capabilities.passkeys && webauthnSupported()) {
-            page.append(passkeysCard());
+            colB.append(passkeysCard());
         }
 
         // sessions
@@ -4287,7 +4291,7 @@
                     el('div', { class: 't-time' }, (s.ip || '?') + ' · zuletzt ' + fmtDateTime(s.last_seen))),
                 s.current ? null : el('button', { class: 'btn btn-ghost btn-sm', onclick: () => revokeSession(s.token) }, 'Abmelden')));
         }
-        page.append(sessCard);
+        colB.append(sessCard);
     };
     function shortUA(ua) {
         if (!ua) return 'Unbekanntes Gerät';
@@ -7441,7 +7445,9 @@
     }
 
     function passkeysCard() {
-        const card = el('div', { class: 'card' }, el('h3', {}, 'Passkeys'),
+        const card = el('div', { class: 'card' },
+            el('div', { class: 'page-head' }, el('h3', {}, 'Passkeys'),
+                el('button', { class: 'btn-sect', onclick: passkeyRegister }, '+ Passkey')),
             el('p', { class: 'muted' }, 'Anmeldung per Fingerabdruck/Gesichtserkennung – ohne Passwort.'));
         const list = el('div', {});
         card.append(list);
@@ -7458,7 +7464,6 @@
                     el('button', { class: 'btn btn-ghost btn-sm', onclick: () => delPasskey(c) }, 'Entfernen')));
             }
         };
-        card.append(el('button', { class: 'btn btn-primary btn-block', style: 'margin-top:.6rem', onclick: passkeyRegister }, '+ Passkey hinzufügen'));
         refresh();
         return card;
     }
