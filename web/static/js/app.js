@@ -2915,6 +2915,9 @@
         page.append(el('div', { class: 'detail-head' },
             el('button', { class: 'back-btn', onclick: () => navigate('vehicles'), 'aria-label': 'Zurück' }, '‹'),
             el('h2', { style: 'margin:0;flex:1' }, esc(vehicleTitle(v))),
+            (canManage() && !v.archived)
+                ? el('button', { class: 'btn btn-primary btn-sm', onclick: () => vehicleForm(v) }, icon('edit'), ' Bearbeiten')
+                : null,
             el('a', { class: 'btn btn-ghost btn-sm', href: '/api/vehicles/' + v.id + '/label', target: '_blank', rel: 'noopener', title: 'Druck-Label mit QR-Code' }, '🖶 Label'),
             statusBadge(v.status)));
 
@@ -2962,10 +2965,6 @@
                 }
                 page.append(ctrl);
             }
-            if (canManage()) {
-                page.append(el('div', { class: 'page-head' }, el('h3', {}, 'Bearbeiten'),
-                    el('button', { class: 'btn btn-ghost btn-sm', onclick: () => vehicleForm(v) }, icon('edit'), ' Bearbeiten')));
-            }
         }
 
         // photos
@@ -2980,8 +2979,8 @@
             const camInput = el('input', { type: 'file', accept: 'image/jpeg,image/png', capture: 'environment', style: 'display:none' });
             camInput.addEventListener('change', () => uploadPhoto(id, camInput.files[0]));
             ph.append(
-                el('button', { class: 'btn btn-primary btn-sm', onclick: () => fileInput.click() }, '+ Foto'),
-                el('button', { class: 'btn btn-ghost btn-sm', title: 'Mit Kamera aufnehmen', onclick: () => camInput.click() }, icon('camera'), ' Kamera'),
+                el('button', { class: 'btn-sect', onclick: () => fileInput.click() }, '+ Foto'),
+                el('button', { class: 'btn-sect', title: 'Mit Kamera aufnehmen', onclick: () => camInput.click() }, icon('camera'), ' Kamera'),
                 fileInput, camInput);
         }
         photoCard.append(ph);
@@ -3001,7 +3000,7 @@
         // Übergabeprotokolle (Zustand + Unterschrift bei Ein-/Auslagerung)
         const hoCard = el('div', { class: 'card' });
         const hoHead = el('div', { class: 'page-head' }, el('h3', {}, 'Übergabeprotokolle'));
-        if (canManage()) hoHead.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => handoverForm(id) }, '+ Protokoll'));
+        if (canManage()) hoHead.append(el('button', { class: 'btn-sect', onclick: () => handoverForm(id) }, '+ Protokoll'));
         hoCard.append(hoHead);
         if (handovers === null) hoCard.append(el('p', { class: 'muted' }, 'Protokolle konnten nicht geladen werden.'));
         else if (!handovers.length) hoCard.append(el('p', { class: 'muted' }, 'Noch keine Protokolle.'));

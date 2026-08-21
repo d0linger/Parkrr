@@ -1753,6 +1753,15 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-block.gp-small .gp-rl-code,.gp-block.gp-small .gp-rl-dim{display:none}
 .gp-block.gp-tiny .gp-rlabel{display:none}
 
+/* ---------- Stiller Sektions-Knopf (Karten-Kopf-Aktionen) ----------
+   Fahrwerk-Regel: EIN Primärknopf pro Ansicht; gleichrangige Sektions-Aktionen
+   (+ Foto, Kamera, + Protokoll) sind still — Markentinte, Fläche erst beim Zeigen. */
+.btn-sect { background:none; border:0; color:var(--primary-ink); font:600 0.82rem var(--font);
+    cursor:pointer; padding:0.35rem 0.55rem; border-radius:var(--radius-sm);
+    display:inline-flex; align-items:center; gap:0.3rem; min-height:36px; }
+.btn-sect:hover { background:var(--primary-soft); }
+.btn-sect:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+
 /* ---------- Backup: Fahrwerk-Ablagezone (statt nativem Datei-Input) ---------- */
 .bk-drop { border:1.5px dashed var(--border, #C2CFCC); border-radius:var(--radius-sm); padding:1.2rem;
     text-align:center; color:var(--text-muted); background:var(--bg-elev-2); cursor:pointer;
