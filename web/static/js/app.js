@@ -3900,7 +3900,7 @@
         const chipWrap = el('div', {});
         const drop = el('div', { class: 'bk-drop', role: 'button', tabindex: '0',
             'aria-label': 'Backup-Datei wählen oder hierher ziehen' },
-        el('span', { class: 'bk-drop-ic', 'aria-hidden': 'true', html: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m0 0 4 4m-4-4-4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>' }),
+        el('span', { class: 'bk-drop-ic', 'aria-hidden': 'true' }, icon('upload', 26)),
         dropLabel,
         el('span', { class: 'bk-drop-sub' }, '.dump.enc · verschlüsselt mit deinem PARKRR_BACKUP_KEY'));
         const showFile = () => {
@@ -3915,10 +3915,18 @@
         drop.addEventListener('click', () => fileIn.click());
         drop.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileIn.click(); } });
         drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('is-over'); });
-        drop.addEventListener('dragleave', () => drop.classList.remove('is-over'));
+        // dragleave feuert auch beim Übertritt auf ein KIND der Zone (Icon, Label)
+        // und ließe die Markierung flackern — nur beim echten Verlassen abräumen.
+        drop.addEventListener('dragleave', (e) => { if (!drop.contains(e.relatedTarget)) drop.classList.remove('is-over'); });
         drop.addEventListener('drop', (e) => {
             e.preventDefault(); drop.classList.remove('is-over');
-            if (e.dataTransfer.files.length) { fileIn.files = e.dataTransfer.files; fileIn.dispatchEvent(new Event('change')); }
+            const f = e.dataTransfer.files[0];
+            if (!f) return;
+            // Der Dateidialog filtert über accept=".enc" — der Drop-Pfad muss
+            // dieselbe Schranke ziehen, sonst wandert eine beliebige Datei in
+            // die Validierung.
+            if (!/\.enc$/i.test(f.name)) { toast('Bitte eine .enc-Backupdatei ablegen', 'error'); return; }
+            fileIn.files = e.dataTransfer.files; fileIn.dispatchEvent(new Event('change'));
         });
         const keyIn = el('input', { type: 'password', placeholder: 'Backup-Schlüssel', autocomplete: 'off' });
         const confirmIn = el('input', { type: 'text', placeholder: 'RESTORE', autocomplete: 'off' });
@@ -3926,8 +3934,12 @@
         const restoreBtn = el('button', { class: 'btn btn-danger', disabled: true, onclick: (e) => restoreBackup(fileIn, keyIn, confirmIn, e.currentTarget) }, 'Wiederherstellen');
         const validateBtn = el('button', { class: 'btn btn-ghost', onclick: () => validateBackup(fileIn, keyIn, result, restoreBtn) }, 'Validieren');
         // Re-validation is required after any change, so the restore stays gated.
-        const invalidate = () => { restoreBtn.disabled = true; result.textContent = ''; showFile(); };
-        fileIn.addEventListener('change', invalidate); keyIn.addEventListener('input', invalidate);
+        // showFile hängt NUR am Datei-Input: am Schlüsselfeld würde jeder
+        // Tastendruck den Chip abreißen und neu bauen (Fokus- und Screenreader-
+        // Position inklusive), obwohl sich die Datei nicht geändert haben kann.
+        const invalidate = () => { restoreBtn.disabled = true; result.textContent = ''; };
+        fileIn.addEventListener('change', () => { invalidate(); showFile(); });
+        keyIn.addEventListener('input', invalidate);
         return el('div', { class: 'card', style: 'margin-top:1rem' },
             el('h3', {}, 'Wiederherstellen'),
             el('div', { class: 'card-meta', style: 'margin:.3rem 0 .6rem;color:var(--accent-text);font-weight:600' },
@@ -4137,13 +4149,18 @@
         page.append(chipsBar);
         const renderChips = () => {
             chipsBar.innerHTML = '';
-            const mk = (label, clear) => el('span', { class: 'audit-chip' }, label,
-                el('button', { type: 'button', 'aria-label': 'Filter „' + label + '" entfernen', onclick: clear }, '✕'));
-            if (q.text) chipsBar.append(mk('„' + q.text + '"', () => { search.value = ''; q.text = ''; apply(); }));
-            if (q.action) chipsBar.append(mk('Aktion: ' + (AUDIT_ACTIONS[q.action] || q.action), () => { actSel.value = ''; q.action = ''; apply(); }));
-            if (q.entity) chipsBar.append(mk('Objekt: ' + (AUDIT_ENTITIES[q.entity] || q.entity), () => { entSel.value = ''; q.entity = ''; apply(); }));
-            if (q.from) chipsBar.append(mk('ab ' + fmtDate(q.from), () => { fromIn.value = ''; q.from = ''; apply(); }));
-            if (q.to) chipsBar.append(mk('bis ' + fmtDate(q.to), () => { toIn.value = ''; q.to = ''; apply(); }));
+            // Das Label wandert unverändert ins aria-Label (das Freitext-Label
+            // bringt seine Anführungszeichen selbst mit — nicht doppelt wickeln).
+            // Nach dem Entfernen wandert der Fokus auf das zugehörige Filterfeld,
+            // sonst fällt er mit dem zerstörten Knopf auf <body> zurück.
+            const mk = (label, clear, focusEl) => el('span', { class: 'audit-chip' }, label,
+                el('button', { type: 'button', 'aria-label': 'Filter ' + label + ' entfernen',
+                    onclick: () => { clear(); focusEl.focus(); } }, '✕'));
+            if (q.text) chipsBar.append(mk('„' + q.text + '“', () => { search.value = ''; q.text = ''; apply(); }, search));
+            if (q.action) chipsBar.append(mk('Aktion: ' + (AUDIT_ACTIONS[q.action] || q.action), () => { actSel.value = ''; q.action = ''; apply(); }, actSel));
+            if (q.entity) chipsBar.append(mk('Objekt: ' + (AUDIT_ENTITIES[q.entity] || q.entity), () => { entSel.value = ''; q.entity = ''; apply(); }, entSel));
+            if (q.from) chipsBar.append(mk('ab ' + fmtDate(q.from), () => { fromIn.value = ''; q.from = ''; apply(); }, fromIn));
+            if (q.to) chipsBar.append(mk('bis ' + fmtDate(q.to), () => { toIn.value = ''; q.to = ''; apply(); }, toIn));
             chipsBar.hidden = !chipsBar.children.length;
         };
         const apply = () => { renderChips(); load(true); };
@@ -4154,8 +4171,21 @@
         moreBtn.hidden = true;
         page.append(moreBtn);
 
+        // Gruppenschlüssel ist der lokale KALENDERTAG, nicht das Anzeigelabel: das
+        // Label trägt (im laufenden Jahr) kein Jahr, also wäre „Mo., 18. August"
+        // 2025 und 2026 derselbe Schlüssel — Einträge verschiedener Jahre
+        // verschmölzen unter einer Überschrift. „Gestern" über setDate statt
+        // now − 86400s, sonst kippt das Label an den beiden DST-Tagen.
+        const DAY_FMT = new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: 'numeric', month: 'long' });
+        const DAY_FMT_Y = new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' });
+        const dayKey = (d) => d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
         let lastDay = null;
+        // Läuft eine ältere Antwort nach einem Filterwechsel ein, würde sie unter
+        // die frische Liste gemischt (falsche Tagesköpfe, verschobenes offset) —
+        // dieselbe Sequenznummer wie in der Befehlspalette macht sie wirkungslos.
+        let loadSeq = 0;
         async function load(reset) {
+            const seq = ++loadSeq;
             if (reset) { q.offset = 0; ul.innerHTML = ''; lastDay = null; }
             const p = new URLSearchParams({ limit: String(q.limit), offset: String(q.offset) });
             if (q.text) p.set('q', q.text);
@@ -4165,13 +4195,17 @@
             if (q.to) p.set('to', q.to);
             let entries = [];
             try { entries = await api.get('/audit?' + p.toString()); } catch { /* ignore */ }
+            if (seq !== loadSeq) return;
+            const now = new Date();
+            const yest = new Date(now); yest.setDate(now.getDate() - 1);
+            const heute = dayKey(now), gestern = dayKey(yest);
             for (const a of entries) {
-                const day = new Date(a.created_at).toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'long' });
+                const d = new Date(a.created_at);
+                const day = dayKey(d);
                 if (day !== lastDay) {
                     lastDay = day;
-                    const today = new Date().toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'long' });
-                    const gestern = new Date(Date.now() - 864e5).toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'long' });
-                    ul.append(el('li', { class: 't-day' }, day === today ? 'Heute · ' + day : (day === gestern ? 'Gestern · ' + day : day)));
+                    const label = d.getFullYear() === now.getFullYear() ? DAY_FMT.format(d) : DAY_FMT_Y.format(d);
+                    ul.append(el('li', { class: 't-day' }, day === heute ? 'Heute · ' + label : (day === gestern ? 'Gestern · ' + label : label)));
                 }
                 ul.append(auditItem(a));
             }
@@ -7595,10 +7629,13 @@
         }
         return idx;
     }
+    // Baut das Marken-Glyph für EIN Element — auch für Ansichten, die nach init()
+    // entstehen (Portal) und den document-weiten applyBrand-Lauf samt Favicon-
+    // Neuaufbau nicht brauchen.
+    const brandGlyph = (size) => `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${VEHICLES[pickVehicleIndex()]}</svg>`;
     function applyBrand() {
         const inner = VEHICLES[pickVehicleIndex()];
-        const mk = (size) => `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
-        $$('.brand-veh').forEach((node) => { node.innerHTML = mk(node.dataset.veh || 24); });
+        $$('.brand-veh').forEach((node) => { node.innerHTML = brandGlyph(node.dataset.veh || 24); });
         // Favicon: a filled teal tile + white glyph so it reads at tab size, and it
         // rotates with the logos. Drop every existing icon link first, otherwise the
         // static favicon.ico (sizes="any") wins and the dynamic one is ignored.
@@ -7792,7 +7829,9 @@
         pv.innerHTML = '';
         const wrap = el('div', { class: 'portal-wrap' });
         wrap.append(el('div', { class: 'portal-head' },
-            el('span', { class: 'brand-veh', 'data-veh': '34', 'aria-hidden': 'true' }),
+            // Direkt gefüllt: init() lief mit applyBrand(), bevor dieser Kopf
+            // existierte — ein zweiter Voll-Lauf würde nur das Favicon neu bauen.
+            el('span', { class: 'brand-veh', 'data-veh': '34', 'aria-hidden': 'true', html: brandGlyph(34) }),
             el('div', {}, el('h1', {}, 'Parkrr'), el('p', { class: 'muted' }, esc(sum.person_name)))));
         wrap.append(el('div', { class: 'portal-card' },
             el('div', { class: 'muted' }, 'Offener Betrag'),
@@ -7821,12 +7860,14 @@
         wrap.append(icard);
         wrap.append(el('p', { class: 'portal-foot muted' }, 'Read-only Ansicht · Parkrr'));
         pv.append(wrap);
-        // init() ran applyBrand() before this view existed, so the .brand-veh
-        // span in the portal head was born empty — fill it now that it's in the DOM.
-        applyBrand();
     }
 
     async function init() {
+        // Ein Drop NEBEN die Backup-Ablagezone (oder irgendwo sonst) würde sonst
+        // die Datei im Tab öffnen und die App samt eingetipptem Schlüssel
+        // wegnavigieren. Global entschärft; die Zone selbst behandelt ihr drop davor.
+        window.addEventListener('dragover', (e) => e.preventDefault());
+        window.addEventListener('drop', (e) => e.preventDefault());
         initTheme();
         applyBrand();
         // Public portal short-circuits the whole app shell / auth flow.
