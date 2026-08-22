@@ -32,7 +32,6 @@
     --warning: #D9A03F;
     --warning-text: #E5B85C;
     --on-warning: #241800;
-    --brand-grad: var(--primary); /* der Teal-Verlauf ist Geschichte; Alias bleibt als Netz */
     --radius: 16px;
     --radius-sm: 12px;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 14px 34px rgba(0, 0, 0, 0.45);
@@ -531,7 +530,7 @@ textarea { resize: vertical; min-height: 72px; }
    nur anders gelegt. Kein JS, kein Markup; unter 1024px ändert sich nichts.
    Die Verwaltungs-Rubriken bleiben wie bisher im Menü (☰) — bewusst: ein statisches
    Markup kennt die Rolle nicht, und das Menü baut sich rollenabhängig in JS. */
-@media (min-width: 1024px) {
+@media screen and (min-width: 1024px) {
     .tabbar {
         top: calc(var(--header-h) + env(safe-area-inset-top));
         bottom: 0; left: 0; right: auto;
@@ -551,9 +550,20 @@ textarea { resize: vertical; min-height: 72px; }
     .tab.active .tab-pill { background: none; }
     .tab.active { background: var(--primary-soft); }
     .app-shell { padding-bottom: 2rem; padding-left: 224px; }
-    /* Toast und Offline-Banner hängen unten an der Tab-Leiste — die ist jetzt links. */
-    .toast { bottom: 1.2rem; left: calc(50% + 112px); }
-    .offline-banner { left: 224px; bottom: 0; }
+    /* Der Kopf ist ein IN-FLOW-Kind der Shell und erbt deren padding-left — ohne
+       Gegenzug begänne seine Glasfläche erst bei x=224 und über der Leiste bliebe
+       ein nackter 224×56-Streifen Grundfläche (nachgemessen). Negativer Rand plus
+       gleich großes Eigen-Padding: Glas und Unterkante spannen die volle Breite,
+       der Inhalt bleibt exakt an seiner Position. */
+    .app-header { margin-left: -224px; padding-left: 224px; }
+    /* Toast und Offline-Banner hängen am body, nicht in der Shell — der Versatz
+       gilt darum nur, solange die App (und damit die Leiste) sichtbar ist; Login
+       und Portal bleiben zentriert bzw. voll breit. Der :has-Wächter liefert
+       zugleich die Spezifität über den Basisregeln weiter unten — ohne ihn
+       verlören diese Zeilen den Kaskadenkampf und wären wirkungslos (so
+       geschehen: die ungewächterte Fassung war nachweislich tot). */
+    body:has(#app-view:not([hidden])) .toast { bottom: 1.2rem; left: calc(50% + 112px); }
+    body:has(#app-view:not([hidden])) .offline-banner { left: 224px; bottom: 0; }
 }
 
 /* ---------- Cards / lists ---------- */
@@ -1078,10 +1088,6 @@ textarea { resize: vertical; min-height: 72px; }
   --font-head:'Bricolage Grotesque','Segoe UI Variable Display','Segoe UI',system-ui,sans-serif;
   --font-mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;
   --radius:16px; --radius-sm:12px;
-  /* --grad war der Teal→Cyan-Verlauf. Fahrwerk kennt keinen Verlauf mehr: der Alias
-     zeigt auf die solide Marke, damit keine vergessene Stelle unsichtbar bricht.
-     Karten- und Text-Token wohnen jetzt vollständig in den vier Theme-Blöcken oben. */
-  --grad: var(--primary);
 }
 
 body{ font-family:var(--font); background:transparent; }
@@ -1349,6 +1355,10 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 
 @media print{
     html, body{ background:#fff !important; }
+    /* Die Blaupause lebt als background-image auf dem Pseudo-Element — das
+       weiße body-Background oben erreicht sie nicht, und mit aktivierten
+       Hintergrundgrafiken druckte sie sonst auf jeder Seite hinter den Beleg. */
+    body::before{ display:none !important; }
     .app-header, .tabbar, .no-print, #page-title { display:none !important; }
     #page{ padding:0 !important; }
     .invoice-doc{ box-shadow:none; border-radius:0; max-width:none; padding:0; }
@@ -1599,7 +1609,10 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .veh-loc-ic{display:inline-grid;place-items:center;place-content:center;width:36px;height:36px;padding:0;border:1px solid color-mix(in srgb,var(--primary-ink) 45%,transparent);border-radius:10px;color:var(--primary-ink);background:color-mix(in srgb,var(--primary-ink) 13%,transparent)}
 .veh-loc-ic svg{width:20px;height:20px;display:block}
 .veh-loc-ic:hover{background:color-mix(in srgb,var(--primary-ink) 24%,transparent);text-decoration:none}
-.veh-loc-ic.empty{color:var(--muted);opacity:.55;border:1px dashed var(--card-border);background:none}
+/* Kein zusätzliches opacity mehr: seit --muted auflöst, dimmte es DOPPELT —
+   gemessen 2,25:1 auf Weiß, unter der 3:1-Grenze für Grafikobjekte. Die
+   gedämpfte Tinte plus gestrichelte Kante tragen den Leer-Zustand allein. */
+.veh-loc-ic.empty{color:var(--muted);border:1px dashed var(--card-border);background:none}
 .gp-block.gp-focus{animation:gpfocus 1.3s ease-in-out 0s 2}
 @keyframes gpfocus{0%,100%{box-shadow:0 0 0 2px #fff,0 0 0 4px var(--gpteal2),0 12px 24px -8px rgba(0,0,0,.6)}50%{box-shadow:0 0 0 3px #fff,0 0 0 12px rgba(46,230,207,.55),0 12px 24px -8px rgba(0,0,0,.6)}}
 @media(prefers-reduced-motion:reduce){.gp-block.gp-focus{animation:none}}
@@ -1766,10 +1779,13 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .audit-chip { display:inline-flex; align-items:center; gap:.45rem; font:500 .8rem var(--font);
     background:var(--bg-elev); border:1px solid var(--border); color:var(--text);
     border-radius:999px; padding:.3rem .4rem .3rem .7rem; }
-.audit-chip button { border:0; background:var(--bg-elev-2); color:var(--text-muted); border-radius:999px;
-    width:19px; height:19px; line-height:1; cursor:pointer; font-size:.68rem; flex:none; }
-.audit-chip button:hover { background:color-mix(in srgb, var(--danger) 16%, transparent); color:var(--danger-hover); }
-.audit-chip button:focus-visible { outline:2px solid var(--primary); outline-offset:1px; }
+/* Entfernen-Knopf für beide Chip-Arten (Audit-Filter, Backup-Datei) aus EINER
+   Regel — die getrennten Kopien waren schon vor dem Merge auseinandergedriftet
+   (19 vs. 20 px, und nur eine hatte einen Fokusring). */
+.audit-chip button, .bk-filechip button { border:0; background:var(--bg-elev-2); color:var(--text-muted); border-radius:999px;
+    width:20px; height:20px; line-height:1; cursor:pointer; font-size:.7rem; flex:none; }
+.audit-chip button:hover, .bk-filechip button:hover { background:color-mix(in srgb, var(--danger) 16%, transparent); color:var(--danger-hover); }
+.audit-chip button:focus-visible, .bk-filechip button:focus-visible { outline:2px solid var(--primary); outline-offset:1px; }
 .timeline .t-day { border-left-color:transparent; padding:.65rem 0 .55rem 1.3rem;
     font:600 .68rem var(--font); letter-spacing:.08em; text-transform:uppercase; color:var(--text-muted);
     display:flex; align-items:center; gap:.6rem; list-style:none; }
@@ -1799,9 +1815,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .bk-filechip { display:inline-flex; align-items:center; gap:.5rem; margin-top:.45rem;
     font:500 .78rem var(--font-mono); background:var(--bg-elev); border:1px solid var(--border);
     border-radius:999px; padding:.35rem .5rem .35rem .75rem; word-break:break-all; }
-.bk-filechip button { border:0; background:var(--bg-elev-2); color:var(--text-muted); border-radius:999px;
-    width:20px; height:20px; line-height:1; cursor:pointer; font-size:.7rem; flex:none; }
-.bk-filechip button:hover { background:color-mix(in srgb, var(--danger) 16%, transparent); color:var(--danger-hover); }
+/* Entfernen-Knopf: gemeinsame Regel beim .audit-chip. */
 
 /* ---------- Command palette (⌘K global search) ---------- */
 .cmdk { position: fixed; inset: 0; z-index: 60; background: rgba(6,12,20,.5); display: flex; align-items: flex-start; justify-content: center; padding: 11vh 1rem 1rem; }
@@ -1894,8 +1908,9 @@ a.portal-row.link:hover { color: var(--primary-ink); }
    trägt .btn-icon mit color: var(--text-muted) und säße näher am SVG — currentColor
    hätte dann immer Grau geliefert, egal welchen Zustand der Wrapper meldet.
    Auch auf :hover erzwingen, weil .btn-icon:hover die Farbe ebenfalls setzt.
-   Werte siehe .app-header-Block weiter unten: in der Kopfzeile gelten eigene,
-   dunklere Töne, weil dort ein weißer Chip statt der Seitenfläche hinterliegt. */
+   Die früheren Kopfzeilen-Sondertöne sind Geschichte: der Chip in der Kopfzeile
+   liegt seit dem Fahrwerk-Umbau auf var(--bg-elev), die Basistöne hier wurden
+   dagegen nachgemessen (Kontrasttabelle im Umbau-Commit). */
 .bkdot--ok .bkico, .bkdot--ok .bkdot__btn:hover .bkico { color: var(--success); }
 .bkdot--warn .bkico, .bkdot--warn .bkdot__btn:hover .bkico { color: var(--warning); }
 .bkdot--bad .bkico, .bkdot--bad .bkdot__btn:hover .bkico { color: var(--danger); }
