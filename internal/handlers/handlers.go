@@ -103,10 +103,10 @@ func (h *Handler) checkPasswordBreach(ctx context.Context, password string) brea
 func (h *Handler) rejectBreachedPassword(w http.ResponseWriter, r *http.Request, password string) bool {
 	switch h.checkPasswordBreach(r.Context(), password) {
 	case breachFound:
-		writeError(w, http.StatusBadRequest, "this password has appeared in a known data breach; please choose another")
+		writeError(w, http.StatusBadRequest, "Dieses Passwort ist in einem bekannten Datenleck aufgetaucht – bitte ein anderes wählen")
 		return true
 	case breachUnavailable:
-		writeError(w, http.StatusServiceUnavailable, "could not verify the password against the breach database; please try again shortly")
+		writeError(w, http.StatusServiceUnavailable, "Passwort konnte nicht gegen die Datenleck-Datenbank geprüft werden – bitte gleich erneut versuchen")
 		return true
 	default:
 		return false

@@ -159,7 +159,7 @@ func (h *AuthHandler) requireStepUp(w http.ResponseWriter, r *http.Request, user
 		return false
 	}
 	if len(password) > maxPasswordLen {
-		writeError(w, http.StatusForbidden, "password is incorrect")
+		writeError(w, http.StatusForbidden, "Passwort ist falsch")
 		return false
 	}
 	key, ip, ok := h.checkRateLimit(w, r, username)
@@ -168,7 +168,7 @@ func (h *AuthHandler) requireStepUp(w http.ResponseWriter, r *http.Request, user
 	}
 	if _, err := h.Auth.Authenticate(r.Context(), username, password); err != nil {
 		h.recordReauthFailure(key, ip)
-		writeError(w, http.StatusForbidden, "password is incorrect")
+		writeError(w, http.StatusForbidden, "Passwort ist falsch")
 		return false
 	}
 	// Do NOT reset the limiter here: TOTPEnable shares this key with its TOTP-code
@@ -189,7 +189,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	// Reject over-long identifiers/credentials before any state lookup: caps
 	// the rate-limiter key size and avoids handing bcrypt an oversized input.
 	if !validUsernameLength(req.Username) || len(req.Password) > maxPasswordLen || len(req.TOTPCode) > maxTOTPCodeLen {
-		writeError(w, http.StatusUnauthorized, "invalid username or password")
+		writeError(w, http.StatusUnauthorized, "Benutzername oder Passwort ist falsch")
 		return
 	}
 	// Per-IP spray throttle first (independent of username), then the per-account
@@ -206,7 +206,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.recordLoginFailure(key, ip)
 		slog.Warn("login failed", "user", req.Username, "ip", ip, "reason", "bad credentials")
-		writeError(w, http.StatusUnauthorized, "invalid username or password")
+		writeError(w, http.StatusUnauthorized, "Benutzername oder Passwort ist falsch")
 		return
 	}
 
@@ -229,7 +229,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 			if uerr != nil {
 				// Fail closed on a DB error rather than mislabelling a valid code as a
 				// replay and counting it toward the account lockout.
-				writeError(w, http.StatusInternalServerError, "could not verify two-factor code")
+				writeError(w, http.StatusInternalServerError, "Zwei-Faktor-Code konnte nicht geprüft werden")
 				return
 			}
 			if ct.RowsAffected() == 1 {
@@ -245,7 +245,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 			h.recordLoginFailure(key, ip)
 			slog.Warn("login failed", "user", u.Username, "ip", ip, "reason", "bad 2fa code")
 			writeJSON(w, http.StatusUnauthorized, map[string]any{
-				"error":         "invalid two-factor code",
+				"error":         "Zwei-Faktor-Code ist ungültig",
 				"totp_required": true,
 			})
 			return
@@ -302,20 +302,20 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validPasswordLength(req.NewPassword) {
-		writeError(w, http.StatusBadRequest, "new password must be between 8 and 72 bytes")
+		writeError(w, http.StatusBadRequest, "Das neue Passwort muss zwischen 8 und 72 Zeichen lang sein")
 		return
 	}
 	// Enforce rotation: the new password must actually change. Rejecting an
 	// identical new password stops a forced reset from being no-op'd by
 	// resubmitting the current one.
 	if req.NewPassword == req.CurrentPassword {
-		writeError(w, http.StatusBadRequest, "new password must differ from the current password")
+		writeError(w, http.StatusBadRequest, "Das neue Passwort muss sich vom aktuellen unterscheiden")
 		return
 	}
 	// An over-long current password can't match (bcrypt caps at 72 bytes), so
 	// reject it up front rather than spending a bcrypt compare on it.
 	if len(req.CurrentPassword) > maxPasswordLen {
-		writeError(w, http.StatusForbidden, "current password is incorrect")
+		writeError(w, http.StatusForbidden, "Aktuelles Passwort ist falsch")
 		return
 	}
 
@@ -331,7 +331,7 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		// checkRateLimit gates this flow on BOTH limiters, so feed both — a wrong
 		// current password counts against the per-username throttle too.
 		h.recordLoginFailure(key, ip)
-		writeError(w, http.StatusForbidden, "current password is incorrect")
+		writeError(w, http.StatusForbidden, "Aktuelles Passwort ist falsch")
 		return
 	}
 	h.Limiter.Reset(key)

@@ -94,7 +94,7 @@ func (req *personRequest) normalize() {
 
 func (req *personRequest) validate() string {
 	if req.FirstName == "" && req.LastName == "" {
-		return "first or last name is required"
+		return "Vor- oder Nachname ist erforderlich"
 	}
 	if !validNameLength(req.FirstName) || !validNameLength(req.LastName) {
 		return "name is too long"
