@@ -129,7 +129,7 @@ func (h *AuthHandler) TOTPDisable(w http.ResponseWriter, r *http.Request) {
 	// An over-long password can't match (bcrypt caps at 72 bytes), so
 	// reject it up front rather than spending a bcrypt compare on it.
 	if len(req.Password) > maxPasswordLen {
-		writeError(w, http.StatusForbidden, "password is incorrect")
+		writeError(w, http.StatusForbidden, "Passwort ist falsch")
 		return
 	}
 
@@ -140,7 +140,7 @@ func (h *AuthHandler) TOTPDisable(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := h.Auth.Authenticate(r.Context(), u.Username, req.Password); err != nil {
 		h.recordReauthFailure(key, ip)
-		writeError(w, http.StatusForbidden, "password is incorrect")
+		writeError(w, http.StatusForbidden, "Passwort ist falsch")
 		return
 	}
 	h.resetReauth(key, ip)
@@ -148,7 +148,7 @@ func (h *AuthHandler) TOTPDisable(w http.ResponseWriter, r *http.Request) {
 	if _, err := h.Pool.Exec(r.Context(),
 		`UPDATE users SET totp_enabled=FALSE, totp_secret='', updated_at=now() WHERE id=$1`,
 		u.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not disable two-factor")
+		writeError(w, http.StatusInternalServerError, "Zwei-Faktor konnte nicht deaktiviert werden")
 		return
 	}
 	h.Auth.DeleteBackupCodes(r.Context(), u.ID)
@@ -173,7 +173,7 @@ func (h *AuthHandler) TOTPBackupCount(w http.ResponseWriter, r *http.Request) {
 func (h *AuthHandler) TOTPRegenerateBackup(w http.ResponseWriter, r *http.Request) {
 	u, _ := auth.UserFrom(r.Context())
 	if !u.TOTPEnabled {
-		writeError(w, http.StatusConflict, "two-factor is not enabled")
+		writeError(w, http.StatusConflict, "Zwei-Faktor ist nicht aktiviert")
 		return
 	}
 	var req totpDisableRequest
@@ -185,7 +185,7 @@ func (h *AuthHandler) TOTPRegenerateBackup(w http.ResponseWriter, r *http.Reques
 	// An over-long password can't match (bcrypt caps at 72 bytes), so
 	// reject it up front rather than spending a bcrypt compare on it.
 	if len(req.Password) > maxPasswordLen {
-		writeError(w, http.StatusForbidden, "password is incorrect")
+		writeError(w, http.StatusForbidden, "Passwort ist falsch")
 		return
 	}
 
@@ -196,7 +196,7 @@ func (h *AuthHandler) TOTPRegenerateBackup(w http.ResponseWriter, r *http.Reques
 
 	if _, err := h.Auth.Authenticate(r.Context(), u.Username, req.Password); err != nil {
 		h.recordReauthFailure(key, ip)
-		writeError(w, http.StatusForbidden, "password is incorrect")
+		writeError(w, http.StatusForbidden, "Passwort ist falsch")
 		return
 	}
 	h.resetReauth(key, ip)

@@ -262,7 +262,7 @@ func (h *AuthHandler) throttlePasskeyLogin(w http.ResponseWriter, r *http.Reques
 	if ok, wait := h.Limiter.Allowed(key); !ok {
 		w.Header().Set("Retry-After", formatSeconds(wait))
 		slog.Warn("passkey throttle active", "ip", ip, "path", r.URL.Path)
-		writeError(w, http.StatusTooManyRequests, "too many attempts, try again in "+formatMinutes(wait))
+		writeError(w, http.StatusTooManyRequests, "Zu viele Versuche – bitte in "+formatMinutes(wait)+" erneut versuchen")
 		return key, false
 	}
 	return key, true

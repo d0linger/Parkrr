@@ -83,14 +83,14 @@ func (h *AuthHandler) checkRateLimit(w http.ResponseWriter, r *http.Request, use
 		// Don't log the request-supplied username (clear-text-logging / PII): a
 		// throttle event is identified by IP + path; the account isn't needed here.
 		slog.Warn("throttle active", "ip", ip, "path", r.URL.Path)
-		writeError(w, http.StatusTooManyRequests, "too many attempts, try again in "+formatMinutes(wait))
+		writeError(w, http.StatusTooManyRequests, "Zu viele Versuche – bitte in "+formatMinutes(wait)+" erneut versuchen")
 		return key, ip, false
 	}
 	// Per-username (IP-independent) throttle — bounds distributed brute force.
 	if allowed, wait := h.UserLimiter.Allowed(uname); !allowed {
 		w.Header().Set("Retry-After", formatSeconds(wait))
 		slog.Warn("throttle active (user)", "ip", ip, "path", r.URL.Path)
-		writeError(w, http.StatusTooManyRequests, "too many attempts, try again in "+formatMinutes(wait))
+		writeError(w, http.StatusTooManyRequests, "Zu viele Versuche – bitte in "+formatMinutes(wait)+" erneut versuchen")
 		return key, ip, false
 	}
 	return key, ip, true
@@ -109,7 +109,7 @@ func (h *AuthHandler) ipThrottled(w http.ResponseWriter, r *http.Request) bool {
 	if allowed, wait := h.IPLimiter.Allowed(ip); !allowed {
 		w.Header().Set("Retry-After", formatSeconds(wait))
 		slog.Warn("throttle active (ip)", "ip", ip, "path", r.URL.Path)
-		writeError(w, http.StatusTooManyRequests, "too many attempts, try again in "+formatMinutes(wait))
+		writeError(w, http.StatusTooManyRequests, "Zu viele Versuche – bitte in "+formatMinutes(wait)+" erneut versuchen")
 		return true
 	}
 	return false
@@ -302,7 +302,7 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validPasswordLength(req.NewPassword) {
-		writeError(w, http.StatusBadRequest, "Das neue Passwort muss zwischen 8 und 72 Zeichen lang sein")
+		writeError(w, http.StatusBadRequest, "Das neue Passwort muss zwischen 8 und 72 Zeichen lang sein (Umlaute und Sonderzeichen zählen doppelt)")
 		return
 	}
 	// Enforce rotation: the new password must actually change. Rejecting an
@@ -426,7 +426,7 @@ func formatSeconds(d time.Duration) string {
 func formatMinutes(d time.Duration) string {
 	m := int(d.Minutes()) + 1
 	if m <= 1 {
-		return "about a minute"
+		return "etwa einer Minute"
 	}
-	return strconv.Itoa(m) + " minutes"
+	return strconv.Itoa(m) + " Minuten"
 }

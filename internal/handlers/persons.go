@@ -97,19 +97,19 @@ func (req *personRequest) validate() string {
 		return "Vor- oder Nachname ist erforderlich"
 	}
 	if !validNameLength(req.FirstName) || !validNameLength(req.LastName) {
-		return "name is too long"
+		return "Name ist zu lang"
 	}
 	if !validEmailLength(req.Email) {
-		return "email is too long"
+		return "E-Mail ist zu lang"
 	}
 	if !validPhoneLength(req.Phone) {
-		return "phone is too long"
+		return "Telefonnummer ist zu lang"
 	}
 	if !validAddressLength(req.Address) {
-		return "address is too long"
+		return "Anschrift ist zu lang"
 	}
 	if !validNoteLength(req.Notes) {
-		return "notes is too long"
+		return "Notizen sind zu lang"
 	}
 	return ""
 }
