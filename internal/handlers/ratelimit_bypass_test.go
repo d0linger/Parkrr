@@ -159,3 +159,34 @@ func TestReauthFailureTripsPerAccountAcrossIPs(t *testing.T) {
 		t.Fatalf("expected 429 from the per-account throttle, got %d", rec.Code)
 	}
 }
+
+// Verify that ChangePassword also records re-authentication failure to UserLimiter
+// without touching IPLimiter, ensuring IP rotation across password changes trips UserLimiter.
+func TestChangePasswordReauthFailureTripsPerAccountAcrossIPs(t *testing.T) {
+	ah := &AuthHandler{
+		Handler:     &Handler{},
+		Auth:        &auth.Manager{},
+		Limiter:     auth.NewLoginLimiter(1000, time.Minute, time.Minute),
+		IPLimiter:   auth.NewLoginLimiter(1000, time.Minute, time.Minute),
+		UserLimiter: auth.NewStickyLoginLimiter(3, time.Minute, time.Minute),
+	}
+	reqFrom := func(ip string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/api/auth/change-password", nil)
+		r.RemoteAddr = ip + ":1234"
+		return r
+	}
+	for i, ip := range []string{"1.1.1.1", "2.2.2.2", "3.3.3.3"} {
+		key, cip, ok := ah.checkRateLimit(httptest.NewRecorder(), reqFrom(ip), "user1")
+		if !ok {
+			t.Fatalf("attempt %d from %s should be allowed", i, ip)
+		}
+		ah.recordReauthFailure(key, cip)
+	}
+	rec := httptest.NewRecorder()
+	if _, _, ok := ah.checkRateLimit(rec, reqFrom("4.4.4.4"), "user1"); ok {
+		t.Fatal("per-account lockout should trip for ChangePassword after failures across rotating IPs")
+	}
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 from the per-account throttle, got %d", rec.Code)
+	}
+}
