@@ -7800,7 +7800,7 @@
         const vcard = el('div', { class: 'portal-card' }, el('h2', {}, 'Ihre Gefährte'));
         if (!sum.vehicles.length) vcard.append(el('p', { class: 'muted' }, 'Keine aktiven Gefährte.'));
         else sum.vehicles.forEach((v) => vcard.append(el('div', { class: 'portal-row' },
-            el('span', {}, esc(v.label)), el('span', { class: 'badge' }, STATUS_LABEL[v.status] || v.status))));
+            el('span', {}, esc(v.label)), statusBadge(v.status))));
         wrap.append(vcard);
         const icard = el('div', { class: 'portal-card' }, el('h2', {}, 'Rechnungen'));
         if (!sum.invoices.length) icard.append(el('p', { class: 'muted' }, 'Keine Rechnungen.'));
@@ -7821,6 +7821,9 @@
         wrap.append(icard);
         wrap.append(el('p', { class: 'portal-foot muted' }, 'Read-only Ansicht · Parkrr'));
         pv.append(wrap);
+        // init() ran applyBrand() before this view existed, so the .brand-veh
+        // span in the portal head was born empty — fill it now that it's in the DOM.
+        applyBrand();
     }
 
     async function init() {

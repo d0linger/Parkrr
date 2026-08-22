@@ -1828,7 +1828,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .portal-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 14px; padding: 1rem 1.1rem; }
 .portal-card h2 { margin: 0 0 .6rem; font-size: 1rem; }
 .portal-amt { font-size: 1.8rem; font-weight: 800; margin-top: .15rem; }
-.portal-amt.owe { color: var(--danger); }
+.portal-amt.owe { color: var(--accent-text); }
 .portal-row { display: flex; justify-content: space-between; align-items: center; gap: .75rem; padding: .55rem 0; border-top: 1px solid var(--card-border); }
 .portal-card > .portal-row:first-of-type { border-top: 0; }
 a.portal-row.link { text-decoration: none; color: inherit; }
