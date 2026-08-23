@@ -37,3 +37,8 @@
 *Vulnerability:* `PasskeyRegisterFinish` recorded failed attestation verifications using `h.Limiter.RecordFailure(key)`, which only updated the per-IP `username|ip` rate limiter. An attacker rotating source IP addresses could bypass the throttle and attempt unlimited passkey registration verifications for an account.
 *Learning:* Post-authentication ceremonies that verify credentials or enrolment attestations (such as TOTP setup or Passkey registration) must record failures against both per-IP and per-account (`UserLimiter`) limiters.
 *Prevention:* Always use `recordReauthFailure` and `resetReauth` helpers on all secondary auth/re-auth/registration endpoints to ensure per-account limiters are updated across IP rotations.
+
+## 2026-07-18 - [Incomplete Factor Cleanup on Administrative 2FA Reset]
+*Vulnerability:* The administrative 2FA reset handler (`ResetUserTOTP`) cleared TOTP secrets and backup codes but failed to delete registered WebAuthn passkeys (`webauthn_credentials`). A user whose 2FA was reset by an admin would still retain active WebAuthn passkeys, allowing persistent second-factor authentication access via compromised passkeys.
+*Learning:* When adding new authentication mechanisms (like WebAuthn passkeys) to an application, all lifecycle administrative operations—such as multi-factor reset or account wipe—must be updated to clear all credential types.
+*Prevention:* Maintain a centralized 2FA credential reset routine or ensure every 2FA factor storage table (TOTP backup codes, WebAuthn credentials) is explicitly purged on 2FA reset events.
