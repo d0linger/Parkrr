@@ -7639,7 +7639,11 @@
         // Favicon: a filled teal tile + white glyph so it reads at tab size, and it
         // rotates with the logos. Drop every existing icon link first, otherwise the
         // static favicon.ico (sizes="any") wins and the dynamic one is ignored.
-        const raw = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="#0F7A73"/><g fill="none" stroke="#ffffff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${inner}</g></svg>`;
+        // Tile bleibt bewusst auf #0d9488 wie die statischen Icons (icons/*.svg,
+        // favicon.ico) — nicht auf der neuen Marke #0F7A73: Tab-Favicon und
+        // installiertes App-Icon sollen dieselbe Farbe tragen. Nur die Titelleiste
+        // (manifest/theme-color) ist petrol.
+        const raw = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="#0d9488"/><g fill="none" stroke="#ffffff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${inner}</g></svg>`;
         document.querySelectorAll('link[rel~="icon"]').forEach((l) => l.remove());
         const link = document.createElement('link');
         link.rel = 'icon';
