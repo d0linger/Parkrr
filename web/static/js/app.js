@@ -7620,13 +7620,20 @@
     // Pick once per browser session and remember it: a normal refresh (F5 or a
     // cache-bypassing hard reload — indistinguishable to a page) keeps the same
     // vehicle, while a new session or cleared site data rolls a fresh one.
+    // vehIndex caches the pick for the whole page lifetime, so EVERY glyph — the
+    // init-time logos/favicon and a portal head rendered later — stays on one
+    // vehicle even when sessionStorage is blocked (private mode), where the raw
+    // storage read would otherwise re-randomise on each call.
+    let vehIndex = -1;
     function pickVehicleIndex() {
+        if (vehIndex >= 0 && vehIndex < VEHICLES.length) return vehIndex;
         let idx = -1;
         try { idx = parseInt(sessionStorage.getItem('parkrr-veh'), 10); } catch { /* storage blocked */ }
         if (!(idx >= 0 && idx < VEHICLES.length)) {
             idx = Math.floor(Math.random() * VEHICLES.length);
             try { sessionStorage.setItem('parkrr-veh', String(idx)); } catch { /* storage blocked */ }
         }
+        vehIndex = idx;
         return idx;
     }
     // Baut das Marken-Glyph für EIN Element — auch für Ansichten, die nach init()
@@ -7634,13 +7641,11 @@
     // Neuaufbau nicht brauchen.
     const brandGlyph = (size, idx = pickVehicleIndex()) => `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${VEHICLES[idx]}</svg>`;
     function applyBrand() {
-        // EIN Fahrzeug pro Aufruf: pickVehicleIndex() ist normalerweise über
-        // sessionStorage stabil — ist Storage aber blockiert (z. B. privater Modus),
-        // würfelt jeder Aufruf neu, und Kopf-Logo, Login-Badge und Favicon zeigten
-        // je ein anderes Fahrzeug. Einmal ziehen, denselben Index überall verwenden.
-        const idx = pickVehicleIndex();
-        const inner = VEHICLES[idx];
-        $$('.brand-veh').forEach((node) => { node.innerHTML = brandGlyph(node.dataset.veh || 24, idx); });
+        // pickVehicleIndex() ist jetzt seitenweit stabil (in vehIndex gecacht) —
+        // Kopf-Logos, Login-Badge, Favicon und ein später gerendertes Portal-Glyph
+        // teilen sich damit dasselbe Fahrzeug, auch bei blockiertem Storage.
+        const inner = VEHICLES[pickVehicleIndex()];
+        $$('.brand-veh').forEach((node) => { node.innerHTML = brandGlyph(node.dataset.veh || 24); });
         // Favicon: a filled teal tile + white glyph so it reads at tab size, and it
         // rotates with the logos. Drop every existing icon link first, otherwise the
         // static favicon.ico (sizes="any") wins and the dynamic one is ignored.
