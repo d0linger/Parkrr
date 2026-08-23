@@ -3066,7 +3066,7 @@
         catch (e) { toast(e.message, 'error'); }
     }
     function delPhoto(p, node) {
-        deleteWithUndo('Foto löschen?', 'Das Foto wird entfernt.', () => api.del('/photos/' + p.id), () => render(), node);
+        deleteWithUndo('Foto löschen?', 'Das Foto wird dauerhaft entfernt — das Original lässt sich nicht wiederherstellen.', () => api.del('/photos/' + p.id), () => render(), node);
     }
     async function delHandover(ho, node) {
         if (!await confirmDialog('Protokoll löschen?', 'Das Übergabeprotokoll wird dauerhaft entfernt.', 'Löschen')) return;
@@ -3509,7 +3509,7 @@
         if (openNow) setTimeout(() => nameI.focus(), 50);
         return card;
     }
-    function delCategory(c, node) { deleteWithUndo('Tarif löschen?', `„${c.name}“ wird gelöscht.`, () => api.del('/categories/' + c.id), () => render(), node); }
+    function delCategory(c, node) { deleteWithUndo('Tarif löschen?', `„${c.name}“ wird endgültig gelöscht. Das geht nur, wenn kein Gefährt den Tarif nutzt — sonst besser archivieren.`, () => api.del('/categories/' + c.id), () => render(), node); }
     async function setCatArchived(c, archived) {
         try { await api.post('/categories/' + c.id + '/archived', { archived }); toast(archived ? 'Tarif archiviert' : 'Tarif reaktiviert', 'success'); render(); }
         catch (e) { toast(e.message, 'error'); }
@@ -3560,7 +3560,7 @@
         try { await api.post('/services/' + s.id + '/archived', { archived }); toast(archived ? 'Dienst archiviert' : 'Dienst reaktiviert', 'success'); render(); }
         catch (e) { toast(e.message, 'error'); }
     }
-    function delService(s, node) { deleteWithUndo('Dienst löschen?', `„${s.name}“ wird gelöscht.`, () => api.del('/services/' + s.id), () => render(), node); }
+    function delService(s, node) { deleteWithUndo('Dienst löschen?', `„${s.name}“ wird gelöscht. Schon gebuchte Posten behalten ihre Werte; nur neu buchen lässt sich der Dienst danach nicht mehr.`, () => api.del('/services/' + s.id), () => render(), node); }
 
     // ================= USERS (admin) =================
     routes.users = async (page) => {
@@ -4092,7 +4092,7 @@
             },
         });
     }
-    function delUser(u, node) { deleteWithUndo('Benutzer löschen?', `„${u.username}“ wird gelöscht.`, () => api.del('/users/' + u.id), () => render(), node); }
+    function delUser(u, node) { deleteWithUndo('Benutzer löschen?', `„${u.username}“ wird gelöscht. Zugang, Sitzungen und Passkeys entfallen sofort; erstellte Rechnungen, Zahlungen und Protokolle bleiben erhalten, verlieren aber die Namenszuordnung.`, () => api.del('/users/' + u.id), () => render(), node); }
 
     // ================= AUDIT (admin) =================
     const AUDIT_ACTIONS = { create: 'Erstellt', update: 'Geändert', delete: 'Gelöscht', login: 'Login', logout: 'Logout', revoke: 'Widerrufen', backup: 'Backup', backup_failed: 'Backup fehlgeschlagen', restore: 'Wiederherstellung', remind: 'Mahnung', import: 'Import', security: 'Sicherheit' };
@@ -7502,7 +7502,7 @@
         return card;
     }
     async function delPasskey(c) {
-        if (!await confirmDialog('Passkey entfernen?', `„${c.name}“ wird entfernt.`, 'Entfernen')) return;
+        if (!await confirmDialog('Passkey entfernen?', `„${c.name}“ wird entfernt. Anmeldung mit diesem Gerät ist danach nicht mehr möglich; andere Passkeys und dein Passwort bleiben gültig.`, 'Entfernen')) return;
         try { await api.del('/passkeys/' + c.id); toast('Passkey entfernt', 'success'); render(); }
         catch (e) { toast(e.message, 'error'); }
     }

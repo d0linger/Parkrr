@@ -633,6 +633,32 @@ textarea { resize: vertical; min-height: 72px; }
 .empty { text-align: center; color: var(--text-muted); padding: 3rem 1rem; }
 .empty .big { display: flex; justify-content: center; margin-bottom: 0.7rem; opacity: 0.55; }
 .empty .big svg { width: 44px; height: 44px; }
+/* Leerzustand als ruhige Insel über der Blaupause (Audit-Beobachtung D): eine
+   halbdurchlässige Fläche mit Blur, damit der Hallenplan durchscheint, der Text
+   aber nicht mehr frei darauf schwebt. Nur div.empty (der Leerzustand-Block) —
+   NICHT die .veh-loc.empty-Chips, denn die sind <button>. */
+div.empty {
+  max-width: 400px;
+  margin: 1.5rem auto;
+  padding: 2.4rem 1.8rem;
+  background: color-mix(in srgb, var(--card-bg) 82%, transparent);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  box-shadow: 0 2px 12px -6px rgba(0, 0, 0, 0.25);
+}
+/* Die Ikone bekommt eine eigene Markenfläche, weil der Block jetzt selbst eine trägt. */
+div.empty .big {
+  opacity: 1;
+  width: 54px; height: 54px;
+  margin: 0 auto 0.9rem;
+  border-radius: 15px;
+  background: var(--primary-soft);
+  color: var(--primary-ink);
+  align-items: center;
+}
+div.empty .big svg { width: 30px; height: 30px; }
 /* Badge that pairs a small icon with text (e.g. the "2FA" shield badge). */
 .badge-ic { display: inline-flex; align-items: center; gap: 0.25rem; }
 .badge-ic svg { width: 12px; height: 12px; }
