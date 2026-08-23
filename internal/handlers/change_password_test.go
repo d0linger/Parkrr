@@ -23,8 +23,8 @@ func TestChangePasswordRejectsIdentical(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("identical new password: expected 400, got %d (%s)", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "must differ") {
-		t.Errorf("expected a 'must differ' message, got %q", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "muss sich vom aktuellen unterscheiden") {
+		t.Errorf("expected the rotation message, got %q", rec.Body.String())
 	}
 }
 
@@ -39,7 +39,7 @@ func TestChangePasswordTooShortStillRejected(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("too-short password: expected 400, got %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "between 8 and 72") {
+	if !strings.Contains(rec.Body.String(), "zwischen 8 und 72") {
 		t.Errorf("expected length error, got %q", rec.Body.String())
 	}
 }

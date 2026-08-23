@@ -2915,6 +2915,9 @@
         page.append(el('div', { class: 'detail-head' },
             el('button', { class: 'back-btn', onclick: () => navigate('vehicles'), 'aria-label': 'Zurück' }, '‹'),
             el('h2', { style: 'margin:0;flex:1' }, esc(vehicleTitle(v))),
+            (canManage() && !v.archived)
+                ? el('button', { class: 'btn btn-primary btn-sm', onclick: () => vehicleForm(v) }, icon('edit'), ' Bearbeiten')
+                : null,
             el('a', { class: 'btn btn-ghost btn-sm', href: '/api/vehicles/' + v.id + '/label', target: '_blank', rel: 'noopener', title: 'Druck-Label mit QR-Code' }, '🖶 Label'),
             statusBadge(v.status)));
 
@@ -2962,10 +2965,6 @@
                 }
                 page.append(ctrl);
             }
-            if (canManage()) {
-                page.append(el('div', { class: 'page-head' }, el('h3', {}, 'Bearbeiten'),
-                    el('button', { class: 'btn btn-ghost btn-sm', onclick: () => vehicleForm(v) }, icon('edit'), ' Bearbeiten')));
-            }
         }
 
         // photos
@@ -2980,8 +2979,8 @@
             const camInput = el('input', { type: 'file', accept: 'image/jpeg,image/png', capture: 'environment', style: 'display:none' });
             camInput.addEventListener('change', () => uploadPhoto(id, camInput.files[0]));
             ph.append(
-                el('button', { class: 'btn btn-primary btn-sm', onclick: () => fileInput.click() }, '+ Foto'),
-                el('button', { class: 'btn btn-ghost btn-sm', title: 'Mit Kamera aufnehmen', onclick: () => camInput.click() }, icon('camera'), ' Kamera'),
+                el('button', { class: 'btn-sect', onclick: () => fileInput.click() }, '+ Foto'),
+                el('button', { class: 'btn-sect', title: 'Mit Kamera aufnehmen', onclick: () => camInput.click() }, icon('camera'), ' Kamera'),
                 fileInput, camInput);
         }
         photoCard.append(ph);
@@ -3001,7 +3000,7 @@
         // Übergabeprotokolle (Zustand + Unterschrift bei Ein-/Auslagerung)
         const hoCard = el('div', { class: 'card' });
         const hoHead = el('div', { class: 'page-head' }, el('h3', {}, 'Übergabeprotokolle'));
-        if (canManage()) hoHead.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => handoverForm(id) }, '+ Protokoll'));
+        if (canManage()) hoHead.append(el('button', { class: 'btn-sect', onclick: () => handoverForm(id) }, '+ Protokoll'));
         hoCard.append(hoHead);
         if (handovers === null) hoCard.append(el('p', { class: 'muted' }, 'Protokolle konnten nicht geladen werden.'));
         else if (!handovers.length) hoCard.append(el('p', { class: 'muted' }, 'Noch keine Protokolle.'));
@@ -3067,7 +3066,7 @@
         catch (e) { toast(e.message, 'error'); }
     }
     function delPhoto(p, node) {
-        deleteWithUndo('Foto löschen?', 'Das Foto wird entfernt.', () => api.del('/photos/' + p.id), () => render(), node);
+        deleteWithUndo('Foto löschen?', 'Das Foto wird dauerhaft entfernt — das Original lässt sich nicht wiederherstellen.', () => api.del('/photos/' + p.id), () => render(), node);
     }
     async function delHandover(ho, node) {
         if (!await confirmDialog('Protokoll löschen?', 'Das Übergabeprotokoll wird dauerhaft entfernt.', 'Löschen')) return;
@@ -3510,7 +3509,7 @@
         if (openNow) setTimeout(() => nameI.focus(), 50);
         return card;
     }
-    function delCategory(c, node) { deleteWithUndo('Tarif löschen?', `„${c.name}“ wird gelöscht.`, () => api.del('/categories/' + c.id), () => render(), node); }
+    function delCategory(c, node) { deleteWithUndo('Tarif löschen?', `„${c.name}“ wird endgültig gelöscht. Das geht nur, wenn kein Gefährt den Tarif nutzt — sonst besser archivieren.`, () => api.del('/categories/' + c.id), () => render(), node); }
     async function setCatArchived(c, archived) {
         try { await api.post('/categories/' + c.id + '/archived', { archived }); toast(archived ? 'Tarif archiviert' : 'Tarif reaktiviert', 'success'); render(); }
         catch (e) { toast(e.message, 'error'); }
@@ -3561,7 +3560,7 @@
         try { await api.post('/services/' + s.id + '/archived', { archived }); toast(archived ? 'Dienst archiviert' : 'Dienst reaktiviert', 'success'); render(); }
         catch (e) { toast(e.message, 'error'); }
     }
-    function delService(s, node) { deleteWithUndo('Dienst löschen?', `„${s.name}“ wird gelöscht.`, () => api.del('/services/' + s.id), () => render(), node); }
+    function delService(s, node) { deleteWithUndo('Dienst löschen?', `„${s.name}“ wird gelöscht. Schon gebuchte Posten behalten ihre Werte; nur neu buchen lässt sich der Dienst danach nicht mehr.`, () => api.del('/services/' + s.id), () => render(), node); }
 
     // ================= USERS (admin) =================
     routes.users = async (page) => {
@@ -3815,7 +3814,7 @@
     function backupStatRow(st) {
         const s = st.status || {};
         return el('div', { class: 'stat-grid', style: 'margin-top:1rem' },
-            stat(fmtWhen(s.last_volume_at), 'Letztes Volume-Backup', { icon: 'warehouse', tone: s.last_volume_ok ? 'green' : (s.last_volume_at ? 'amber' : undefined) }),
+            stat(fmtWhen(s.last_volume_at), 'Letztes Volume-Backup', { icon: 'warehouse', tone: s.last_volume_ok ? 'green' : (s.last_volume_at ? 'red' : undefined) }),
             stat(s.last_volume_size ? fmtBytes(s.last_volume_size) : '—', 'Größe', { icon: 'trend' }),
             stat(fmtWhen(s.restore_tested_at), 'Archiv geprüft', { icon: 'check', tone: s.restore_tested_at ? 'teal' : undefined }),
             stat(st.schema_version || '—', 'Schema-Stand', { icon: 'clock' }));
@@ -3896,20 +3895,56 @@
                 el('li', {}, 'Für beliebig große Backups: Restore per Kommandozeile ', el('code', {}, 'parkrr restore <datei.dump.enc>'), '.'))));
     };
     function backupRestoreCard() {
-        const fileIn = el('input', { type: 'file', accept: '.enc' });
+        const fileIn = el('input', { type: 'file', accept: '.enc', style: 'display:none' });
+        const dropLabel = el('b', {}, 'Backup-Datei wählen oder hierher ziehen');
+        const chipWrap = el('div', {});
+        const drop = el('div', { class: 'bk-drop', role: 'button', tabindex: '0',
+            'aria-label': 'Backup-Datei wählen oder hierher ziehen' },
+        el('span', { class: 'bk-drop-ic', 'aria-hidden': 'true' }, icon('upload', 26)),
+        dropLabel,
+        el('span', { class: 'bk-drop-sub' }, '.dump.enc · verschlüsselt mit deinem PARKRR_BACKUP_KEY'));
+        const showFile = () => {
+            chipWrap.innerHTML = '';
+            const f = fileIn.files[0];
+            if (!f) return;
+            chipWrap.append(el('span', { class: 'bk-filechip' },
+                esc(f.name) + ' · ' + fmtBytes(f.size),
+                el('button', { type: 'button', 'aria-label': 'Auswahl entfernen',
+                    onclick: () => { fileIn.value = ''; fileIn.dispatchEvent(new Event('change')); } }, '✕')));
+        };
+        drop.addEventListener('click', () => fileIn.click());
+        drop.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileIn.click(); } });
+        drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('is-over'); });
+        // dragleave feuert auch beim Übertritt auf ein KIND der Zone (Icon, Label)
+        // und ließe die Markierung flackern — nur beim echten Verlassen abräumen.
+        drop.addEventListener('dragleave', (e) => { if (!drop.contains(e.relatedTarget)) drop.classList.remove('is-over'); });
+        drop.addEventListener('drop', (e) => {
+            e.preventDefault(); drop.classList.remove('is-over');
+            const f = e.dataTransfer.files[0];
+            if (!f) return;
+            // Der Dateidialog filtert über accept=".enc" — der Drop-Pfad muss
+            // dieselbe Schranke ziehen, sonst wandert eine beliebige Datei in
+            // die Validierung.
+            if (!/\.enc$/i.test(f.name)) { toast('Bitte eine .enc-Backupdatei ablegen', 'error'); return; }
+            fileIn.files = e.dataTransfer.files; fileIn.dispatchEvent(new Event('change'));
+        });
         const keyIn = el('input', { type: 'password', placeholder: 'Backup-Schlüssel', autocomplete: 'off' });
         const confirmIn = el('input', { type: 'text', placeholder: 'RESTORE', autocomplete: 'off' });
         const result = el('div', { class: 'card-meta', style: 'margin:.5rem 0' });
         const restoreBtn = el('button', { class: 'btn btn-danger', disabled: true, onclick: (e) => restoreBackup(fileIn, keyIn, confirmIn, e.currentTarget) }, 'Wiederherstellen');
         const validateBtn = el('button', { class: 'btn btn-ghost', onclick: () => validateBackup(fileIn, keyIn, result, restoreBtn) }, 'Validieren');
         // Re-validation is required after any change, so the restore stays gated.
+        // showFile hängt NUR am Datei-Input: am Schlüsselfeld würde jeder
+        // Tastendruck den Chip abreißen und neu bauen (Fokus- und Screenreader-
+        // Position inklusive), obwohl sich die Datei nicht geändert haben kann.
         const invalidate = () => { restoreBtn.disabled = true; result.textContent = ''; };
-        fileIn.addEventListener('change', invalidate); keyIn.addEventListener('input', invalidate);
+        fileIn.addEventListener('change', () => { invalidate(); showFile(); });
+        keyIn.addEventListener('input', invalidate);
         return el('div', { class: 'card', style: 'margin-top:1rem' },
             el('h3', {}, 'Wiederherstellen'),
             el('div', { class: 'card-meta', style: 'margin:.3rem 0 .6rem;color:var(--accent-text);font-weight:600' },
                 '⚠ Überschreibt die gesamte aktuelle Datenbank. Atomar (rollt bei Fehler komplett zurück). Erst validieren.'),
-            el('label', {}, 'Backup-Datei (.dump.enc)'), fileIn,
+            fileIn, drop, chipWrap,
             el('label', {}, 'Schlüssel'), keyIn,
             el('div', { style: 'margin-top:.6rem' }, validateBtn),
             result,
@@ -4057,7 +4092,7 @@
             },
         });
     }
-    function delUser(u, node) { deleteWithUndo('Benutzer löschen?', `„${u.username}“ wird gelöscht.`, () => api.del('/users/' + u.id), () => render(), node); }
+    function delUser(u, node) { deleteWithUndo('Benutzer löschen?', `„${u.username}“ wird gelöscht. Zugang, Sitzungen und Passkeys entfallen sofort; erstellte Rechnungen, Zahlungen und Protokolle bleiben erhalten, verlieren aber die Namenszuordnung.`, () => api.del('/users/' + u.id), () => render(), node); }
 
     // ================= AUDIT (admin) =================
     const AUDIT_ACTIONS = { create: 'Erstellt', update: 'Geändert', delete: 'Gelöscht', login: 'Login', logout: 'Logout', revoke: 'Widerrufen', backup: 'Backup', backup_failed: 'Backup fehlgeschlagen', restore: 'Wiederherstellung', remind: 'Mahnung', import: 'Import', security: 'Sicherheit' };
@@ -4106,14 +4141,52 @@
             el('div', { class: 'audit-filter-row' }, actSel, entSel),
             el('div', { class: 'audit-filter-row' }, fromIn, toIn)));
 
+        // Aktive Filter als Chips (Audit-Befund 3): sobald die Filterkarte aus dem
+        // Bild scrollt, war bisher unsichtbar, WAS gerade filtert. Jeder Chip räumt
+        // per ✕ genau sein Steuerelement — derselbe Weg, den das Element selbst
+        // gegangen wäre, keine zweite Filterlogik.
+        const chipsBar = el('div', { class: 'audit-chips' });
+        page.append(chipsBar);
+        const renderChips = () => {
+            chipsBar.innerHTML = '';
+            // Das Label wandert unverändert ins aria-Label (das Freitext-Label
+            // bringt seine Anführungszeichen selbst mit — nicht doppelt wickeln).
+            // Nach dem Entfernen wandert der Fokus auf das zugehörige Filterfeld,
+            // sonst fällt er mit dem zerstörten Knopf auf <body> zurück.
+            const mk = (label, clear, focusEl) => el('span', { class: 'audit-chip' }, label,
+                el('button', { type: 'button', 'aria-label': 'Filter ' + label + ' entfernen',
+                    onclick: () => { clear(); focusEl.focus(); } }, '✕'));
+            if (q.text) chipsBar.append(mk('„' + q.text + '“', () => { search.value = ''; q.text = ''; apply(); }, search));
+            if (q.action) chipsBar.append(mk('Aktion: ' + (AUDIT_ACTIONS[q.action] || q.action), () => { actSel.value = ''; q.action = ''; apply(); }, actSel));
+            if (q.entity) chipsBar.append(mk('Objekt: ' + (AUDIT_ENTITIES[q.entity] || q.entity), () => { entSel.value = ''; q.entity = ''; apply(); }, entSel));
+            if (q.from) chipsBar.append(mk('ab ' + fmtDate(q.from), () => { fromIn.value = ''; q.from = ''; apply(); }, fromIn));
+            if (q.to) chipsBar.append(mk('bis ' + fmtDate(q.to), () => { toIn.value = ''; q.to = ''; apply(); }, toIn));
+            chipsBar.hidden = !chipsBar.children.length;
+        };
+        const apply = () => { renderChips(); load(true); };
+
         const ul = el('ul', { class: 'timeline' });
         page.append(el('div', { class: 'card' }, ul));
         const moreBtn = el('button', { class: 'btn btn-ghost btn-block', onclick: () => load(false) }, 'Mehr laden');
         moreBtn.hidden = true;
         page.append(moreBtn);
 
+        // Gruppenschlüssel ist der lokale KALENDERTAG, nicht das Anzeigelabel: das
+        // Label trägt (im laufenden Jahr) kein Jahr, also wäre „Mo., 18. August"
+        // 2025 und 2026 derselbe Schlüssel — Einträge verschiedener Jahre
+        // verschmölzen unter einer Überschrift. „Gestern" über setDate statt
+        // now − 86400s, sonst kippt das Label an den beiden DST-Tagen.
+        const DAY_FMT = new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: 'numeric', month: 'long' });
+        const DAY_FMT_Y = new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' });
+        const dayKey = (d) => d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
+        let lastDay = null;
+        // Läuft eine ältere Antwort nach einem Filterwechsel ein, würde sie unter
+        // die frische Liste gemischt (falsche Tagesköpfe, verschobenes offset) —
+        // dieselbe Sequenznummer wie in der Befehlspalette macht sie wirkungslos.
+        let loadSeq = 0;
         async function load(reset) {
-            if (reset) { q.offset = 0; ul.innerHTML = ''; }
+            const seq = ++loadSeq;
+            if (reset) { q.offset = 0; ul.innerHTML = ''; lastDay = null; }
             const p = new URLSearchParams({ limit: String(q.limit), offset: String(q.offset) });
             if (q.text) p.set('q', q.text);
             if (q.action) p.set('action', q.action);
@@ -4122,17 +4195,31 @@
             if (q.to) p.set('to', q.to);
             let entries = [];
             try { entries = await api.get('/audit?' + p.toString()); } catch { /* ignore */ }
-            for (const a of entries) ul.append(auditItem(a));
+            if (seq !== loadSeq) return;
+            const now = new Date();
+            const yest = new Date(now); yest.setDate(now.getDate() - 1);
+            const heute = dayKey(now), gestern = dayKey(yest);
+            for (const a of entries) {
+                const d = new Date(a.created_at);
+                const day = dayKey(d);
+                if (day !== lastDay) {
+                    lastDay = day;
+                    const label = d.getFullYear() === now.getFullYear() ? DAY_FMT.format(d) : DAY_FMT_Y.format(d);
+                    ul.append(el('li', { class: 't-day' }, day === heute ? 'Heute · ' + label : (day === gestern ? 'Gestern · ' + label : label)));
+                }
+                ul.append(auditItem(a));
+            }
             q.offset += entries.length;
             moreBtn.hidden = entries.length < q.limit;
             if (!ul.children.length) ul.append(el('li', { class: 'muted' }, 'Keine Einträge.'));
         }
         let t;
-        search.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => { q.text = search.value.trim(); load(true); }, 300); });
-        actSel.addEventListener('change', () => { q.action = actSel.value; load(true); });
-        entSel.addEventListener('change', () => { q.entity = entSel.value; load(true); });
-        fromIn.addEventListener('change', () => { q.from = fromIn.value; load(true); });
-        toIn.addEventListener('change', () => { q.to = toIn.value; load(true); });
+        search.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => { q.text = search.value.trim(); apply(); }, 300); });
+        actSel.addEventListener('change', () => { q.action = actSel.value; apply(); });
+        entSel.addEventListener('change', () => { q.entity = entSel.value; apply(); });
+        fromIn.addEventListener('change', () => { q.from = fromIn.value; apply(); });
+        toIn.addEventListener('change', () => { q.to = toIn.value; apply(); });
+        renderChips();
         load(true);
     };
 
@@ -4141,8 +4228,12 @@
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' }, el('button', { class: 'back-btn', onclick: () => navigate('dashboard') }, '‹'), el('h2', { style: 'margin:0' }, 'Einstellungen')));
 
+        const colA = el('div', { class: 'set-col' });
+        const colB = el('div', { class: 'set-col' });
+        page.append(el('div', { class: 'set-grid' }, colA, colB));
+
         // account
-        page.append(el('div', { class: 'card' },
+        colA.append(el('div', { class: 'card' },
             el('div', { class: 'balance' }, el('span', {}, 'Angemeldet als'), el('strong', {}, esc(state.user.username))),
             el('div', { class: 'balance' }, el('span', {}, 'Rolle'), el('span', {}, ROLE_LABEL[state.user.role] || state.user.role)),
             el('button', { class: 'btn btn-ghost btn-block', style: 'margin-top:.7rem', onclick: changePasswordForm }, 'Passwort ändern')));
@@ -4216,11 +4307,11 @@
             twoFA.append(el('p', { class: 'tf-desc' }, 'Schütze dein Konto mit einer Authenticator-App: beim Anmelden ist dann zusätzlich ein 6-stelliger Code nötig.'));
             twoFA.append(el('button', { class: 'btn btn-primary btn-block', onclick: setup2FA }, '2FA einrichten'));
         }
-        page.append(twoFA);
+        colA.append(twoFA);
 
         // passkeys
         if (state.capabilities.passkeys && webauthnSupported()) {
-            page.append(passkeysCard());
+            colB.append(passkeysCard());
         }
 
         // sessions
@@ -4234,7 +4325,7 @@
                     el('div', { class: 't-time' }, (s.ip || '?') + ' · zuletzt ' + fmtDateTime(s.last_seen))),
                 s.current ? null : el('button', { class: 'btn btn-ghost btn-sm', onclick: () => revokeSession(s.token) }, 'Abmelden')));
         }
-        page.append(sessCard);
+        colB.append(sessCard);
     };
     function shortUA(ua) {
         if (!ua) return 'Unbekanntes Gerät';
@@ -7388,7 +7479,9 @@
     }
 
     function passkeysCard() {
-        const card = el('div', { class: 'card' }, el('h3', {}, 'Passkeys'),
+        const card = el('div', { class: 'card' },
+            el('div', { class: 'page-head' }, el('h3', {}, 'Passkeys'),
+                el('button', { class: 'btn-sect', onclick: passkeyRegister }, '+ Passkey')),
             el('p', { class: 'muted' }, 'Anmeldung per Fingerabdruck/Gesichtserkennung – ohne Passwort.'));
         const list = el('div', {});
         card.append(list);
@@ -7405,12 +7498,11 @@
                     el('button', { class: 'btn btn-ghost btn-sm', onclick: () => delPasskey(c) }, 'Entfernen')));
             }
         };
-        card.append(el('button', { class: 'btn btn-primary btn-block', style: 'margin-top:.6rem', onclick: passkeyRegister }, '+ Passkey hinzufügen'));
         refresh();
         return card;
     }
     async function delPasskey(c) {
-        if (!await confirmDialog('Passkey entfernen?', `„${c.name}“ wird entfernt.`, 'Entfernen')) return;
+        if (!await confirmDialog('Passkey entfernen?', `„${c.name}“ wird entfernt. Anmeldung mit diesem Gerät ist danach nicht mehr möglich; andere Passkeys und dein Passwort bleiben gültig.`, 'Entfernen')) return;
         try { await api.del('/passkeys/' + c.id); toast('Passkey entfernt', 'success'); render(); }
         catch (e) { toast(e.message, 'error'); }
     }
@@ -7528,22 +7620,39 @@
     // Pick once per browser session and remember it: a normal refresh (F5 or a
     // cache-bypassing hard reload — indistinguishable to a page) keeps the same
     // vehicle, while a new session or cleared site data rolls a fresh one.
+    // vehIndex caches the pick for the whole page lifetime, so EVERY glyph — the
+    // init-time logos/favicon and a portal head rendered later — stays on one
+    // vehicle even when sessionStorage is blocked (private mode), where the raw
+    // storage read would otherwise re-randomise on each call.
+    let vehIndex = -1;
     function pickVehicleIndex() {
+        if (vehIndex >= 0 && vehIndex < VEHICLES.length) return vehIndex;
         let idx = -1;
         try { idx = parseInt(sessionStorage.getItem('parkrr-veh'), 10); } catch { /* storage blocked */ }
         if (!(idx >= 0 && idx < VEHICLES.length)) {
             idx = Math.floor(Math.random() * VEHICLES.length);
             try { sessionStorage.setItem('parkrr-veh', String(idx)); } catch { /* storage blocked */ }
         }
+        vehIndex = idx;
         return idx;
     }
+    // Baut das Marken-Glyph für EIN Element — auch für Ansichten, die nach init()
+    // entstehen (Portal) und den document-weiten applyBrand-Lauf samt Favicon-
+    // Neuaufbau nicht brauchen.
+    const brandGlyph = (size, idx = pickVehicleIndex()) => `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${VEHICLES[idx]}</svg>`;
     function applyBrand() {
+        // pickVehicleIndex() ist jetzt seitenweit stabil (in vehIndex gecacht) —
+        // Kopf-Logos, Login-Badge, Favicon und ein später gerendertes Portal-Glyph
+        // teilen sich damit dasselbe Fahrzeug, auch bei blockiertem Storage.
         const inner = VEHICLES[pickVehicleIndex()];
-        const mk = (size) => `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
-        $$('.brand-veh').forEach((node) => { node.innerHTML = mk(node.dataset.veh || 24); });
+        $$('.brand-veh').forEach((node) => { node.innerHTML = brandGlyph(node.dataset.veh || 24); });
         // Favicon: a filled teal tile + white glyph so it reads at tab size, and it
         // rotates with the logos. Drop every existing icon link first, otherwise the
         // static favicon.ico (sizes="any") wins and the dynamic one is ignored.
+        // Tile bleibt bewusst auf #0d9488 wie die statischen Icons (icons/*.svg,
+        // favicon.ico) — nicht auf der neuen Marke #0F7A73: Tab-Favicon und
+        // installiertes App-Icon sollen dieselbe Farbe tragen. Nur die Titelleiste
+        // (manifest/theme-color) ist petrol.
         const raw = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="#0d9488"/><g fill="none" stroke="#ffffff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${inner}</g></svg>`;
         document.querySelectorAll('link[rel~="icon"]').forEach((l) => l.remove());
         const link = document.createElement('link');
@@ -7734,7 +7843,9 @@
         pv.innerHTML = '';
         const wrap = el('div', { class: 'portal-wrap' });
         wrap.append(el('div', { class: 'portal-head' },
-            el('span', { class: 'brand-veh', 'data-veh': '34', 'aria-hidden': 'true' }),
+            // Direkt gefüllt: init() lief mit applyBrand(), bevor dieser Kopf
+            // existierte — ein zweiter Voll-Lauf würde nur das Favicon neu bauen.
+            el('span', { class: 'brand-veh', 'data-veh': '34', 'aria-hidden': 'true', html: brandGlyph(34) }),
             el('div', {}, el('h1', {}, 'Parkrr'), el('p', { class: 'muted' }, esc(sum.person_name)))));
         wrap.append(el('div', { class: 'portal-card' },
             el('div', { class: 'muted' }, 'Offener Betrag'),
@@ -7742,7 +7853,7 @@
         const vcard = el('div', { class: 'portal-card' }, el('h2', {}, 'Ihre Gefährte'));
         if (!sum.vehicles.length) vcard.append(el('p', { class: 'muted' }, 'Keine aktiven Gefährte.'));
         else sum.vehicles.forEach((v) => vcard.append(el('div', { class: 'portal-row' },
-            el('span', {}, esc(v.label)), el('span', { class: 'badge' }, STATUS_LABEL[v.status] || v.status))));
+            el('span', {}, esc(v.label)), statusBadge(v.status))));
         wrap.append(vcard);
         const icard = el('div', { class: 'portal-card' }, el('h2', {}, 'Rechnungen'));
         if (!sum.invoices.length) icard.append(el('p', { class: 'muted' }, 'Keine Rechnungen.'));
@@ -7766,6 +7877,14 @@
     }
 
     async function init() {
+        // Ein Drop NEBEN eine Ablagezone würde sonst die Datei im Tab öffnen und
+        // die App samt eingetipptem Schlüssel wegnavigieren. Global entschärft —
+        // aber NICHT über echten Ablagezielen: ein globales preventDefault würgt
+        // sonst auch die native Dateizuweisung eines sichtbaren <input type=file>
+        // (Planer-Icons) ab, und die Backup-Zone behandelt ihr Drop ohnehin selbst.
+        const overDropTarget = (e) => e.target.closest && e.target.closest('input[type="file"], .bk-drop');
+        window.addEventListener('dragover', (e) => { if (!overDropTarget(e)) e.preventDefault(); });
+        window.addEventListener('drop', (e) => { if (!overDropTarget(e)) e.preventDefault(); });
         initTheme();
         applyBrand();
         // Public portal short-circuits the whole app shell / auth flow.

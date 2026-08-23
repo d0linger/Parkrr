@@ -1,5 +1,5 @@
 /* Parkrr service worker – offline shell with fresh-first assets. */
-const CACHE = "parkrr-v256";
+const CACHE = "parkrr-v273";
 const SHELL = [
     '/',
     '/css/style.css',
@@ -9,7 +9,7 @@ const SHELL = [
     '/icons/icon.svg',
     '/icons/icon-maskable.svg',
     '/fonts/hanken.woff2',
-    '/fonts/manrope.woff2',
+    '/fonts/bricolage.woff2',
     '/fonts/jbmono.woff2',
 ];
 
