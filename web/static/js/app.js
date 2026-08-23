@@ -7632,10 +7632,15 @@
     // Baut das Marken-Glyph für EIN Element — auch für Ansichten, die nach init()
     // entstehen (Portal) und den document-weiten applyBrand-Lauf samt Favicon-
     // Neuaufbau nicht brauchen.
-    const brandGlyph = (size) => `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${VEHICLES[pickVehicleIndex()]}</svg>`;
+    const brandGlyph = (size, idx = pickVehicleIndex()) => `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${VEHICLES[idx]}</svg>`;
     function applyBrand() {
-        const inner = VEHICLES[pickVehicleIndex()];
-        $$('.brand-veh').forEach((node) => { node.innerHTML = brandGlyph(node.dataset.veh || 24); });
+        // EIN Fahrzeug pro Aufruf: pickVehicleIndex() ist normalerweise über
+        // sessionStorage stabil — ist Storage aber blockiert (z. B. privater Modus),
+        // würfelt jeder Aufruf neu, und Kopf-Logo, Login-Badge und Favicon zeigten
+        // je ein anderes Fahrzeug. Einmal ziehen, denselben Index überall verwenden.
+        const idx = pickVehicleIndex();
+        const inner = VEHICLES[idx];
+        $$('.brand-veh').forEach((node) => { node.innerHTML = brandGlyph(node.dataset.veh || 24, idx); });
         // Favicon: a filled teal tile + white glyph so it reads at tab size, and it
         // rotates with the logos. Drop every existing icon link first, otherwise the
         // static favicon.ico (sizes="any") wins and the dynamic one is ignored.
@@ -7867,11 +7872,14 @@
     }
 
     async function init() {
-        // Ein Drop NEBEN die Backup-Ablagezone (oder irgendwo sonst) würde sonst
-        // die Datei im Tab öffnen und die App samt eingetipptem Schlüssel
-        // wegnavigieren. Global entschärft; die Zone selbst behandelt ihr drop davor.
-        window.addEventListener('dragover', (e) => e.preventDefault());
-        window.addEventListener('drop', (e) => e.preventDefault());
+        // Ein Drop NEBEN eine Ablagezone würde sonst die Datei im Tab öffnen und
+        // die App samt eingetipptem Schlüssel wegnavigieren. Global entschärft —
+        // aber NICHT über echten Ablagezielen: ein globales preventDefault würgt
+        // sonst auch die native Dateizuweisung eines sichtbaren <input type=file>
+        // (Planer-Icons) ab, und die Backup-Zone behandelt ihr Drop ohnehin selbst.
+        const overDropTarget = (e) => e.target.closest && e.target.closest('input[type="file"], .bk-drop');
+        window.addEventListener('dragover', (e) => { if (!overDropTarget(e)) e.preventDefault(); });
+        window.addEventListener('drop', (e) => { if (!overDropTarget(e)) e.preventDefault(); });
         initTheme();
         applyBrand();
         // Public portal short-circuits the whole app shell / auth flow.
