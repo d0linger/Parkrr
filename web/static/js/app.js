@@ -7395,14 +7395,15 @@
     function paintLoginBays() {
         const box = $('#login-bays');
         if (!box || box.childElementCount) return;
-        const COLS = 11, ROWS = 7, STEP = 0.26;
-        const cx = (COLS - 1) / 2, cy = (ROWS - 1) / 2;
-        for (let r = 0; r < ROWS; r++) {
-            for (let c = 0; c < COLS; c++) {
-                const cell = el('i');
-                cell.style.animationDelay = (Math.hypot(c - cx, r - cy) * STEP).toFixed(2) + 's';
-                box.append(cell);
-            }
+        // Wie im Artefakt: die Stellplatz-Felder werden in scheinbar ZUFÄLLIGER
+        // Reihenfolge hervorgehoben — kein Kreis von innen nach außen. Jede Zelle
+        // bekommt eine zufällige Phase (negatives Delay), also glimmt das Raster
+        // verstreut auf.
+        const DUR = 3.8;
+        for (let i = 0; i < 240; i++) {
+            const cell = el('i');
+            cell.style.animationDelay = '-' + (Math.random() * DUR).toFixed(2) + 's';
+            box.append(cell);
         }
     }
     function showLogin() {
