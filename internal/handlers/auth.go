@@ -329,8 +329,10 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := h.Auth.Authenticate(r.Context(), u.Username, req.CurrentPassword); err != nil {
 		// checkRateLimit gates this flow on BOTH limiters, so feed both — a wrong
-		// current password counts against the per-username throttle too.
-		h.recordLoginFailure(key, ip)
+		// current password counts against the per-account throttle too. recordReauth-
+		// Failure trifft Limiter + UserLimiter (nicht den login-only IPLimiter): ein
+		// Passwortwechsel ist eine Re-Auth, kein Login (PR #125).
+		h.recordReauthFailure(key, ip)
 		writeError(w, http.StatusForbidden, "Aktuelles Passwort ist falsch")
 		return
 	}
