@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
@@ -305,8 +306,19 @@ func (h *Handler) ResetUserTOTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
+	// TOTP-Reset und das Entfernen ALLER zweiten Faktoren laufen in EINER
+	// Transaktion: nicht nur die TOTP-Backup-Codes, sondern auch registrierte
+	// WebAuthn-Passkeys (PR #127). Atomar und fehlergeprüft — sonst quittiert ein
+	// fehlgeschlagenes DELETE (Timeout, Deadlock) den Reset trotzdem als Erfolg und
+	// lässt einen gültigen Passkey als zweiten Faktor stehen (Code-Review).
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not reset two-factor")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
 	var prevTOTP bool
-	if err := h.Pool.QueryRow(r.Context(),
+	if err := tx.QueryRow(r.Context(),
 		`WITH prev AS (SELECT totp_enabled FROM users WHERE id=$1)
 		 UPDATE users SET totp_enabled=FALSE, totp_secret='', updated_at=now() WHERE id=$1
 		 RETURNING (SELECT totp_enabled FROM prev)`,
@@ -314,12 +326,23 @@ func (h *Handler) ResetUserTOTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not reset two-factor")
 		return
 	}
-	// Alle zweiten Faktoren löschen — nicht nur TOTP-Backup-Codes, sondern auch
-	// registrierte WebAuthn-Passkeys. Sonst behält ein Nutzer nach dem 2FA-Reset
-	// durch den Admin weiter gültige Passkeys als zweiten Faktor (PR #127).
-	_, _ = h.Pool.Exec(r.Context(), `DELETE FROM totp_backup_codes WHERE user_id=$1`, id)
-	_, _ = h.Pool.Exec(r.Context(), `DELETE FROM webauthn_credentials WHERE user_id=$1`, id)
-	h.auditChange(r, "update", "user", id, "reset 2FA for "+username,
+	if _, err := tx.Exec(r.Context(), `DELETE FROM totp_backup_codes WHERE user_id=$1`, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not reset two-factor")
+		return
+	}
+	pkDel, err := tx.Exec(r.Context(), `DELETE FROM webauthn_credentials WHERE user_id=$1`, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not reset two-factor")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not reset two-factor")
+		return
+	}
+	// Die Zahl entfernter Passkeys mit auditieren, damit der Trail die Entfernung
+	// des zweiten Faktors belegt und nicht nur den TOTP-Übergang.
+	h.auditChange(r, "update", "user", id,
+		fmt.Sprintf("reset 2FA for %s (%d Passkey(s) entfernt)", username, pkDel.RowsAffected()),
 		diffFields(map[string]any{"totp_enabled": prevTOTP}, map[string]any{"totp_enabled": false}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reset"})
 }
