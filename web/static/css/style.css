@@ -431,20 +431,22 @@ textarea { resize: vertical; min-height: 72px; }
    0 < Karte 1). */
 .lv-bays {
     position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
-    display: grid; grid-template-columns: repeat(auto-fill, 30px); grid-auto-rows: 30px; gap: 34px;
-    align-content: center; justify-content: center; padding: 24px;
+    display: grid; grid-template-columns: repeat(auto-fill, 56px); grid-auto-rows: 56px; gap: 56px;
+    align-content: start; justify-content: center; padding: 0;
 }
 /* Zell-Stil 1:1 aus dem Artefakt (.l4 .cell + puls): volles Petrol, sanftes
    Aufglimmen + Skalieren; die ZUFÄLLIGE Phase je Zelle setzt paintLoginBays. */
 .lv-bays i {
-    border-radius: 4px; background: var(--primary);
+    border-radius: 5px; background: var(--primary);
     opacity: 0; transform: scale(.7);
-    animation: lv-bay 3.8s ease-out infinite;
+    animation: lv-bay 6.5s ease-in-out infinite;
 }
+/* Kurze Leucht-Phase in langem Zyklus (~22 % an): mit zufälliger Phase je Zelle
+   glimmt immer nur ein kleiner Teil gleichzeitig, langsam auf und wieder ab. */
 @keyframes lv-bay {
-    0% { opacity: 0; transform: scale(.7); }
-    30% { opacity: .55; transform: scale(1); }
-    70%, 100% { opacity: 0; transform: scale(1); }
+    0% { opacity: 0; transform: scale(.72); }
+    10% { opacity: .55; transform: scale(1); }
+    26%, 100% { opacity: 0; transform: scale(1); }
 }
 /* Der globale reduced-motion-Reset (weiter unten) friert per !important ALLES ein.
    Für diesen EINEN sanften Login-Marken-Moment (Skalieren + Ausblenden, kein Blitzen/
@@ -452,7 +454,7 @@ textarea { resize: vertical; min-height: 72px; }
    er auch unter erzwungenem reduce läuft (z. B. Remote-Desktop). Die per CSSOM
    gesetzten Zell-Delays bleiben; der App-Hintergrund selbst bleibt statisch. */
 @media (prefers-reduced-motion: reduce) {
-    .lv-bays i { animation-duration: 3.8s !important; animation-iteration-count: infinite !important; }
+    .lv-bays i { animation-duration: 6.5s !important; animation-iteration-count: infinite !important; }
 }
 .login-card {
     position: relative; overflow: hidden; z-index: 1;

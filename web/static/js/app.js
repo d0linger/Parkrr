@@ -7399,8 +7399,10 @@
         // Reihenfolge hervorgehoben — kein Kreis von innen nach außen. Jede Zelle
         // bekommt eine zufällige Phase (negatives Delay), also glimmt das Raster
         // verstreut auf.
-        const DUR = 3.8;
-        for (let i = 0; i < 240; i++) {
+        // Genug Zellen, um auch grosse Screens von oben bis unten zu fuellen
+        // (ueberzaehlige werden geclippt); jede mit zufaelliger Phase im langen Zyklus.
+        const DUR = 6.5;
+        for (let i = 0; i < 400; i++) {
             const cell = el('i');
             cell.style.animationDelay = '-' + (Math.random() * DUR).toFixed(2) + 's';
             box.append(cell);
