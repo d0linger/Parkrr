@@ -40,7 +40,7 @@
     --card-border: #24312E;
     --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 28px rgba(0, 0, 0, 0.35);
     --glow: rgba(47, 179, 168, 0.14);
-    --deco-plan: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='190' viewBox='0 0 320 190' fill='none' stroke='%2379CBC5' stroke-opacity='0.20' stroke-width='2'%3E%3Crect x='16' y='16' width='288' height='158' rx='4'/%3E%3Cpath d='M70 16V174M124 16V174M178 16V174M232 16V174M286 16V174' stroke-width='1'/%3E%3Crect x='20' y='20' width='46' height='66'/%3E%3Crect x='128' y='20' width='46' height='66'/%3E%3Crect x='236' y='108' width='46' height='62'/%3E%3C/svg%3E");
+    --deco-plan: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='92' height='160' viewBox='0 0 92 160' fill='none' stroke='%235ED4C9'%3E%3Cg stroke-opacity='0.11' stroke-width='1.2'%3E%3Cpath d='M0 0H92M0 160H92'/%3E%3Cpath d='M0 0V56M46 0V56M0 104V160M46 104V160'/%3E%3C/g%3E%3Cpath stroke-opacity='0.15' stroke-width='1' stroke-dasharray='5 7' d='M0 80H92'/%3E%3Cpath stroke-opacity='0.22' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round' d='M42 75l5 5l-5 5'/%3E%3C/svg%3E");
     --glass: rgba(12, 19, 18, 0.7);
     --glass-border: rgba(232, 240, 238, 0.08);
     --tab-active: #5ED4C9;
@@ -80,7 +80,7 @@
         --card-border: #DCE5E3;
         --card-shadow: 0 1px 2px rgba(16, 34, 31, 0.05), 0 8px 24px rgba(16, 34, 31, 0.08);
         --glow: rgba(15, 122, 115, 0.10);
-        --deco-plan: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='190' viewBox='0 0 320 190' fill='none' stroke='%230F7A73' stroke-opacity='0.22' stroke-width='2'%3E%3Crect x='16' y='16' width='288' height='158' rx='4'/%3E%3Cpath d='M70 16V174M124 16V174M178 16V174M232 16V174M286 16V174' stroke-width='1'/%3E%3Crect x='20' y='20' width='46' height='66'/%3E%3Crect x='128' y='20' width='46' height='66'/%3E%3Crect x='236' y='108' width='46' height='62'/%3E%3C/svg%3E");
+        --deco-plan: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='92' height='160' viewBox='0 0 92 160' fill='none' stroke='%230F7A73'%3E%3Cg stroke-opacity='0.13' stroke-width='1.2'%3E%3Cpath d='M0 0H92M0 160H92'/%3E%3Cpath d='M0 0V56M46 0V56M0 104V160M46 104V160'/%3E%3C/g%3E%3Cpath stroke-opacity='0.17' stroke-width='1' stroke-dasharray='5 7' d='M0 80H92'/%3E%3Cpath stroke-opacity='0.24' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round' d='M42 75l5 5l-5 5'/%3E%3C/svg%3E");
         --glass: rgba(242, 246, 245, 0.78);
         --glass-border: rgba(20, 32, 30, 0.08);
         --tab-active: #0B615B;
@@ -117,7 +117,7 @@
     --card-border: #DCE5E3;
     --card-shadow: 0 1px 2px rgba(16, 34, 31, 0.05), 0 8px 24px rgba(16, 34, 31, 0.08);
     --glow: rgba(15, 122, 115, 0.10);
-    --deco-plan: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='190' viewBox='0 0 320 190' fill='none' stroke='%230F7A73' stroke-opacity='0.22' stroke-width='2'%3E%3Crect x='16' y='16' width='288' height='158' rx='4'/%3E%3Cpath d='M70 16V174M124 16V174M178 16V174M232 16V174M286 16V174' stroke-width='1'/%3E%3Crect x='20' y='20' width='46' height='66'/%3E%3Crect x='128' y='20' width='46' height='66'/%3E%3Crect x='236' y='108' width='46' height='62'/%3E%3C/svg%3E");
+    --deco-plan: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='92' height='160' viewBox='0 0 92 160' fill='none' stroke='%230F7A73'%3E%3Cg stroke-opacity='0.13' stroke-width='1.2'%3E%3Cpath d='M0 0H92M0 160H92'/%3E%3Cpath d='M0 0V56M46 0V56M0 104V160M46 104V160'/%3E%3C/g%3E%3Cpath stroke-opacity='0.17' stroke-width='1' stroke-dasharray='5 7' d='M0 80H92'/%3E%3Cpath stroke-opacity='0.24' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round' d='M42 75l5 5l-5 5'/%3E%3C/svg%3E");
     --glass: rgba(242, 246, 245, 0.78);
     --glass-border: rgba(20, 32, 30, 0.08);
     --tab-active: #0B615B;
@@ -151,7 +151,7 @@
     --card-border: #24312E;
     --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 10px 28px rgba(0, 0, 0, 0.35);
     --glow: rgba(47, 179, 168, 0.14);
-    --deco-plan: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='190' viewBox='0 0 320 190' fill='none' stroke='%2379CBC5' stroke-opacity='0.20' stroke-width='2'%3E%3Crect x='16' y='16' width='288' height='158' rx='4'/%3E%3Cpath d='M70 16V174M124 16V174M178 16V174M232 16V174M286 16V174' stroke-width='1'/%3E%3Crect x='20' y='20' width='46' height='66'/%3E%3Crect x='128' y='20' width='46' height='66'/%3E%3Crect x='236' y='108' width='46' height='62'/%3E%3C/svg%3E");
+    --deco-plan: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='92' height='160' viewBox='0 0 92 160' fill='none' stroke='%235ED4C9'%3E%3Cg stroke-opacity='0.11' stroke-width='1.2'%3E%3Cpath d='M0 0H92M0 160H92'/%3E%3Cpath d='M0 0V56M46 0V56M0 104V160M46 104V160'/%3E%3C/g%3E%3Cpath stroke-opacity='0.15' stroke-width='1' stroke-dasharray='5 7' d='M0 80H92'/%3E%3Cpath stroke-opacity='0.22' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round' d='M42 75l5 5l-5 5'/%3E%3C/svg%3E");
     --glass: rgba(12, 19, 18, 0.7);
     --glass-border: rgba(232, 240, 238, 0.08);
     --tab-active: #5ED4C9;
@@ -195,16 +195,15 @@ body::before {
     inset: 0;
     z-index: -1;
     pointer-events: none;
-    /* 01 Blaupause (statisch): Schein + Pauspapier-RASTER + Hallenplan. Das Raster
-       macht die Blaupause app-weit sichtbar — auch wenn Inhalt den Eck-Plan verdeckt. */
+    /* 03 Parkmarkierung (statisch): Schein + eine app-weit KACHELNDE Parkplatz-
+       Markierung (Doppelreihen Buchten, Fahrgassen mit gestrichelter Mittellinie
+       und Richtungspfeil). --deco-plan ist die Kachel; kein separates Raster mehr. */
     background-image:
         radial-gradient(120% 75% at 50% -12%, var(--glow), transparent 58%),
-        linear-gradient(color-mix(in srgb, var(--primary) 13%, transparent) 1px, transparent 1px),
-        linear-gradient(90deg, color-mix(in srgb, var(--primary) 13%, transparent) 1px, transparent 1px),
         var(--deco-plan);
-    background-repeat: no-repeat, repeat, repeat, no-repeat;
-    background-position: 0 0, 0 0, 0 0, center 58%;
-    background-size: 100% 100%, 26px 26px, 26px 26px, min(1100px, 94%) auto;
+    background-repeat: no-repeat, repeat;
+    background-position: 0 0, center;
+    background-size: 100% 100%, 116px 202px;
 }
 
 h1, h2, h3 { margin: 0 0 0.4em; font-weight: 650; letter-spacing: -0.01em; }
