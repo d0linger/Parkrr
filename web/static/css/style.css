@@ -439,11 +439,11 @@ textarea { resize: vertical; min-height: 72px; }
 .lv-bays i {
     border-radius: 5px; background: var(--primary);
     opacity: 0; transform: scale(.82);
-    animation: lv-bay 10s ease-in-out infinite;
+    animation: lv-bay 20s ease-in-out infinite;
 }
 /* Sehr kurze Leucht-Phase in langem Zyklus (~24 % an, 76 % dunkel): mit zufälliger
    Phase je Zelle glimmen immer nur wenige gleichzeitig; das Aufleuchten steigt
-   sanft über ~1,2 s statt schlagartig. */
+   sanft über ~2,4 s statt schlagartig (12 % von 20 s). */
 @keyframes lv-bay {
     0% { opacity: 0; transform: scale(.82); }
     12% { opacity: .5; transform: scale(1); }
@@ -455,7 +455,7 @@ textarea { resize: vertical; min-height: 72px; }
    er auch unter erzwungenem reduce läuft (z. B. Remote-Desktop). Die per CSSOM
    gesetzten Zell-Delays bleiben; der App-Hintergrund selbst bleibt statisch. */
 @media (prefers-reduced-motion: reduce) {
-    .lv-bays i { animation-duration: 10s !important; animation-iteration-count: infinite !important; }
+    .lv-bays i { animation-duration: 20s !important; animation-iteration-count: infinite !important; }
 }
 .login-card {
     position: relative; overflow: hidden; z-index: 1;

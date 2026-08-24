@@ -7401,7 +7401,7 @@
         // verstreut auf.
         // Genug Zellen, um auch grosse Screens von oben bis unten zu fuellen
         // (ueberzaehlige werden geclippt); jede mit zufaelliger Phase im langen Zyklus.
-        const DUR = 10;
+        const DUR = 20;
         for (let i = 0; i < 180; i++) {
             const cell = el('i');
             cell.style.animationDelay = '-' + (Math.random() * DUR).toFixed(2) + 's';
