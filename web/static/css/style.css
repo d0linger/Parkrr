@@ -195,10 +195,16 @@ body::before {
     inset: 0;
     z-index: -1;
     pointer-events: none;
-    background-image: radial-gradient(120% 75% at 50% -12%, var(--glow), transparent 58%), var(--deco-plan);
-    background-repeat: no-repeat, no-repeat;
-    background-position: 0 0, right -160px bottom -40px;
-    background-size: 100% 100%, 880px auto;
+    /* 01 Blaupause (statisch): Schein + Pauspapier-RASTER + Hallenplan. Das Raster
+       macht die Blaupause app-weit sichtbar — auch wenn Inhalt den Eck-Plan verdeckt. */
+    background-image:
+        radial-gradient(120% 75% at 50% -12%, var(--glow), transparent 58%),
+        linear-gradient(color-mix(in srgb, var(--primary) 7%, transparent) 1px, transparent 1px),
+        linear-gradient(90deg, color-mix(in srgb, var(--primary) 7%, transparent) 1px, transparent 1px),
+        var(--deco-plan);
+    background-repeat: no-repeat, repeat, repeat, no-repeat;
+    background-position: 0 0, 0 0, 0 0, right -160px bottom -40px;
+    background-size: 100% 100%, 30px 30px, 30px 30px, 880px auto;
 }
 
 h1, h2, h3 { margin: 0 0 0.4em; font-weight: 650; letter-spacing: -0.01em; }
@@ -419,32 +425,32 @@ textarea { resize: vertical; min-height: 72px; }
         linear-gradient(90deg, color-mix(in srgb, var(--primary) 9%, transparent) 1px, transparent 1px) 0 0 / 44px 44px,
         var(--bg);
 }
-/* Zwei konzentrische Puls-Wellen aus der Mitte, um eine halbe Periode versetzt =
-   fortlaufendes „Atmen" der Belegung. z-index unter der Karte (die liegt auf 1). */
-.login-view::before, .login-view::after {
-    content: ""; position: absolute; left: 50%; top: 50%;
-    width: 140vmax; height: 140vmax; border-radius: 50%; z-index: 0; pointer-events: none;
-    transform: translate(-50%, -50%) scale(.12); opacity: 0;
-    background: radial-gradient(closest-side, transparent 56%, color-mix(in srgb, var(--primary) 20%, transparent) 64%, transparent 72%);
-    animation: lv-pulse 6.5s ease-out infinite;
+/* Belegungspuls (Login-04): die Stellplatz-Felder pulsieren in Wellen aus der Mitte
+   nach außen. Die Zellen erzeugt app.js (paintLoginBays) mit radial gestaffeltem
+   animation-delay via CSSOM — Inline-Styles blockt die CSP. Hinter der Karte (z-index
+   0 < Karte 1). */
+.lv-bays {
+    position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
+    display: grid; place-content: center;
+    grid-template-columns: repeat(11, 42px); grid-auto-rows: 42px; gap: 9px;
 }
-.login-view::after { animation-delay: 3.25s; }
-@keyframes lv-pulse {
-    0% { transform: translate(-50%, -50%) scale(.12); opacity: 0; }
-    16% { opacity: .75; }
-    72%, 100% { transform: translate(-50%, -50%) scale(1.12); opacity: 0; }
+.lv-bays i {
+    border-radius: 5px; background: color-mix(in srgb, var(--primary) 42%, transparent);
+    opacity: 0; transform: scale(.72);
+    animation: lv-bay 4.5s ease-out infinite;
 }
-/* Der globale reduced-motion-Reset (weiter unten) friert per !important ALLES ein —
-   auch *::before/::after. Für den EINEN sanften Login-Marken-Moment (langsames
-   Skalieren + Ausblenden, kein Blitzen/Rotieren) heben wir das gezielt wieder auf,
-   damit er auch unter erzwungenem reduce läuft (z. B. Remote-Desktop). Höhere
-   Spezifität (.login-view::before) + !important schlägt den *::before-Reset. Der
-   App-Hintergrund selbst bleibt statisch. */
+@keyframes lv-bay {
+    0% { opacity: 0; transform: scale(.72); }
+    28% { opacity: .72; transform: scale(1); }
+    68%, 100% { opacity: 0; transform: scale(1); }
+}
+/* Der globale reduced-motion-Reset (weiter unten) friert per !important ALLES ein.
+   Für diesen EINEN sanften Login-Marken-Moment (Skalieren + Ausblenden, kein Blitzen/
+   Rotieren) heben wir ihn gezielt wieder auf (höhere Spezifität + !important), damit
+   er auch unter erzwungenem reduce läuft (z. B. Remote-Desktop). Die per CSSOM
+   gesetzten Zell-Delays bleiben; der App-Hintergrund selbst bleibt statisch. */
 @media (prefers-reduced-motion: reduce) {
-    .login-view::before, .login-view::after {
-        animation-duration: 6.5s !important;
-        animation-iteration-count: infinite !important;
-    }
+    .lv-bays i { animation-duration: 4.5s !important; animation-iteration-count: infinite !important; }
 }
 .login-card {
     position: relative; overflow: hidden; z-index: 1;

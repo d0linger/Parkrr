@@ -7389,9 +7389,26 @@
             : '6-stelliger Code aus der App – oder ein Backup-Code, falls kein Handy zur Hand.';
         clearTotp();
     }
+    // Belegungspuls-Hintergrund (Login-04): ein Stellplatz-Raster, dessen Felder in
+    // Wellen aus der Mitte pulsieren. Die radiale Staffelung sitzt im animation-delay
+    // je Zelle — via CSSOM gesetzt, weil die CSP Inline-Styles blockt. Einmalig gebaut.
+    function paintLoginBays() {
+        const box = $('#login-bays');
+        if (!box || box.childElementCount) return;
+        const COLS = 11, ROWS = 7, STEP = 0.26;
+        const cx = (COLS - 1) / 2, cy = (ROWS - 1) / 2;
+        for (let r = 0; r < ROWS; r++) {
+            for (let c = 0; c < COLS; c++) {
+                const cell = el('i');
+                cell.style.animationDelay = (Math.hypot(c - cx, r - cy) * STEP).toFixed(2) + 's';
+                box.append(cell);
+            }
+        }
+    }
     function showLogin() {
         $('#app-view').hidden = true;
         $('#login-view').hidden = false;
+        paintLoginBays();
         $('#login-totp-wrap').hidden = true;
         $('#login-form').classList.remove('is-2fa');
         setTotpMode(false);
