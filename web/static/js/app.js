@@ -7394,15 +7394,18 @@
     // je Zelle — via CSSOM gesetzt, weil die CSP Inline-Styles blockt. Einmalig gebaut.
     function paintLoginBays() {
         const box = $('#login-bays');
-        if (!box || box.childElementCount) return;
+        if (!box) return;
         // Wie im Artefakt: die Stellplatz-Felder werden in scheinbar ZUFÄLLIGER
         // Reihenfolge hervorgehoben — kein Kreis von innen nach außen. Jede Zelle
         // bekommt eine zufällige Phase (negatives Delay), also glimmt das Raster
         // verstreut auf.
-        // Genug Zellen, um auch grosse Screens von oben bis unten zu fuellen
-        // (ueberzaehlige werden geclippt); jede mit zufaelliger Phase im langen Zyklus.
-        const DUR = 20;
-        for (let i = 0; i < 180; i++) {
+        // Zellzahl aus dem Viewport ableiten (56px Zelle + 140px gap = 196px Raster),
+        // damit JEDER Screen von oben bis unten gefuellt ist — nicht mehr fix 180.
+        // Nur FEHLENDE Zellen ergaenzen (nie neu aufbauen): bestehende behalten ihre
+        // zufaellige Phase, ueberzaehlige bei kleineren Fenstern werden geclippt.
+        const DUR = 20, PITCH = 196;
+        const need = (Math.ceil(window.innerWidth / PITCH) + 1) * (Math.ceil(window.innerHeight / PITCH) + 1);
+        for (let i = box.childElementCount; i < need; i++) {
             const cell = el('i');
             cell.style.animationDelay = '-' + (Math.random() * DUR).toFixed(2) + 's';
             box.append(cell);
@@ -7911,6 +7914,9 @@
         const overDropTarget = (e) => e.target.closest && e.target.closest('input[type="file"], .bk-drop');
         window.addEventListener('dragover', (e) => { if (!overDropTarget(e)) e.preventDefault(); });
         window.addEventListener('drop', (e) => { if (!overDropTarget(e)) e.preventDefault(); });
+        // Wird das Fenster auf dem Login-Screen groesser, fehlende Belegungspuls-Zellen
+        // nachlegen (paintLoginBays ergaenzt nur, ist bei ausreichender Zahl ein No-Op).
+        window.addEventListener('resize', () => { const lv = $('#login-view'); if (lv && !lv.hidden) paintLoginBays(); });
         initTheme();
         applyBrand();
         // Public portal short-circuits the whole app shell / auth flow.
