@@ -206,6 +206,14 @@ body::before {
     background-size: 100% 100%, 500px 227px;
 }
 
+/* Boot-Entwarnung: bis app.js den Auth-Status geklaert und den passenden View
+   (Login/App/Portal) eingeblendet hat, bleibt die Blaupause UNSICHTBAR. Sonst
+   malt dieses Pseudo-Element sofort und blitzt waehrend der /auth/me-Abfrage als
+   Post-Login-Hintergrund auf dem noch leeren Login-Screen auf. init() nimmt die
+   Klasse, sobald ein View steht — dann liegt die Blaupause hinter dem Login-Grund
+   (abgedeckt) bzw. erscheint als App-Hintergrund. */
+html.preboot body::before { display: none; }
+
 h1, h2, h3 { margin: 0 0 0.4em; font-weight: 650; letter-spacing: -0.01em; }
 /* Inline stroke icons: align with the text baseline outside flex contexts. */
 .ic-svg { vertical-align: -0.2em; flex: none; }

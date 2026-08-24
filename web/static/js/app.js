@@ -7956,13 +7956,16 @@
         applyBrand();
         // Public portal short-circuits the whole app shell / auth flow.
         const pm = (location.hash || '').match(/^#\/portal\/([A-Za-z0-9_-]+)$/);
-        if (pm) { await renderPortal(pm[1]); return; }
+        if (pm) { await renderPortal(pm[1]); document.documentElement.classList.remove('preboot'); return; }
         bindStatic();
         setupInstallPrompt();
         setupOfflineIndicator();
         try { state.capabilities = await api.get('/auth/capabilities'); } catch { state.capabilities = {}; }
         try { state.user = await api.get('/auth/me'); showApp(); }
         catch { showLogin(); }
+        // View steht (synchron in showApp/showLogin gesetzt) — Blaupause freigeben.
+        // Vorher blieb sie waehrend der Auth-Roundtrips als Post-Login-Grund sichtbar.
+        document.documentElement.classList.remove('preboot');
         if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
         const sb = $('#search-btn'); if (sb) sb.addEventListener('click', () => openCommandPalette());
         document.addEventListener('keydown', (e) => {
