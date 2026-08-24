@@ -411,9 +411,43 @@ textarea { resize: vertical; min-height: 72px; }
 .login-view {
     min-height: 100vh; min-height: 100dvh;
     display: grid; place-items: center; padding: 1.5rem;
+    position: relative; overflow: hidden;
+    /* Belegungspuls (Login-04): eigener Stellplatz-Raster-Grund — deckt die App-weite
+       Blaupause im Login ab; die Puls-Wellen laufen als Pseudo-Elemente darüber. */
+    background:
+        linear-gradient(color-mix(in srgb, var(--primary) 9%, transparent) 1px, transparent 1px) 0 0 / 44px 44px,
+        linear-gradient(90deg, color-mix(in srgb, var(--primary) 9%, transparent) 1px, transparent 1px) 0 0 / 44px 44px,
+        var(--bg);
+}
+/* Zwei konzentrische Puls-Wellen aus der Mitte, um eine halbe Periode versetzt =
+   fortlaufendes „Atmen" der Belegung. z-index unter der Karte (die liegt auf 1). */
+.login-view::before, .login-view::after {
+    content: ""; position: absolute; left: 50%; top: 50%;
+    width: 140vmax; height: 140vmax; border-radius: 50%; z-index: 0; pointer-events: none;
+    transform: translate(-50%, -50%) scale(.12); opacity: 0;
+    background: radial-gradient(closest-side, transparent 56%, color-mix(in srgb, var(--primary) 20%, transparent) 64%, transparent 72%);
+    animation: lv-pulse 6.5s ease-out infinite;
+}
+.login-view::after { animation-delay: 3.25s; }
+@keyframes lv-pulse {
+    0% { transform: translate(-50%, -50%) scale(.12); opacity: 0; }
+    16% { opacity: .75; }
+    72%, 100% { transform: translate(-50%, -50%) scale(1.12); opacity: 0; }
+}
+/* Der globale reduced-motion-Reset (weiter unten) friert per !important ALLES ein —
+   auch *::before/::after. Für den EINEN sanften Login-Marken-Moment (langsames
+   Skalieren + Ausblenden, kein Blitzen/Rotieren) heben wir das gezielt wieder auf,
+   damit er auch unter erzwungenem reduce läuft (z. B. Remote-Desktop). Höhere
+   Spezifität (.login-view::before) + !important schlägt den *::before-Reset. Der
+   App-Hintergrund selbst bleibt statisch. */
+@media (prefers-reduced-motion: reduce) {
+    .login-view::before, .login-view::after {
+        animation-duration: 6.5s !important;
+        animation-iteration-count: infinite !important;
+    }
 }
 .login-card {
-    position: relative; overflow: hidden;
+    position: relative; overflow: hidden; z-index: 1;
     width: 100%; max-width: 380px;
     background: var(--card-bg); border: 1px solid var(--card-border);
     border-radius: var(--radius); padding: 2rem 1.5rem; box-shadow: var(--shadow);
