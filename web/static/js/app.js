@@ -7637,21 +7637,22 @@
         '<path d="M3 14.2h13.6a3 3 0 0 1-3 2.9H6a3 3 0 0 1-3-2.9Z"/><path d="M11 14l3.3-3.2 1.8 1"/><path d="M2.5 20c1.3.9 2.6.9 4 0s2.6-.9 4 0 2.6.9 4 0 2.6-.9 4 0"/>',
         '<path d="M3 15.5v-2.2l1.6-.6 1.4-3c.3-.6.9-1 1.6-1h6c.6 0 1.2.3 1.5.9l1.4 2.9 2.5.9v2.1"/><path d="M2.5 15.5h19"/><path d="M6 12.7h5"/><circle cx="7.3" cy="16.3" r="1.7"/><circle cx="16.7" cy="16.3" r="1.7"/>',
     ];
-    // Pick once per browser session and remember it: a normal refresh (F5 or a
-    // cache-bypassing hard reload — indistinguishable to a page) keeps the same
-    // vehicle, while a new session or cleared site data rolls a fresh one.
-    // vehIndex caches the pick for the whole page lifetime, so EVERY glyph — the
-    // init-time logos/favicon and a portal head rendered later — stays on one
-    // vehicle even when sessionStorage is blocked (private mode), where the raw
-    // storage read would otherwise re-randomise on each call.
+    // Pick once and PERSIST in localStorage, so Logo + Favicon über JEDEN Reload
+    // stabil bleiben — Soft-Reload (F5) UND Hard-Reset (Strg+Umschalt+R), auch über
+    // neue Tabs/Sitzungen hinweg. Wechselt nur, wenn der Nutzer Site-Data leert.
+    // (Vorher sessionStorage: ein Hard-Reset kann die Session-Ablage je nach
+    // Browser leeren und rollte dann ein neues Fahrzeug — genau der gemeldete Bug.)
+    // vehIndex cacht die Wahl für die Seitenlebensdauer, damit JEDES Glyph — Kopf-
+    // Logo, Login-Badge, Favicon, später der Portal-Kopf — auf demselben Fahrzeug
+    // sitzt, selbst wenn Storage blockiert ist (privater Modus).
     let vehIndex = -1;
     function pickVehicleIndex() {
         if (vehIndex >= 0 && vehIndex < VEHICLES.length) return vehIndex;
         let idx = -1;
-        try { idx = parseInt(sessionStorage.getItem('parkrr-veh'), 10); } catch { /* storage blocked */ }
+        try { idx = parseInt(localStorage.getItem('parkrr-veh'), 10); } catch { /* storage blocked */ }
         if (!(idx >= 0 && idx < VEHICLES.length)) {
             idx = Math.floor(Math.random() * VEHICLES.length);
-            try { sessionStorage.setItem('parkrr-veh', String(idx)); } catch { /* storage blocked */ }
+            try { localStorage.setItem('parkrr-veh', String(idx)); } catch { /* storage blocked */ }
         }
         vehIndex = idx;
         return idx;

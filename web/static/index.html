@@ -8,8 +8,9 @@
     <meta name="app-version" content="__APP_VERSION__">
     <title>Parkrr</title>
     <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
-    <link rel="icon" href="/icons/favicon.ico" sizes="any">
+    <!-- Kein statisches Tab-Favicon: applyBrand() injiziert zur Laufzeit das
+         (per localStorage stabile) Marken-Fahrzeug. Ein statisches Icon hier wuerde
+         beim Hard-Reload kurz aufblitzen, bevor das dynamische gesetzt ist. -->
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
     <link rel="stylesheet" href="/css/style.css">
 </head>
