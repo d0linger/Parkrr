@@ -314,7 +314,11 @@ func (h *Handler) ResetUserTOTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not reset two-factor")
 		return
 	}
+	// Alle zweiten Faktoren löschen — nicht nur TOTP-Backup-Codes, sondern auch
+	// registrierte WebAuthn-Passkeys. Sonst behält ein Nutzer nach dem 2FA-Reset
+	// durch den Admin weiter gültige Passkeys als zweiten Faktor (PR #127).
 	_, _ = h.Pool.Exec(r.Context(), `DELETE FROM totp_backup_codes WHERE user_id=$1`, id)
+	_, _ = h.Pool.Exec(r.Context(), `DELETE FROM webauthn_credentials WHERE user_id=$1`, id)
 	h.auditChange(r, "update", "user", id, "reset 2FA for "+username,
 		diffFields(map[string]any{"totp_enabled": prevTOTP}, map[string]any{"totp_enabled": false}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reset"})
