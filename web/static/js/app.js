@@ -7389,9 +7389,32 @@
             : '6-stelliger Code aus der App – oder ein Backup-Code, falls kein Handy zur Hand.';
         clearTotp();
     }
+    // Belegungspuls-Hintergrund (Login-04): ein Stellplatz-Raster, dessen Felder in
+    // Wellen aus der Mitte pulsieren. Die radiale Staffelung sitzt im animation-delay
+    // je Zelle — via CSSOM gesetzt, weil die CSP Inline-Styles blockt. Einmalig gebaut.
+    function paintLoginBays() {
+        const box = $('#login-bays');
+        if (!box) return;
+        // Wie im Artefakt: die Stellplatz-Felder werden in scheinbar ZUFÄLLIGER
+        // Reihenfolge hervorgehoben — kein Kreis von innen nach außen. Jede Zelle
+        // bekommt eine zufällige Phase (negatives Delay), also glimmt das Raster
+        // verstreut auf.
+        // Zellzahl aus dem Viewport ableiten (56px Zelle + 140px gap = 196px Raster),
+        // damit JEDER Screen von oben bis unten gefuellt ist — nicht mehr fix 180.
+        // Nur FEHLENDE Zellen ergaenzen (nie neu aufbauen): bestehende behalten ihre
+        // zufaellige Phase, ueberzaehlige bei kleineren Fenstern werden geclippt.
+        const DUR = 20, PITCH = 196;
+        const need = (Math.ceil(window.innerWidth / PITCH) + 1) * (Math.ceil(window.innerHeight / PITCH) + 1);
+        for (let i = box.childElementCount; i < need; i++) {
+            const cell = el('i');
+            cell.style.animationDelay = '-' + (Math.random() * DUR).toFixed(2) + 's';
+            box.append(cell);
+        }
+    }
     function showLogin() {
         $('#app-view').hidden = true;
         $('#login-view').hidden = false;
+        paintLoginBays();
         $('#login-totp-wrap').hidden = true;
         $('#login-form').classList.remove('is-2fa');
         setTotpMode(false);
@@ -7617,21 +7640,27 @@
         '<path d="M3 14.2h13.6a3 3 0 0 1-3 2.9H6a3 3 0 0 1-3-2.9Z"/><path d="M11 14l3.3-3.2 1.8 1"/><path d="M2.5 20c1.3.9 2.6.9 4 0s2.6-.9 4 0 2.6.9 4 0 2.6-.9 4 0"/>',
         '<path d="M3 15.5v-2.2l1.6-.6 1.4-3c.3-.6.9-1 1.6-1h6c.6 0 1.2.3 1.5.9l1.4 2.9 2.5.9v2.1"/><path d="M2.5 15.5h19"/><path d="M6 12.7h5"/><circle cx="7.3" cy="16.3" r="1.7"/><circle cx="16.7" cy="16.3" r="1.7"/>',
     ];
-    // Pick once per browser session and remember it: a normal refresh (F5 or a
-    // cache-bypassing hard reload — indistinguishable to a page) keeps the same
-    // vehicle, while a new session or cleared site data rolls a fresh one.
-    // vehIndex caches the pick for the whole page lifetime, so EVERY glyph — the
-    // init-time logos/favicon and a portal head rendered later — stays on one
-    // vehicle even when sessionStorage is blocked (private mode), where the raw
-    // storage read would otherwise re-randomise on each call.
+    // Gewünschtes Verhalten: normaler Reload (F5) → GLEICHES Fahrzeug; Hard-Reload
+    // (Strg+Umschalt+R) → NEUES Fahrzeug.
+    // Der verlässliche Unterschied: ein Hard-Reload UMGEHT den Service Worker, die
+    // Seite ist dann nicht SW-kontrolliert → navigator.serviceWorker.controller ist
+    // null. Ein normaler Load/Soft-Reload unter aktivem SW (der hier skipWaiting +
+    // clients.claim macht) hat einen Controller. Also: Controller da → gespeichertes
+    // Fahrzeug aus localStorage behalten; kein Controller (Hard-Reload / allererste
+    // Wahl / kein SW) → neu würfeln und speichern. Ohne SW-Unterstützung immer behalten.
+    // vehIndex cacht die Wahl für die Seitenlebensdauer, damit JEDES Glyph — Kopf-Logo,
+    // Login-Badge, Favicon, später der Portal-Kopf — auf demselben Fahrzeug sitzt.
     let vehIndex = -1;
     function pickVehicleIndex() {
         if (vehIndex >= 0 && vehIndex < VEHICLES.length) return vehIndex;
+        const controlled = !('serviceWorker' in navigator) || !!navigator.serviceWorker.controller;
         let idx = -1;
-        try { idx = parseInt(sessionStorage.getItem('parkrr-veh'), 10); } catch { /* storage blocked */ }
+        if (controlled) {
+            try { idx = parseInt(localStorage.getItem('parkrr-veh'), 10); } catch { /* storage blocked */ }
+        }
         if (!(idx >= 0 && idx < VEHICLES.length)) {
             idx = Math.floor(Math.random() * VEHICLES.length);
-            try { sessionStorage.setItem('parkrr-veh', String(idx)); } catch { /* storage blocked */ }
+            try { localStorage.setItem('parkrr-veh', String(idx)); } catch { /* storage blocked */ }
         }
         vehIndex = idx;
         return idx;
@@ -7885,6 +7914,9 @@
         const overDropTarget = (e) => e.target.closest && e.target.closest('input[type="file"], .bk-drop');
         window.addEventListener('dragover', (e) => { if (!overDropTarget(e)) e.preventDefault(); });
         window.addEventListener('drop', (e) => { if (!overDropTarget(e)) e.preventDefault(); });
+        // Wird das Fenster auf dem Login-Screen groesser, fehlende Belegungspuls-Zellen
+        // nachlegen (paintLoginBays ergaenzt nur, ist bei ausreichender Zahl ein No-Op).
+        window.addEventListener('resize', () => { const lv = $('#login-view'); if (lv && !lv.hidden) paintLoginBays(); });
         initTheme();
         applyBrand();
         // Public portal short-circuits the whole app shell / auth flow.
