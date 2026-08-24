@@ -7392,22 +7392,57 @@
     // Belegungspuls-Hintergrund (Login-04): ein Stellplatz-Raster, dessen Felder in
     // Wellen aus der Mitte pulsieren. Die radiale Staffelung sitzt im animation-delay
     // je Zelle — via CSSOM gesetzt, weil die CSP Inline-Styles blockt. Einmalig gebaut.
+    // Phasen-Seed fuer den Login-Puls: jede Zelle bekommt einen FESTEN Versatz, der
+    // ueber Soft-Reloads (F5) STABIL bleibt und nur bei einem Hard-Reload (Strg+F5)
+    // neu gewuerfelt wird — dieselbe Logik wie beim Marken-Fahrzeug/Favicon (siehe
+    // pickVehicleIndex): bei einem Hard-Reload umgeht der Browser den Service Worker,
+    // also ist navigator.serviceWorker.controller dann null.
+    let loginBayRng = null;
+    function seededLoginRng() {
+        if (loginBayRng) return loginBayRng;
+        const controlled = !('serviceWorker' in navigator) || !!navigator.serviceWorker.controller;
+        let seed = NaN;
+        if (controlled) {
+            try { seed = parseInt(localStorage.getItem('parkrr-login-seed'), 10); } catch { /* storage blocked */ }
+        }
+        if (!Number.isFinite(seed)) {
+            seed = (Math.random() * 0x100000000) >>> 0;
+            try { localStorage.setItem('parkrr-login-seed', String(seed)); } catch { /* storage blocked */ }
+        }
+        // mulberry32: winziger, deterministischer PRNG — gleicher Seed, gleiche Folge.
+        let a = seed >>> 0;
+        loginBayRng = function () {
+            a = a + 0x6D2B79F5 | 0;
+            let t = Math.imul(a ^ a >>> 15, 1 | a);
+            t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+            return ((t ^ t >>> 14) >>> 0) / 0x100000000;
+        };
+        return loginBayRng;
+    }
     function paintLoginBays() {
         const box = $('#login-bays');
         if (!box) return;
         // Wie im Artefakt: die Stellplatz-Felder werden in scheinbar ZUFÄLLIGER
         // Reihenfolge hervorgehoben — kein Kreis von innen nach außen. Jede Zelle
-        // bekommt eine zufällige Phase (negatives Delay), also glimmt das Raster
-        // verstreut auf.
+        // bekommt einen festen Phasen-Versatz (negatives Delay), also glimmt das
+        // Raster verstreut auf. Der Versatz kommt aus einem stabilen Seed, damit ein
+        // F5 dasselbe Muster zeigt; neu gewuerfelt nur bei Hard-Reload.
         // Zellzahl aus dem Viewport ableiten (56px Zelle + 140px gap = 196px Raster),
         // damit JEDER Screen von oben bis unten gefuellt ist — nicht mehr fix 180.
         // Nur FEHLENDE Zellen ergaenzen (nie neu aufbauen): bestehende behalten ihre
-        // zufaellige Phase, ueberzaehlige bei kleineren Fenstern werden geclippt.
+        // Phase, ueberzaehlige bei kleineren Fenstern werden geclippt.
+        const rng = seededLoginRng();
         const DUR = 20, PITCH = 196;
+        // An die WANDUHR ankern: die Zyklus-Position einer Zelle ist (jetzt + Versatz)
+        // mod DUR (= CSS animation-duration von .lv-bay). Dadurch setzt die Animation
+        // nach einem Reload dort wieder an, wo sie ohne Reload staende — kein sichtbarer
+        // Ruecksprung an den Zyklusanfang, sie laeuft optisch einfach weiter.
+        const nowSec = Date.now() / 1000;
         const need = (Math.ceil(window.innerWidth / PITCH) + 1) * (Math.ceil(window.innerHeight / PITCH) + 1);
         for (let i = box.childElementCount; i < need; i++) {
             const cell = el('i');
-            cell.style.animationDelay = '-' + (Math.random() * DUR).toFixed(2) + 's';
+            const delay = (nowSec + rng() * DUR) % DUR;
+            cell.style.animationDelay = '-' + delay.toFixed(2) + 's';
             box.append(cell);
         }
     }
