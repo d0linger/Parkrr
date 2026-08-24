@@ -72,9 +72,11 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.HandleFunc("POST /api/auth/passkey/login/finish", ah.PasskeyLoginFinish)
 
 	// --- Customer self-service portal (PUBLIC, token-scoped, read-only) ---
-	mux.HandleFunc("GET /api/portal/{token}/summary", h.PortalSummary)
-	mux.HandleFunc("GET /api/portal/{token}/invoices/{id}/pdf", h.PortalInvoicePDF)
-	mux.HandleFunc("GET /api/portal/{token}/invoices/{id}/pay-qr", h.PortalPayQR)
+	// The token travels in the Authorization header, NOT the URL path, so it stays
+	// out of access/reverse-proxy logs, browser history, and Referer (finding SEC-01).
+	mux.HandleFunc("GET /api/portal/summary", h.PortalSummary)
+	mux.HandleFunc("GET /api/portal/invoices/{id}/pdf", h.PortalInvoicePDF)
+	mux.HandleFunc("GET /api/portal/invoices/{id}/pay-qr", h.PortalPayQR)
 
 	// --- Auth (protected) ---
 	mux.Handle("POST /api/auth/logout", authed(hf(ah.Logout)))

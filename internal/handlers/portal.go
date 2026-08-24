@@ -58,6 +58,32 @@ func (h *Handler) resolvePortalPerson(ctx context.Context, rawToken string) (int
 	return pid, true
 }
 
+// portalBearer extracts the raw self-service token from the Authorization header.
+// The token lives in a header, not the URL path, so it never reaches access or
+// reverse-proxy logs, browser history, or Referer (finding SEC-01).
+func portalBearer(r *http.Request) (string, bool) {
+	const prefix = "Bearer "
+	authz := strings.TrimSpace(r.Header.Get("Authorization"))
+	if !strings.HasPrefix(authz, prefix) {
+		return "", false
+	}
+	token := strings.TrimSpace(authz[len(prefix):])
+	if token == "" {
+		return "", false
+	}
+	return token, true
+}
+
+// portalPerson resolves the bearer token to the owning person id, or reports
+// failure (missing header / invalid / expired / revoked token).
+func (h *Handler) portalPerson(r *http.Request) (int64, bool) {
+	token, ok := portalBearer(r)
+	if !ok {
+		return 0, false
+	}
+	return h.resolvePortalPerson(r.Context(), token)
+}
+
 // CreatePortalLink issues a self-service magic link for a person (editor+),
 // optionally e-mailing it. Body (optional JSON): {"days":1..365, "send":bool}.
 func (h *Handler) CreatePortalLink(w http.ResponseWriter, r *http.Request) {
@@ -279,7 +305,7 @@ type portalSummary struct {
 
 // PortalSummary is the PUBLIC read-only view behind a valid magic-link token.
 func (h *Handler) PortalSummary(w http.ResponseWriter, r *http.Request) {
-	pid, ok := h.resolvePortalPerson(r.Context(), r.PathValue("token"))
+	pid, ok := h.portalPerson(r)
 	if !ok {
 		writeError(w, http.StatusNotFound, "Link ungültig oder abgelaufen")
 		return
@@ -369,7 +395,7 @@ func (h *Handler) PortalSummary(w http.ResponseWriter, r *http.Request) {
 
 // PortalInvoicePDF serves a person's own invoice PDF behind a valid token.
 func (h *Handler) PortalInvoicePDF(w http.ResponseWriter, r *http.Request) {
-	pid, ok := h.resolvePortalPerson(r.Context(), r.PathValue("token"))
+	pid, ok := h.portalPerson(r)
 	if !ok {
 		writeError(w, http.StatusNotFound, "Link ungültig oder abgelaufen")
 		return

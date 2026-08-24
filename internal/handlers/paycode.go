@@ -125,7 +125,7 @@ func (h *Handler) PayQR(w http.ResponseWriter, r *http.Request) {
 
 // PortalPayQR serves the pay QR for a person's own invoice behind a valid token.
 func (h *Handler) PortalPayQR(w http.ResponseWriter, r *http.Request) {
-	pid, ok := h.resolvePortalPerson(r.Context(), r.PathValue("token"))
+	pid, ok := h.portalPerson(r)
 	if !ok {
 		writeError(w, http.StatusNotFound, "Link ungültig oder abgelaufen")
 		return

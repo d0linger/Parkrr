@@ -36,8 +36,9 @@ func createPortalLink(t *testing.T, h *Handler, pid int64) string {
 
 func getPortalSummary(t *testing.T, h *Handler, token string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/api/portal/"+token+"/summary", nil)
-	req.SetPathValue("token", token)
+	// Token travels in the Authorization header, not the URL path (SEC-01).
+	req := httptest.NewRequest(http.MethodGet, "/api/portal/summary", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	h.PortalSummary(w, req)
 	return w
@@ -142,9 +143,17 @@ func TestSelfServicePortal(t *testing.T) {
 		t.Errorf("bogus token: want 404, got %d", bw.Code)
 	}
 
+	// No Authorization header at all → 404 (portalBearer rejects it; SEC-01).
+	noAuth := httptest.NewRequest(http.MethodGet, "/api/portal/summary", nil)
+	naw := httptest.NewRecorder()
+	h.PortalSummary(naw, noAuth)
+	if naw.Code != http.StatusNotFound {
+		t.Errorf("missing Authorization header: want 404, got %d", naw.Code)
+	}
+
 	// Own invoice PDF via the token.
-	preq := httptest.NewRequest(http.MethodGet, "/api/portal/"+token+"/invoices/"+strconv.FormatInt(iv.ID, 10)+"/pdf", nil)
-	preq.SetPathValue("token", token)
+	preq := httptest.NewRequest(http.MethodGet, "/api/portal/invoices/"+strconv.FormatInt(iv.ID, 10)+"/pdf", nil)
+	preq.Header.Set("Authorization", "Bearer "+token)
 	preq.SetPathValue("id", strconv.FormatInt(iv.ID, 10))
 	pw := httptest.NewRecorder()
 	h.PortalInvoicePDF(pw, preq)
@@ -156,8 +165,8 @@ func TestSelfServicePortal(t *testing.T) {
 	otherPid := createIntegrationPerson(t, h)
 	chargeFor(t, h, otherPid, 10.0)
 	otherIv := createInvoice(t, h, otherPid)
-	oreq := httptest.NewRequest(http.MethodGet, "/api/portal/"+token+"/invoices/"+strconv.FormatInt(otherIv.ID, 10)+"/pdf", nil)
-	oreq.SetPathValue("token", token)
+	oreq := httptest.NewRequest(http.MethodGet, "/api/portal/invoices/"+strconv.FormatInt(otherIv.ID, 10)+"/pdf", nil)
+	oreq.Header.Set("Authorization", "Bearer "+token)
 	oreq.SetPathValue("id", strconv.FormatInt(otherIv.ID, 10))
 	ow := httptest.NewRecorder()
 	h.PortalInvoicePDF(ow, oreq)

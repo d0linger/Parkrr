@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -41,22 +40,6 @@ func requestID() string {
 	return hex.EncodeToString(b)
 }
 
-// redactPath masks the bearer-equivalent token embedded in customer-portal URLs
-// so it never reaches the access log — and from there any log or reverse-proxy
-// artifact where it could be replayed until expiry.
-// /api/portal/<token>/... -> /api/portal/REDACTED/... (finding SEC-01).
-func redactPath(p string) string {
-	const prefix = "/api/portal/"
-	if !strings.HasPrefix(p, prefix) {
-		return p
-	}
-	rest := p[len(prefix):] // "<token>/summary", "<token>/invoices/…", or "<token>"
-	if i := strings.IndexByte(rest, '/'); i >= 0 {
-		return prefix + "REDACTED" + rest[i:]
-	}
-	return prefix + "REDACTED"
-}
-
 // requestLogger assigns a request ID and logs one structured line per request.
 func requestLogger(mgr *auth.Manager, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -71,8 +54,10 @@ func requestLogger(mgr *auth.Manager, next http.Handler) http.Handler {
 
 		attrs := []any{
 			"id", id,
+			// Portal tokens are no longer carried in the URL path (they moved to the
+			// Authorization header, finding SEC-01), so the raw path is safe to log.
 			"method", r.Method,
-			"path", redactPath(r.URL.Path),
+			"path", r.URL.Path,
 			"status", rec.status,
 			"bytes", rec.bytes,
 			"ip", mgr.ClientIP(r),
