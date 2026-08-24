@@ -334,8 +334,12 @@ func (h *Handler) auditAs(r *http.Request, actorID int64, actorName, action, ent
 }
 
 func (h *Handler) auditInsert(r *http.Request, actorID int64, actorName, action, entity string, id int64, summary string, changes any) {
-	// Best-effort, post-commit: never break a request on an audit failure.
-	_ = auditExec(r.Context(), h.Pool, actorID, actorName, action, entity, id, summary, changes)
+	// Best-effort, post-commit: never break a request on an audit failure — but do
+	// surface it, so a silent gap in the audit trail is at least visible in the logs
+	// (finding MAINT-02). Auditability is mandatory for these operations.
+	if err := auditExec(r.Context(), h.Pool, actorID, actorName, action, entity, id, summary, changes); err != nil {
+		slog.Error("audit write failed", "action", action, "entity", entity, "entity_id", id, "err", err)
+	}
 }
 
 // AuditSystem records an action taken outside a request handler: a scheduled backup,
