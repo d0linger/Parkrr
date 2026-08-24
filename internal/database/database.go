@@ -56,7 +56,14 @@ func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
 			pool.Close()
 			return nil, fmt.Errorf("database not reachable: %w", err)
 		}
-		time.Sleep(1 * time.Second)
+		// Cancellation-aware backoff: a shutdown during connect retry returns at once
+		// instead of blocking the full second per iteration (finding L-03).
+		select {
+		case <-ctx.Done():
+			pool.Close()
+			return nil, ctx.Err()
+		case <-time.After(1 * time.Second):
+		}
 	}
 
 	return pool, nil
