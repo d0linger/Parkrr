@@ -160,34 +160,40 @@ func TestReauthFailureTripsPerAccountAcrossIPs(t *testing.T) {
 	}
 }
 
-// PR #125: Ein falsches aktuelles Passwort bei ChangePassword muss auch die
-// Konto-Drossel (UserLimiter) fuellen, damit IP-Rotation den Lockout nicht
-// aushebelt — genau wie bei den anderen Re-Auth-Endpunkten.
-func TestChangePasswordReauthFailureTripsPerAccountAcrossIPs(t *testing.T) {
+// PR #125: Ein falsches aktuelles Passwort bei ChangePassword ist ein Re-Auth-
+// Fehlversuch, kein Login — recordReauthFailure darf die login-only Pro-IP-
+// Drossel (IPLimiter) NICHT fuellen. Sonst koennte ein vertippter Nutzer den
+// *Login* fuer sein ganzes NAT sperren. Das ist das eine Verhalten, das den Fix
+// vom alten recordLoginFailure unterscheidet (das den IPLimiter fuettert): ein
+// Rueckbau wuerde ipThrottled hier ausloesen und den Test brechen. Die Konto-
+// Drossel ueber rotierende IPs deckt bereits TestReauthFailureTripsPerAccountAcrossIPs.
+func TestChangePasswordFailureDoesNotTripLoginIPThrottle(t *testing.T) {
 	ah := &AuthHandler{
-		Handler:     &Handler{},
-		Auth:        &auth.Manager{},
+		Handler: &Handler{},
+		Auth:    &auth.Manager{}, // trustProxy=false -> ClientIP uses RemoteAddr
+		// Global + per-account effektiv unbegrenzt; nur die Pro-IP-Login-Drossel
+		// ist eng, damit die Zusicherung isoliert, ob genau sie gefuettert wird.
 		Limiter:     auth.NewLoginLimiter(1000, time.Minute, time.Minute),
-		IPLimiter:   auth.NewLoginLimiter(1000, time.Minute, time.Minute),
-		UserLimiter: auth.NewStickyLoginLimiter(3, time.Minute, time.Minute),
+		IPLimiter:   auth.NewLoginLimiter(3, time.Minute, time.Minute),
+		UserLimiter: auth.NewStickyLoginLimiter(1000, time.Minute, time.Minute),
 	}
-	reqFrom := func(ip string) *http.Request {
+	reqFromIP := func() *http.Request {
 		r := httptest.NewRequest(http.MethodPost, "/api/auth/change-password", nil)
-		r.RemoteAddr = ip + ":1234"
+		r.RemoteAddr = "9.9.9.9:1234"
 		return r
 	}
-	for i, ip := range []string{"1.1.1.1", "2.2.2.2", "3.3.3.3"} {
-		key, cip, ok := ah.checkRateLimit(httptest.NewRecorder(), reqFrom(ip), "user1")
+	// Fuenf Fehlversuche von EINER IP — deutlich ueber der Pro-IP-Schwelle von 3.
+	// Als Re-Auth-Fehlversuche muessen sie den IPLimiter unberuehrt lassen.
+	for i := 0; i < 5; i++ {
+		key, ip, ok := ah.checkRateLimit(httptest.NewRecorder(), reqFromIP(), "user1")
 		if !ok {
-			t.Fatalf("attempt %d from %s should be allowed", i, ip)
+			t.Fatalf("attempt %d should pass the ChangePassword gate", i)
 		}
-		ah.recordReauthFailure(key, cip)
+		ah.recordReauthFailure(key, ip)
 	}
-	rec := httptest.NewRecorder()
-	if _, _, ok := ah.checkRateLimit(rec, reqFrom("4.4.4.4"), "user1"); ok {
-		t.Fatal("per-account lockout should trip for ChangePassword after failures across rotating IPs")
-	}
-	if rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("expected 429 from the per-account throttle, got %d", rec.Code)
+	// Die login-only Pro-IP-Drossel muss diese IP weiter zulassen; recordLoginFailure
+	// haette sie nach 3 ausgeloest — das bewacht gegen einen Rueckbau des Fixes.
+	if ah.ipThrottled(httptest.NewRecorder(), reqFromIP()) {
+		t.Fatal("ChangePassword re-auth failures must not trip the login per-IP throttle")
 	}
 }
