@@ -3,10 +3,12 @@ package handlers
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/preining/parkrr/internal/auth"
+	"github.com/preining/parkrr/internal/models"
 )
 
 // Usernames are matched case-insensitively in the database, so the login
@@ -161,39 +163,47 @@ func TestReauthFailureTripsPerAccountAcrossIPs(t *testing.T) {
 }
 
 // PR #125: Ein falsches aktuelles Passwort bei ChangePassword ist ein Re-Auth-
-// Fehlversuch, kein Login — recordReauthFailure darf die login-only Pro-IP-
-// Drossel (IPLimiter) NICHT fuellen. Sonst koennte ein vertippter Nutzer den
-// *Login* fuer sein ganzes NAT sperren. Das ist das eine Verhalten, das den Fix
-// vom alten recordLoginFailure unterscheidet (das den IPLimiter fuettert): ein
-// Rueckbau wuerde ipThrottled hier ausloesen und den Test brechen. Die Konto-
-// Drossel ueber rotierende IPs deckt bereits TestReauthFailureTripsPerAccountAcrossIPs.
+// Fehlversuch, kein Login — er darf die login-only Pro-IP-Drossel (IPLimiter)
+// NICHT fuellen. Sonst koennte ein vertippter Nutzer den *Login* fuer sein ganzes
+// NAT sperren. Der Test faehrt bewusst durch den ChangePassword-HANDLER (nicht nur
+// die Rate-Limit-Helfer), damit er BRICHT, falls der Handler je wieder auf
+// recordLoginFailure zurueckfaellt — recordLoginFailure fuettert den IPLimiter.
 func TestChangePasswordFailureDoesNotTripLoginIPThrottle(t *testing.T) {
+	h := testHandler(t) // DB-gestuetzt: Authenticate scheitert fuer den unbekannten User sauber
+	mgr, err := auth.NewManager(h.Pool, auth.SessionConfig{}, false, false, "test-secret")
+	if err != nil {
+		t.Fatalf("new auth manager: %v", err)
+	}
 	ah := &AuthHandler{
-		Handler: &Handler{},
-		Auth:    &auth.Manager{}, // trustProxy=false -> ClientIP uses RemoteAddr
-		// Global + per-account effektiv unbegrenzt; nur die Pro-IP-Login-Drossel
-		// ist eng, damit die Zusicherung isoliert, ob genau sie gefuettert wird.
+		Handler: h,
+		Auth:    mgr,
+		// Global + per-account grosszuegig; nur die Pro-IP-Login-Drossel ist eng,
+		// damit die Zusicherung isoliert, ob genau sie gefuettert wird.
 		Limiter:     auth.NewLoginLimiter(1000, time.Minute, time.Minute),
 		IPLimiter:   auth.NewLoginLimiter(3, time.Minute, time.Minute),
 		UserLimiter: auth.NewStickyLoginLimiter(1000, time.Minute, time.Minute),
 	}
-	reqFromIP := func() *http.Request {
-		r := httptest.NewRequest(http.MethodPost, "/api/auth/change-password", nil)
+	// Ein User im Context, dessen Name in der DB NICHT existiert -> Authenticate
+	// scheitert mit "invalid credentials" und laeuft in den recordReauthFailure-Pfad.
+	ctxUser := &models.User{Username: "cp_ratelimit_nouser"}
+	newReq := func() *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/api/auth/change-password",
+			strings.NewReader(`{"current_password":"currentwrong1","new_password":"brandnewpass99"}`))
 		r.RemoteAddr = "9.9.9.9:1234"
-		return r
+		return r.WithContext(auth.ContextWithUser(r.Context(), ctxUser))
 	}
-	// Fuenf Fehlversuche von EINER IP — deutlich ueber der Pro-IP-Schwelle von 3.
-	// Als Re-Auth-Fehlversuche muessen sie den IPLimiter unberuehrt lassen.
+	// Fuenf fehlgeschlagene Passwortwechsel von EINER IP — deutlich ueber der
+	// Pro-IP-Schwelle von 3. Jeder muss mit 403 (falsches aktuelles Passwort) enden.
 	for i := 0; i < 5; i++ {
-		key, ip, ok := ah.checkRateLimit(httptest.NewRecorder(), reqFromIP(), "user1")
-		if !ok {
-			t.Fatalf("attempt %d should pass the ChangePassword gate", i)
+		rec := httptest.NewRecorder()
+		ah.ChangePassword(rec, newReq())
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("attempt %d: expected 403 (falsches aktuelles Passwort), got %d %s", i, rec.Code, rec.Body.String())
 		}
-		ah.recordReauthFailure(key, ip)
 	}
 	// Die login-only Pro-IP-Drossel muss diese IP weiter zulassen; recordLoginFailure
-	// haette sie nach 3 ausgeloest — das bewacht gegen einen Rueckbau des Fixes.
-	if ah.ipThrottled(httptest.NewRecorder(), reqFromIP()) {
-		t.Fatal("ChangePassword re-auth failures must not trip the login per-IP throttle")
+	// haette sie nach 3 ausgeloest — genau das bewacht gegen einen Rueckbau des Fixes.
+	if ah.ipThrottled(httptest.NewRecorder(), newReq()) {
+		t.Fatal("ChangePassword-Fehlversuche duerfen die login-only Pro-IP-Drossel nicht ausloesen")
 	}
 }
