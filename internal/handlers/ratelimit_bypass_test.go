@@ -3,10 +3,12 @@ package handlers
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/preining/parkrr/internal/auth"
+	"github.com/preining/parkrr/internal/models"
 )
 
 // Usernames are matched case-insensitively in the database, so the login
@@ -157,5 +159,51 @@ func TestReauthFailureTripsPerAccountAcrossIPs(t *testing.T) {
 	}
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected 429 from the per-account throttle, got %d", rec.Code)
+	}
+}
+
+// PR #125: Ein falsches aktuelles Passwort bei ChangePassword ist ein Re-Auth-
+// Fehlversuch, kein Login — er darf die login-only Pro-IP-Drossel (IPLimiter)
+// NICHT fuellen. Sonst koennte ein vertippter Nutzer den *Login* fuer sein ganzes
+// NAT sperren. Der Test faehrt bewusst durch den ChangePassword-HANDLER (nicht nur
+// die Rate-Limit-Helfer), damit er BRICHT, falls der Handler je wieder auf
+// recordLoginFailure zurueckfaellt — recordLoginFailure fuettert den IPLimiter.
+func TestChangePasswordFailureDoesNotTripLoginIPThrottle(t *testing.T) {
+	h := testHandler(t) // DB-gestuetzt: Authenticate scheitert fuer den unbekannten User sauber
+	mgr, err := auth.NewManager(h.Pool, auth.SessionConfig{}, false, false, "test-secret")
+	if err != nil {
+		t.Fatalf("new auth manager: %v", err)
+	}
+	ah := &AuthHandler{
+		Handler: h,
+		Auth:    mgr,
+		// Global + per-account grosszuegig; nur die Pro-IP-Login-Drossel ist eng,
+		// damit die Zusicherung isoliert, ob genau sie gefuettert wird.
+		Limiter:     auth.NewLoginLimiter(1000, time.Minute, time.Minute),
+		IPLimiter:   auth.NewLoginLimiter(3, time.Minute, time.Minute),
+		UserLimiter: auth.NewStickyLoginLimiter(1000, time.Minute, time.Minute),
+	}
+	// Ein User im Context, dessen Name in der DB NICHT existiert -> Authenticate
+	// scheitert mit "invalid credentials" und laeuft in den recordReauthFailure-Pfad.
+	ctxUser := &models.User{Username: "cp_ratelimit_nouser"}
+	newReq := func() *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/api/auth/change-password",
+			strings.NewReader(`{"current_password":"currentwrong1","new_password":"brandnewpass99"}`))
+		r.RemoteAddr = "9.9.9.9:1234"
+		return r.WithContext(auth.ContextWithUser(r.Context(), ctxUser))
+	}
+	// Fuenf fehlgeschlagene Passwortwechsel von EINER IP — deutlich ueber der
+	// Pro-IP-Schwelle von 3. Jeder muss mit 403 (falsches aktuelles Passwort) enden.
+	for i := 0; i < 5; i++ {
+		rec := httptest.NewRecorder()
+		ah.ChangePassword(rec, newReq())
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("attempt %d: expected 403 (falsches aktuelles Passwort), got %d %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	// Die login-only Pro-IP-Drossel muss diese IP weiter zulassen; recordLoginFailure
+	// haette sie nach 3 ausgeloest — genau das bewacht gegen einen Rueckbau des Fixes.
+	if ah.ipThrottled(httptest.NewRecorder(), newReq()) {
+		t.Fatal("ChangePassword-Fehlversuche duerfen die login-only Pro-IP-Drossel nicht ausloesen")
 	}
 }
