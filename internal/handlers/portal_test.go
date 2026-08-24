@@ -197,3 +197,28 @@ func TestSelfServicePortal(t *testing.T) {
 		t.Errorf("after revoke: want 404, got %d", aw.Code)
 	}
 }
+
+// TestAnonymizeRevokesPortalTokens: anonymizing a person must also revoke their
+// self-service portal links — otherwise a live magic link keeps exposing the
+// (now-scrubbed) record after a GDPR anonymization (finding H-05).
+func TestAnonymizeRevokesPortalTokens(t *testing.T) {
+	h := testHandler(t)
+	pid := createIntegrationPerson(t, h)
+	token := createPortalLink(t, h, pid)
+
+	if w := getPortalSummary(t, h, token); w.Code != http.StatusOK {
+		t.Fatalf("summary before anonymize: %d %s", w.Code, w.Body.String())
+	}
+
+	areq := httptest.NewRequest(http.MethodPost, "/api/persons/"+strconv.FormatInt(pid, 10)+"/anonymize", nil)
+	areq.SetPathValue("id", strconv.FormatInt(pid, 10))
+	aw := httptest.NewRecorder()
+	h.AnonymizePerson(aw, areq)
+	if aw.Code != http.StatusOK {
+		t.Fatalf("anonymize: %d %s", aw.Code, aw.Body.String())
+	}
+
+	if w := getPortalSummary(t, h, token); w.Code != http.StatusNotFound {
+		t.Errorf("portal token still works after anonymize: got %d, want 404", w.Code)
+	}
+}

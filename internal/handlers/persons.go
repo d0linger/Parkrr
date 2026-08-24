@@ -317,6 +317,15 @@ func (h *Handler) AnonymizePerson(w http.ResponseWriter, r *http.Request) {
 	// Löschung auf: audit_log ist append-only und wird sieben Jahre aufbewahrt.
 	// (Treckrr schreibt an dieser Stelle den alten Namen in die Zusammenfassung; das
 	// ist hier bewusst nicht übernommen.)
+	// An anonymized person must not keep working self-service portal links — a live
+	// magic link would still expose their (now-scrubbed) record. Revoke them as part
+	// of the anonymization (finding H-05). Broader PII in linked tables (vehicle
+	// plates, handover signatures, photos) is a separate, legally-scoped decision.
+	if _, terr := h.Pool.Exec(r.Context(),
+		`UPDATE self_service_tokens SET revoked = TRUE WHERE person_id = $1 AND NOT revoked`, id); terr != nil {
+		writeError(w, http.StatusInternalServerError, "could not anonymize person")
+		return
+	}
 	h.auditChange(r, "anonymize", "person", id,
 		"Personendaten anonymisiert (DSGVO Art. 17) — Belege bleiben aufbewahrungspflichtig erhalten",
 		auditSnapshot(map[string]any{"anonymized": true}))

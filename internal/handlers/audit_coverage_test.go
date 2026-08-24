@@ -152,6 +152,12 @@ var auditIgnoredPerFunc = map[string]map[string]bool{
 	// gap; everywhere else `totp_enabled` must still appear in the diff (TOTPEnable and
 	// TOTPDisable audit it directly, and both pass).
 	"TOTPSetup": {"totp_enabled": true},
+	// AnonymizePerson revokes the person's self-service portal tokens as a mechanical
+	// side-effect of anonymizing them — a live magic link must not survive the erasure.
+	// That is the consequence of the anonymize action, whose own audit entry is the
+	// trail, not a user edit of the token rows. Scoped here; RevokePortalLink still
+	// audits `revoked` directly (finding H-05).
+	"AnonymizePerson": {"revoked": true},
 }
 
 // TestAuditDiffsCoverEveryWrittenColumn fails when a handler records field changes

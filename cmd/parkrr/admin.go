@@ -65,6 +65,14 @@ func bootstrapAdmin(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config)
 		if err != nil {
 			return err
 		}
+		// Emergency password rotation must not leave stolen admin cookies valid:
+		// when the ENV password is force-re-applied, revoke every existing session for
+		// this account so a compromised cookie dies with the old password (finding H-04).
+		if cfg.AdminPasswordForce {
+			if _, derr := pool.Exec(ctx, `DELETE FROM sessions WHERE user_id=$1`, existingID); derr != nil {
+				return derr
+			}
+		}
 		changed := ct.RowsAffected() > 0
 		// Log the mode as a control-flow-selected literal rather than logging the
 		// AdminPasswordForce field directly: the field name matches a "password"

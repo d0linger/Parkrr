@@ -271,7 +271,9 @@ func (s *WebAuthnService) saveCredential(ctx context.Context, userID int64, c *w
 
 func (s *WebAuthnService) updateSignCount(ctx context.Context, credID []byte, count uint32) error {
 	_, err := s.pool.Exec(ctx,
-		`UPDATE webauthn_credentials SET sign_count=$1, last_used_at=now() WHERE credential_id=$2`,
+		// GREATEST prevents a stale/out-of-order concurrent assertion from regressing the
+		// stored counter, which would weaken authenticator-clone detection (finding M-04).
+		`UPDATE webauthn_credentials SET sign_count=GREATEST(sign_count,$1), last_used_at=now() WHERE credential_id=$2`,
 		int64(count), credID)
 	return err
 }
