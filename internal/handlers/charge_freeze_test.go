@@ -64,4 +64,13 @@ func TestUpdateChargeFrozenWhenInvoiced(t *testing.T) {
 	if code := update(map[string]any{"person_id": pid, "vehicle_id": vid, "description": "Frostschutz neu", "amount": 40, "quantity": 1}); code != http.StatusOK {
 		t.Errorf("cosmetic edit of invoiced charge: got %d, want 200", code)
 	}
+	// Cent-boundary (NUMERIC(12,2) compare, not float tolerance): a value that rounds
+	// to the SAME stored cent is not a billing change; one that rounds to a DIFFERENT
+	// cent is.
+	if code := update(map[string]any{"person_id": pid, "vehicle_id": vid, "description": "Frostschutz", "amount": 40.004, "quantity": 1}); code != http.StatusOK {
+		t.Errorf("amount rounding to the same cent should be allowed: got %d, want 200", code)
+	}
+	if code := update(map[string]any{"person_id": pid, "vehicle_id": vid, "description": "Frostschutz", "amount": 40.006, "quantity": 1}); code != http.StatusConflict {
+		t.Errorf("amount rounding to a different cent should be blocked: got %d, want 409", code)
+	}
 }

@@ -68,3 +68,31 @@ func TestApplyCreditDoesNotOverAllocateSmallPayment(t *testing.T) {
 		t.Errorf("%d payment(s) allocate more than their amount (H-01 over-allocation)", overallocated)
 	}
 }
+
+// TestApplyCreditSkipsUnaffordableButSettlesLaterSmaller pins the break->continue
+// fix: with €60 credit and an ordered €100 then €50 open item, the €100 exceeds the
+// budget but the €50 must still be settled — the loop skips the unaffordable item
+// instead of stopping at it.
+func TestApplyCreditSkipsUnaffordableButSettlesLaterSmaller(t *testing.T) {
+	h := testHandler(t)
+	pid := createIntegrationPerson(t, h)
+	if rec := postPayment(t, h, pid, map[string]any{"amount": 60, "method": "bar", "allocate": false}); rec.Code != http.StatusCreated {
+		t.Fatalf("payment: %d %s", rec.Code, rec.Body.String())
+	}
+	cBig := mkChargeP(t, h, pid, "big", 100, "2026-01-10")
+	cSmall := mkChargeP(t, h, pid, "small", 50, "2026-02-10")
+
+	areq := httptest.NewRequest(http.MethodPost, "/api/persons/"+strconv.FormatInt(pid, 10)+"/apply-credit", nil)
+	areq.SetPathValue("id", strconv.FormatInt(pid, 10))
+	arec := httptest.NewRecorder()
+	h.ApplyCredit(arec, areq)
+	if arec.Code != http.StatusOK {
+		t.Fatalf("apply-credit: %d %s", arec.Code, arec.Body.String())
+	}
+	if chargePaid(t, h, cBig) {
+		t.Error("the 100 EUR item should NOT be settled (exceeds the 60 EUR budget)")
+	}
+	if !chargePaid(t, h, cSmall) {
+		t.Error("the 50 EUR item should be settled from the 60 EUR credit (not skipped by a break)")
+	}
+}

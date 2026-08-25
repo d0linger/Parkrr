@@ -447,8 +447,8 @@ func (h *Handler) UpdateCharge(w http.ResponseWriter, r *http.Request) {
 		`SELECT
 		   (c.person_id IS DISTINCT FROM $2
 		    OR c.vehicle_id IS DISTINCT FROM $3
-		    OR abs(c.amount - $4) > 0.005
-		    OR abs(c.quantity - $5) > 0.005),
+		    OR c.amount   IS DISTINCT FROM $4::numeric(12,2)
+		    OR c.quantity IS DISTINCT FROM $5::numeric(10,2)),
 		   EXISTS(SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
 		           WHERE s.kind='charge' AND s.ref_id=c.id AND NOT i.canceled)
 		 FROM charges c WHERE c.id=$1`,

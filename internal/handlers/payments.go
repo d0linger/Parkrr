@@ -909,8 +909,11 @@ func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
 	var archive []int64
 	txErr := pgx.BeginFunc(ctx, h.Pool, func(tx pgx.Tx) error {
 		for _, it := range items {
+			if budget < 0.005 {
+				break // no drawable Guthaben left at all
+			}
 			if budget+0.005 < it.LineTotal {
-				break // person has no drawable Guthaben left at all
+				continue // this item exceeds the remaining budget — later, smaller ones may still fit
 			}
 			// Book the drawdown against a payment that actually has enough UNSPENT value
 			// (its amount minus its allocations and invoice applications), LOCKED so a
@@ -934,6 +937,22 @@ func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
 			}
 			if perr != nil {
 				return perr
+			}
+			// The WHERE above computed the balance from a snapshot; now that the row lock
+			// is held, re-read the payment's CURRENT remaining — a concurrent settlement
+			// may have committed an allocation against it while we waited for the lock
+			// (the lock alone doesn't re-check the aggregate) — and skip it if it can no
+			// longer cover the item, so we never over-allocate (finding H-01).
+			var remaining float64
+			if rerr := tx.QueryRow(ctx, `
+				SELECT p.amount
+				       - COALESCE((SELECT SUM(amount) FROM payment_allocations WHERE payment_id = p.id), 0)
+				       - COALESCE((SELECT SUM(amount) FROM invoice_payments   WHERE payment_id = p.id), 0)
+				  FROM payments p WHERE p.id = $1`, payID).Scan(&remaining); rerr != nil {
+				return rerr
+			}
+			if remaining+0.005 < it.LineTotal {
+				continue // lost the remaining budget to a concurrent settlement
 			}
 			ok, veh, serr := settleItemTx(ctx, tx, payID, it)
 			if serr != nil {
