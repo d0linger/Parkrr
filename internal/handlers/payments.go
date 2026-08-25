@@ -910,9 +910,32 @@ func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
 	txErr := pgx.BeginFunc(ctx, h.Pool, func(tx pgx.Tx) error {
 		for _, it := range items {
 			if budget+0.005 < it.LineTotal {
-				break // not enough paid to cover this (oldest) open item
+				break // person has no drawable Guthaben left at all
 			}
-			ok, veh, serr := settleItemTx(ctx, tx, latestPayment, it)
+			// Book the drawdown against a payment that actually has enough UNSPENT value
+			// (its amount minus its allocations and invoice applications), LOCKED so a
+			// concurrent settlement can't double-spend the same remaining budget. Never
+			// over-allocate a payment — a 1 EUR payment must not carry a 100 EUR drawdown
+			// that a later reversal of that payment would then wrongly reopen (finding
+			// H-01). Reversed and dedicated (period-settling) payments are not sources.
+			var payID int64
+			perr := tx.QueryRow(ctx, `
+				SELECT p.id FROM payments p
+				 WHERE p.person_id = $1 AND NOT p.reversed AND p.settles_kind IS NULL
+				   AND p.amount
+				       - COALESCE((SELECT SUM(amount) FROM payment_allocations WHERE payment_id = p.id), 0)
+				       - COALESCE((SELECT SUM(amount) FROM invoice_payments   WHERE payment_id = p.id), 0)
+				       >= $2 - 0.005
+				 ORDER BY p.paid_on, p.id
+				 LIMIT 1
+				 FOR UPDATE OF p`, id, it.LineTotal).Scan(&payID)
+			if errors.Is(perr, pgx.ErrNoRows) {
+				continue // no single payment covers this item — split credit stays unsettled
+			}
+			if perr != nil {
+				return perr
+			}
+			ok, veh, serr := settleItemTx(ctx, tx, payID, it)
 			if serr != nil {
 				return serr
 			}
@@ -926,12 +949,11 @@ func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
 			settled++
 		}
 		if settled > 0 {
-			// entity_id is the payment the drawdown is booked against — it is guaranteed
-			// non-zero here (the handler returns early above when there is none). Logging
-			// 0 left an entry under entity "payment" that resolved to no payment at all.
-			return h.auditChangeTx(ctx, tx, r, "update", "payment", latestPayment,
+			// The drawdown may now span several payments, so audit the PERSON whose
+			// Guthaben was applied rather than a single payment id.
+			return h.auditChangeTx(ctx, tx, r, "update", "person", id,
 				fmt.Sprintf("applied Guthaben to %d open position(s)", settled),
-				auditSnapshot(map[string]any{"settled_positions": settled, "person_id": id}))
+				auditSnapshot(map[string]any{"settled_positions": settled}))
 		}
 		return nil
 	})
