@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"hash/crc32"
 	"image"
 	"image/color"
@@ -93,5 +94,32 @@ func TestSanitizeImage(t *testing.T) {
 	// decoding — the bomb guard.
 	if _, _, err := sanitizeImage(bombPNG(maxPhotoDimension+1, 1)); err == nil {
 		t.Error("oversized dimensions: expected rejection, got nil")
+	}
+}
+
+// TestSanitizeImageBudgetSheds: the decode budget is byte-weighted, not count-based
+// (finding H-08). When it is exhausted, a further decode sheds load (errDecodeBusy)
+// instead of running and risking an OOM; once released, decoding works again.
+func TestSanitizeImageBudgetSheds(t *testing.T) {
+	raw := encodeJPEG(t, 32, 32)
+
+	// Baseline: with a free budget the decode succeeds.
+	if _, _, err := sanitizeImage(raw); err != nil {
+		t.Fatalf("baseline decode failed: %v", err)
+	}
+
+	// Reserve the ENTIRE budget so any further weight cannot fit.
+	if !decodeBudget.TryAcquire(decodeBudgetBytes) {
+		t.Fatal("could not reserve the full decode budget")
+	}
+	_, _, err := sanitizeImage(raw)
+	decodeBudget.Release(decodeBudgetBytes)
+	if !errors.Is(err, errDecodeBusy) {
+		t.Errorf("exhausted budget: got %v, want errDecodeBusy", err)
+	}
+
+	// After releasing, decoding works again — the budget is not permanently consumed.
+	if _, _, err := sanitizeImage(raw); err != nil {
+		t.Errorf("after release: %v", err)
 	}
 }
