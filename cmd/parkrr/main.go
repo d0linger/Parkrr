@@ -123,10 +123,13 @@ func run() error {
 		return err
 	}
 	if cfg.TrustedProxies && len(cfg.TrustedProxyCIDRs) == 0 {
-		slog.Warn("PARKRR_TRUSTED_PROXY is on but no PARKRR_TRUSTED_PROXY_CIDRS set: " +
-			"forwarded client IPs are trusted from ANY direct peer — a client with direct " +
-			"backend access can spoof audit/rate-limit IPs. Set the proxy CIDR allowlist and " +
-			"ensure the backend is only reachable via the proxy (finding SH-05).")
+		// Fail closed at startup: trusting forwarded headers from ANY direct peer lets a
+		// client with direct backend access spoof audit/rate-limit IPs. Refuse to start
+		// rather than run in that state (finding H-06).
+		return errors.New("PARKRR_TRUSTED_PROXY=true requires PARKRR_TRUSTED_PROXY_CIDRS " +
+			"(the reverse-proxy IP range); without it forwarded client IPs would be trusted " +
+			"from any direct peer. Set the CIDR allowlist, or set PARKRR_TRUSTED_PROXY=false " +
+			"when the backend is reached directly.")
 	}
 
 	// Bootstrap/refresh the admin account from environment variables.

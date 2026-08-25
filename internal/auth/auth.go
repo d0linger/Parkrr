@@ -122,8 +122,12 @@ func (m *Manager) SetTrustedProxyCIDRs(cidrs []string) error {
 // keeps the legacy behavior (any peer), so a direct-to-backend client can still
 // spoof headers unless the operator also configures TrustedProxyCIDRs.
 func (m *Manager) peerIsTrustedProxy(r *http.Request) bool {
+	// Fail closed: with no CIDR allowlist, trust NO direct peer — so forwarded headers
+	// from a client with direct backend access cannot spoof the client IP (finding
+	// H-06). Startup already refuses TRUSTED_PROXY=true without CIDRs, so in practice
+	// this guards misuse rather than the normal path.
 	if len(m.trustedProxyNets) == 0 {
-		return true
+		return false
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

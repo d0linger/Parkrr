@@ -18,6 +18,11 @@ func TestClientIP_ForwardedForUsesRightmostHop(t *testing.T) {
 	req.Header.Set("X-Forwarded-For", "1.1.1.1, 2.2.2.2, 203.0.113.7")
 
 	proxied := &Manager{trustProxy: true}
+	// The proxy's own peer address must be in the trusted CIDR allowlist for its
+	// forwarded headers to be honored at all (fail-closed; finding H-06).
+	if err := proxied.SetTrustedProxyCIDRs([]string{"10.0.0.0/8"}); err != nil {
+		t.Fatalf("SetTrustedProxyCIDRs: %v", err)
+	}
 	if got := proxied.ClientIP(req); got != "203.0.113.7" {
 		t.Errorf("trusted proxy: got %q, want the rightmost hop 203.0.113.7", got)
 	}
@@ -42,8 +47,25 @@ func TestClientIP_MultipleForwardedForFields(t *testing.T) {
 	req.Header.Add("X-Forwarded-For", "203.0.113.7")
 
 	m := &Manager{trustProxy: true}
+	if err := m.SetTrustedProxyCIDRs([]string{"10.0.0.0/8"}); err != nil {
+		t.Fatalf("SetTrustedProxyCIDRs: %v", err)
+	}
 	if got := m.ClientIP(req); got != "203.0.113.7" {
 		t.Errorf("multi-field XFF: got %q, want rightmost hop 203.0.113.7", got)
+	}
+}
+
+// H-06: with trusted-proxy ON but NO CIDR allowlist, no direct peer is trusted, so
+// forwarded headers are ignored and the socket peer is authoritative. (Startup also
+// refuses this combination; this guards the ClientIP path directly.)
+func TestClientIP_TrustProxyWithoutCIDRsFailsClosed(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
+	req.RemoteAddr = "10.0.0.1:5555"
+	req.Header.Set("X-Forwarded-For", "203.0.113.7")
+
+	m := &Manager{trustProxy: true} // no SetTrustedProxyCIDRs -> trust nobody
+	if got := m.ClientIP(req); got != "10.0.0.1" {
+		t.Errorf("no CIDRs: got %q, want socket peer 10.0.0.1 (XFF must be ignored)", got)
 	}
 }
 

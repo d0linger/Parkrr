@@ -51,6 +51,9 @@ services:
       PARKRR_SESSION_ABSOLUTE_MAX_AGE: ${PARKRR_SESSION_ABSOLUTE_MAX_AGE:-7776000}
       PARKRR_SECURE_COOKIES: ${PARKRR_SECURE_COOKIES:-true}
       PARKRR_TRUSTED_PROXY: ${PARKRR_TRUSTED_PROXY:-false}
+      # Required when PARKRR_TRUSTED_PROXY=true: the reverse-proxy IP range(s) whose
+      # forwarded headers are trusted. Without it the app refuses to start (H-06).
+      PARKRR_TRUSTED_PROXY_CIDRS: ${PARKRR_TRUSTED_PROXY_CIDRS:-}
       PARKRR_CHECK_BREACHED_PASSWORDS: ${PARKRR_CHECK_BREACHED_PASSWORDS:-true}
       # --- Passkeys (WebAuthn): set RP_ID + ORIGINS to enable ---
       PARKRR_WEBAUTHN_RP_ID: ${PARKRR_WEBAUTHN_RP_ID:-}
