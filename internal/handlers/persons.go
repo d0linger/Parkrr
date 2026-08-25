@@ -278,16 +278,28 @@ func (h *Handler) AnonymizePerson(w http.ResponseWriter, r *http.Request) {
 	}
 	// Der Platzhalter bleibt eindeutig und stabil, damit Listen und Verweise weiter
 	// etwas Anzeigbares haben, ohne wieder auf eine Person zu zeigen.
+	// Anonymize the person AND revoke their self-service portal links in ONE
+	// transaction: a live magic link would still expose the (now-scrubbed) record, so
+	// the scrub and the revocation must commit or roll back together (findings H-05,
+	// atomicity). Broader PII in linked tables (vehicle plates, handover signatures,
+	// photos) is a separate, legally-scoped decision.
 	var wasAnon bool
-	err := h.Pool.QueryRow(r.Context(),
-		`WITH prev AS (SELECT anonymized FROM persons WHERE id=$1)
-		 UPDATE persons
-		    SET first_name = 'Anonymisiert', last_name = '#' || id,
-		        email = '', phone = '', address = '', notes = '',
-		        anonymized = TRUE, updated_at = now()
-		  WHERE id = $1 AND NOT anonymized
-		  RETURNING (SELECT anonymized FROM prev)`, id).Scan(&wasAnon)
-	if errors.Is(err, pgx.ErrNoRows) {
+	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		if e := tx.QueryRow(r.Context(),
+			`WITH prev AS (SELECT anonymized FROM persons WHERE id=$1)
+			 UPDATE persons
+			    SET first_name = 'Anonymisiert', last_name = '#' || id,
+			        email = '', phone = '', address = '', notes = '',
+			        anonymized = TRUE, updated_at = now()
+			  WHERE id = $1 AND NOT anonymized
+			  RETURNING (SELECT anonymized FROM prev)`, id).Scan(&wasAnon); e != nil {
+			return e
+		}
+		_, e := tx.Exec(r.Context(),
+			`UPDATE self_service_tokens SET revoked = TRUE WHERE person_id = $1 AND NOT revoked`, id)
+		return e
+	})
+	if errors.Is(txErr, pgx.ErrNoRows) {
 		// Kein Treffer heißt: Person existiert nicht ODER war schon anonymisiert.
 		// Für den Aufrufer sind das zwei verschiedene Antworten.
 		var exists, already bool
@@ -308,24 +320,13 @@ func (h *Handler) AnonymizePerson(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if err != nil {
+	if txErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not anonymize person")
 		return
 	}
-	// Der Eintrag hält NUR fest, DASS anonymisiert wurde — bewusst ohne die
-	// gelöschten Werte. Ein Trail, der beim Löschen den Namen mitschreibt, hebt die
-	// Löschung auf: audit_log ist append-only und wird sieben Jahre aufbewahrt.
-	// (Treckrr schreibt an dieser Stelle den alten Namen in die Zusammenfassung; das
-	// ist hier bewusst nicht übernommen.)
-	// An anonymized person must not keep working self-service portal links — a live
-	// magic link would still expose their (now-scrubbed) record. Revoke them as part
-	// of the anonymization (finding H-05). Broader PII in linked tables (vehicle
-	// plates, handover signatures, photos) is a separate, legally-scoped decision.
-	if _, terr := h.Pool.Exec(r.Context(),
-		`UPDATE self_service_tokens SET revoked = TRUE WHERE person_id = $1 AND NOT revoked`, id); terr != nil {
-		writeError(w, http.StatusInternalServerError, "could not anonymize person")
-		return
-	}
+	// Der Eintrag hält NUR fest, DASS anonymisiert wurde — bewusst ohne die gelöschten
+	// Werte: audit_log ist append-only und wird sieben Jahre aufbewahrt. (Treckrr
+	// schreibt hier den alten Namen; hier bewusst nicht übernommen.)
 	h.auditChange(r, "anonymize", "person", id,
 		"Personendaten anonymisiert (DSGVO Art. 17) — Belege bleiben aufbewahrungspflichtig erhalten",
 		auditSnapshot(map[string]any{"anonymized": true}))

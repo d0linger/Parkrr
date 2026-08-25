@@ -2,75 +2,54 @@ package main
 
 import (
 	"os"
-	"regexp"
-	"sort"
-	"strings"
+	"reflect"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
-// TestGHCRComposeParity guards against docker-compose.ghcr.yml drifting from the
-// base docker-compose.yml. The GHCR file is a full standalone (needed for the
-// single-file Portainer paste), so it must carry the SAME app environment and the
-// /backups volume — otherwise a GHCR deployment silently runs without the backups,
-// S3 or SMTP that its .env configured (finding H-11: it had fallen behind exactly
-// this way).
+// composeApp is the subset of a Compose file we assert parity on: the app service's
+// environment (keys AND values) and its volume mounts.
+type composeApp struct {
+	Services struct {
+		App struct {
+			Environment map[string]string `yaml:"environment"`
+			Volumes     []string          `yaml:"volumes"`
+		} `yaml:"app"`
+	} `yaml:"services"`
+}
+
+// TestGHCRComposeParity guards against docker-compose.ghcr.yml drifting from the base
+// docker-compose.yml. The GHCR file is a full standalone (needed for the single-file
+// Portainer paste), so its app service must carry the SAME environment (keys AND
+// values) and the same volumes — otherwise a GHCR deployment silently runs without the
+// backups, S3 or SMTP that its .env configured (finding H-11: it had fallen behind
+// exactly this way). Comparing the decoded maps catches a drifted VALUE too, not just a
+// missing key.
 func TestGHCRComposeParity(t *testing.T) {
-	base := readComposeFile(t, "../../docker-compose.yml")
-	ghcr := readComposeFile(t, "../../docker-compose.ghcr.yml")
+	base := decodeCompose(t, "../../docker-compose.yml").Services.App
+	ghcr := decodeCompose(t, "../../docker-compose.ghcr.yml").Services.App
 
-	// PARKRR_* keys only appear as app-environment map keys (line-start after
-	// indentation); on the db side they appear only inside ${...} substitutions.
-	keyRe := regexp.MustCompile(`(?m)^\s+(PARKRR_\w+):`)
-	envKeys := func(s string) []string {
-		set := map[string]bool{}
-		for _, m := range keyRe.FindAllStringSubmatch(s, -1) {
-			set[m[1]] = true
-		}
-		out := make([]string, 0, len(set))
-		for k := range set {
-			out = append(out, k)
-		}
-		sort.Strings(out)
-		return out
-	}
-
-	baseKeys, ghcrKeys := envKeys(base), envKeys(ghcr)
-	if strings.Join(baseKeys, ",") != strings.Join(ghcrKeys, ",") {
-		t.Errorf("app environment drifted between the compose files.\n"+
-			"missing from ghcr: %v\nextra in ghcr:    %v\n"+
+	if !reflect.DeepEqual(base.Environment, ghcr.Environment) {
+		t.Errorf("app environment drifted between the compose files.\nbase: %v\nghcr: %v\n"+
 			"keep docker-compose.ghcr.yml in sync with docker-compose.yml (finding H-11).",
-			missing(baseKeys, ghcrKeys), missing(ghcrKeys, baseKeys))
+			base.Environment, ghcr.Environment)
 	}
-
-	// The scheduled-backup volume must be mounted in BOTH, or the GHCR deployment
-	// loses its backups.
-	const backupMount = "parkrr-backups:/backups"
-	if !strings.Contains(base, backupMount) || !strings.Contains(ghcr, backupMount) {
-		t.Errorf("both compose files must mount %q (base=%v ghcr=%v)",
-			backupMount, strings.Contains(base, backupMount), strings.Contains(ghcr, backupMount))
+	if !reflect.DeepEqual(base.Volumes, ghcr.Volumes) {
+		t.Errorf("app volumes drifted: base=%v ghcr=%v (the /backups mount must match).",
+			base.Volumes, ghcr.Volumes)
 	}
 }
 
-func readComposeFile(t *testing.T, path string) string {
+func decodeCompose(t *testing.T, path string) composeApp {
 	t.Helper()
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
-	return string(b)
-}
-
-// missing returns the elements of a not present in b.
-func missing(a, b []string) []string {
-	inB := map[string]bool{}
-	for _, x := range b {
-		inB[x] = true
+	var f composeApp
+	if err := yaml.Unmarshal(b, &f); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
 	}
-	var out []string
-	for _, x := range a {
-		if !inB[x] {
-			out = append(out, x)
-		}
-	}
-	return out
+	return f
 }

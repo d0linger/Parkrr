@@ -1135,12 +1135,13 @@ func (h *Handler) Occupancy(w http.ResponseWriter, r *http.Request) {
 // many are placed in a hall) into occupancy_snapshots. Idempotent per day. Called
 // by the background occupancy loop so the dashboard GET stays a pure read (L-02).
 func (h *Handler) RecordOccupancySnapshot(ctx context.Context) error {
+	// Both counts from ONE query so the snapshot is a single consistent view — two
+	// separate counts could straddle a concurrent change and record placed > active.
 	var active, placed int
-	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM vehicles WHERE NOT archived`).Scan(&active); err != nil {
-		return err
-	}
 	if err := h.Pool.QueryRow(ctx,
-		`SELECT count(*) FROM vehicles WHERE NOT archived AND spot_id IS NOT NULL`).Scan(&placed); err != nil {
+		`SELECT count(*) FILTER (WHERE NOT archived),
+		        count(*) FILTER (WHERE NOT archived AND spot_id IS NOT NULL)
+		   FROM vehicles`).Scan(&active, &placed); err != nil {
 		return err
 	}
 	_, err := h.Pool.Exec(ctx,

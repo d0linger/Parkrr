@@ -6,7 +6,6 @@ import (
 	"log/slog"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/preining/parkrr/internal/auth"
@@ -48,32 +47,37 @@ func bootstrapAdmin(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config)
 
 	switch {
 	case err == nil: //nolint:gocritic // clearest form for this three-way branch
-		// Restrict the UPDATE to rows that actually differ, so a plain restart is a
-		// no-op: RowsAffected then tells us whether anything really changed.
-		var ct pgconn.CommandTag
+		var changed bool
 		if cfg.AdminPasswordForce {
-			ct, err = pool.Exec(ctx,
-				`UPDATE users SET email=$1, password_hash=$2, is_admin=TRUE, role='admin', updated_at=now()
-				 WHERE id=$3`, cfg.AdminEmail, hash, existingID)
+			// Emergency rotation is ATOMIC: re-apply the ENV password AND revoke every
+			// existing session in ONE transaction, so a stolen admin cookie cannot
+			// outlive the old password even if one statement fails (finding H-04). The
+			// forced UPDATE always re-applies the password, so it always counts as changed.
+			if err = pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				if _, e := tx.Exec(ctx,
+					`UPDATE users SET email=$1, password_hash=$2, is_admin=TRUE, role='admin', updated_at=now()
+					 WHERE id=$3`, cfg.AdminEmail, hash, existingID); e != nil {
+					return e
+				}
+				_, e := tx.Exec(ctx, `DELETE FROM sessions WHERE user_id=$1`, existingID)
+				return e
+			}); err != nil {
+				return err
+			}
+			changed = true
 		} else {
-			ct, err = pool.Exec(ctx,
+			// Restrict the UPDATE to rows that actually differ, so a plain restart is a
+			// no-op: RowsAffected then tells us whether anything really changed.
+			ct, uerr := pool.Exec(ctx,
 				`UPDATE users SET email=$1, is_admin=TRUE, role='admin', updated_at=now()
 				 WHERE id=$2
 				   AND (email IS DISTINCT FROM $1 OR NOT is_admin OR role <> 'admin')`,
 				cfg.AdminEmail, existingID)
-		}
-		if err != nil {
-			return err
-		}
-		// Emergency password rotation must not leave stolen admin cookies valid:
-		// when the ENV password is force-re-applied, revoke every existing session for
-		// this account so a compromised cookie dies with the old password (finding H-04).
-		if cfg.AdminPasswordForce {
-			if _, derr := pool.Exec(ctx, `DELETE FROM sessions WHERE user_id=$1`, existingID); derr != nil {
-				return derr
+			if uerr != nil {
+				return uerr
 			}
+			changed = ct.RowsAffected() > 0
 		}
-		changed := ct.RowsAffected() > 0
 		// Log the mode as a control-flow-selected literal rather than logging the
 		// AdminPasswordForce field directly: the field name matches a "password"
 		// heuristic and trips clear-text-logging scanners even though it's a bool.
