@@ -30,9 +30,22 @@ per vehicle — monthly or yearly, prorated to the day.
 
 ## 📸 Screenshots
 
-| Login | Dashboard | Vehicles | Person |
-| --- | --- | --- | --- |
-| ![Login](docs/screenshots/01-login.png) | ![Dashboard](docs/screenshots/02-dashboard.png) | ![Vehicles](docs/screenshots/03-vehicles.png) | ![Person](docs/screenshots/04-person.png) |
+> The screenshots follow your theme automatically — **light on GitHub's light theme, dark on its dark theme**.
+
+<table>
+<tr>
+<td align="center"><b>Login</b></td>
+<td align="center"><b>Dashboard</b></td>
+<td align="center"><b>Gefährte</b></td>
+<td align="center"><b>Person</b></td>
+</tr>
+<tr>
+<td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/01-login-dark.png"><img alt="Login screen" src="docs/screenshots/01-login.png" width="200"></picture></td>
+<td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/02-dashboard-dark.png"><img alt="Dashboard overview" src="docs/screenshots/02-dashboard.png" width="200"></picture></td>
+<td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/03-vehicles-dark.png"><img alt="Vehicle list with status sliders" src="docs/screenshots/03-vehicles.png" width="200"></picture></td>
+<td><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/04-person-dark.png"><img alt="Person detail with balance" src="docs/screenshots/04-person.png" width="200"></picture></td>
+</tr>
+</table>
 
 ---
 
@@ -60,7 +73,16 @@ per vehicle — monthly or yearly, prorated to the day.
 - **Extra charges** — electricity, cleaning, winter service … from a service catalog.
 - **Statistics & charts** — revenue/month, status distribution, paid/open, and
   cost per person by month and year (local SVG charts).
-- **Multi-user & roles** — *Admin, Site manager, Accounting, Read-only*.
+- **Fuzzy search** — one server-side command palette across people, vehicles,
+  invoices, garages, halls, tariffs and services: German stemming,
+  diacritics-folded (finds *Müller* for `muller`) and typo-tolerant.
+- **Self-service portal** — a per-person magic link lets a customer see their
+  balance, download invoice PDFs and open a payment QR code — no login, no
+  account.
+- **Backups** — scheduled, **encrypted** (AES-256-GCM) database dumps to a local
+  volume and optionally **off-site to S3** (any S3-compatible store), with a
+  restore path and a health check.
+- **Multi-user & roles** — *Admin, Editor, Reader* (see [Roles & permissions](#-roles--permissions)).
 - **Security** — passkeys (WebAuthn), 2FA (TOTP) + **recovery codes**, hashed
   session tokens, rate limiting, hardened HTTP headers. See [Security](#-security).
 - **PWA** — installable on a phone, light/dark, offline-capable app shell.
@@ -116,15 +138,33 @@ compose network). Schema migrations run automatically at startup.
 | `PARKRR_WEBAUTHN_ORIGINS` | allowed origins, e.g. `https://parkrr.example.com` | – |
 | `PARKRR_SECURE_COOKIES` | `Secure` flag on cookies (secure-by-default; `false` only for plain-HTTP dev on non-`localhost`) | `true` |
 | `PARKRR_TRUSTED_PROXY` | behind a reverse proxy: trust `X-Forwarded-*` | `false` |
+| `PARKRR_TRUSTED_PROXY_CIDRS` | **required when `PARKRR_TRUSTED_PROXY=true`** — comma-separated proxy IP range(s); `X-Forwarded-*` is honoured only from these peers (startup fails if trusted-proxy is on and this is empty) | – |
+| `PARKRR_PUBLIC_BASE_URL` | external base URL (self-service portal links, email) | – |
 | `PARKRR_RATE_LIMIT_PER_MIN` | general per-IP request budget/minute (`0` = off) | `600` |
 | `PARKRR_AUDIT_RETENTION_DAYS` | long window: prune audit entries older than N days (`0` = disables **this** window only, see below). Records of account (`invoice`, `payment`, `billing`, `flatrate`, `recurring_charge`) are never pruned at any age | `2555` (7 y, BAO §132) |
 | `PARKRR_AUDIT_RETENTION_SHORT_DAYS` | short window for auth/ops noise only (`login`, `logout`, `backup`, `remind`, `import`); `0` disables the short tier | `365` |
 | `PARKRR_METRICS_TOKEN` | Bearer token for `/metrics` (empty = open on an internal network) | – |
+| `PARKRR_METRICS_REQUIRE_AUTH` | refuse to serve `/metrics` unless a token is set | `false` |
 | `PARKRR_CHECK_BREACHED_PASSWORDS` | check new passwords against the HIBP range API (fail-open) | `true` |
 | `PARKRR_LOG_FORMAT` / `PARKRR_LOG_LEVEL` | `json`\|`text` / `debug`..`error` | `json` / `info` |
 
 > The admin account is created/updated from the ENV values on **every start** —
 > the ENV remains the source of truth for the admin.
+
+**Backups & email** (all optional — a feature stays off until its key variable is set):
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `PARKRR_BACKUP_KEY` | passphrase enabling scheduled **encrypted** DB backups (AES-256-GCM); empty = backups off | – |
+| `PARKRR_BACKUP_DIR` | directory for local dumps (a mounted volume) | `/backups` (compose) |
+| `PARKRR_S3_ENDPOINT` / `PARKRR_S3_REGION` | off-site target: S3-compatible endpoint / region | – |
+| `PARKRR_S3_BUCKET` / `PARKRR_S3_PREFIX` | bucket and key prefix for uploaded backups | – |
+| `PARKRR_S3_ACCESS_KEY` / `PARKRR_S3_SECRET_KEY` | S3 credentials | – |
+| `PARKRR_S3_USE_SSL` | use TLS to the S3 endpoint | `true` |
+| `PARKRR_SMTP_HOST` / `PARKRR_SMTP_PORT` | SMTP server for payment reminders & portal links; empty = email off | – / `587` |
+| `PARKRR_SMTP_USERNAME` / `PARKRR_SMTP_PASSWORD` | SMTP credentials | – |
+| `PARKRR_SMTP_FROM` / `PARKRR_SMTP_FROM_NAME` | envelope/display sender | – |
+| `PARKRR_SMTP_TLS` | `starttls` \| `tls` \| `none` | `starttls` |
 
 ---
 
@@ -140,7 +180,7 @@ PARKRR_WEBAUTHN_ORIGINS=https://parkrr.example.com
 ```
 
 <div align="center">
-<img src="docs/screenshots/05-settings.png" width="300" alt="Settings with the Passkeys card">
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/05-settings-dark.png"><img src="docs/screenshots/05-settings.png" width="300" alt="Settings with the Passkeys card"></picture>
 </div>
 
 - **Enroll:** **Settings → Passkeys → "+ Passkey hinzufügen"** (after a normal login).
@@ -184,14 +224,19 @@ reverse proxy on its own (sub)domain without changes. TLS is terminated at the p
 **1. Adjust `.env`:**
 
 ```env
-PARKRR_TRUSTED_PROXY=true      # trust X-Forwarded-For/-Proto (behind a proxy only!)
-PARKRR_SECURE_COOKIES=true     # default; correct behind TLS/proxy (use false only for plain-HTTP dev)
+PARKRR_TRUSTED_PROXY=true                       # trust X-Forwarded-For/-Proto (behind a proxy only!)
+PARKRR_TRUSTED_PROXY_CIDRS=172.16.0.0/12        # required when the above is true: the proxy's IP range(s)
+PARKRR_SECURE_COOKIES=true                      # default; correct behind TLS/proxy (use false only for plain-HTTP dev)
 ```
 
 With `PARKRR_TRUSTED_PROXY=true`, Parkrr uses the real client IP from
 `X-Forwarded-For`/`X-Real-IP` (for logs, rate limiting, audit) and detects HTTPS
-via `X-Forwarded-Proto` (→ `Secure` cookies + HSTS). **Without** a proxy, keep it
-`false` to prevent header spoofing.
+via `X-Forwarded-Proto` (→ `Secure` cookies + HSTS). `X-Forwarded-*` headers are
+honoured **only** from a peer inside `PARKRR_TRUSTED_PROXY_CIDRS`, so this
+allowlist is **required** whenever the trusted-proxy switch is on — the app
+**refuses to start** without it (otherwise any direct client could spoof its own
+IP). Set it to your proxy's address range (e.g. the Docker bridge subnet). **Without**
+a proxy, keep `PARKRR_TRUSTED_PROXY=false`.
 
 **2. Nginx Proxy Manager — Proxy Host:**
 
@@ -231,7 +276,8 @@ Parkrr runs cleanly under a **rootless engine** (rootless Docker or Podman). It
 needs no privileged features, no host networking, and no bind mounts: the app
 image already runs as a **non-root** user (the `parkrr` user, uid 10001),
 photos live in the database, and the DB uses a **named volume**. The published
-ports (`8099:8080`) are ≥ 1024, so no extra capability is required to bind them.
+port (`${PARKRR_HTTP_PORT:-8080}:8080`) is ≥ 1024, so no extra capability is
+required to bind it.
 
 **Rootless Docker (Ubuntu):**
 
@@ -347,16 +393,20 @@ internal/database/ – pgx pool + embedded SQL migrations (advisory-locked)
 internal/models/   – domain types + cost calculation (with tests)
 internal/auth/     – bcrypt, sessions/CSRF, roles, 2FA (TOTP/AES-GCM),
                      passkeys (WebAuthn), rate limiting, HIBP
+internal/backup/   – scheduled encrypted DB dumps, S3 off-site, verify/restore
 internal/handlers/ – JSON API (auth/2FA/passkeys, people, vehicles, photos,
-                     tariffs, services, charges, stats, users, audit)
+                     tariffs, services, charges, stats, users, audit, search,
+                     self-service portal, backups)
 internal/server/   – routing, middleware (access log, rate limit, security
                      headers, metrics), health/readiness/metrics endpoints
 web/static/        – PWA frontend (SPA, SVG charts, service worker, icons)
 ```
 
 - **Backend:** Go standard library (`net/http`, method-based routing); runtime
-  dependencies are `pgx`, `golang.org/x/crypto`, `pquerna/otp`, `go-webauthn`,
-  and the Prometheus client.
+  dependencies are `pgx` (PostgreSQL), `golang.org/x/crypto` + `golang.org/x/sync`,
+  `pquerna/otp` (TOTP), `go-webauthn` (passkeys), `go-pdf/fpdf` (invoice PDFs),
+  `boombuler/barcode` (payment QR codes), `minio-go` (S3 backups),
+  `robfig/cron` (scheduled backups) and the Prometheus client.
 - **Frontend:** vanilla-JS SPA with hash routing, native `<dialog>` modals, SVG
   charts, modern CSS — no framework, no build step.
 
@@ -397,6 +447,7 @@ GitHub Actions workflows under `.github/workflows/`:
 | Workflow | Purpose |
 | --- | --- |
 | `ci.yml` | build, `go vet`, tests (race detector) + coverage gate, Docker build |
+| `a11y.yml` | accessibility smoke tests (Playwright + axe-core) |
 | `golangci-lint.yml` | static analysis / linting (golangci-lint v2) |
 | `gosec.yml` | security scanner |
 | `govulncheck.yml` | known vulnerabilities (also weekly) |
