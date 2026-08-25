@@ -51,23 +51,42 @@ var (
 // deterministic and avoids duplicate-registration panics in tests.
 func registerMetrics(pool *pgxpool.Pool) *prometheus.Registry {
 	reg := prometheus.NewRegistry()
-	reg.MustRegister(
-		httpRequests,
-		httpDuration,
-		collectors(pool),
-	)
+	reg.MustRegister(httpRequests, httpDuration)
+	reg.MustRegister(collectors(pool)...)
 	return reg
 }
 
-// collectors exposes pgx pool statistics as gauges.
-func collectors(pool *pgxpool.Pool) prometheus.Collector {
-	return prometheus.NewGaugeFunc(
-		prometheus.GaugeOpts{
-			Name: "parkrr_db_pool_acquired_conns",
-			Help: "Currently acquired database connections.",
-		},
-		func() float64 { return float64(pool.Stat().AcquiredConns()) },
-	)
+// collectors exposes pgx pool statistics: point-in-time gauges (acquired / idle /
+// total / max) plus cumulative counters (acquire count, empty and canceled
+// acquires, total acquire-wait) so pool saturation and acquire latency can be
+// alerted on, not just current usage (finding M-21).
+func collectors(pool *pgxpool.Pool) []prometheus.Collector {
+	gauge := func(name, help string, f func(*pgxpool.Stat) float64) prometheus.Collector {
+		return prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: name, Help: help},
+			func() float64 { return f(pool.Stat()) })
+	}
+	counter := func(name, help string, f func(*pgxpool.Stat) float64) prometheus.Collector {
+		return prometheus.NewCounterFunc(prometheus.CounterOpts{Name: name, Help: help},
+			func() float64 { return f(pool.Stat()) })
+	}
+	return []prometheus.Collector{
+		gauge("parkrr_db_pool_acquired_conns", "Currently acquired database connections.",
+			func(s *pgxpool.Stat) float64 { return float64(s.AcquiredConns()) }),
+		gauge("parkrr_db_pool_idle_conns", "Currently idle database connections.",
+			func(s *pgxpool.Stat) float64 { return float64(s.IdleConns()) }),
+		gauge("parkrr_db_pool_total_conns", "Total connections (idle + in-use + constructing).",
+			func(s *pgxpool.Stat) float64 { return float64(s.TotalConns()) }),
+		gauge("parkrr_db_pool_max_conns", "Maximum size of the connection pool.",
+			func(s *pgxpool.Stat) float64 { return float64(s.MaxConns()) }),
+		counter("parkrr_db_pool_acquire_total", "Cumulative successful connection acquisitions.",
+			func(s *pgxpool.Stat) float64 { return float64(s.AcquireCount()) }),
+		counter("parkrr_db_pool_empty_acquire_total", "Cumulative acquisitions that had to wait for a connection.",
+			func(s *pgxpool.Stat) float64 { return float64(s.EmptyAcquireCount()) }),
+		counter("parkrr_db_pool_canceled_acquire_total", "Cumulative acquisitions canceled by their context.",
+			func(s *pgxpool.Stat) float64 { return float64(s.CanceledAcquireCount()) }),
+		counter("parkrr_db_pool_acquire_duration_seconds_total", "Cumulative time spent waiting to acquire connections.",
+			func(s *pgxpool.Stat) float64 { return s.AcquireDuration().Seconds() }),
+	}
 }
 
 // metricsMiddleware records request count and latency, labeled by the matched
@@ -154,6 +173,32 @@ func startFlatRateArchival(h *handlers.Handler, stop <-chan struct{}) {
 			return
 		case <-ticker.C:
 			sweep()
+		}
+	}
+}
+
+// startOccupancySnapshot records today's occupancy KPIs into occupancy_snapshots
+// on a background loop — once at startup, then hourly (the upsert is idempotent
+// per day). Writing the snapshot here rather than from the dashboard GET keeps that
+// request a pure read (finding L-02) and captures the trend even on days nobody
+// opens the dashboard.
+func startOccupancySnapshot(h *handlers.Handler, stop <-chan struct{}) {
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+	snap := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := h.RecordOccupancySnapshot(ctx); err != nil {
+			slog.Warn("occupancy snapshot failed", "err", err)
+		}
+	}
+	snap() // once at startup
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			snap()
 		}
 	}
 }

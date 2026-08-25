@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -46,5 +47,27 @@ func TestOccupancy(t *testing.T) {
 	}
 	if sum > resp.Active {
 		t.Errorf("sum of per-hall placed (%d) exceeds active (%d)", sum, resp.Active)
+	}
+}
+
+// TestRecordOccupancySnapshot: the background loop writes today's snapshot via this
+// method (so the dashboard GET stays a pure read, finding L-02). The per-day upsert
+// is idempotent — calling it twice leaves exactly one row for today.
+func TestRecordOccupancySnapshot(t *testing.T) {
+	h := testHandler(t)
+	ctx := context.Background()
+	if err := h.RecordOccupancySnapshot(ctx); err != nil {
+		t.Fatalf("first snapshot: %v", err)
+	}
+	if err := h.RecordOccupancySnapshot(ctx); err != nil {
+		t.Fatalf("second snapshot: %v", err)
+	}
+	var n int
+	if err := h.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM occupancy_snapshots WHERE day = CURRENT_DATE`).Scan(&n); err != nil {
+		t.Fatalf("query snapshot: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected exactly 1 snapshot row for today (idempotent upsert), got %d", n)
 	}
 }
