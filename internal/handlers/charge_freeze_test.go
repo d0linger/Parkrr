@@ -74,3 +74,35 @@ func TestUpdateChargeFrozenWhenInvoiced(t *testing.T) {
 		t.Errorf("amount rounding to a different cent should be blocked: got %d, want 409", code)
 	}
 }
+
+// TestUpdateChargeAuditRoundsToCent: amount/quantity are NUMERIC(12,2)/(10,2), so the
+// audit trail must record the ROUNDED value that was actually stored, not the raw
+// sub-cent request value.
+func TestUpdateChargeAuditRoundsToCent(t *testing.T) {
+	h := testHandler(t)
+	pid := createIntegrationPerson(t, h)
+	var chargeID int64
+	if err := h.Pool.QueryRow(t.Context(),
+		`INSERT INTO charges (person_id, description, amount, quantity) VALUES ($1,'Pos',40,1) RETURNING id`, pid).Scan(&chargeID); err != nil {
+		t.Fatalf("insert charge: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]any{"person_id": pid, "description": "Pos", "amount": 40.006, "quantity": 1})
+	req := httptest.NewRequest(http.MethodPut, "/api/charges/"+strconv.FormatInt(chargeID, 10), bytes.NewReader(body))
+	req.SetPathValue("id", strconv.FormatInt(chargeID, 10))
+	rec := httptest.NewRecorder()
+	h.UpdateCharge(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update: %d %s", rec.Code, rec.Body.String())
+	}
+
+	var newAmount string
+	if err := h.Pool.QueryRow(t.Context(),
+		`SELECT changes->'amount'->>'new' FROM audit_log
+		  WHERE entity='charge' AND entity_id=$1 AND action='update' ORDER BY id DESC LIMIT 1`, chargeID).Scan(&newAmount); err != nil {
+		t.Fatalf("query audit: %v", err)
+	}
+	if newAmount != "40.01" {
+		t.Errorf("audit new amount = %q, want 40.01 (rounded to the stored cent, not 40.006)", newAmount)
+	}
+}

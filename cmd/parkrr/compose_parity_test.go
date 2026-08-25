@@ -12,7 +12,9 @@ import (
 // environment (keys AND values) and its volume mounts.
 type composeApp struct {
 	Services struct {
-		App struct {
+		// Pointer so an entirely MISSING services.app is nil (not a zero-value that
+		// would falsely compare equal to another missing one) — the test then fails.
+		App *struct {
 			Environment map[string]string `yaml:"environment"`
 			Volumes     []string          `yaml:"volumes"`
 		} `yaml:"app"`
@@ -29,6 +31,12 @@ type composeApp struct {
 func TestGHCRComposeParity(t *testing.T) {
 	base := decodeCompose(t, "../../docker-compose.yml").Services.App
 	ghcr := decodeCompose(t, "../../docker-compose.ghcr.yml").Services.App
+	if base == nil {
+		t.Fatal("docker-compose.yml has no services.app")
+	}
+	if ghcr == nil {
+		t.Fatal("docker-compose.ghcr.yml has no services.app")
+	}
 
 	if !reflect.DeepEqual(base.Environment, ghcr.Environment) {
 		t.Errorf("app environment drifted between the compose files.\nbase: %v\nghcr: %v\n"+

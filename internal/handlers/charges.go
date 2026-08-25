@@ -497,7 +497,13 @@ func (h *Handler) UpdateCharge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prev.ChargedOn = prevChargedOn.Format("2006-01-02")
-	h.auditChange(r, "update", "charge", id, "updated charge "+req.Description, diffFields(prev, req))
+	// amount/quantity are NUMERIC(12,2)/(10,2), so the UPDATE stored the rounded
+	// values; audit the rounded numbers too, so the trail's "new" matches what's on
+	// disk and a sub-cent-only request records no phantom change.
+	audited := req
+	audited.Amount = round2(req.Amount)
+	audited.Quantity = round2(req.Quantity)
+	h.auditChange(r, "update", "charge", id, "updated charge "+req.Description, diffFields(prev, audited))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
