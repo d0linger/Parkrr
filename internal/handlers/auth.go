@@ -205,7 +205,13 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	u, err := h.Auth.Authenticate(r.Context(), req.Username, req.Password)
 	if err != nil {
 		h.recordLoginFailure(key, ip)
-		slog.Warn("login failed", "user", req.Username, "ip", ip, "reason", "bad credentials")
+		// Don't log the request-supplied username: on a bad-credentials failure it is
+		// attacker-controlled and may not be a real account, so it adds unbounded
+		// cardinality and needless PII to operational logs. IP + reason identify the
+		// event; the per-account lockout is keyed internally (finding M-18). The 2FA
+		// and login/logout events below log the RESOLVED account (password already
+		// verified), matching the request logger, and stay as-is.
+		slog.Warn("login failed", "ip", ip, "reason", "bad credentials")
 		writeError(w, http.StatusUnauthorized, "Benutzername oder Passwort ist falsch")
 		return
 	}

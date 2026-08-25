@@ -115,6 +115,13 @@ func (h *Handler) rejectBreachedPassword(w http.ResponseWriter, r *http.Request,
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	// Authenticated JSON (persons, payments, sessions, audit, portal balances) must
+	// not linger in a browser cache or be cached by a misconfigured intermediary.
+	// Default to no-store, but leave any caching policy a handler already chose for
+	// this response intact (finding SEC-04).
+	if w.Header().Get("Cache-Control") == "" {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	w.WriteHeader(status)
 	if v != nil {
 		_ = json.NewEncoder(w).Encode(v)
@@ -327,8 +334,12 @@ func (h *Handler) auditAs(r *http.Request, actorID int64, actorName, action, ent
 }
 
 func (h *Handler) auditInsert(r *http.Request, actorID int64, actorName, action, entity string, id int64, summary string, changes any) {
-	// Best-effort, post-commit: never break a request on an audit failure.
-	_ = auditExec(r.Context(), h.Pool, actorID, actorName, action, entity, id, summary, changes)
+	// Best-effort, post-commit: never break a request on an audit failure — but do
+	// surface it, so a silent gap in the audit trail is at least visible in the logs
+	// (finding MAINT-02). Auditability is mandatory for these operations.
+	if err := auditExec(r.Context(), h.Pool, actorID, actorName, action, entity, id, summary, changes); err != nil {
+		slog.Error("audit write failed", "action", action, "entity", entity, "entity_id", id, "err", err)
+	}
 }
 
 // AuditSystem records an action taken outside a request handler: a scheduled backup,

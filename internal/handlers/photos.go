@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"image"
+	"image/color"
 	"image/jpeg"
 	"image/png"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/sync/semaphore"
 )
 
 // Upload limits.
@@ -23,11 +25,18 @@ const (
 	//                                   still be e.g. 8000x8000 = 64 MP; bound the product too.
 	maxPhotosPerVehicle = 20
 	jpegQuality         = 85
+	// decodeBudgetBytes bounds TOTAL in-flight decode memory. It must be >= the
+	// worst-case single image (~152 MiB: 32 MP RGBA + the raw input + a re-encode
+	// cushion) so a legitimate max-size upload is never permanently shed, yet it
+	// stays well under the 256 MiB hardened container limit (finding H-08).
+	decodeBudgetBytes = 160 << 20
 )
 
-// decodeSem bounds how many image decode/re-encode operations run at once, so a
-// burst of large uploads can't multiply peak decoded memory across requests.
-var decodeSem = make(chan struct{}, 4)
+// decodeBudget bounds image decode/re-encode by a MEMORY budget, not a count: each
+// decode reserves its estimated peak bytes, and a burst sheds load once the budget
+// is exhausted. A plain count cap let N large images (up to ~128 MiB RGBA each) run
+// at once and overrun the container memory limit (finding H-08).
+var decodeBudget = semaphore.NewWeighted(decodeBudgetBytes)
 
 // errDecodeBusy is returned by sanitizeImage when all decode slots are occupied.
 // Callers map it to 503 so a flood of uploads sheds load instead of queueing
@@ -172,14 +181,23 @@ func sanitizeImage(raw []byte) ([]byte, string, error) {
 	if int64(cfg.Width)*int64(cfg.Height) > maxPhotoPixels {
 		return nil, "", errImage("image is too large")
 	}
-	// Serialize the memory-heavy decode/re-encode behind a small semaphore. Shed
-	// load (rather than queue unbounded) when every slot is busy.
-	select {
-	case decodeSem <- struct{}{}:
-		defer func() { <-decodeSem }()
-	default:
+	// Reserve this decode's estimated peak memory against the global budget: the RGBA
+	// bitmap (pixels x4) plus the raw input we still hold and a cushion for the
+	// re-encode output/encoder. Shed load (rather than queue) when the budget is
+	// exhausted, so concurrent uploads can never overrun the container's memory limit
+	// (finding H-08).
+	// Bit-depth-aware: a 16-bit PNG decodes to RGBA64 (8 bytes/pixel), not 4, so a
+	// naive x4 weight would under-reserve and could still OOM. A large 16-bit image
+	// then exceeds decodeBudgetBytes and is shed rather than decoded (finding H-08).
+	bytesPerPixel := int64(4)
+	if cfg.ColorModel == color.RGBA64Model || cfg.ColorModel == color.NRGBA64Model {
+		bytesPerPixel = 8
+	}
+	weight := int64(cfg.Width)*int64(cfg.Height)*bytesPerPixel + int64(len(raw)) + (16 << 20)
+	if !decodeBudget.TryAcquire(weight) {
 		return nil, "", errDecodeBusy
 	}
+	defer decodeBudget.Release(weight)
 	img, _, err := image.Decode(bytes.NewReader(raw))
 	if err != nil {
 		return nil, "", errImage("could not decode image")

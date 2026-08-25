@@ -46,6 +46,9 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	// Archive vehicles of finished-and-settled Pauschalen in the background.
 	go startFlatRateArchival(h, stop)
 
+	// Record daily occupancy snapshots off the dashboard GET (finding L-02).
+	go startOccupancySnapshot(h, stop)
+
 	// Idempotent one-shot: book real Zahlungseingänge for Pauschale/Nebenkosten
 	// period settlements made before migration 036 (they only flipped an off-book
 	// flag). Runs in the background so a large dataset never delays serving.
@@ -72,9 +75,11 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.HandleFunc("POST /api/auth/passkey/login/finish", ah.PasskeyLoginFinish)
 
 	// --- Customer self-service portal (PUBLIC, token-scoped, read-only) ---
-	mux.HandleFunc("GET /api/portal/{token}/summary", h.PortalSummary)
-	mux.HandleFunc("GET /api/portal/{token}/invoices/{id}/pdf", h.PortalInvoicePDF)
-	mux.HandleFunc("GET /api/portal/{token}/invoices/{id}/pay-qr", h.PortalPayQR)
+	// The token travels in the Authorization header, NOT the URL path, so it stays
+	// out of access/reverse-proxy logs, browser history, and Referer (finding SEC-01).
+	mux.HandleFunc("GET /api/portal/summary", h.PortalSummary)
+	mux.HandleFunc("GET /api/portal/invoices/{id}/pdf", h.PortalInvoicePDF)
+	mux.HandleFunc("GET /api/portal/invoices/{id}/pay-qr", h.PortalPayQR)
 
 	// --- Auth (protected) ---
 	mux.Handle("POST /api/auth/logout", authed(hf(ah.Logout)))
@@ -527,7 +532,9 @@ func securityHeaders(authMgr *auth.Manager, next http.Handler) http.Handler {
 		h.Set("Cross-Origin-Resource-Policy", "same-origin")
 		h.Set("Permissions-Policy",
 			"geolocation=(), camera=(), microphone=(), payment=(), usb=(), interest-cohort=()")
-		csp := "default-src 'self'; img-src 'self' data:; style-src 'self'; " +
+		// blob: for object URLs the SPA builds itself (e.g. the portal pay-QR fetched
+		// with an auth header and shown via URL.createObjectURL) — same-origin, local.
+		csp := "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; " +
 			"script-src 'self'; connect-src 'self'; manifest-src 'self'; " +
 			"base-uri 'self'; form-action 'self'; frame-ancestors 'none'; " +
 			"object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'self'"

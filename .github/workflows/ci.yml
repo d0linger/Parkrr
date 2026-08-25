@@ -12,6 +12,7 @@ jobs:
   build-test:
     name: Build & Test
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     services:
       postgres:
@@ -35,7 +36,7 @@ jobs:
       PARKRR_TEST_DATABASE_URL: postgres://parkrr:parkrr@localhost:5432/parkrr_test?sslmode=disable&pool_max_conns=4
       # Coverage ratchet floor. Raise this as coverage grows; the gate fails the
       # build if total statement coverage drops below it. (Actual ~48.7%.)
-      COVERAGE_MIN: "40"
+      COVERAGE_MIN: "45"
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -72,6 +73,7 @@ jobs:
   docker:
     name: Docker build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -90,6 +92,7 @@ jobs:
   actions-pinned:
     name: Actions pinned to SHA
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -112,6 +115,7 @@ jobs:
   geometry:
     name: Planner geometry tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

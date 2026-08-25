@@ -421,25 +421,55 @@ func (h *Handler) syncTogglePaymentTx(ctx context.Context, tx pgx.Tx, kind strin
 	if exists {
 		return nil // already covered (won the race elsewhere)
 	}
+	// Payments are IMMUTABLE (BAO §131 — a DB trigger blocks changing amount), so the
+	// amount must be right at INSERT time. Decide which bound charges are still
+	// claimable BEFORE minting the payment: a charge already allocated elsewhere stays
+	// with its winner and is not counted, so the payment never carries credit for money
+	// that settled another position (finding H-03, phantom credit).
+	claimable := make([]boundCharge, 0, len(bound))
+	claimed := amt
+	for _, b := range bound {
+		var taken bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM payment_allocations WHERE kind='charge' AND ref_id=$1)`, b.id).Scan(&taken); err != nil {
+			return err
+		}
+		if taken {
+			continue
+		}
+		claimable = append(claimable, b)
+		claimed += b.total
+	}
 	var pid int64
 	if err := tx.QueryRow(ctx,
 		`INSERT INTO payments (person_id, amount, method, note, auto, created_by)
-		 VALUES ($1,$2,'bar','Slider „bezahlt"',true,$3) RETURNING id`, personID, amt+boundTotal, createdBy).Scan(&pid); err != nil {
+		 VALUES ($1,$2,'bar','Slider „bezahlt"',true,$3) RETURNING id`, personID, round2(claimed), createdBy).Scan(&pid); err != nil {
 		return err
 	}
-	// ON CONFLICT guards the toggle-vs-manual-payment race the advisory lock
-	// doesn't cover (CreatePayment takes no such lock). The primary allocation is
-	// the "settled" marker even when amt is 0 (a 0-rent vehicle with bound charges).
-	if _, err := tx.Exec(ctx,
+	// The primary allocation is this payment's claim. ON CONFLICT guards the
+	// toggle-vs-manual-payment race the per-item advisory lock does not cover. If the
+	// primary — or a charge we pre-counted — was claimed in the tiny window since the
+	// checks above, the immutable payment can't be trimmed: roll the whole toggle back
+	// so nothing settles at the wrong amount. A retry then re-plans against the new
+	// state and is a clean no-op / correct partial (finding H-03).
+	pTag, err := tx.Exec(ctx,
 		`INSERT INTO payment_allocations (payment_id, kind, ref_id, amount) VALUES ($1,$2,$3,$4)
-		 ON CONFLICT (kind, ref_id) DO NOTHING`, pid, kind, refID, amt); err != nil {
+		 ON CONFLICT (kind, ref_id) DO NOTHING`, pid, kind, refID, amt)
+	if err != nil {
 		return err
 	}
-	for _, b := range bound {
-		if _, err := tx.Exec(ctx,
+	if pTag.RowsAffected() == 0 {
+		return fmt.Errorf("settlement raced on %s %d; retry", kind, refID)
+	}
+	for _, b := range claimable {
+		cTag, cerr := tx.Exec(ctx,
 			`INSERT INTO payment_allocations (payment_id, kind, ref_id, amount) VALUES ($1,'charge',$2,$3)
-			 ON CONFLICT (kind, ref_id) DO NOTHING`, pid, b.id, b.total); err != nil {
-			return err
+			 ON CONFLICT (kind, ref_id) DO NOTHING`, pid, b.id, b.total)
+		if cerr != nil {
+			return cerr
+		}
+		if cTag.RowsAffected() == 0 {
+			return fmt.Errorf("settlement raced on charge %d; retry", b.id)
 		}
 		if _, err := tx.Exec(ctx, `UPDATE charges SET paid=true WHERE id=$1`, b.id); err != nil {
 			return err
@@ -879,10 +909,52 @@ func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
 	var archive []int64
 	txErr := pgx.BeginFunc(ctx, h.Pool, func(tx pgx.Tx) error {
 		for _, it := range items {
-			if budget+0.005 < it.LineTotal {
-				break // not enough paid to cover this (oldest) open item
+			if budget < 0.005 {
+				break // no drawable Guthaben left at all
 			}
-			ok, veh, serr := settleItemTx(ctx, tx, latestPayment, it)
+			if budget+0.005 < it.LineTotal {
+				continue // this item exceeds the remaining budget — later, smaller ones may still fit
+			}
+			// Book the drawdown against a payment that actually has enough UNSPENT value
+			// (its amount minus its allocations and invoice applications), LOCKED so a
+			// concurrent settlement can't double-spend the same remaining budget. Never
+			// over-allocate a payment — a 1 EUR payment must not carry a 100 EUR drawdown
+			// that a later reversal of that payment would then wrongly reopen (finding
+			// H-01). Reversed and dedicated (period-settling) payments are not sources.
+			var payID int64
+			perr := tx.QueryRow(ctx, `
+				SELECT p.id FROM payments p
+				 WHERE p.person_id = $1 AND NOT p.reversed AND p.settles_kind IS NULL
+				   AND p.amount
+				       - COALESCE((SELECT SUM(amount) FROM payment_allocations WHERE payment_id = p.id), 0)
+				       - COALESCE((SELECT SUM(amount) FROM invoice_payments   WHERE payment_id = p.id), 0)
+				       >= $2 - 0.005
+				 ORDER BY p.paid_on, p.id
+				 LIMIT 1
+				 FOR UPDATE OF p`, id, it.LineTotal).Scan(&payID)
+			if errors.Is(perr, pgx.ErrNoRows) {
+				continue // no single payment covers this item — split credit stays unsettled
+			}
+			if perr != nil {
+				return perr
+			}
+			// The WHERE above computed the balance from a snapshot; now that the row lock
+			// is held, re-read the payment's CURRENT remaining — a concurrent settlement
+			// may have committed an allocation against it while we waited for the lock
+			// (the lock alone doesn't re-check the aggregate) — and skip it if it can no
+			// longer cover the item, so we never over-allocate (finding H-01).
+			var remaining float64
+			if rerr := tx.QueryRow(ctx, `
+				SELECT p.amount
+				       - COALESCE((SELECT SUM(amount) FROM payment_allocations WHERE payment_id = p.id), 0)
+				       - COALESCE((SELECT SUM(amount) FROM invoice_payments   WHERE payment_id = p.id), 0)
+				  FROM payments p WHERE p.id = $1`, payID).Scan(&remaining); rerr != nil {
+				return rerr
+			}
+			if remaining+0.005 < it.LineTotal {
+				continue // lost the remaining budget to a concurrent settlement
+			}
+			ok, veh, serr := settleItemTx(ctx, tx, payID, it)
 			if serr != nil {
 				return serr
 			}
@@ -896,12 +968,11 @@ func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
 			settled++
 		}
 		if settled > 0 {
-			// entity_id is the payment the drawdown is booked against — it is guaranteed
-			// non-zero here (the handler returns early above when there is none). Logging
-			// 0 left an entry under entity "payment" that resolved to no payment at all.
-			return h.auditChangeTx(ctx, tx, r, "update", "payment", latestPayment,
+			// The drawdown may now span several payments, so audit the PERSON whose
+			// Guthaben was applied rather than a single payment id.
+			return h.auditChangeTx(ctx, tx, r, "update", "person", id,
 				fmt.Sprintf("applied Guthaben to %d open position(s)", settled),
-				auditSnapshot(map[string]any{"settled_positions": settled, "person_id": id}))
+				auditSnapshot(map[string]any{"settled_positions": settled}))
 		}
 		return nil
 	})

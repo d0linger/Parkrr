@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/preining/parkrr/internal/auth"
 	"github.com/preining/parkrr/internal/models"
 )
 
@@ -1113,15 +1112,10 @@ func (h *Handler) Occupancy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	// FE4: record today's snapshot (idempotent per day — a bounded, per-day upsert; best-effort
-	// telemetry) and return the recent daily trend for the sparkline. Only writers (admin/editor)
-	// trigger the write, so a read-only reader never mutates the DB on this GET (safe-GET / least-privilege).
-	if u, ok := auth.UserFrom(r.Context()); ok && (u.IsAdmin || u.Role == models.RoleEditor) {
-		_, _ = h.Pool.Exec(ctx,
-			`INSERT INTO occupancy_snapshots (day, placed, active) VALUES (CURRENT_DATE, $1, $2)
-			 ON CONFLICT (day) DO UPDATE SET placed = EXCLUDED.placed, active = EXCLUDED.active, taken_at = now()`,
-			resp.Placed, resp.Active)
-	}
+	// FE4: today's snapshot is written by the background occupancy loop (see
+	// RecordOccupancySnapshot), so this dashboard GET stays a pure read and never
+	// mutates the DB — a GET must be safe (finding L-02). Here we only return the
+	// recent daily trend for the sparkline.
 	resp.Trend = []occDay{}
 	if trows, terr := h.Pool.Query(ctx,
 		`SELECT to_char(day, 'YYYY-MM-DD'), placed, active FROM occupancy_snapshots
@@ -1135,6 +1129,26 @@ func (h *Handler) Occupancy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// RecordOccupancySnapshot upserts today's placement KPIs (active vehicles and how
+// many are placed in a hall) into occupancy_snapshots. Idempotent per day. Called
+// by the background occupancy loop so the dashboard GET stays a pure read (L-02).
+func (h *Handler) RecordOccupancySnapshot(ctx context.Context) error {
+	// Both counts from ONE query so the snapshot is a single consistent view — two
+	// separate counts could straddle a concurrent change and record placed > active.
+	var active, placed int
+	if err := h.Pool.QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE NOT archived),
+		        count(*) FILTER (WHERE NOT archived AND spot_id IS NOT NULL)
+		   FROM vehicles`).Scan(&active, &placed); err != nil {
+		return err
+	}
+	_, err := h.Pool.Exec(ctx,
+		`INSERT INTO occupancy_snapshots (day, placed, active) VALUES (CURRENT_DATE, $1, $2)
+		 ON CONFLICT (day) DO UPDATE SET placed = EXCLUDED.placed, active = EXCLUDED.active, taken_at = now()`,
+		placed, active)
+	return err
 }
 
 // personMonthly computes combined rent (flat-rate agreements + uncovered

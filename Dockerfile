@@ -8,14 +8,18 @@ WORKDIR /src
 # Build tools for module resolution.
 RUN apk add --no-cache git ca-certificates
 
-# Resolve dependencies first for better layer caching.
+# Resolve dependencies first for better layer caching. No `|| true`: a failed
+# module download must fail the build, not silently proceed with an incomplete
+# graph (finding CONT-02).
 COPY go.mod ./
 COPY go.sum* ./
-RUN go mod download || true
+RUN go mod download
 
-# Copy the rest of the source and ensure the module graph is complete.
+# Copy the rest of the source. The build uses the committed go.mod/go.sum as-is —
+# no `go mod tidy` here: it would mutate dependency resolution at build time and
+# make the image non-reproducible. An inconsistent module graph should fail the
+# build (and CI) rather than be silently rewritten (finding CONT-02).
 COPY . .
-RUN go mod tidy
 
 # Build a static binary. Version can be injected at build time.
 ARG VERSION=dev

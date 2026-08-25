@@ -12,6 +12,7 @@ jobs:
   a11y:
     name: Accessibility (Playwright + axe-core)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     services:
       postgres:

@@ -7887,6 +7887,32 @@
     }
 
     // Public self-service portal (no login): rendered when the hash is
+    // Portal resources are fetched with the token in the Authorization header (never
+    // in the URL), so it stays out of server/reverse-proxy logs and Referer (SEC-01).
+    // PDFs and the pay-QR therefore can't be plain <a>/<img> URLs — fetch them as
+    // blobs and hand the browser an object URL.
+    async function portalFetch(token, path, as) {
+        const res = await fetch('/api/portal' + path, {
+            credentials: 'omit',
+            referrerPolicy: 'no-referrer',
+            headers: { 'Authorization': 'Bearer ' + token, 'Accept': as === 'json' ? 'application/json' : '*/*' },
+        });
+        if (!res.ok) throw new Error('portal ' + res.status);
+        return as === 'json' ? res.json() : res.blob();
+    }
+    async function portalOpenPdf(token, id) {
+        // Open the tab synchronously (inside the click) so it isn't popup-blocked, then
+        // point it at the fetched blob. window.open(..., 'noopener') returns null (so the
+        // handle would be unusable) — open without it and sever opener manually to keep
+        // the new tab isolated.
+        const win = window.open('', '_blank');
+        if (win) win.opener = null;
+        try {
+            const url = URL.createObjectURL(await portalFetch(token, '/invoices/' + id + '/pdf', 'blob'));
+            if (win) win.location = url; else window.open(url, '_blank', 'noopener');
+        } catch { if (win) win.close(); toast('PDF konnte nicht geladen werden', 'error'); }
+    }
+
     // #/portal/<token>. Read-only view of one person's vehicles + invoices.
     async function renderPortal(token) {
         const lv = $('#login-view'); if (lv) lv.hidden = true;
@@ -7896,7 +7922,7 @@
         pv.innerHTML = '';
         pv.append(skeleton(4));
         let sum;
-        try { sum = await api.get('/portal/' + token + '/summary'); }
+        try { sum = await portalFetch(token, '/summary', 'json'); }
         catch (e) {
             pv.innerHTML = '';
             pv.append(el('div', { class: 'portal-wrap' }, el('div', { class: 'portal-card' },
@@ -7923,15 +7949,20 @@
         if (!sum.invoices.length) icard.append(el('p', { class: 'muted' }, 'Keine Rechnungen.'));
         else sum.invoices.forEach((iv) => {
             icard.append(
-                el('a', { class: 'portal-row link', href: '/api/portal/' + token + '/invoices/' + iv.id + '/pdf', target: '_blank', rel: 'noopener' },
+                el('a', { class: 'portal-row link', role: 'button', tabindex: '0', style: 'cursor:pointer',
+                    onclick: () => portalOpenPdf(token, iv.id),
+                    onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); portalOpenPdf(token, iv.id); } } },
                     el('span', {}, 'Rechnung ' + esc(iv.number),
                         el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, new Date(iv.issued_on).toLocaleDateString('de-DE') + (iv.status ? ' · ' + esc(iv.status) : ''))),
                     el('span', { style: 'text-align:right' }, eur(iv.total),
                         iv.open > 0.005 ? el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, 'offen ' + eur(iv.open)) : null)));
             // Scan-to-pay QR for each still-open invoice.
             if (iv.open > 0.005) {
+                const qr = el('img', { alt: 'SEPA-Zahlungs-QR', width: 150, height: 150, style: 'max-width:150px;height:auto' });
+                portalFetch(token, '/invoices/' + iv.id + '/pay-qr', 'blob')
+                    .then((b) => { qr.src = URL.createObjectURL(b); }).catch(() => { });
                 icard.append(el('div', { style: 'text-align:center;padding:.4rem 0 .2rem' },
-                    el('img', { src: '/api/portal/' + token + '/invoices/' + iv.id + '/pay-qr', alt: 'SEPA-Zahlungs-QR', width: 150, height: 150, style: 'max-width:150px;height:auto' }),
+                    qr,
                     el('div', { class: 'muted', style: 'font-size:.72rem' }, 'Scan zum Bezahlen (SEPA)')));
             }
         });

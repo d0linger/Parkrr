@@ -436,6 +436,34 @@ func (h *Handler) UpdateCharge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, badMsg)
 		return
 	}
+	// A charge on an issued invoice is part of an immutable document (BAO): its money
+	// (amount/quantity), owner (person) or binding (vehicle) must not change out from
+	// under the invoice — otherwise the live balance disagrees with what was billed and
+	// paid, or the charge is re-billed under a new owner. Freeze exactly those fields
+	// once invoiced (mirrors UpdateVehicle and DeleteCharge, finding H-02); cosmetic
+	// edits (description/date) stay allowed. One null-safe query decides both.
+	var billingChanged, chargeInvoiced bool
+	if err := h.Pool.QueryRow(r.Context(),
+		`SELECT
+		   (c.person_id IS DISTINCT FROM $2
+		    OR c.vehicle_id IS DISTINCT FROM $3
+		    OR c.amount   IS DISTINCT FROM $4::numeric(12,2)
+		    OR c.quantity IS DISTINCT FROM $5::numeric(10,2)),
+		   EXISTS(SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+		           WHERE s.kind='charge' AND s.ref_id=c.id AND NOT i.canceled)
+		 FROM charges c WHERE c.id=$1`,
+		id, req.PersonID, req.VehicleID, req.Amount, req.Quantity).Scan(&billingChanged, &chargeInvoiced); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "charge not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "could not update charge")
+		return
+	}
+	if billingChanged && chargeInvoiced {
+		writeError(w, http.StatusConflict, "Zusatzkosten sind Teil einer ausgestellten Rechnung – Betrag/Menge/Person/Bindung nicht änderbar (Storno über die Rechnung).")
+		return
+	}
 	// The own paid flag only governs standalone charges; a bound charge follows its
 	// vehicle/Pauschale. So when the binding changes (bind, unbind or rebind) the
 	// old flag is stale — reset it to open. Edits that keep the binding keep paid.
@@ -469,7 +497,13 @@ func (h *Handler) UpdateCharge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prev.ChargedOn = prevChargedOn.Format("2006-01-02")
-	h.auditChange(r, "update", "charge", id, "updated charge "+req.Description, diffFields(prev, req))
+	// amount/quantity are NUMERIC(12,2)/(10,2), so the UPDATE stored the rounded
+	// values; audit the rounded numbers too, so the trail's "new" matches what's on
+	// disk and a sub-cent-only request records no phantom change.
+	audited := req
+	audited.Amount = round2(req.Amount)
+	audited.Quantity = round2(req.Quantity)
+	h.auditChange(r, "update", "charge", id, "updated charge "+req.Description, diffFields(prev, audited))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

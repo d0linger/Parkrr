@@ -192,12 +192,18 @@ func getenv(key, def string) string {
 }
 
 func getenvInt(key string, def int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
+	v := os.Getenv(key)
+	if v == "" {
+		return def
 	}
-	return def
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		// A malformed value silently falling back to the default can hide a typo in
+		// an operational limit; surface it instead of swallowing it (finding MAINT-01).
+		slog.Warn("invalid integer config value; using default", "key", key, "value", v, "default", def)
+		return def
+	}
+	return n
 }
 
 // splitList parses a comma- or space-separated list, dropping empties.
@@ -213,10 +219,17 @@ func splitList(s string) []string {
 }
 
 func getenvBool(key string, def bool) bool {
-	if v := os.Getenv(key); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			return b
-		}
+	v := os.Getenv(key)
+	if v == "" {
+		return def
 	}
-	return def
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		// Especially dangerous for security switches: PARKRR_METRICS_REQUIRE_AUTH=treu
+		// would silently become the default and disable an intended control. Warn
+		// loudly rather than fall back in silence (finding MAINT-01).
+		slog.Warn("invalid boolean config value; using default", "key", key, "value", v, "default", def)
+		return def
+	}
+	return b
 }

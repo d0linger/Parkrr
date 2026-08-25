@@ -17,6 +17,13 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
+# Serialize runs per ref: a newer push cancels an in-flight run, so a slower older
+# build can never overwrite a newer image tag, and superseded checks stop cleanly
+# instead of lingering to the timeout (finding H-10).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Read-only validation on pull requests: build the multi-arch image WITHOUT
   # pushing and without any write token, so the Dockerfile/build is exercised
@@ -50,17 +57,74 @@ jobs:
         with:
           context: .
           build-args: |
-            VERSION=${{ github.ref_name }}
+            VERSION=${{ github.sha }}
           platforms: linux/amd64,linux/arm64
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  # Quality gate for anything that will be PUBLISHED: the image is pushed only if
+  # the code vets, the full race-enabled test suite passes, and govulncheck finds
+  # no reachable vulnerability. Publishing used to run independently of CI, so a red
+  # commit could still replace latest/main (finding H-10). Mirrors ci.yml's gate so
+  # the publish path stands on its own, not on a parallel workflow.
+  gates:
+    name: Quality gate (vet + race tests + govulncheck)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: parkrr
+          POSTGRES_PASSWORD: parkrr
+          POSTGRES_DB: parkrr_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U parkrr"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PARKRR_TEST_DATABASE_URL: postgres://parkrr:parkrr@localhost:5432/parkrr_test?sslmode=disable&pool_max_conns=4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: "1.26.6"
+          cache: true
+
+      - name: Download & verify modules
+        run: |
+          go mod download
+          go mod verify
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (race)
+        run: go test -race ./...
+
+      - name: Run govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
   # Publish on branch/tag pushes and manual dispatch only. This is the ONLY job
-  # that holds packages:write, and it never runs for a pull_request.
+  # that holds packages:write, and it never runs for a pull_request. It publishes
+  # ONLY after the gate above is green, so a failing commit can't replace the image.
   publish:
     name: Build & Push (linux/amd64, linux/arm64)
     if: github.event_name != 'pull_request'
+    needs: gates
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -103,13 +167,16 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
+            # Immutable per-commit tag (sha-<full commit>) so a deployment can pin an
+            # exact commit / deploy by digest, and every image maps back to a commit.
+            type=sha,format=long
 
       - name: Build and push
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           build-args: |
-            VERSION=${{ github.ref_name }}
+            VERSION=${{ github.sha }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}

@@ -3,6 +3,13 @@
 # No local build needed:
 #   docker compose -f docker-compose.ghcr.yml up -d
 # Pin a release instead of latest via PARKRR_TAG (e.g. PARKRR_TAG=1.2).
+#
+# IMPORTANT: the `app` service below is kept byte-for-byte in sync with the
+# `app` service in docker-compose.yml — same environment, volumes, ports and
+# healthcheck, only `build:` swapped for the GHCR `image:`. This standalone shape
+# is required for the single-file paste flows (Portainer web editor). The CI test
+# TestGHCRComposeParity fails the build if the two drift apart (finding H-11):
+# it used to silently miss the backup key, S3, SMTP, /backups and the proxy CIDRs.
 services:
   db:
     image: postgres:16-alpine
@@ -51,6 +58,9 @@ services:
       PARKRR_SESSION_ABSOLUTE_MAX_AGE: ${PARKRR_SESSION_ABSOLUTE_MAX_AGE:-7776000}
       PARKRR_SECURE_COOKIES: ${PARKRR_SECURE_COOKIES:-true}
       PARKRR_TRUSTED_PROXY: ${PARKRR_TRUSTED_PROXY:-false}
+      # Required when PARKRR_TRUSTED_PROXY=true: the reverse-proxy IP range(s) whose
+      # forwarded headers are trusted. Without it the app refuses to start (H-06).
+      PARKRR_TRUSTED_PROXY_CIDRS: ${PARKRR_TRUSTED_PROXY_CIDRS:-}
       PARKRR_CHECK_BREACHED_PASSWORDS: ${PARKRR_CHECK_BREACHED_PASSWORDS:-true}
       # --- Passkeys (WebAuthn): set RP_ID + ORIGINS to enable ---
       PARKRR_WEBAUTHN_RP_ID: ${PARKRR_WEBAUTHN_RP_ID:-}
@@ -60,9 +70,34 @@ services:
       PARKRR_RATE_LIMIT_PER_MIN: ${PARKRR_RATE_LIMIT_PER_MIN:-600}
       PARKRR_AUDIT_RETENTION_DAYS: ${PARKRR_AUDIT_RETENTION_DAYS:-2555}
       PARKRR_AUDIT_RETENTION_SHORT_DAYS: ${PARKRR_AUDIT_RETENTION_SHORT_DAYS:-365}
+      # Encrypted backups. Set PARKRR_BACKUP_KEY to enable them (on-demand download
+      # + scheduled). Scheduled backups default to the /backups volume below, which
+      # lives next to the DB volume — convenient, but a copy beside the database it
+      # protects is not an off-site backup: also configure S3 for 3-2-1. The
+      # schedule (cron) and retention are edited in the Backup tab, not via env.
+      PARKRR_BACKUP_KEY: ${PARKRR_BACKUP_KEY:-}
+      PARKRR_BACKUP_DIR: ${PARKRR_BACKUP_DIR:-/backups}
+      # Optional off-site S3-compatible target (AWS S3 / Backblaze B2 / Wasabi / MinIO).
+      PARKRR_S3_ENDPOINT: ${PARKRR_S3_ENDPOINT:-}
+      PARKRR_S3_BUCKET: ${PARKRR_S3_BUCKET:-}
+      PARKRR_S3_ACCESS_KEY: ${PARKRR_S3_ACCESS_KEY:-}
+      PARKRR_S3_SECRET_KEY: ${PARKRR_S3_SECRET_KEY:-}
+      PARKRR_S3_REGION: ${PARKRR_S3_REGION:-}
+      PARKRR_S3_PREFIX: ${PARKRR_S3_PREFIX:-parkrr/}
+      PARKRR_S3_USE_SSL: ${PARKRR_S3_USE_SSL:-true}
       PARKRR_METRICS_TOKEN: ${PARKRR_METRICS_TOKEN:-}
       # true = /metrics is disabled unless a token is set (fail closed); default off.
       PARKRR_METRICS_REQUIRE_AUTH: ${PARKRR_METRICS_REQUIRE_AUTH:-false}
+      # --- E-mail (SMTP): set PARKRR_SMTP_HOST to enable payment reminders. ---
+      PARKRR_SMTP_HOST: ${PARKRR_SMTP_HOST:-}
+      PARKRR_SMTP_PORT: ${PARKRR_SMTP_PORT:-587}
+      PARKRR_SMTP_USERNAME: ${PARKRR_SMTP_USERNAME:-}
+      PARKRR_SMTP_PASSWORD: ${PARKRR_SMTP_PASSWORD:-}
+      PARKRR_SMTP_FROM: ${PARKRR_SMTP_FROM:-}
+      PARKRR_SMTP_FROM_NAME: ${PARKRR_SMTP_FROM_NAME:-Parkrr}
+      PARKRR_SMTP_TLS: ${PARKRR_SMTP_TLS:-starttls}
+      # Externally reachable base URL, used for links inside e-mail (e.g. reminders).
+      PARKRR_PUBLIC_BASE_URL: ${PARKRR_PUBLIC_BASE_URL:-}
       PARKRR_LOG_FORMAT: ${PARKRR_LOG_FORMAT:-json}
       PARKRR_LOG_LEVEL: ${PARKRR_LOG_LEVEL:-info}
     healthcheck:
@@ -73,11 +108,15 @@ services:
       start_period: 20s
     ports:
       - "${PARKRR_HTTP_PORT:-8080}:8080"
+    # Scheduled encrypted backups land here, in a named volume next to the DB's.
+    volumes:
+      - parkrr-backups:/backups
     networks:
       - parkrr-net
 
 volumes:
   parkrr-db-data:
+  parkrr-backups:
 
 networks:
   parkrr-net:

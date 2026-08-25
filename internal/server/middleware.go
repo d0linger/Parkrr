@@ -54,6 +54,8 @@ func requestLogger(mgr *auth.Manager, next http.Handler) http.Handler {
 
 		attrs := []any{
 			"id", id,
+			// Portal tokens are no longer carried in the URL path (they moved to the
+			// Authorization header, finding SEC-01), so the raw path is safe to log.
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rec.status,
