@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"image"
+	"image/color"
 	"image/jpeg"
 	"image/png"
 	"io"
@@ -185,7 +186,14 @@ func sanitizeImage(raw []byte) ([]byte, string, error) {
 	// re-encode output/encoder. Shed load (rather than queue) when the budget is
 	// exhausted, so concurrent uploads can never overrun the container's memory limit
 	// (finding H-08).
-	weight := int64(cfg.Width)*int64(cfg.Height)*4 + int64(len(raw)) + (16 << 20)
+	// Bit-depth-aware: a 16-bit PNG decodes to RGBA64 (8 bytes/pixel), not 4, so a
+	// naive x4 weight would under-reserve and could still OOM. A large 16-bit image
+	// then exceeds decodeBudgetBytes and is shed rather than decoded (finding H-08).
+	bytesPerPixel := int64(4)
+	if cfg.ColorModel == color.RGBA64Model || cfg.ColorModel == color.NRGBA64Model {
+		bytesPerPixel = 8
+	}
+	weight := int64(cfg.Width)*int64(cfg.Height)*bytesPerPixel + int64(len(raw)) + (16 << 20)
 	if !decodeBudget.TryAcquire(weight) {
 		return nil, "", errDecodeBusy
 	}

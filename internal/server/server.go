@@ -532,7 +532,9 @@ func securityHeaders(authMgr *auth.Manager, next http.Handler) http.Handler {
 		h.Set("Cross-Origin-Resource-Policy", "same-origin")
 		h.Set("Permissions-Policy",
 			"geolocation=(), camera=(), microphone=(), payment=(), usb=(), interest-cohort=()")
-		csp := "default-src 'self'; img-src 'self' data:; style-src 'self'; " +
+		// blob: for object URLs the SPA builds itself (e.g. the portal pay-QR fetched
+		// with an auth header and shown via URL.createObjectURL) — same-origin, local.
+		csp := "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; " +
 			"script-src 'self'; connect-src 'self'; manifest-src 'self'; " +
 			"base-uri 'self'; form-action 'self'; frame-ancestors 'none'; " +
 			"object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'self'"

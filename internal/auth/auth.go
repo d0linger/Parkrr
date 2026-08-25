@@ -118,9 +118,9 @@ func (m *Manager) SetTrustedProxyCIDRs(cidrs []string) error {
 }
 
 // peerIsTrustedProxy reports whether the request's DIRECT peer (RemoteAddr) may
-// have its forwarded headers honored. With no CIDR allowlist configured this
-// keeps the legacy behavior (any peer), so a direct-to-backend client can still
-// spoof headers unless the operator also configures TrustedProxyCIDRs.
+// have its forwarded headers honored. With NO CIDR allowlist configured it trusts
+// no peer (fail-closed, H-06), so a direct-to-backend client cannot spoof forwarded
+// headers; only peers inside TrustedProxyCIDRs are honored.
 func (m *Manager) peerIsTrustedProxy(r *http.Request) bool {
 	// Fail closed: with no CIDR allowlist, trust NO direct peer — so forwarded headers
 	// from a client with direct backend access cannot spoof the client IP (finding

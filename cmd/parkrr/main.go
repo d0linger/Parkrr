@@ -129,7 +129,7 @@ func run() error {
 		return errors.New("PARKRR_TRUSTED_PROXY=true requires PARKRR_TRUSTED_PROXY_CIDRS " +
 			"(the reverse-proxy IP range); without it forwarded client IPs would be trusted " +
 			"from any direct peer. Set the CIDR allowlist, or set PARKRR_TRUSTED_PROXY=false " +
-			"when the backend is reached directly.")
+			"when the backend is reached directly")
 	}
 
 	// Bootstrap/refresh the admin account from environment variables.

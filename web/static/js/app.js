@@ -7901,9 +7901,12 @@
         return as === 'json' ? res.json() : res.blob();
     }
     async function portalOpenPdf(token, id) {
-        // Open the tab synchronously (inside the click) so it isn't popup-blocked,
-        // then point it at the fetched blob once it arrives.
-        const win = window.open('', '_blank', 'noopener');
+        // Open the tab synchronously (inside the click) so it isn't popup-blocked, then
+        // point it at the fetched blob. window.open(..., 'noopener') returns null (so the
+        // handle would be unusable) — open without it and sever opener manually to keep
+        // the new tab isolated.
+        const win = window.open('', '_blank');
+        if (win) win.opener = null;
         try {
             const url = URL.createObjectURL(await portalFetch(token, '/invoices/' + id + '/pdf', 'blob'));
             if (win) win.location = url; else window.open(url, '_blank', 'noopener');
