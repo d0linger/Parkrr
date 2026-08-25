@@ -93,6 +93,22 @@ func TestPasswordLengthPolicy(t *testing.T) {
 			t.Errorf("TOTPRegenerateBackup with %d-byte password: expected 403, got %d", len(long), rec.Code)
 		}
 	}
+
+	// requireStepUp (used by PasskeyRegisterBegin and TOTPEnable) rejects an
+	// over-long password with 403 up front even if the session step-up window is active.
+	{
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/passkeys/register/begin",
+			strings.NewReader(`{"password":"`+long+`"}`))
+		ctx := auth.ContextWithUser(context.Background(), &models.User{Username: "testuser"})
+		req = req.WithContext(ctx)
+		if ok := ah.requireStepUp(rec, req, "testuser", long); ok {
+			t.Errorf("requireStepUp with %d-byte password: expected false, got true", len(long))
+		}
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("requireStepUp with %d-byte password: expected 403, got %d", len(long), rec.Code)
+		}
+	}
 }
 
 // Usernames are capped at 100 bytes; over-long ones are rejected before any
