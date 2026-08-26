@@ -34,7 +34,12 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # dedicated non-root user.
 FROM alpine:3.24
 
-RUN apk add --no-cache postgresql16-client ca-certificates tzdata \
+# `apk upgrade` first: `apk add` never lifts an already-satisfied base-image
+# package, so libcrypto3/libssl3, busybox etc. would otherwise stay on the
+# base tag's (older) -rN even when the repo has a patched build. Upgrading all
+# base packages before adding the extras keeps the runtime image patch-fresh.
+RUN apk upgrade --no-cache \
+    && apk add --no-cache postgresql16-client ca-certificates tzdata \
     && adduser -D -H -u 10001 parkrr \
     # Default backup directory, owned by the app user so a named volume mounted
     # here (docker-compose) inherits writable ownership for the non-root process.
