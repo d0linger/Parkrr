@@ -47,6 +47,9 @@ per vehicle — monthly or yearly, prorated to the day.
 </tr>
 </table>
 
+<p align="center"><b>Garagenplaner (Stellplatzverwaltung)</b> — a to-scale floor plan per hall, vehicles placed on their spots</p>
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/06-planner-dark.png"><img alt="Garagenplaner: to-scale hall floor plan with vehicles placed on their spots" src="docs/screenshots/06-planner.png" width="760"></picture></p>
+
 ---
 
 ## ✨ Features
@@ -59,8 +62,15 @@ per vehicle — monthly or yearly, prorated to the day.
   plate, price **and photos**) with a new start date.
 - **Lifecycle & reservations** — status history (who/when/note); the end date is
   set automatically on collection.
+- **Garagenplaner (Stellplatzverwaltung)** — a to-scale floor-plan editor per
+  hall: draw walls, mark exclusion zones and place/rotate each vehicle on its
+  spot, with live fit checks (footprint inside the hall, height ≤ door, weight ≤
+  floor load) and a colour-coded occupancy bar. Import a **DXF or image** as a
+  plan underlay. Structured as garages → halls → spots.
 - **Photos** — per vehicle (JPEG/PNG), validated and re-encoded on upload
   (EXIF/GPS stripped), gallery with lightbox.
+- **Handover protocols (Übergabeprotokoll)** — record the condition and a **drawn
+  signature** on check-in and on collection; download each protocol as a PDF.
 - **Central tariffs** — vehicle types with default prices, **overridable per
   vehicle** (special price); monthly/yearly price optionally **coupled**
   (year = month × 12, one field fills the other automatically).
@@ -70,9 +80,19 @@ per vehicle — monthly or yearly, prorated to the day.
   (open/paid); the vehicles then show as "covered by the flat rate".
 - **Cost tracking** — day-accurate costs from the start date to the collection
   date (or to today).
-- **Extra charges** — electricity, cleaning, winter service … from a service catalog.
+- **Extra & recurring charges** — one-off items (cleaning, winter service …) from
+  a service catalog, plus **recurring** charges (e.g. monthly electricity) that
+  bill automatically per completed period.
+- **Invoicing (Rechnungen)** — issue period invoices (Austrian **BAO**-compliant,
+  immutable once issued — corrections are reversals, not silent edits), download
+  as **PDF**, attach a **payment QR code**, send **reminders**, and track overdue.
+- **Payments & credit (Guthaben)** — record a payment, auto-allocate it across the
+  open items, and carry any remainder forward as credit; reversing a payment
+  re-opens exactly what it had covered.
 - **Statistics & charts** — revenue/month, status distribution, paid/open, and
   cost per person by month and year (local SVG charts).
+- **CSV import & export** — bulk-import people from a CSV (with a downloadable
+  example template), and export lists (people, vehicles, invoices, occupancy …) as CSV.
 - **Fuzzy search** — one server-side command palette across people, vehicles,
   invoices, garages, halls, tariffs and services: German stemming,
   diacritics-folded (finds *Müller* for `muller`) and typo-tolerant.
@@ -350,6 +370,9 @@ demoted or deleted.
 - Hardened HTTP headers: **CSP**, **HSTS** (behind TLS), `Permissions-Policy`,
   COOP/CORP; session cookies `HttpOnly` + `SameSite`.
 - **Session management** — view active devices, sign out individually or "everywhere".
+- **Privacy (DSGVO/GDPR)** — **anonymise** a person who can't be deleted (their
+  invoices must stay for tax law): the master record is cleared and their portal
+  links revoked, while the receipts remain intact.
 - **Audit log** of every change; structured logs (slog, JSON/text) with a
   request ID **and the signed-in user** per access. Login/logout and failed
   attempts are logged with user, IP and reason.
