@@ -287,10 +287,10 @@ func TestInputLengthValidation(t *testing.T) {
 			errMsg:     "note is too long",
 		},
 		{
-			name:       "CreateHandover: SignerName too long",
-			path:       "/api/vehicles/1/handovers",
-			method:     "POST",
-			body:       struct {
+			name:   "CreateHandover: SignerName too long",
+			path:   "/api/vehicles/1/handovers",
+			method: "POST",
+			body: struct {
 				Direction  string `json:"direction"`
 				SignerName string `json:"signer_name"`
 			}{Direction: "einlagerung", SignerName: longName},
