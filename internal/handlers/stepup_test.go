@@ -68,6 +68,15 @@ func TestRequireStepUp(t *testing.T) {
 		t.Errorf("recent session should pass step-up without a password (got %d)", w.Code)
 	}
 
+	// Recent login with over-long password: must be rejected with 403 up front.
+	wOverlongRecent := httptest.NewRecorder()
+	if ah.requireStepUp(wOverlongRecent, reqWithSession(), uname, strings.Repeat("a", maxPasswordLen+1)) {
+		t.Error("recent session with over-long password must NOT pass step-up")
+	}
+	if wOverlongRecent.Code != http.StatusForbidden {
+		t.Errorf("want 403 for over-long password on recent session, got %d", wOverlongRecent.Code)
+	}
+
 	// Backdate the session so the recent-auth window has closed.
 	if _, err := h.Pool.Exec(ctx,
 		`UPDATE sessions SET created_at = now() - interval '1 hour' WHERE user_id = $1`, uid); err != nil {

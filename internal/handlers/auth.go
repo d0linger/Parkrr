@@ -151,15 +151,15 @@ const stepUpWindow = 10 * time.Minute
 // retry with the password; a wrong password is throttled like a login failure.
 // Returns false (and writes the response) when the caller must stop.
 func (h *AuthHandler) requireStepUp(w http.ResponseWriter, r *http.Request, username, password string) bool {
+	if len(password) > maxPasswordLen {
+		writeError(w, http.StatusForbidden, "Passwort ist falsch")
+		return false
+	}
 	if t, ok := h.Auth.SessionCreatedAt(r.Context(), r); ok && time.Since(t) < stepUpWindow {
 		return true
 	}
 	if password == "" {
 		writeError(w, http.StatusForbidden, "reauth_required")
-		return false
-	}
-	if len(password) > maxPasswordLen {
-		writeError(w, http.StatusForbidden, "Passwort ist falsch")
 		return false
 	}
 	key, ip, ok := h.checkRateLimit(w, r, username)
