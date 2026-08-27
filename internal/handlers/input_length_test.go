@@ -286,6 +286,17 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "note is too long",
 		},
+		{
+			name:       "CreateHandover: SignerName too long",
+			path:       "/api/vehicles/1/handovers",
+			method:     "POST",
+			body:       struct {
+				Direction  string `json:"direction"`
+				SignerName string `json:"signer_name"`
+			}{Direction: "einlagerung", SignerName: longName},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "Name zu lang",
+		},
 	}
 
 	for _, tt := range tests {
@@ -337,6 +348,9 @@ func TestInputLengthValidation(t *testing.T) {
 			case "CreateInvoice: Note too long":
 				req.SetPathValue("id", "1")
 				h.CreateInvoice(w, req)
+			case "CreateHandover: SignerName too long":
+				req.SetPathValue("id", "1")
+				h.CreateHandover(w, req)
 			}
 
 			if w.Code != tt.wantStatus {
