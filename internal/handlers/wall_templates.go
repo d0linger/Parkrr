@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -98,8 +97,8 @@ func (h *Handler) CreateWallTemplate(w http.ResponseWriter, r *http.Request) {
 
 // DeleteWallTemplate removes a template by id.
 func (h *Handler) DeleteWallTemplate(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
+	id, ok := pathID(r)
+	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
