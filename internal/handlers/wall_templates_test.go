@@ -32,3 +32,18 @@ func TestWallTemplateCreateOK(t *testing.T) {
 		t.Fatalf("valid template should be 201 Created, got %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestWallTemplateDeleteInvalidID verifies that DeleteWallTemplate rejects invalid or non-positive IDs.
+func TestWallTemplateDeleteInvalidID(t *testing.T) {
+	h := testHandler(t)
+	invalidIDs := []string{"0", "-1", "abc"}
+	for _, id := range invalidIDs {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodDelete, "/api/wall-templates/"+id, nil)
+		req.SetPathValue("id", id)
+		h.DeleteWallTemplate(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("expected 400 Bad Request for id %q, got %d", id, rec.Code)
+		}
+	}
+}
