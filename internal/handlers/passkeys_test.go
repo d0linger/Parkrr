@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/preining/parkrr/internal/auth"
+	"github.com/preining/parkrr/internal/models"
 )
 
 // TestPasskeyLoginThrottle verifies the usernameless passkey login throttle
@@ -91,6 +93,35 @@ func TestPasskeyRegisterBegin_NameLength(t *testing.T) {
 	}
 	if resp["error"] != "name is too long" {
 		t.Errorf("got error %q, want %q", resp["error"], "name is too long")
+	}
+}
+
+func TestPasskeyRegisterBegin_PasswordLength(t *testing.T) {
+	wa, err := auth.NewWebAuthnService(nil, "example.com", "Example", []string{"https://example.com"})
+	if err != nil {
+		t.Fatalf("failed to create webauthn service: %v", err)
+	}
+
+	ah := &AuthHandler{
+		Handler:  &Handler{},
+		Auth:     &auth.Manager{},
+		WebAuthn: wa,
+	}
+
+	body := map[string]string{
+		"name":     "My Key",
+		"password": strings.Repeat("a", maxPasswordLen+1),
+	}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/passkeys/register/begin", bytes.NewReader(b))
+	ctx := auth.ContextWithUser(context.Background(), &models.User{ID: 1, Username: "testuser"})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	ah.PasskeyRegisterBegin(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("got status %d, want %d", w.Code, http.StatusForbidden)
 	}
 }
 
