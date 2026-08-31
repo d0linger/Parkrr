@@ -30,9 +30,24 @@
         for (const [k, v] of Object.entries(attrs)) {
             if (k === 'class') node.className = v;
             else if (k === 'html') node.innerHTML = v;
-            // Apply styles via the CSSOM (not a style="" attribute) so they are
-            // not blocked by the strict `style-src 'self'` CSP.
-            else if (k === 'style') node.style.cssText = v;
+            // Apply styles property-by-property via the CSSOM. Setting `style.cssText`
+            // (like a style="" attribute) counts as applying an inline style and IS
+            // blocked by the strict `style-src 'self'` CSP; individual setProperty
+            // writes are not. Declarations are simple "prop:value" pairs (no url()/
+            // data: values carry an inner ';'), so a split on ';' is safe.
+            else if (k === 'style') {
+                for (const decl of String(v).split(';')) {
+                    const c = decl.indexOf(':');
+                    if (c < 0) continue;
+                    const prop = decl.slice(0, c).trim();
+                    if (!prop) continue;
+                    let val = decl.slice(c + 1).trim();
+                    let prio = '';
+                    const bang = val.toLowerCase().indexOf('!important');
+                    if (bang >= 0) { prio = 'important'; val = val.slice(0, bang).trim(); }
+                    node.style.setProperty(prop, val, prio);
+                }
+            }
             else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2), v);
             else if (v === true) node.setAttribute(k, '');
             else if (v !== false && v != null) node.setAttribute(k, v);
@@ -580,13 +595,18 @@
           </defs>
           <g>${grid}</g>
           ${area ? `<path d="${area}" fill="url(#af-${id})"/>` : ''}
-          ${line ? `<path class="c-line" style="stroke:url(#as-${id})" d="${line}"/>` : ''}
+          ${line ? `<path class="c-line" d="${line}"/>` : ''}
           <g>${lab}</g>
           <line class="c-cross" y1="${pt}" y2="${H - pb}"/>
           <circle class="c-focus" r="4"/>
           ${endMark}
           <rect class="c-overlay" x="0" y="0" width="${W}" height="${H}" fill="transparent"/></svg>`;
         const svg = box.querySelector('svg'), cross = box.querySelector('.c-cross'), focus = box.querySelector('.c-focus');
+        // Gradient stroke via the CSSOM: an inline style="stroke:url(...)" attribute in
+        // the SVG markup is blocked by the strict `style-src 'self'` CSP, but a per-
+        // property write is not — and it still overrides the flat --primary from CSS.
+        const cLine = box.querySelector('.c-line');
+        if (cLine) cLine.style.stroke = `url(#as-${id})`;
         const tip = chartTip(box, svg, W, H);
         if (hi >= 0 && !REDUCE_MOTION()) {
             const el2 = box.querySelector('.c-line');
