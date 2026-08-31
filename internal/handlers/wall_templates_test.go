@@ -32,3 +32,19 @@ func TestWallTemplateCreateOK(t *testing.T) {
 		t.Fatalf("valid template should be 201 Created, got %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestDeleteWallTemplateRejectsBadID: DeleteWallTemplate parses the path id via pathID,
+// so a zero, negative, or non-numeric id is a clean 400 before any DB work, matching the
+// other {id} endpoints (PR #140/#141).
+func TestDeleteWallTemplateRejectsBadID(t *testing.T) {
+	h := testHandler(t)
+	for _, bad := range []string{"0", "-1", "abc"} {
+		req := httptest.NewRequest(http.MethodDelete, "/api/wall-templates/"+bad, nil)
+		req.SetPathValue("id", bad)
+		rec := httptest.NewRecorder()
+		h.DeleteWallTemplate(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("delete wall-template with id %q: got %d, want 400", bad, rec.Code)
+		}
+	}
+}
