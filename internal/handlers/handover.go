@@ -101,7 +101,7 @@ func (h *Handler) CreateHandover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	signerName := trim(req.SignerName)
-	if len(signerName) > 200 {
+	if !validNameLength(signerName) {
 		writeError(w, http.StatusBadRequest, "Name zu lang")
 		return
 	}

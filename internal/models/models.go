@@ -342,11 +342,16 @@ func (a *FlatRatePeriod) ElapsedPeriodsDetailed(asOf time.Time) []OpenPeriod {
 			Key:   key,
 			Start: s,
 			Cost:  float64(fractionCents(cents, days(s, e), days(pStart, pEnd))) / 100,
-			// Complete (billable) when the period's end is reached under the SAME
-			// whole-day cutoff accrual uses (DayAfter): on a period's last calendar
-			// day the balance already owes it in full, so it becomes invoiceable that
-			// day instead of lagging to the next — aligning owed with billable (S2).
-			Complete: !end.After(DayAfter(asOf)),
+			// Complete (billable) only once the period has FULLY elapsed: its
+			// exclusive end must fall strictly before the day-after-today cutoff, so
+			// the running period is deferred even on its own last calendar day and
+			// becomes billable when the next period begins. The accrued balance still
+			// owes the running month in full; only the invoice defers it. This matches
+			// the "running period deferred" design and the period-lock tests. (An
+			// earlier `!end.After(DayAfter(asOf))` billed a period on its last day, so
+			// on a month's final day, e.g. 2026-08-31, the running month was
+			// double-counted into the invoice.)
+			Complete: end.Before(DayAfter(asOf)),
 		})
 	})
 	return out
