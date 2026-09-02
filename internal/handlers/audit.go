@@ -18,15 +18,24 @@ func (h *Handler) ListAudit(w http.ResponseWriter, r *http.Request) {
 	var where []string
 	var args []any
 	if q := trim(r.URL.Query().Get("q")); q != "" {
+		if !validSearchQueryLength(q) {
+			q = q[:maxSearchQueryLen]
+		}
 		args = append(args, "%"+q+"%")
 		n := len(args)
 		where = append(where, fmt.Sprintf("(username ILIKE $%d OR summary ILIKE $%d)", n, n))
 	}
 	if a := trim(r.URL.Query().Get("action")); a != "" {
+		if !validNameLength(a) {
+			a = a[:maxNameLen]
+		}
 		args = append(args, a)
 		where = append(where, fmt.Sprintf("action = $%d", len(args)))
 	}
 	if e := trim(r.URL.Query().Get("entity")); e != "" {
+		if !validNameLength(e) {
+			e = e[:maxNameLen]
+		}
 		args = append(args, e)
 		where = append(where, fmt.Sprintf("entity = $%d", len(args)))
 	}

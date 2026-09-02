@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -39,5 +40,14 @@ func TestListAuditDateFilter(t *testing.T) {
 	}
 	if n := len(get("from=not-a-date")); n == 0 {
 		t.Error("a malformed 'from' must be ignored (no filter), still returning entries")
+	}
+
+	// Over-long query parameters must be safely capped and not cause errors.
+	longQ := "q=" + strings.Repeat("a", maxSearchQueryLen+100)
+	req := httptest.NewRequest(http.MethodGet, "/api/audit?"+longQ, nil)
+	w := httptest.NewRecorder()
+	h.ListAudit(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for over-long search query parameter, got %d", w.Code)
 	}
 }

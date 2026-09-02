@@ -66,6 +66,11 @@ func TestLengthPredicates(t *testing.T) {
 		{"backup key short", validBackupKeyLength, "my-secret-key", true},
 		{"backup key max", validBackupKeyLength, rep(maxBackupKeyLen), true},
 		{"backup key max+1", validBackupKeyLength, rep(maxBackupKeyLen + 1), false},
+
+		// search query: 0..maxSearchQueryLen
+		{"search query empty", validSearchQueryLength, "", true},
+		{"search query max", validSearchQueryLength, rep(maxSearchQueryLen), true},
+		{"search query max+1", validSearchQueryLength, rep(maxSearchQueryLen + 1), false},
 	}
 	for _, tc := range cases {
 		if got := tc.fn(tc.in); got != tc.want {
