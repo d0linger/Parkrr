@@ -27,10 +27,10 @@ const (
 	// Date strings are YYYY-MM-DD (10 chars); 20 leaves headroom while capping an
 	// over-long payload before time.Parse. Cron/backup-key caps bound cron parsing
 	// and key-derivation input — defense-in-depth behind the request body limit.
-	maxDateLen         = 20
-	maxCronLen         = 100
-	maxBackupKeyLen    = 100
-	maxSearchQueryLen  = 500
+	maxDateLen        = 20
+	maxCronLen        = 100
+	maxBackupKeyLen   = 100
+	maxSearchQueryLen = 500
 	// maxGeometryLen caps the opaque planner geometry JSON stored per hall/spot.
 	// The request body is already bounded to 1 MiB by decodeJSON; this keeps a
 	// single geometry blob well under that and bounds stored row size.
