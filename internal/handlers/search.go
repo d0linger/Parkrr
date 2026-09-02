@@ -184,7 +184,12 @@ func dotJoin(parts ...string) string {
 
 // Search beantwortet GET /api/search?q= für die Befehlspalette.
 func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	rawQ := r.URL.Query().Get("q")
+	if !validSearchQueryLength(rawQ) {
+		writeError(w, http.StatusBadRequest, "search query is too long")
+		return
+	}
+	q := strings.TrimSpace(rawQ)
 	if utf8.RuneCountInString(q) < searchMinRunes {
 		writeJSON(w, http.StatusOK, []searchResult{})
 		return

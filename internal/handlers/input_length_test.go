@@ -21,6 +21,7 @@ func TestInputLengthValidation(t *testing.T) {
 	longAddress := strings.Repeat("e", maxAddressLen+1)
 	longCron := strings.Repeat("*", maxCronLen+1)
 	longDate := strings.Repeat("2", maxDateLen+1)
+	longSearchQuery := strings.Repeat("s", maxSearchQueryLen+1)
 
 	tests := []struct {
 		name       string
@@ -286,6 +287,14 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "note is too long",
 		},
+		{
+			name:       "Search: Query too long",
+			path:       "/api/search?q=" + longSearchQuery,
+			method:     "GET",
+			body:       nil,
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "search query is too long",
+		},
 	}
 
 	for _, tt := range tests {
@@ -337,6 +346,8 @@ func TestInputLengthValidation(t *testing.T) {
 			case "CreateInvoice: Note too long":
 				req.SetPathValue("id", "1")
 				h.CreateInvoice(w, req)
+			case "Search: Query too long":
+				h.Search(w, req)
 			}
 
 			if w.Code != tt.wantStatus {
