@@ -155,6 +155,9 @@ func (h *AuthHandler) PasskeyRegisterBegin(w http.ResponseWriter, r *http.Reques
 	if !h.requireStepUp(w, r, u.Username, body.Password) {
 		return
 	}
+	if _, _, ok := h.checkRateLimit(w, r, u.Username); !ok {
+		return
+	}
 
 	opts, sd, err := h.WebAuthn.BeginRegistration(r.Context(), u)
 	if err != nil {

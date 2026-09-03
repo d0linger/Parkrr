@@ -37,3 +37,8 @@
 *Vulnerability:* `PasskeyRegisterFinish` recorded failed attestation verifications using `h.Limiter.RecordFailure(key)`, which only updated the per-IP `username|ip` rate limiter. An attacker rotating source IP addresses could bypass the throttle and attempt unlimited passkey registration verifications for an account.
 *Learning:* Post-authentication ceremonies that verify credentials or enrolment attestations (such as TOTP setup or Passkey registration) must record failures against both per-IP and per-account (`UserLimiter`) limiters.
 *Prevention:* Always use `recordReauthFailure` and `resetReauth` helpers on all secondary auth/re-auth/registration endpoints to ensure per-account limiters are updated across IP rotations.
+
+## 2026-07-18 - [Rate-Limiter Bypass on Passkey Registration Initiation via Step-Up Window]
+*Vulnerability:* `PasskeyRegisterBegin` relied solely on `requireStepUp` without explicitly invoking `checkRateLimit`. When an active session was recent (< 10 minutes), `requireStepUp` bypassed rate-limiter evaluation, allowing rate-limited or locked-out accounts to initiate passkey registration ceremonies and persist ceremony state.
+*Learning:* Helper functions like `requireStepUp` that shortcut authentication checks for recent sessions must not be treated as a complete substitute for explicit rate limiting on sensitive ceremony initiation endpoints.
+*Prevention:* Always invoke `checkRateLimit` explicitly on registration and authentication ceremony endpoints, even if `requireStepUp` is used for step-up authentication.
