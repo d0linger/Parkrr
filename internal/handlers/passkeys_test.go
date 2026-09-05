@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/preining/parkrr/internal/auth"
+	"github.com/preining/parkrr/internal/models"
 )
 
 // TestPasskeyLoginThrottle verifies the usernameless passkey login throttle
@@ -125,5 +126,43 @@ func TestPasskeyRegisterFinish_PerAccountRateLimit(t *testing.T) {
 	}
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected 429 from per-account throttle, got %d", rec.Code)
+	}
+}
+
+func TestPasskeyRegisterBegin_RateLimit(t *testing.T) {
+	wa, err := auth.NewWebAuthnService(nil, "example.com", "Example", []string{"https://example.com"})
+	if err != nil {
+		t.Fatalf("failed to create webauthn service: %v", err)
+	}
+
+	ah := &AuthHandler{
+		Handler:     &Handler{},
+		Auth:        &auth.Manager{},
+		WebAuthn:    wa,
+		Limiter:     auth.NewLoginLimiter(1, time.Minute, time.Minute),
+		IPLimiter:   auth.NewLoginLimiter(100, time.Minute, time.Minute),
+		UserLimiter: auth.NewStickyLoginLimiter(100, time.Minute, time.Minute),
+	}
+
+	u := &models.User{
+		ID:       1,
+		Username: "alice",
+	}
+
+	// Lock out user alice on Limiter
+	ah.Limiter.RecordFailure("alice|127.0.0.1")
+
+	body := map[string]string{"name": "My Passkey", "password": "secretpassword"}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/passkeys/register/begin", bytes.NewReader(b))
+	req.RemoteAddr = "127.0.0.1:12345"
+	ctx := auth.ContextWithUser(req.Context(), u)
+	req = req.WithContext(ctx)
+
+	rec := httptest.NewRecorder()
+	ah.PasskeyRegisterBegin(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("got status %d, want %d", rec.Code, http.StatusTooManyRequests)
 	}
 }
