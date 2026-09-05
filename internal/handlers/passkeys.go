@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-webauthn/webauthn/webauthn"
@@ -328,6 +329,9 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	h.Limiter.Reset(key)
+	if h.UserLimiter != nil {
+		h.UserLimiter.Reset(strings.ToLower(u.Username))
+	}
 	if err := h.Auth.CreateSession(r.Context(), w, r, uid); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create session")
 		return

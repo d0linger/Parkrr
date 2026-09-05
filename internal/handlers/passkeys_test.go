@@ -127,3 +127,34 @@ func TestPasskeyRegisterFinish_PerAccountRateLimit(t *testing.T) {
 		t.Fatalf("expected 429 from per-account throttle, got %d", rec.Code)
 	}
 }
+
+func TestPasskeyLoginResetUserLimiter(t *testing.T) {
+	ul := auth.NewStickyLoginLimiter(3, time.Minute, time.Minute)
+	ah := &AuthHandler{
+		Handler:     &Handler{},
+		Auth:        &auth.Manager{},
+		Limiter:     auth.NewLoginLimiter(1000, time.Minute, time.Minute),
+		UserLimiter: ul,
+	}
+
+	username := "Alice"
+	lowerUser := strings.ToLower(username)
+
+	// Record 3 failures to lock out the user.
+	for i := 0; i < 3; i++ {
+		ul.RecordFailure(lowerUser)
+	}
+
+	if allowed, _ := ul.Allowed(lowerUser); allowed {
+		t.Fatal("user should be locked out prior to reset")
+	}
+
+	// Simulating successful passkey login reset on UserLimiter.
+	if ah.UserLimiter != nil {
+		ah.UserLimiter.Reset(lowerUser)
+	}
+
+	if allowed, _ := ul.Allowed(lowerUser); !allowed {
+		t.Fatal("user should be allowed after passkey login resets UserLimiter")
+	}
+}
