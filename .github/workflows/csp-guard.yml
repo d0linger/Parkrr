@@ -1,0 +1,24 @@
+name: CSP Guard
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inline-style:
+    name: CSP inline-style guard (SPA)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # Fails the build if a CSP-forbidden inline style (cssText, setAttribute('style'),
+      # or a style="..." attribute in markup) reappears in the frontend JS. Keeps the
+      # strict `style-src 'self'` policy from being silently reintroduced.
+      - name: Guard against CSP-forbidden inline styles
+        run: bash scripts/csp-inline-style-check.sh
