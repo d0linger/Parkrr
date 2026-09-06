@@ -132,6 +132,12 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Benutzername ist erforderlich (höchstens 100 Zeichen)")
 		return
 	}
+	// Validate an optional password change up front, before any database
+	// work (an empty password means "keep the current one").
+	if req.Password != "" && !validPasswordLength(req.Password) {
+		writeError(w, http.StatusBadRequest, "Das Passwort muss zwischen 8 und 72 Zeichen lang sein (Umlaute und Sonderzeichen zählen doppelt)")
+		return
+	}
 	if !validEmailLength(req.Email) {
 		writeError(w, http.StatusBadRequest, "E-Mail ist zu lang")
 		return
@@ -142,13 +148,7 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate an optional password change up front, before any database
-	// work (an empty password means "keep the current one").
 	if req.Password != "" {
-		if !validPasswordLength(req.Password) {
-			writeError(w, http.StatusBadRequest, "Das Passwort muss zwischen 8 und 72 Zeichen lang sein (Umlaute und Sonderzeichen zählen doppelt)")
-			return
-		}
 		if h.rejectBreachedPassword(w, r, req.Password) {
 			return
 		}

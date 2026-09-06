@@ -111,10 +111,18 @@ func TestInputLengthValidation(t *testing.T) {
 			errMsg:     "E-Mail ist zu lang",
 		},
 		{
+			name:       "UpdateUser: Password too long",
+			path:       "/api/users/1",
+			method:     "PUT",
+			body:       userRequest{Username: "testuser", Password: strings.Repeat("p", maxPasswordLen+1)},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "Das Passwort muss zwischen 8 und 72 Zeichen lang sein",
+		},
+		{
 			name:       "UpdateUser: Email too long",
 			path:       "/api/users/1",
 			method:     "PUT",
-			body:       userRequest{Username: "testuser", Email: longEmail},
+			body:       userRequest{Username: "testuser", Password: "validPassword123", Email: longEmail},
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "E-Mail ist zu lang",
 		},
@@ -305,7 +313,7 @@ func TestInputLengthValidation(t *testing.T) {
 				h.CreateCharge(w, req)
 			case "CreateUser: Email too long":
 				h.CreateUser(w, req)
-			case "UpdateUser: Email too long":
+			case "UpdateUser: Password too long", "UpdateUser: Email too long":
 				req.SetPathValue("id", "1")
 				h.UpdateUser(w, req)
 			case "CreateAgreement: NewVehicles Label too long", "CreateAgreement: NewVehicles LicensePlate too long", "CreateAgreement: EditVehicles Label too long", "CreateAgreement: EditVehicles LicensePlate too long":
