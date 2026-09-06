@@ -19,22 +19,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      # Official install script (latest). Kept a script rather than a SHA-pinned action
-      # so the workflow does not break on an unverified pin; swap for
-      # aquasecurity/trivy-action@<sha> to match the repo's action-pinning discipline.
-      - name: Install Trivy
-        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b "$RUNNER_TEMP/bin"
-      # Report-only (exit-code 0): govulncheck already GATES Go vulnerabilities with
-      # reachability analysis, so trivy's match-based vuln hits (which flag even
-      # unreachable CVEs) must not block CI. Trivy's added value here is Dockerfile/
-      # Compose misconfig and secret detection, surfaced for review. To turn it into a
-      # gate later, set --exit-code 1 (ideally scoped to --scanners misconfig,secret).
+      # Versioned action from the Trivy publisher (no `curl | sh` from a mutable branch).
+      # Dependabot (github-actions ecosystem) keeps this pinned/updated to match the
+      # repo's action-pinning discipline. Report-only (exit-code 0): govulncheck already
+      # GATES Go vulnerabilities with reachability analysis, so trivy's match-based vuln
+      # hits (which flag even unreachable CVEs) must not block CI. Trivy's added value
+      # here is Dockerfile/Compose misconfig + secret detection, surfaced for review.
+      # To make it a gate later, set exit-code '1' (ideally scoped to misconfig,secret).
       - name: Trivy filesystem scan (report-only)
-        run: |
-          "$RUNNER_TEMP/bin/trivy" fs \
-            --scanners vuln,misconfig,secret \
-            --severity HIGH,CRITICAL \
-            --ignore-unfixed \
-            --exit-code 0 \
-            --no-progress \
-            --format table .
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '0'
+          format: table

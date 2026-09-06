@@ -1,0 +1,9 @@
+/* Print stylesheet for the Garagenplaner PDF/print popup (exportPlanPDF).
+   Loaded as an EXTERNAL same-origin stylesheet so it complies with the app's
+   strict `style-src 'self'` CSP, which the popup inherits from its opener — an
+   inline <style> block or style="" attribute would be blocked there. */
+@page { margin: 12mm; }
+html, body { margin: 0; }
+svg { width: 100%; height: auto; }
+.hint { font: 13px system-ui; padding: 8px; color: #555; }
+@media print { .hint { display: none; } }

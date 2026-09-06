@@ -5199,7 +5199,10 @@
         function exportPlanPDF() { const ex = planExportSVG(); if (!ex) { toast('Nichts zu exportieren', 'warn'); return; } const w = window.open('', '_blank'); if (!w) { toast('Popup blockiert — bitte erlauben', 'warn'); return; }
             // No inline <script> in the popup — the opener's CSP (script-src 'self') would block it.
             // We drive print/close from here after the document is written.
-            w.document.write('<!doctype html><meta charset="utf-8"><title>Grundriss</title><style>@page{margin:12mm}html,body{margin:0}svg{width:100%;height:auto}@media print{.hint{display:none}}</style><div class="hint" style="font:13px system-ui;padding:8px;color:#555">Drucken-Dialog → „Als PDF speichern".</div>' + ex.svg); // csp-allow-inline-style: separate print-popup document, not the app CSP context
+            // The popup inherits the app's strict `style-src 'self'` CSP, so it styles
+            // itself from an EXTERNAL same-origin stylesheet (an inline <style>/style=
+            // would be blocked). location.origin is the opener's, which the popup shares.
+            w.document.write('<!doctype html><meta charset="utf-8"><title>Grundriss</title><link rel="stylesheet" href="' + location.origin + '/css/print.css"><div class="hint">Drucken-Dialog → „Als PDF speichern".</div>' + ex.svg);
             w.document.close();
             try { w.onafterprint = () => { try { w.close(); } catch (e) { /* ignore */ } }; } catch (e) { /* ignore */ }
             setTimeout(() => { try { w.focus(); w.print(); } catch (e) { /* ignore */ } }, 300); }
