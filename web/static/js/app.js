@@ -31,7 +31,7 @@
             if (k === 'class') node.className = v;
             else if (k === 'html') node.innerHTML = v;
             // Apply styles property-by-property via the CSSOM. Setting `style.cssText`
-            // (like a style="" attribute) counts as applying an inline style and IS
+            // (like an inline style attribute) counts as applying inline style and IS
             // blocked by the strict `style-src 'self'` CSP; individual setProperty
             // writes are not. Declarations are simple "prop:value" pairs (no url()/
             // data: values carry an inner ';'), so a split on ';' is safe.
@@ -602,8 +602,8 @@
           ${endMark}
           <rect class="c-overlay" x="0" y="0" width="${W}" height="${H}" fill="transparent"/></svg>`;
         const svg = box.querySelector('svg'), cross = box.querySelector('.c-cross'), focus = box.querySelector('.c-focus');
-        // Gradient stroke via the CSSOM: an inline style="stroke:url(...)" attribute in
-        // the SVG markup is blocked by the strict `style-src 'self'` CSP, but a per-
+        // Gradient stroke via the CSSOM: an inline stroke style attribute in the SVG
+        // markup is blocked by the strict `style-src 'self'` CSP, but a per-
         // property write is not — and it still overrides the flat --primary from CSS.
         const cLine = box.querySelector('.c-line');
         if (cLine) cLine.style.stroke = `url(#as-${id})`;
@@ -5199,7 +5199,10 @@
         function exportPlanPDF() { const ex = planExportSVG(); if (!ex) { toast('Nichts zu exportieren', 'warn'); return; } const w = window.open('', '_blank'); if (!w) { toast('Popup blockiert — bitte erlauben', 'warn'); return; }
             // No inline <script> in the popup — the opener's CSP (script-src 'self') would block it.
             // We drive print/close from here after the document is written.
-            w.document.write('<!doctype html><meta charset="utf-8"><title>Grundriss</title><style>@page{margin:12mm}html,body{margin:0}svg{width:100%;height:auto}@media print{.hint{display:none}}</style><div class="hint" style="font:13px system-ui;padding:8px;color:#555">Drucken-Dialog → „Als PDF speichern".</div>' + ex.svg);
+            // The popup inherits the app's strict `style-src 'self'` CSP, so it styles
+            // itself from an EXTERNAL same-origin stylesheet (an inline <style>/style=
+            // would be blocked). location.origin is the opener's, which the popup shares.
+            w.document.write('<!doctype html><meta charset="utf-8"><title>Grundriss</title><link rel="stylesheet" href="' + location.origin + '/css/print.css"><div class="hint">Drucken-Dialog → „Als PDF speichern".</div>' + ex.svg);
             w.document.close();
             try { w.onafterprint = () => { try { w.close(); } catch (e) { /* ignore */ } }; } catch (e) { /* ignore */ }
             setTimeout(() => { try { w.focus(); w.print(); } catch (e) { /* ignore */ } }, 300); }

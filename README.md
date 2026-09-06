@@ -166,6 +166,7 @@ compose network). Schema migrations run automatically at startup.
 | `PARKRR_METRICS_TOKEN` | Bearer token for `/metrics` (empty = open on an internal network) | – |
 | `PARKRR_METRICS_REQUIRE_AUTH` | refuse to serve `/metrics` unless a token is set | `false` |
 | `PARKRR_CHECK_BREACHED_PASSWORDS` | check new passwords against the HIBP range API (fail-open) | `true` |
+| `PARKRR_BREACH_CHECK_FAIL_CLOSED` | reject a new password if the HIBP check itself fails (instead of the default fail-open) | `false` |
 | `PARKRR_LOG_FORMAT` / `PARKRR_LOG_LEVEL` | `json`\|`text` / `debug`..`error` | `json` / `info` |
 
 > The admin account is created/updated from the ENV values on **every start** —
@@ -361,10 +362,14 @@ demoted or deleted.
   **reset** a user's 2FA (on device loss).
 - **Session hardening** — a password change rotates the session and signs out
   other devices; new passwords are optionally checked against **HIBP**
-  (`PARKRR_CHECK_BREACHED_PASSWORDS`, fail-open); login and 2FA verification are
-  rate-limited. Optional **sliding sessions** re-login only after inactivity.
+  (`PARKRR_CHECK_BREACHED_PASSWORDS`, **fail-open** by default so an HIBP outage
+  can't block password changes; set `PARKRR_BREACH_CHECK_FAIL_CLOSED=true` to
+  reject instead); login and 2FA verification are rate-limited. Optional
+  **sliding sessions** re-login only after inactivity.
 - **Rate limiting** — login lockout after too many failures **plus** a general
-  per-IP throttle.
+  per-IP throttle. The counters are **in-memory and per-instance**: run multiple
+  replicas and each enforces the limits on its own, so add a shared limit at the
+  reverse proxy if you need one global budget.
 - **Photo uploads** are decoded and re-encoded (**EXIF/GPS stripped**), accept
   only genuine JPEG/PNG, with dimension and count limits.
 - Hardened HTTP headers: **CSP**, **HSTS** (behind TLS), `Permissions-Policy`,

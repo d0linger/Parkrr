@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-webauthn/webauthn/webauthn"
@@ -328,6 +329,12 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	h.Limiter.Reset(key)
+	// A verified passkey login is proof of identity for this account, so clear the
+	// per-account failure counter too — matching password Login, which resets both
+	// limiters on success. Otherwise a user who was password-throttled would stay
+	// throttled even after a successful passkey login. The passkey path is
+	// usernameless, so key the reset by the resolved account name (as UserLimiter is).
+	h.UserLimiter.Reset(strings.ToLower(u.Username))
 	if err := h.Auth.CreateSession(r.Context(), w, r, uid); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create session")
 		return
