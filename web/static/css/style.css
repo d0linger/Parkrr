@@ -1048,6 +1048,16 @@ div.empty .big svg { width: 30px; height: 30px; }
 }
 /* Foto-Upload-Fortschritt (Hundert 50): schmale Leiste neben den Knoepfen, nur
    waehrend eines Uploads sichtbar; die Breite des <i> traegt den Fortschritt. */
+/* Fotoreihenfolge + Titelbild (Hundert 58) */
+.photo-thumb{position:relative}
+.photo-thumb .title-badge{position:absolute;top:4px;left:4px;background:var(--primary);color:var(--on-primary);
+    border-radius:99px;font-size:.7rem;line-height:1;padding:3px 6px;pointer-events:none}
+.photo-order{position:absolute;bottom:4px;left:4px;right:4px;display:flex;gap:4px;justify-content:center;
+    opacity:0;transition:opacity .12s}
+.photo-thumb:hover .photo-order,.photo-thumb:focus-within .photo-order{opacity:1}
+.photo-order .ord{border:0;border-radius:7px;background:rgba(10,14,13,.72);color:#fff;cursor:pointer;
+    font-size:.85rem;line-height:1;padding:4px 8px}
+.photo-order .ord:hover{background:var(--primary)}
 .upl-progress{display:inline-block;width:90px;height:8px;border-radius:99px;overflow:hidden;
     background:var(--bg-elev-2);border:1px solid var(--border);vertical-align:middle}
 .upl-progress>i{display:block;height:100%;width:0;border-radius:99px;

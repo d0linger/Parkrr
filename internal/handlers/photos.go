@@ -61,7 +61,7 @@ func (h *Handler) ListPhotos(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := h.Pool.Query(r.Context(),
 		`SELECT id, vehicle_id, filename, content_type, byte_size, created_at
-		 FROM vehicle_photos WHERE vehicle_id=$1 ORDER BY created_at DESC`, id)
+		 FROM vehicle_photos WHERE vehicle_id=$1 ORDER BY sort_order, created_at DESC`, id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -273,3 +273,74 @@ func (h *Handler) DeletePhoto(w http.ResponseWriter, r *http.Request) {
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
+
+// ReorderPhotos setzt die Anzeige-Reihenfolge der Fotos eines Gefährts in EINEM
+// Zug (Hundert 58): der Client schickt die vollständige id-Liste in Wunschfolge,
+// Position 0 ist das Titelbild (der Planer zeigt genau dieses). Vollständig statt
+// "eins nach vorn": eine einzelne Verschiebung als API-Vokabular erzwingt beim
+// Client Schleifen aus Einzel-PUTs mit halbfertigen Zwischenständen.
+func (h *Handler) ReorderPhotos(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req struct {
+		IDs []int64 `json:"ids"`
+	}
+	if err := decodeJSON(r, &req); err != nil || len(req.IDs) == 0 {
+		writeError(w, http.StatusBadRequest, "ids is required")
+		return
+	}
+	if len(req.IDs) > maxPhotosPerVehicle {
+		writeError(w, http.StatusBadRequest, "too many ids")
+		return
+	}
+	seen := make(map[int64]bool, len(req.IDs))
+	for _, pid := range req.IDs {
+		if pid <= 0 || seen[pid] {
+			writeError(w, http.StatusBadRequest, "invalid or duplicate photo id")
+			return
+		}
+		seen[pid] = true
+	}
+	var mismatch bool
+	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		// Die Liste muss GENAU die Fotos dieses Gefährts sein — nicht mehr, nicht
+		// weniger: eine Teil-Liste ließe die fehlenden auf alten Positionen zurück
+		// und die Reihenfolge wäre mehrdeutig.
+		var count int
+		if err := tx.QueryRow(r.Context(),
+			`SELECT count(*) FROM vehicle_photos WHERE vehicle_id=$1`, id).Scan(&count); err != nil {
+			return err
+		}
+		if count != len(req.IDs) {
+			mismatch = true
+			return nil
+		}
+		for pos, pid := range req.IDs {
+			ct, err := tx.Exec(r.Context(),
+				`UPDATE vehicle_photos SET sort_order=$1 WHERE id=$2 AND vehicle_id=$3`, pos, pid, id)
+			if err != nil {
+				return err
+			}
+			if ct.RowsAffected() == 0 {
+				mismatch = true
+				return errRollbackReorder
+			}
+		}
+		return nil
+	})
+	switch {
+	case errors.Is(txErr, errRollbackReorder) || mismatch:
+		writeError(w, http.StatusConflict, "ids must be exactly the vehicle's photos")
+		return
+	case txErr != nil:
+		serverError(w, r, "could not reorder photos", txErr)
+		return
+	}
+	// Reihenfolge ist Darstellung, kein Geschäftsvorfall — bewusst ohne Audit-Zeile.
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+var errRollbackReorder = errors.New("photo not on this vehicle")

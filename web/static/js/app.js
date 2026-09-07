@@ -3195,12 +3195,31 @@
         if (!photos.length) photoCard.append(el('p', { class: 'muted' }, 'Keine Fotos.'));
         else {
             const grid = el('div', { class: 'photo-grid' });
-            for (const p of photos) {
+            // Reihenfolge + Titelbild (Hundert 58): ‹/› tauschen mit dem Nachbarn,
+            // ★ macht zum Titelbild (Position 0 — der Planer zeigt genau dieses).
+            // Der Client schickt immer die VOLLSTÄNDIGE id-Liste; der Server wendet
+            // sie in einer Transaktion an.
+            const reorder = async (from, to) => {
+                const ids = photos.map((x) => x.id);
+                const [moved] = ids.splice(from, 1);
+                ids.splice(to, 0, moved);
+                try { await api.put('/vehicles/' + id + '/photos/order', { ids }); render(); }
+                catch (e) { toast(e.message, 'error'); }
+            };
+            photos.forEach((p, i) => {
                 const img = el('img', { src: '/api/photos/' + p.id, alt: esc(p.filename), loading: 'lazy', onclick: () => lightbox(p.id) });
-                const thumb = el('div', { class: 'photo-thumb' }, img);
-                if (canManage()) thumb.append(el('button', { class: 'del', title: (p.filename || 'Foto') + ' löschen', 'aria-label': (p.filename || 'Foto') + ' löschen', onclick: () => delPhoto(p, thumb) }, icon('close', 12)));
+                const thumb = el('div', { class: 'photo-thumb' + (i === 0 ? ' is-title' : '') }, img);
+                if (i === 0) thumb.append(el('span', { class: 'title-badge', title: 'Titelbild — erscheint im Garagenplaner' }, '★'));
+                if (canManage()) {
+                    thumb.append(el('button', { class: 'del', title: (p.filename || 'Foto') + ' löschen', 'aria-label': (p.filename || 'Foto') + ' löschen', onclick: () => delPhoto(p, thumb) }, icon('close', 12)));
+                    const ord = el('div', { class: 'photo-order' });
+                    if (i > 0) ord.append(el('button', { class: 'ord', title: 'Nach vorn', 'aria-label': 'Foto nach vorn schieben', onclick: () => reorder(i, i - 1) }, '‹'));
+                    if (i > 0) ord.append(el('button', { class: 'ord', title: 'Als Titelbild', 'aria-label': 'Als Titelbild festlegen', onclick: () => reorder(i, 0) }, '★'));
+                    if (i < photos.length - 1) ord.append(el('button', { class: 'ord', title: 'Nach hinten', 'aria-label': 'Foto nach hinten schieben', onclick: () => reorder(i, i + 1) }, '›'));
+                    thumb.append(ord);
+                }
                 grid.append(thumb);
-            }
+            });
             photoCard.append(grid);
         }
         page.append(photoCard);
@@ -4446,13 +4465,33 @@
         if (a.changes && Object.keys(a.changes).length) li.append(auditChangesEl(a.changes));
         return li;
     }
+    // E-Mail-Versandprotokoll (Hundert 86): "Hat der Kunde die Mahnung bekommen?"
+    // hat eine Anlaufstelle — jeder Versuch, Erfolg wie Fehlschlag, mit Grund.
+    async function showMailLog() {
+        let entries = [];
+        try { entries = await api.get('/mail-log'); } catch (e) { toast(e.message, 'error'); return; }
+        contentModal('E-Mail-Versand', (body, close) => {
+            if (!entries.length) { body.append(el('p', { class: 'muted' }, 'Noch kein Versand protokolliert.')); return; }
+            entries.forEach((m) => {
+                body.append(el('div', { class: 'card pay-row' },
+                    el('div', { class: 'pay-main' },
+                        el('div', { class: 'pay-method' }, esc(m.subject), ' ',
+                            m.ok ? el('span', { class: 'badge badge-stored' }, 'gesendet')
+                                : el('span', { class: 'badge badge-cancelled', title: m.error || '' }, 'fehlgeschlagen')),
+                        el('div', { class: 'pay-date' }, new Date(m.sent_at).toLocaleString('de-DE') + ' · an ' + esc(m.recipients)
+                            + (m.error ? ' · ' + esc(m.error) : ''))))); 
+            });
+        });
+    }
+
     routes.audit = async (page) => {
         if (!isAdmin()) { page.innerHTML = ''; page.append(emptyState('settings', 'Nur für Administratoren.')); return; }
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' }, el('button', { class: 'back-btn', onclick: () => navigate('dashboard') }, '‹'), el('h2', { style: 'margin:0' }, 'Audit-Log'),
             // Revisionssicherer Export (Hundert 43): JSONL mit SHA-256-Hashkette —
             // jede Zeile versiegelt alle vorigen, prüfbar ohne Parkrr.
-            el('a', { class: 'btn btn-ghost btn-sm', href: '/api/audit/export', download: '', title: 'Vollständiger Export mit SHA-256-Hashkette (JSONL)' }, icon('download', 15), ' Revisionsexport')));
+            el('a', { class: 'btn btn-ghost btn-sm', href: '/api/audit/export', download: '', title: 'Vollständiger Export mit SHA-256-Hashkette (JSONL)' }, icon('download', 15), ' Revisionsexport'),
+            el('button', { class: 'btn btn-ghost btn-sm', onclick: () => showMailLog(), title: 'Jeder E-Mail-Versuch mit Empfänger, Betreff und Ausgang' }, icon('mail', 15), ' E-Mail-Versand')));
 
         const q = { text: '', action: '', entity: '', from: '', to: '', offset: 0, limit: 50 };
         const search = el('input', { type: 'search', placeholder: 'Suchen (Benutzer, Beschreibung)…', 'aria-label': 'Audit-Log durchsuchen' });

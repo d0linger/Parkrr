@@ -207,3 +207,29 @@ func cleanAddrs(in []string) []string {
 	}
 	return out
 }
+
+// Log ist die Schnittstelle, über die ein Sender seine Versuche festhält —
+// abstrahiert, damit dieses Paket keine Datenbank kennt.
+type Log func(recipients []string, subject string, ok bool, sendErr error)
+
+type loggingSender struct {
+	inner Sender
+	log   Log
+}
+
+// WithLog umwickelt einen Sender so, dass JEDER Versuch (Erfolg wie Fehlschlag)
+// protokolliert wird (Hundert 86). Der Fehler des inneren Senders wird
+// unverändert durchgereicht — das Protokoll beobachtet, es verändert nichts.
+func WithLog(s Sender, log Log) Sender {
+	if log == nil {
+		return s
+	}
+	return &loggingSender{inner: s, log: log}
+}
+
+func (l *loggingSender) Enabled() bool { return l.inner.Enabled() }
+func (l *loggingSender) Send(ctx context.Context, to []string, subject, body string) error {
+	err := l.inner.Send(ctx, to, subject, body)
+	l.log(to, subject, err == nil, err)
+	return err
+}

@@ -185,6 +185,8 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	// --- Vehicle photos ---
 	mux.Handle("GET /api/vehicles/{id}/photos", authed(hf(h.ListPhotos)))
 	mux.Handle("POST /api/vehicles/{id}/photos", editor(hf(h.UploadPhoto)))
+	// Fotoreihenfolge in einem Zug; Position 0 = Titelbild (Hundert 58).
+	mux.Handle("PUT /api/vehicles/{id}/photos/order", editor(hf(h.ReorderPhotos)))
 	mux.Handle("GET /api/photos/{id}", authed(hf(h.GetPhoto)))
 	mux.Handle("DELETE /api/photos/{id}", editor(hf(h.DeletePhoto)))
 
@@ -267,6 +269,8 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/audit", admin(hf(h.ListAudit)))
 	// Revisionssicherer Export: JSONL mit SHA-256-Hashkette, prüfbar ohne Parkrr.
 	mux.Handle("GET /api/audit/export", admin(hf(h.ExportAudit)))
+	// E-Mail-Versandprotokoll: jeder Versuch mit Empfänger, Betreff, Ausgang (Hundert 86).
+	mux.Handle("GET /api/mail-log", admin(hf(h.ListMailLog)))
 	mux.Handle("POST /api/backup", admin(hf(h.CreateBackup)))
 	// Nur die Ampel, bewusst editor+ statt admin: Bearbeiter arbeiten den ganzen Tag
 	// in der App und sollen ein totes Backup sehen, ohne Admin zu sein. Liefert weder

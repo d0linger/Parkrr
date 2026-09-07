@@ -179,6 +179,23 @@ func run() error {
 		Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
 		From: cfg.SMTPFrom, FromName: cfg.SMTPFromName, TLS: cfg.SMTPTLS,
 	})
+	// Versandprotokoll (Hundert 86): JEDER Versuch — Erfolg wie Fehlschlag — landet
+	// in mail_log. Eigener kurzer Context: das Protokoll darf nicht am (womöglich
+	// abgelaufenen) Context des Auslösers hängen; und ein Protokollfehler bleibt
+	// eine Warnung, er macht den Versand nicht ungeschehen.
+	mailer = mail.WithLog(mailer, func(to []string, subject string, ok bool, sendErr error) {
+		lctx, lcancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer lcancel()
+		errText := ""
+		if sendErr != nil {
+			errText = sendErr.Error()
+		}
+		if _, err := pool.Exec(lctx,
+			`INSERT INTO mail_log (recipients, subject, ok, error) VALUES ($1,$2,$3,$4)`,
+			strings.Join(to, ", "), subject, ok, errText); err != nil {
+			slog.Warn("mail_log write failed", "err", err)
+		}
+	})
 	if mailer.Enabled() {
 		slog.Info("SMTP e-mail enabled", "host", cfg.SMTPHost, "port", cfg.SMTPPort, "tls", cfg.SMTPTLS)
 	}

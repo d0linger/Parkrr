@@ -358,7 +358,7 @@ func (h *Handler) spotsOfHall(r *http.Request, hallID int64) ([]models.Spot, err
 		        v.person_id, trim(p.first_name || ' ' || p.last_name),
 		        v.length_m, v.width_m, v.height_m, v.weight_t, COALESCE(v.needs_power, false),
 		        v.planner_symbol,
-		        (SELECT vp.id FROM vehicle_photos vp WHERE vp.vehicle_id = v.id ORDER BY vp.created_at, vp.id LIMIT 1)
+		        (SELECT vp.id FROM vehicle_photos vp WHERE vp.vehicle_id = v.id ORDER BY vp.sort_order, vp.created_at DESC, vp.id LIMIT 1)
 		   FROM spots s
 		   LEFT JOIN vehicles   v   ON v.spot_id = s.id
 		   LEFT JOIN categories cat ON cat.id = v.category_id

@@ -100,7 +100,7 @@ B11 Destruktives + Betreiber-Punkte.
 - [ ] **55** [Mittel/M] Kalenderansicht
 - [ ] **56** [Mittel/M] Aktivitäts-Timeline pro Person
 - [ ] **57** [Mittel/M] Datei-Anhänge je Person und Gefährt
-- [ ] **58** [Idee/S] Fotoreihenfolge und Titelbild
+- [x] **58** [Idee/S] Fotoreihenfolge und Titelbild
 
 ## Barrierefreiheit (B6 A11y)
 
@@ -149,9 +149,15 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **83** [Hoch/S] Portal: Blob-URLs freigeben, Fehler abfangen — `web/static/js/app.js:7986`
 - [ ] **84** [Mittel/M] Portal: Übergabeprotokolle einsehen
 - [ ] **85** [Mittel/M] Portal: Stammdaten-Änderungswunsch
-- [ ] **86** [Mittel/S] E-Mail-Versandprotokoll
+- [x] **86** [Mittel/S] E-Mail-Versandprotokoll
 - [ ] **87** [Idee/M] Portal: Terminwunsch für Abholung
-- [ ] **88** [Idee/S] Portal-Link als QR auf der Rechnung
+- [!] **88** [Idee/S] Portal-Link als QR auf der Rechnung
+      ÜBERSPRUNGEN aus Sicherheitsgründen: der Portal-Link IST das Geheimnis
+      (Bearer-Token mit TTL und Widerruf; SEC-01 hält ihn bewusst aus URLs und
+      Logs). Ihn als QR auf ein unveränderliches, gedrucktes, archiviertes
+      Dokument zu bannen widerspricht genau diesem Modell — das Papier überlebt
+      jede Token-Laufzeit. Der Zahlungs-QR (Girocode) auf der Rechnung deckt den
+      eigentlichen Anwendungsfall (bezahlen) bereits ohne Geheimnis ab.
 - [ ] **89** [Idee/M] Portal auf Englisch
 
 ## Tests und Qualität (B2/B10 Tests)
