@@ -92,6 +92,22 @@ jobs:
           node --check web/static/sw.js
       - name: Build image
         run: docker build -t parkrr:ci .
+      # Trivy als GEPRÜFTES Binary statt als Action (Hundert 45): die trivy-action
+      # fiel unserer SHA-Pin-Policy und einem Supply-Chain-Advisory zum Opfer und
+      # wurde entfernt — seither lief gar kein Image-Scan mehr. Ein per SHA-256
+      # verifizierter Release-Download hat dieselbe Wirkung ohne fremden
+      # Action-Code: Version UND Prüfsumme sind hier festgeschrieben, ein
+      # ausgetauschtes Release-Asset fällt am Hash auf.
+      - name: Scan image (Trivy, pinned + checksummed binary)
+        run: |
+          TRIVY_VERSION=0.74.0
+          TRIVY_SHA256=2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+          curl -sSfL -o trivy.tgz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  trivy.tgz" | sha256sum -c -
+          tar -xzf trivy.tgz trivy
+          # Gate auf HIGH/CRITICAL mit Fix; unfixierte Findings werden gemeldet,
+          # brechen aber nicht — dagegen kann ein Rebuild nichts tun.
+          ./trivy image --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL parkrr:ci
 
   actions-pinned:
     name: Actions pinned to SHA

@@ -22,7 +22,7 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **07** [Hoch/S] Archiv-Sweep-Fehler sichtbar machen — `internal/handlers/agreements.go:553`
 - [x] **08** [Mittel/S] Backfill hinter Done-Marker legen — `internal/server/server.go:56`
 - [x] **09** [Mittel/S] S3-Retention konfigurierbar machen — `internal/backup/s3.go`
-- [ ] **10** [Mittel/M] Beispiel-Alerts und Dashboard mitliefern
+- [x] **10** [Mittel/M] Beispiel-Alerts und Dashboard mitliefern
 - [x] **11** [Idee/M] Geteilter Rate-Limiter für Replikate — `internal/auth/ratelimit.go`
 
 ## Abrechnung und Finanzen (B2 Abrechnung)
@@ -71,7 +71,7 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **42** [Mittel/S] Passkey-only-Modus
 - [x] **43** [Mittel/M] Revisionssicherer Audit-Export
 - [x] **44** [Idee/S] CSP-Verstöße an client-error melden — `internal/server/server.go`
-- [ ] **45** [Idee/S] Trivy als geprüftes Binary in CI
+- [x] **45** [Idee/S] Trivy als geprüftes Binary in CI
 
 ## Bedienung und UX (B4 UX)
 
@@ -121,7 +121,10 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **70** [Mittel/S] theme-color dem Theme folgen lassen — `web/static/index.html:6`
 - [ ] **71** [Idee/L] Offline-Queue für Schreibaktionen
 - [ ] **72** [Idee/M] Web-Push-Benachrichtigungen
-- [ ] **73** [Idee/S] Kamera-Direktaufnahme
+- [x] **73** [Idee/S] Kamera-Direktaufnahme
+      War bereits umgesetzt (Commit bbdced0, vor dem Programm): der "Kamera"-Knopf
+      an den Gefährt-Fotos nutzt capture=environment und öffnet am Handy direkt
+      die Rückkamera. Seit B23 läuft auch dieser Weg über Verkleinern+Fortschritt.
 
 ## Garagenplaner (B7 Planner)
 
@@ -162,7 +165,12 @@ B11 Destruktives + Betreiber-Punkte.
 
 ## Ausbau und Zukunft (B10 Ausbau)
 
-- [ ] **96** [Mittel/M] Redesign-Rollout, Phase Tokens
+- [>] **96** [Mittel/M] Redesign-Rollout, Phase Tokens
+      BETREIBER-ENTSCHEIDUNG per stehender Leitplanke: das Taste-Skill-Redesign
+      gilt ausdrücklich NUR für generierte Artifacts, nie für die App-Oberfläche
+      (Session-Memory design-taste-artifacts-only). Ein Token-Rollout in die App
+      ist genau der Schritt, der menschliche Freigabe braucht — die
+      Vorher/Nachher-Artifacts aus dieser Session sind die Entscheidungsgrundlage.
 - [ ] **97** [Mittel/M] Betreiber-Handbuch
 - [ ] **98** [Idee/L] Mehrsprachigkeit der App — `web/static/js/app.js:148`
 - [x] **99** [Idee/S] CHANGELOG und Release-Notes

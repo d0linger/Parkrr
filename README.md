@@ -241,6 +241,16 @@ login/logout noise — set both to `0` to disable retention completely.
 
 ---
 
+### Beispiel-Alerts & Dashboard
+
+`ops/prometheus-alerts.yml` bringt Startregeln für Prometheus mit (Erreichbarkeit,
+5xx-Quote, p95-Latenz, DB-Pool-Sättigung, Neustart-Schleife), `ops/grafana-dashboard.json`
+ein importierbares Grafana-Dashboard über dieselben Metriken. Beide sind auf die
+tatsächlich exportierten `parkrr_*`-Metriken zugeschnitten — Schwellwerte sind
+Startwerte, Nachschärfen gehört zum Betrieb.
+
+---
+
 ## 🌐 Running behind a reverse proxy (Nginx Proxy Manager, Traefik, Caddy …)
 
 Parkrr uses only **relative paths** and listens on `:8080` — it runs behind a
