@@ -295,6 +295,10 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	indexHTML = fingerprintAsset(indexHTML, staticFS, "/css/style.css", "css/style.css")
 	// Expose the build version to the SPA (client-error telemetry reads this meta).
 	indexHTML = bytes.ReplaceAll(indexHTML, []byte("__APP_VERSION__"), []byte(Version))
+	// Same substitution in the service worker, so its cache name changes with every
+	// build. Previously the name was hand-maintained ("parkrr-v288") and a forgotten
+	// bump left the OFFLINE shell pinned to stale precached assets (finding PWA-65).
+	swJS = bytes.ReplaceAll(swJS, []byte("__APP_VERSION__"), []byte(Version))
 
 	mux.Handle("GET /", gzipStatic(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/")

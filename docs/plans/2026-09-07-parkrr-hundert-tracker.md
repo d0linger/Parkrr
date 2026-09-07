@@ -95,12 +95,12 @@ B11 Destruktives + Betreiber-Punkte.
 
 ## PWA und Offline (B5 PWA)
 
-- [ ] **65** [Notwendig/S] Install-Prompt mit zweiter Chance — `web/static/js/app.js:7660`
-- [ ] **66** [Notwendig/S] SW-Cache-Version an den Build koppeln — `web/static/sw.js:2`
-- [ ] **67** [Hoch/S] Update-Hinweis statt stillem Austausch — `web/static/sw.js:17`
-- [ ] **68** [Hoch/S] Precache vervollständigen — `web/static/sw.js:3`
+- [x] **65** [Notwendig/S] Install-Prompt mit zweiter Chance — `web/static/js/app.js:7660`
+- [x] **66** [Notwendig/S] SW-Cache-Version an den Build koppeln — `web/static/sw.js:2`
+- [x] **67** [Hoch/S] Update-Hinweis statt stillem Austausch — `web/static/sw.js:17`
+- [x] **68** [Hoch/S] Precache vervollständigen — `web/static/sw.js:3`
 - [ ] **69** [Mittel/S] Manifest ausbauen — `web/static/manifest.webmanifest:44`
-- [ ] **70** [Mittel/S] theme-color dem Theme folgen lassen — `web/static/index.html:6`
+- [x] **70** [Mittel/S] theme-color dem Theme folgen lassen — `web/static/index.html:6`
 - [ ] **71** [Idee/L] Offline-Queue für Schreibaktionen
 - [ ] **72** [Idee/M] Web-Push-Benachrichtigungen
 - [ ] **73** [Idee/S] Kamera-Direktaufnahme

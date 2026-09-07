@@ -220,6 +220,10 @@
     function initTheme() {
         const saved = localStorage.getItem('parkrr-theme');
         if (saved) document.documentElement.dataset.theme = saved;
+        syncThemeColor();
+        // Ohne explizite Wahl folgt die App dem System, also muss die Titelleiste
+        // mitwandern, wenn das System umschaltet.
+        try { matchMedia('(prefers-color-scheme: dark)').addEventListener('change', syncThemeColor); } catch { /* alte Browser */ }
     }
     function toggleTheme() {
         const cur = document.documentElement.dataset.theme;
@@ -228,6 +232,18 @@
         else next = matchMedia('(prefers-color-scheme: dark)').matches ? 'light' : 'dark';
         document.documentElement.dataset.theme = next;
         localStorage.setItem('parkrr-theme', next);
+        syncThemeColor();
+    }
+    // theme-color steuert die Titelleiste der installierten App. Der Meta-Tag war ein
+    // statisches Petrol, sodass eine helle Installation eine dunkle Leiste bekam
+    // (Hundert PWA-69). Wert aus dem tatsächlich gerenderten Hintergrund lesen.
+    function syncThemeColor() {
+        const meta = document.querySelector('meta[name="theme-color"]');
+        if (!meta) return;
+        // Aus dem --bg-Token lesen: body ist bewusst transparent (style.css), der Grund
+        // kommt aus der Token-Ebene, die hell/dunkel und data-theme bereits auflöst.
+        const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+        if (bg) meta.setAttribute('content', bg);
     }
 
     // ---------- toast ----------
@@ -7239,6 +7255,8 @@
         if (isAdmin()) body.append(item('receipt', 'Rechnungen', () => navigate('billing')));
         if (isAdmin()) body.append(item('archive', 'Backup', () => navigate('backup')));
         body.append(item('theme', 'Design wechseln', () => toggleTheme()));
+        // Nur zeigen, solange der Browser die Installation tatsächlich anbietet.
+        if (canInstall()) body.append(item('download', 'App installieren', runInstallPrompt));
         body.append(item('logout', 'Abmelden', () => logout(), 'danger'));
         dlg.showModal();
     }
@@ -7686,14 +7704,21 @@
         window.addEventListener('beforeinstallprompt', (e) => {
             e.preventDefault();
             deferredInstall = e;
-            toastAction('Parkrr als App installieren?', 'Installieren', async () => {
-                if (!deferredInstall) return;
-                deferredInstall.prompt();
-                await deferredInstall.userChoice;
-                deferredInstall = null;
-            }, 8000);
+            toastAction('Parkrr als App installieren?', 'Installieren', runInstallPrompt, 8000);
         });
+        // Nach erfolgreicher Installation ist das Angebot gegenstandslos.
+        window.addEventListener('appinstalled', () => { deferredInstall = null; });
     }
+    // Zweite Chance: der Toast lief nach 8 Sekunden ab und das Angebot war für immer
+    // weg (Chrome loggt dann "Banner not shown ... must call prompt()"). Das Menü hält
+    // den aufgehobenen Event dauerhaft verfügbar (Hundert PWA-64).
+    async function runInstallPrompt() {
+        if (!deferredInstall) return;
+        const ev = deferredInstall;
+        deferredInstall = null; // ein Event ist einmalig verwendbar
+        try { ev.prompt(); await ev.userChoice; } catch { /* vom Browser verworfen */ }
+    }
+    const canInstall = () => !!deferredInstall;
     // Offline indicator: a banner plus a body class while the network is down.
     function setupOfflineIndicator() {
         const banner = el('div', { class: 'offline-banner', role: 'status', 'aria-live': 'polite', hidden: true }, t('offline.banner'));
@@ -8043,7 +8068,7 @@
         applyBrand();
         // Public portal short-circuits the whole app shell / auth flow.
         const pm = (location.hash || '').match(/^#\/portal\/([A-Za-z0-9_-]+)$/);
-        if (pm) { await renderPortal(pm[1]); document.documentElement.classList.remove('preboot'); return; }
+        if (pm) { await renderPortal(pm[1]); document.documentElement.classList.remove('preboot'); syncThemeColor(); return; }
         bindStatic();
         setupInstallPrompt();
         setupOfflineIndicator();
@@ -8053,7 +8078,25 @@
         // View steht (synchron in showApp/showLogin gesetzt) — Blaupause freigeben.
         // Vorher blieb sie waehrend der Auth-Roundtrips als Post-Login-Grund sichtbar.
         document.documentElement.classList.remove('preboot');
-        if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+        syncThemeColor();
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js').then((reg) => {
+                // Ein neuer Worker übernimmt wegen skipWaiting()+clients.claim() mitten
+                // in der Sitzung. Statt still auszutauschen einmal anbieten, neu zu
+                // laden — sonst mischen sich alte Seite und neue Assets (PWA-66).
+                reg.addEventListener('updatefound', () => {
+                    const sw = reg.installing;
+                    if (!sw) return;
+                    sw.addEventListener('statechange', () => {
+                        // Nur wenn schon ein Controller lief, ist das ein UPDATE und
+                        // keine Erstinstallation.
+                        if (sw.state === 'installed' && navigator.serviceWorker.controller) {
+                            toastAction('Neue Version verfügbar', 'Neu laden', () => location.reload(), 15000);
+                        }
+                    });
+                });
+            }).catch(() => {});
+        }
         const sb = $('#search-btn'); if (sb) sb.addEventListener('click', () => openCommandPalette());
         document.addEventListener('keydown', (e) => {
             if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K') && state.user) { e.preventDefault(); openCommandPalette(); }

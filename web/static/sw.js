@@ -1,8 +1,14 @@
 /* Parkrr service worker – offline shell with fresh-first assets. */
-const CACHE = "parkrr-v288";
+// Cache name carries the build version, substituted by the server when it serves
+// this file (see server.go). Every deploy therefore gets a fresh cache and the
+// activate handler drops the old one — no hand-maintained bump to forget. The
+// literal fallback only applies if the file is served unsubstituted (e.g. straight
+// from disk in a dev setup).
+const CACHE = "parkrr-__APP_VERSION__";
 const SHELL = [
     '/',
     '/css/style.css',
+    '/css/print.css',
     '/js/geometry.js',
     '/js/app.js',
     '/manifest.webmanifest',
