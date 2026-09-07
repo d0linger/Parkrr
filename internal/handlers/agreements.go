@@ -169,7 +169,7 @@ func (h *Handler) ListAgreements(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	list, err := h.loadAgreements(r.Context(), id, time.Now())
+	list, err := h.loadAgreements(r.Context(), id, h.now())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -461,7 +461,7 @@ func (h *Handler) validateAgreement(ctx context.Context, personID, excludeID int
 	// person-wide agreement (empty VehicleIDs) covers the new vehicles too, so a
 	// time overlap with one of those is still a conflict (double billing).
 	if len(cand.VehicleIDs) == 0 && hasNew {
-		existing, err := h.loadAgreements(ctx, personID, time.Now())
+		existing, err := h.loadAgreements(ctx, personID, h.now())
 		if err != nil {
 			return "query failed", http.StatusInternalServerError
 		}
@@ -475,7 +475,7 @@ func (h *Handler) validateAgreement(ctx context.Context, personID, excludeID int
 		}
 		return "", 0
 	}
-	msg, err := h.checkOverlap(ctx, personID, excludeID, cand, time.Now())
+	msg, err := h.checkOverlap(ctx, personID, excludeID, cand, h.now())
 	if err != nil {
 		return "query failed", http.StatusInternalServerError
 	}
@@ -924,7 +924,7 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 	if req.Paid {
 		// (a) Rent: one real Zahlungseingang per COMPLETED elapsed period. A still-
 		// running period keeps the off-book credit (its cost is not final yet).
-		for _, per := range ag.ElapsedPeriodsDetailed(time.Now()) {
+		for _, per := range ag.ElapsedPeriodsDetailed(h.now()) {
 			if !per.Complete {
 				continue
 			}
@@ -1134,7 +1134,7 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 	// unmark, a bad key on a master-paid agreement would still materialize the
 	// elapsed rows and clear the master flag — state changed by garbage input.
 	valid := false
-	for _, k := range a.ElapsedPeriodKeys(time.Now()) {
+	for _, k := range a.ElapsedPeriodKeys(h.now()) {
 		if k == key {
 			valid = true
 			break
@@ -1144,7 +1144,7 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 	// would otherwise become a real overpayment and inflate the Guthaben. A genuine
 	// prepayment is entered as a regular Zahlung (which correctly becomes credit).
 	if valid && req.Amount != nil {
-		if cost, ok := periodCostForKey(a, key, time.Now()); ok && *req.Amount > cost+0.005 {
+		if cost, ok := periodCostForKey(a, key, h.now()); ok && *req.Amount > cost+0.005 {
 			writeError(w, http.StatusBadRequest, "Teilbetrag übersteigt die Periodenkosten – für eine Vorauszahlung eine reguläre Zahlung erfassen")
 			return
 		}
@@ -1184,7 +1184,7 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 		// Book the real Zahlungseingang mirroring this off-book settlement (Fix 1): a
 		// completed whole period or an explicit partial. A still-running whole period
 		// stays off-book (its cost isn't final); its payment is booked once complete.
-		if amt, ok := periodPaymentAmount(a, key, req.Amount, time.Now()); ok {
+		if amt, ok := periodPaymentAmount(a, key, req.Amount, h.now()); ok {
 			if err := recordPeriodPaymentTx(r.Context(), tx, a.PersonID, "agreement", id, key, amt, createdByFrom(r.Context())); err != nil {
 				writeError(w, http.StatusInternalServerError, "could not update payment")
 				return
@@ -1198,7 +1198,7 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 			if _, err := tx.Exec(r.Context(),
 				`INSERT INTO flat_rate_period_payments (period_id, period_key)
 				 SELECT $1, unnest($2::text[]) ON CONFLICT DO NOTHING`,
-				id, a.ElapsedPeriodKeys(time.Now())); err != nil {
+				id, a.ElapsedPeriodKeys(h.now())); err != nil {
 				writeError(w, http.StatusInternalServerError, "could not update payment")
 				return
 			}
@@ -1241,7 +1241,7 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *Handler) writeAgreements(w http.ResponseWriter, r *http.Request, personID int64) {
-	list, err := h.loadAgreements(r.Context(), personID, time.Now())
+	list, err := h.loadAgreements(r.Context(), personID, h.now())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -1345,7 +1345,7 @@ func coveringAgreements(agreements []models.FlatRatePeriod, vehicleID int64, veh
 // case after an agreement mutation); 0 sweeps everyone (background job).
 // Returns the number of vehicles archived.
 func (h *Handler) ArchiveSettledExpiredVehicles(ctx context.Context, personID int64) (int64, error) {
-	now := time.Now()
+	now := h.now()
 	agByPerson, err := h.loadAllAgreements(ctx, personID)
 	if err != nil {
 		return 0, err

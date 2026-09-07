@@ -185,7 +185,7 @@ func (h *Handler) ListRecurringCharges(w http.ResponseWriter, r *http.Request) {
 	}
 	// Settlement is derived from each charge's own per-period flags (Option A), so
 	// no agreements/vehicles load is needed here.
-	list, err := h.loadRecurringCharges(r.Context(), id, time.Now())
+	list, err := h.loadRecurringCharges(r.Context(), id, h.now())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -522,7 +522,7 @@ func (h *Handler) SetRecurringChargePaid(w http.ResponseWriter, r *http.Request)
 		}
 		if req.Paid {
 			p := rc.AsPeriod()
-			for _, per := range p.ElapsedPeriodsDetailed(time.Now()) {
+			for _, per := range p.ElapsedPeriodsDetailed(h.now()) {
 				if !per.Complete || locked[lockKey("recurring", id, per.Key)] {
 					continue // running, or settled through an invoice → skip
 				}
@@ -588,7 +588,7 @@ func (h *Handler) SetRecurringChargePeriodPaid(w http.ResponseWriter, r *http.Re
 	// Only periods that have begun can be paid (guards against bogus keys).
 	valid := false
 	p := rc.AsPeriod()
-	for _, k := range p.ElapsedPeriodKeys(time.Now()) {
+	for _, k := range p.ElapsedPeriodKeys(h.now()) {
 		if k == req.PeriodKey {
 			valid = true
 			break
@@ -602,7 +602,7 @@ func (h *Handler) SetRecurringChargePeriodPaid(w http.ResponseWriter, r *http.Re
 	// Teilbetrag must not become a silent overpayment; a real prepayment is a regular
 	// Zahlung.
 	if req.Paid && req.Amount != nil {
-		if cost, ok := periodCostForKey(p, req.PeriodKey, time.Now()); ok && *req.Amount > cost+0.005 {
+		if cost, ok := periodCostForKey(p, req.PeriodKey, h.now()); ok && *req.Amount > cost+0.005 {
 			writeError(w, http.StatusBadRequest, "Teilbetrag übersteigt die Periodenkosten – für eine Vorauszahlung eine reguläre Zahlung erfassen")
 			return
 		}
@@ -661,7 +661,7 @@ func (h *Handler) SetRecurringChargePeriodPaid(w http.ResponseWriter, r *http.Re
 		// toggle-off deletes it. The off-book credit skips periods with such a payment,
 		// so the balance never double-counts.
 		if req.Paid {
-			if amt, ok := periodPaymentAmount(rc.AsPeriod(), req.PeriodKey, req.Amount, time.Now()); ok {
+			if amt, ok := periodPaymentAmount(rc.AsPeriod(), req.PeriodKey, req.Amount, h.now()); ok {
 				if err := recordPeriodPaymentTx(r.Context(), tx, rc.PersonID, "recurring", id, req.PeriodKey, amt, createdByFrom(r.Context())); err != nil {
 					return err
 				}

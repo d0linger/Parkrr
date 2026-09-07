@@ -27,7 +27,7 @@ B11 Destruktives + Betreiber-Punkte.
 
 ## Abrechnung und Finanzen (B2 Abrechnung)
 
-- [ ] **12** [Notwendig/M] Injizierbare Uhr in der Abrechnung — `internal/handlers/billing.go:273`
+- [x] **12** [Notwendig/M] Injizierbare Uhr in der Abrechnung — `internal/handlers/billing.go:273`
 - [ ] **13** [Notwendig/M] Eine Zeitzonen-Wahrheit statt drei — `internal/handlers/audit.go:37`
 - [ ] **14** [Notwendig/M] Rechnungs-PDF auf Unicode-Schrift — `internal/handlers/invoice_pdf.go:113`
 - [ ] **15** [Hoch/M] Mahnwesen mit Stufen und Gedächtnis — `internal/handlers/reminders.go:66`
@@ -129,7 +129,7 @@ B11 Destruktives + Betreiber-Punkte.
 
 ## Tests und Qualität (B2/B10 Tests)
 
-- [ ] **90** [Notwendig/M] Datums-Grenzfall-Matrix mit gepinnter Uhr
+- [x] **90** [Notwendig/M] Datums-Grenzfall-Matrix mit gepinnter Uhr
 - [ ] **91** [Hoch/M] photos.go und planner_icons.go testen — `internal/handlers/photos.go:90`
 - [ ] **92** [Hoch/M] Vehicle-Lifecycle abdecken — `internal/handlers/vehicles.go:556`
 - [ ] **93** [Mittel/M] E2E-Tests für Login, 2FA und Passkey — `tests/a11y/`

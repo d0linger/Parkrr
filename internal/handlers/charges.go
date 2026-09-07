@@ -360,7 +360,7 @@ func (h *Handler) validateCharge(ctx context.Context, req *chargeRequest) (time.
 			return time.Time{}, "", err
 		}
 	}
-	chargedOn := time.Now()
+	chargedOn := h.now()
 	if trim(req.ChargedOn) != "" {
 		if !validDateLength(trim(req.ChargedOn)) {
 			return time.Time{}, "charged_on is too long", nil

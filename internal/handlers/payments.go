@@ -216,7 +216,7 @@ func deletePeriodPaymentTx(ctx context.Context, tx pgx.Tx, kind string, refID in
 // their own settlement.
 func (h *Handler) openOwedItems(r *http.Request, personID int64) ([]owedItem, error) {
 	ctx := r.Context()
-	now := time.Now()
+	now := h.now()
 
 	ags, err := h.loadAgreements(ctx, personID, now)
 	if err != nil {
@@ -585,7 +585,7 @@ func (h *Handler) validatePayment(req *paymentRequest) (time.Time, string) {
 	if !validNameLength(req.Note) {
 		return time.Time{}, "note is too long"
 	}
-	paidOn := time.Now()
+	paidOn := h.now()
 	if trim(req.PaidOn) != "" {
 		if !validDateLength(trim(req.PaidOn)) {
 			return time.Time{}, "paid_on is too long"

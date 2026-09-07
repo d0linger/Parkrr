@@ -386,7 +386,7 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now()
+	now := h.now()
 	year := parseYearParam(r, now.Year())
 
 	resp := personStatsResponse{
@@ -560,7 +560,7 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 // only the total is needed (Guthaben / apply-credit).
 func (h *Handler) personAccruedTotal(r *http.Request, id int64) (float64, error) {
 	ctx := r.Context()
-	now := time.Now()
+	now := h.now()
 	vehicles, cats, err := h.loadVehiclesWithCategories(r, id)
 	if err != nil {
 		return 0, err
@@ -609,7 +609,7 @@ func (h *Handler) outstandingByPerson(r *http.Request, personID int64) (map[int6
 	if personID != 0 {
 		scopeArgs = append(scopeArgs, personID)
 	}
-	now := time.Now()
+	now := h.now()
 	until := models.DayAfter(now)
 	vehPaid := vehiclePaidMap(vehicles)
 
@@ -790,7 +790,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now()
+	now := h.now()
 	resp.Year = parseYearParam(r, now.Year())
 	resp.TopOutstanding = []personOutstanding{}
 	yearStart := time.Date(resp.Year, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -1231,7 +1231,7 @@ func (h *Handler) loadVehiclesWithCategories(r *http.Request, personID int64) ([
 	}
 	defer rows.Close()
 
-	now := time.Now()
+	now := h.now()
 	vehicles := []models.Vehicle{}
 	cats := map[int64]models.Category{}
 	for rows.Next() {

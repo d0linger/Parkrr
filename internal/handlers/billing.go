@@ -270,7 +270,7 @@ type createInvoiceRequest struct {
 // open balance.
 func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, error) {
 	ctx := r.Context()
-	now := time.Now()
+	now := h.now()
 
 	vehicles, _, err := h.loadVehiclesWithCategories(r, personID)
 	if err != nil {
@@ -690,7 +690,7 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 		sellerJSON, _ := json.Marshal(seller)
 		buyerJSON, _ := json.Marshal(buyer)
 
-		issued := time.Now()
+		issued := h.now()
 		// Terms of 0 mean "sofort fällig" — due on the issue date (overdue the next
 		// day). A nil due_on would instead hide it from Mahnwesen forever, so always
 		// setting it is the fix.
@@ -853,7 +853,7 @@ func (h *Handler) CancelInvoice(w http.ResponseWriter, r *http.Request) {
 		if _, err := tx.Exec(r.Context(), `UPDATE billing_settings SET next_invoice_no = next_invoice_no + 1 WHERE id=1`); err != nil {
 			return err
 		}
-		issued := time.Now()
+		issued := h.now()
 		var stornoID int64
 		if err := tx.QueryRow(r.Context(),
 			`INSERT INTO invoices (number, person_id, issued_on, subtotal, ust_rate, tax_amount, total,

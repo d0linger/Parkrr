@@ -27,6 +27,12 @@ import (
 type Handler struct {
 	Pool *pgxpool.Pool
 
+	// Now returns the wall clock for all billing/period math; tests pin it to make
+	// date-boundary cases (month end, leap day, year roll) deterministic (finding
+	// FIN-12: the 2026-08-31 bug was latent because the suite could only ever run
+	// against the real date). Nil means time.Now.
+	Now func() time.Time
+
 	// CheckBreachedPasswords enables the HIBP k-anonymity check on new passwords.
 	CheckBreachedPasswords bool
 	// FailClosedOnBreach rejects a new password when the HIBP check can't run
@@ -126,6 +132,14 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	if v != nil {
 		_ = json.NewEncoder(w).Encode(v)
 	}
+}
+
+// now returns the handler clock (see Handler.Now); production uses the real time.
+func (h *Handler) now() time.Time {
+	if h.Now != nil {
+		return h.Now()
+	}
+	return time.Now()
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
