@@ -1093,13 +1093,19 @@ type overdueInvoice struct {
 // OverdueInvoices lists non-canceled, unpaid/partly-paid invoices whose due date
 // has passed — the "who do I need to chase" list (Mahnwesen light).
 func (h *Handler) OverdueInvoices(w http.ResponseWriter, r *http.Request) {
+	// Global list, so paged (finding API-28); X-Total-Count signals truncation.
+	limit, offset := pageParams(r, 1000, 5000)
+	h.totalCount(w, r.Context(),
+		`SELECT count(*) FROM invoices i
+		  WHERE NOT i.canceled AND i.cancels_id IS NULL AND i.due_on IS NOT NULL
+		    AND i.due_on < CURRENT_DATE AND (i.total - i.paid_amount) > 0.005`)
 	rows, err := h.Pool.Query(r.Context(),
 		`SELECT i.id, i.number, i.person_id, trim(p.first_name || ' ' || p.last_name),
 		        i.due_on, i.total, i.paid_amount, (CURRENT_DATE - i.due_on) AS days
 		   FROM invoices i JOIN persons p ON p.id = i.person_id
 		  WHERE NOT i.canceled AND i.cancels_id IS NULL AND i.due_on IS NOT NULL
 		    AND i.due_on < CURRENT_DATE AND (i.total - i.paid_amount) > 0.005
-		  ORDER BY i.due_on`)
+		  ORDER BY i.due_on LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -1142,9 +1148,12 @@ func (h *Handler) ListInvoices(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+	// Paged with a generous default (finding API-28); X-Total-Count signals truncation.
+	limit, offset := pageParams(r, 1000, 5000)
+	h.totalCount(w, r.Context(), `SELECT count(*) FROM invoices WHERE person_id=$1`, pid)
 	rows, err := h.Pool.Query(r.Context(),
 		`SELECT id, number, issued_on, due_on, subtotal, ust_rate, tax_amount, total, kleinunternehmer, canceled, cancels_id, paid_amount
-		   FROM invoices WHERE person_id=$1 ORDER BY issued_on DESC, id DESC`, pid)
+		   FROM invoices WHERE person_id=$1 ORDER BY issued_on DESC, id DESC LIMIT $2 OFFSET $3`, pid, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return

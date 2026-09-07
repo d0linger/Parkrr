@@ -61,8 +61,12 @@ func (h *Handler) ListPayments(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+	// Paged with a generous default: unbounded loading was the exception among the
+	// list endpoints (finding API-28); X-Total-Count lets a client see truncation.
+	limit, offset := pageParams(r, 1000, 5000)
+	h.totalCount(w, r.Context(), `SELECT count(*) FROM payments WHERE person_id=$1`, id)
 	rows, err := h.Pool.Query(r.Context(),
-		`SELECT `+paymentColumns+` FROM payments WHERE person_id=$1 ORDER BY paid_on DESC, id DESC`, id)
+		`SELECT `+paymentColumns+` FROM payments WHERE person_id=$1 ORDER BY paid_on DESC, id DESC LIMIT $2 OFFSET $3`, id, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return

@@ -184,6 +184,16 @@ func pathID(r *http.Request) (int64, bool) {
 
 func trim(s string) string { return strings.TrimSpace(s) }
 
+// totalCount sets X-Total-Count from the given COUNT query so a client can detect a
+// truncated (paged) listing instead of silently missing rows past the limit (finding
+// API-29). Best-effort: a count failure only omits the header, never fails the list.
+func (h *Handler) totalCount(w http.ResponseWriter, ctx context.Context, query string, args ...any) {
+	var n int64
+	if err := h.Pool.QueryRow(ctx, query, args...).Scan(&n); err == nil {
+		w.Header().Set("X-Total-Count", strconv.FormatInt(n, 10))
+	}
+}
+
 // pageParams parses ?limit and ?offset for list endpoints, applying a default
 // page size and a hard maximum so a single request can never pull an unbounded
 // result set into memory.

@@ -49,6 +49,8 @@ func (h *Handler) getPerson(ctx context.Context, id int64) (models.Person, error
 // ListPersons returns all persons.
 func (h *Handler) ListPersons(w http.ResponseWriter, r *http.Request) {
 	limit, offset := pageParams(r, 1000, 1000)
+	// X-Total-Count lets a client notice when the 1000er-Seite abschneidet (API-29).
+	h.totalCount(w, r.Context(), `SELECT count(*) FROM persons`)
 	rows, err := h.Pool.Query(r.Context(),
 		`SELECT `+personColumns+` FROM persons ORDER BY last_name, first_name LIMIT $1 OFFSET $2`,
 		limit, offset)
