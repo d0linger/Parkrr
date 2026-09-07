@@ -756,10 +756,16 @@
         state.persons = persons; state.categories = categories; state.services = services;
     }
 
+    // Per-list UI state (search text, sort, page), kept across render() rebuilds and
+    // keyed by list, so a save no longer resets it (finding UX-54).
+    const listState = new Map();
     // ---------- generic list with search / sort / pagination ----------
     function mountList(page, opts) {
         const pageSize = opts.pageSize || 10;
-        let q = '', sortIdx = opts.defaultSort || 0, pageNum = 1;
+        const stateKey = opts.stateKey || opts.title || 'list';
+        const saved = listState.get(stateKey) || {};
+        let qRaw = saved.qRaw || '', sortIdx = (saved.sortIdx != null ? saved.sortIdx : (opts.defaultSort || 0)), pageNum = saved.pageNum || 1;
+        let q = norm(qRaw);
 
         page.innerHTML = '';
         const head = el('div', { class: 'page-head' }, el('h2', {}, opts.title));
@@ -768,7 +774,7 @@
         }
         page.append(head);
 
-        const search = el('input', { class: 'search', type: 'search', placeholder: 'Suche …', value: q });
+        const search = el('input', { class: 'search', type: 'search', placeholder: 'Suche …', value: qRaw });
         const sortSel = el('select', { 'aria-label': 'Sortierung' }, ...opts.sorts.map((s, i) => el('option', { value: i, selected: i === sortIdx }, s.label)));
         const toolbar = el('div', { class: 'toolbar' }, search, sortSel);
         const controlState = {};
@@ -779,7 +785,7 @@
         const pagerEl = el('div', {});
         page.append(listEl, pagerEl);
 
-        search.addEventListener('input', () => { q = norm(search.value); pageNum = 1; refresh(); });
+        search.addEventListener('input', () => { qRaw = search.value; q = norm(qRaw); pageNum = 1; refresh(); });
         sortSel.addEventListener('change', () => { sortIdx = Number(sortSel.value); refresh(); });
 
         function refresh() {
@@ -791,6 +797,7 @@
             const total = items.length;
             const pages = Math.max(1, Math.ceil(total / pageSize));
             if (pageNum > pages) pageNum = pages;
+            listState.set(stateKey, { qRaw, sortIdx, pageNum });
             const start = (pageNum - 1) * pageSize;
             const slice = items.slice(start, start + pageSize);
             listEl.innerHTML = '';

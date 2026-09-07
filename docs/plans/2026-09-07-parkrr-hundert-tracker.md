@@ -70,7 +70,7 @@ B11 Destruktives + Betreiber-Punkte.
 
 ## Bedienung und UX (B4 UX)
 
-- [ ] **46** [Notwendig/S] Speichern erhält den Listenzustand — `web/static/js/app.js:884`
+- [x] **46** [Notwendig/S] Speichern erhält den Listenzustand — `web/static/js/app.js:884`
 - [x] **47** [Notwendig/S] Template-Fehler nicht als Offline-Erfolg tarnen — `web/static/js/app.js:5248`
 - [x] **48** [Hoch/S] Zusatzkosten-Empty-State reparieren — `web/static/js/app.js:3151`
 - [x] **49** [Hoch/S] Mehr laden mit Busy- und Fehlerzustand — `web/static/js/app.js:4217`
