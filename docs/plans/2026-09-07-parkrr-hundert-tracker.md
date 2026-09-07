@@ -115,9 +115,15 @@ B11 Destruktives + Betreiber-Punkte.
 
 ## Garagenplaner (B7 Planner)
 
-- [ ] **74** [Hoch/M] Batch-Endpunkt für Spot-Layouts — `internal/server/server.go:207`
+- [x] **74** [Hoch/M] Batch-Endpunkt für Spot-Layouts — `internal/server/server.go:207`
 - [x] **75** [Hoch/M] Zeichenpfad entlasten — `web/static/js/app.js:5856`
-- [ ] **76** [Hoch/S] Rail und Toolbar nicht pro draw() neu bauen — `web/static/js/app.js:6358`
+- [!] **76** [Hoch/S] Rail und Toolbar nicht pro draw() neu bauen — `web/static/js/app.js:6358`
+      ÜBERSPRUNGEN (gemessen statt vermutet): die pointermove-Pfade des Planers
+      rufen draw() gar nicht — Drag/Rotate/Resize mutieren Styles direkt, draw()
+      läuft nur bei diskreten Aktionen. Der Neubau von Rail+Toolbar dort kostet
+      bei realen Palettengrößen <1 ms; eine Memo-Schicht mit Zustands-Signatur
+      riskiert dafür veraltete Anzeigen in genau dem Modul, das laut Leitplanke
+      (AR4) nicht autonom umgebaut werden soll. Nutzen unklar, Risiko real.
 - [x] **77** [Mittel/S] Undo-Snapshots verschlanken — `web/static/js/app.js:5077`
 - [x] **78** [Mittel/S] Emoji-Knöpfe durch SVG-Icons ersetzen — `web/static/js/app.js:6230`
 - [ ] **79** [Mittel/M] Belegungshistorie pro Stellplatz

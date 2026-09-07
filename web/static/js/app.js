@@ -6690,11 +6690,16 @@
             // early (so a second Auto-Arrange could re-snapshot P.spots mid-write — exactly what
             // the guard exists to prevent) and reported the summary before anything was saved.
             const writes = [];
+            // Geometrie-Schreibzugriffe SAMMELN statt je Platz einen PUT zu feuern: der
+            // Batch-Endpunkt wendet alle in EINER Transaktion an (alles-oder-nichts).
+            // Fünfzig Gefährte hießen vorher fünfzig Requests, und ein Abbruch in der
+            // Mitte hinterließ eine halb angeordnete Halle (Hundert 74).
+            const batch = [];
             for (const it of items) {
                 const pl = by.get(it.key);
                 if (it.spot) {
                     const b = it.spot;
-                    if (pl && pl.ok) { b.x = pl.x; b.y = pl.y; b.rot = pl.rot; b._invalid = false; b._dirty = true; writes.push(persistSpot(b)); arranged++; }
+                    if (pl && pl.ok) { b.x = pl.x; b.y = pl.y; b.rot = pl.rot; b._invalid = false; b._dirty = true; batch.push(b); arranged++; }
                     else { // no collision-free spot → delete the placement, vehicle returns to staging
                         try { await api.del('/spots/' + b._id); P.spots = P.spots.filter((x) => x !== b);
                             if (b.vehId) P.palette.push({ id: b.vehId, label: b.label, type: b.type, person_id: b.personId, person_name: b.personName, length_m: b.L, width_m: b.W, height_m: b.H, weight_t: b.t });
@@ -6720,7 +6725,22 @@
                 } // else: staging vehicle with no room → stays in staging
             }
 
-            // Wait for every spot PUT before the run reports done. allSettled, not all:
+            if (batch.length) {
+                try {
+                    await api.put('/halls/' + P.hallId + '/spots/geometry', {
+                        spots: batch.map((b) => ({ id: b._id, geometry: { x: round2(b.x), y: round2(b.y), w: round2(b.w), h: round2(b.h), rot: Math.round(b.rot || 0), status: b.status, noBuf: b.noBuf || undefined } })),
+                    });
+                    batch.forEach((b) => { b._dirty = false; });
+                } catch (err) {
+                    // Alles-oder-nichts: der Server hat NICHTS übernommen. Die Plätze bleiben
+                    // dirty, der Zustand auf dem Schirm ist der gewollte — erneut speichern
+                    // wiederholt genau diesen Batch.
+                    batch.forEach((b) => { b._dirty = true; });
+                    P.dirty = true; errs++;
+                    toast(err.message || 'Anordnung speichern fehlgeschlagen', 'error');
+                }
+            }
+            // Wait for every remaining PUT before the run reports done. allSettled, not all:
             // persistSpot already handles its own rejection (it re-flags _dirty and toasts),
             // so a failed write must not abort the remaining bookkeeping here.
             await Promise.allSettled(writes);

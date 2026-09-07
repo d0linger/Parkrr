@@ -215,6 +215,9 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/halls/{id}/plan", authed(hf(h.GetHallPlan)))
 	mux.Handle("POST /api/halls/{id}/spots", editor(hf(h.CreateSpot)))
 	mux.Handle("PUT /api/spots/{id}", editor(hf(h.UpdateSpot)))
+	// Batch: die Geometrie vieler Plätze EINER Halle in einer Transaktion — der
+	// Weg fürs Auto-Anordnen, damit ein Abbruch keine halbe Anordnung hinterlässt.
+	mux.Handle("PUT /api/halls/{id}/spots/geometry", editor(hf(h.BatchUpdateSpotGeometry)))
 	mux.Handle("DELETE /api/spots/{id}", editor(hf(h.DeleteSpot)))
 	mux.Handle("PUT /api/spots/{id}/vehicle", editor(hf(h.AssignSpotVehicle)))
 	mux.Handle("DELETE /api/spots/{id}/vehicle", editor(hf(h.UnassignSpotVehicle)))
