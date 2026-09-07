@@ -34,6 +34,9 @@ Stand des Verbesserungsprogramms „Parkrr-Hundert" (September 2026).
   eine brauchbare erste Näherung; eigene Maße gewinnen immer.
 - **Batch-Speichern im Garagenplaner:** Auto-Anordnen schreibt alle Plätze in
   einer Transaktion — keine halb angeordnete Halle mehr bei einem Abbruch.
+- **Automatischer Rechnungslauf** (`PARKRR_AUTO_INVOICE_CRON`, Default aus):
+  erstellt Rechnungen nach Zeitplan über denselben Pfad wie der Knopf; schon
+  abgerechnete Perioden werden nie doppelt fakturiert.
 - **`parkrr seed-demo`:** befüllt eine frische Datenbank mit erkennbaren
   Demo-Daten (idempotent; weigert sich auf einer benutzten Datenbank).
 - **Storno-Dokumente nennen die stornierte Rechnungsnummer** (§11 UStG).

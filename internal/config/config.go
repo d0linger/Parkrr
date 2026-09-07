@@ -87,6 +87,12 @@ type Config struct {
 	// ändern ihr Verhalten nicht, bis der Betreiber es einschaltet (Hundert 41).
 	Require2FA bool
 
+	// AutoInvoiceCron plant den automatischen Rechnungslauf (5-Feld-Cron, z. B.
+	// "0 6 1 * *" = monatlich am 1. um 06:00). LEER = AUS (Default): kein Automat
+	// erzeugt Rechnungen, solange der Betreiber es nicht ausdrücklich einschaltet
+	// (Hundert 16). Der Lauf nutzt denselben Pfad wie der "+ Rechnung"-Knopf.
+	AutoInvoiceCron string
+
 	// PasskeyOnly schaltet den Passwort-Login ab: Anmeldung nur noch per Passkey
 	// (Hundert 42). Verlangt eingerichtetes WebAuthn (PARKRR_WEBAUTHN_RP_ID),
 	// sonst bricht der Start ab — eine Installation ohne einen einzigen
@@ -157,18 +163,19 @@ func Load() (*Config, error) {
 		BackupKey: os.Getenv("PARKRR_BACKUP_KEY"),
 		BackupDir: os.Getenv("PARKRR_BACKUP_DIR"),
 
-		SMTPHost:      os.Getenv("PARKRR_SMTP_HOST"),
-		SMTPPort:      getenvInt("PARKRR_SMTP_PORT", 587),
-		SMTPUsername:  os.Getenv("PARKRR_SMTP_USERNAME"),
-		SMTPPassword:  os.Getenv("PARKRR_SMTP_PASSWORD"),
-		SMTPFrom:      os.Getenv("PARKRR_SMTP_FROM"),
-		SMTPFromName:  getenv("PARKRR_SMTP_FROM_NAME", "Parkrr"),
-		SMTPTLS:       getenv("PARKRR_SMTP_TLS", "starttls"),
-		AlertEmail:    splitList(os.Getenv("PARKRR_ALERT_EMAIL")),
-		Require2FA:    getenvBool("PARKRR_REQUIRE_2FA", false),
-		PasskeyOnly:   getenvBool("PARKRR_PASSKEY_ONLY", false),
-		PublicBaseURL: os.Getenv("PARKRR_PUBLIC_BASE_URL"),
-		TimeZone:      os.Getenv("PARKRR_TIMEZONE"),
+		SMTPHost:        os.Getenv("PARKRR_SMTP_HOST"),
+		SMTPPort:        getenvInt("PARKRR_SMTP_PORT", 587),
+		SMTPUsername:    os.Getenv("PARKRR_SMTP_USERNAME"),
+		SMTPPassword:    os.Getenv("PARKRR_SMTP_PASSWORD"),
+		SMTPFrom:        os.Getenv("PARKRR_SMTP_FROM"),
+		SMTPFromName:    getenv("PARKRR_SMTP_FROM_NAME", "Parkrr"),
+		SMTPTLS:         getenv("PARKRR_SMTP_TLS", "starttls"),
+		AlertEmail:      splitList(os.Getenv("PARKRR_ALERT_EMAIL")),
+		Require2FA:      getenvBool("PARKRR_REQUIRE_2FA", false),
+		PasskeyOnly:     getenvBool("PARKRR_PASSKEY_ONLY", false),
+		AutoInvoiceCron: os.Getenv("PARKRR_AUTO_INVOICE_CRON"),
+		PublicBaseURL:   os.Getenv("PARKRR_PUBLIC_BASE_URL"),
+		TimeZone:        os.Getenv("PARKRR_TIMEZONE"),
 
 		S3Endpoint:  os.Getenv("PARKRR_S3_ENDPOINT"),
 		S3Bucket:    os.Getenv("PARKRR_S3_BUCKET"),

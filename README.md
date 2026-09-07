@@ -190,6 +190,7 @@ compose network). Schema migrations run automatically at startup.
 | `PARKRR_TIMEZONE` | business time zone (IANA name, e.g. `Europe/Vienna`) deciding what "today" and "this month" mean; empty = container zone | – |
 | `PARKRR_REQUIRE_2FA` | require a second factor (TOTP or passkey); unenrolled accounts can only reach the 2FA/passkey setup | `false` |
 | `PARKRR_PASSKEY_ONLY` | disable password login entirely (passkey sign-in only); requires `PARKRR_WEBAUTHN_RP_ID` | `false` |
+| `PARKRR_AUTO_INVOICE_CRON` | 5-field cron for the automatic invoice run (e.g. `0 6 1 * *`); empty = off; uses the same path as the manual button, billed periods are never invoiced twice | – |
 
 ---
 

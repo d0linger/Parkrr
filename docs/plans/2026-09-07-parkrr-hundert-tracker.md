@@ -31,7 +31,7 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **13** [Notwendig/M] Eine Zeitzonen-Wahrheit statt drei — `internal/handlers/audit.go:37`
 - [x] **14** [Notwendig/M] Rechnungs-PDF auf Unicode-Schrift — `internal/handlers/invoice_pdf.go:113`
 - [x] **15** [Hoch/M] Mahnwesen mit Stufen und Gedächtnis — `internal/handlers/reminders.go:66`
-- [ ] **16** [Hoch/L] Automatischer Rechnungslauf
+- [x] **16** [Hoch/L] Automatischer Rechnungslauf
 - [x] **17** [Hoch/M] Offene-Posten-Liste als Report
 - [x] **18** [Hoch/M] Storno als Gutschrift-PDF
 - [x] **19** [Mittel/S] Rechnungen und Zusatzkosten als CSV — `internal/handlers/export.go:48`

@@ -247,6 +247,8 @@ func run() error {
 	}
 
 	go server.StartExpiryCleanup(pool, authMgr, cleanupStop)
+	// Automatischer Rechnungslauf — nur mit ausdrücklich gesetztem Cron (Hundert 16).
+	go server.StartAutoInvoice(pool, apiHandler, cfg.AutoInvoiceCron, cleanupStop)
 	go server.StartAuditRetention(pool,
 		time.Duration(cfg.AuditRetentionDays)*24*time.Hour,
 		time.Duration(cfg.AuditRetentionShortDays)*24*time.Hour, cleanupStop, sysAudit)
