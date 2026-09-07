@@ -598,6 +598,49 @@
     const tipNames = (labels) => (labels && labels.length === 12 ? MONTH_NAMES : (labels || []));
     const gid = () => 'c' + Math.random().toString(36).slice(2, 7);
 
+    // Tastatur + Screenreader für Charts (Hundert 62). Die Diagramme waren reine
+    // Hover-Flächen: ohne Maus gab es weder die Werte noch eine Navigation, und der
+    // Screenreader hörte nur "Verlauf". Drei Teile, für Linie und Balken gleich:
+    //  - ein beschreibendes aria-label mit den Kernzahlen (statt eines Gattungsworts),
+    //  - Pfeiltasten-Navigation über die Monate (tabindex=0, Home/Ende), die den
+    //    vorhandenen Tooltip mitführt und den Wert über aria-live ansagt,
+    //  - eine sr-only-Datentabelle als vollwertige Alternative zum Bild.
+    function chartA11y(box, values, names, title, moveTo) {
+        const hi = lastPositive(values);
+        const sum = values.reduce((a, v) => a + v, 0);
+        let peak = 0; for (let i = 1; i < values.length; i++) if (values[i] > values[peak]) peak = i;
+        const svg = box.querySelector('svg');
+        const label = title + ': '
+            + (hi < 0 ? 'keine Werte.' : 'Summe ' + eur(sum) + ', höchster Wert ' + (names[peak] || '') + ' ' + eur(values[peak])
+                + ', letzter Wert ' + (names[hi] || '') + ' ' + eur(values[hi]) + '.')
+            + ' Mit den Pfeiltasten durch die Monate.';
+        svg.setAttribute('aria-label', label);
+        box.tabIndex = 0;
+        box.setAttribute('role', 'img');
+        box.setAttribute('aria-label', label);
+        const live = el('span', { class: 'sr-only', 'aria-live': 'polite' });
+        box.append(live);
+        let idx = -1;
+        box.addEventListener('keydown', (e) => {
+            if (hi < 0) return;
+            let next = idx;
+            if (e.key === 'ArrowRight') next = Math.min(hi, idx < 0 ? 0 : idx + 1);
+            else if (e.key === 'ArrowLeft') next = Math.max(0, idx < 0 ? hi : idx - 1);
+            else if (e.key === 'Home') next = 0;
+            else if (e.key === 'End') next = hi;
+            else return;
+            e.preventDefault();
+            idx = next;
+            moveTo(idx);
+            live.textContent = (names[idx] || '') + ': ' + eur(values[idx]);
+        });
+        // sr-only-Tabelle: dieselben Zahlen als Text, für Screenreader-Tabellennavigation.
+        const tbl = el('table', { class: 'sr-only' },
+            el('caption', {}, title),
+            el('tbody', {}, ...values.map((v, i) => el('tr', {}, el('th', { scope: 'row' }, names[i] || String(i + 1)), el('td', {}, eur(v))))));
+        box.append(tbl);
+    }
+
     // Shared hover tooltip positioned over the chart (viewBox coords -> pixels).
     function chartTip(box, svg, W, H) {
         const tip = el('div', { class: 'c-tip' });
@@ -617,7 +660,7 @@
     // Area/line chart with gradient fill, faint grid, hover crosshair + tooltip
     // and an emphasized latest point. Values are money; future (0) months aren't
     // drawn so the line stops at the latest activity.
-    function chartLine(values, labels) {
+    function chartLine(values, labels, title = 'Verlauf') {
         const W = 340, H = 160, pl = 8, pr = 8, pt = 16, pb = 22, n = values.length;
         const max = Math.max(1, ...values) * 1.12, iw = W - pl - pr, ih = H - pt - pb;
         const x = (i) => pl + (n <= 1 ? iw / 2 : i * iw / (n - 1));
@@ -678,12 +721,19 @@
         overlay.addEventListener('pointerdown', at);
         overlay.addEventListener('pointerleave', off);
         overlay.addEventListener('pointerup', off);
+        chartA11y(box, values, names, title, (i) => {
+            const cx = x(i), cy = y(values[i]);
+            cross.setAttribute('x1', cx); cross.setAttribute('x2', cx); cross.style.opacity = 1;
+            focus.setAttribute('cx', cx); focus.setAttribute('cy', cy); focus.style.opacity = 1;
+            tip.show(cx, cy, `<span class="k">${names[i] || ''}</span><b>${eur(values[i])}</b>`);
+        });
+        box.addEventListener('blur', off);
         return box;
     }
 
     // Vertical bars with rounded ends, gradient fill, a highlighted latest bar and
     // per-bar hover tooltip.
-    function chartBars(values, labels) {
+    function chartBars(values, labels, title = 'Balken') {
         const W = 340, H = 160, pl = 8, pr = 8, pt = 16, pb = 22, n = values.length;
         const max = Math.max(1, ...values) * 1.15, iw = W - pl - pr, ih = H - pt - pb;
         const gap = iw / n, bw = Math.min(24, gap * 0.62), hi = lastPositive(values), id = gid(), names = tipNames(labels);
@@ -714,6 +764,14 @@
             b.addEventListener('pointerdown', focus);
         });
         svg.addEventListener('pointerleave', () => { tip.hide(); marks.forEach((o) => o.classList.remove('dim')); });
+        chartA11y(box, values, names, title, (i) => {
+            const b = marks[i];
+            if (!b) return;
+            marks.forEach((o) => o.classList.toggle('dim', o !== b));
+            tip.show(+b.getAttribute('x') + +b.getAttribute('width') / 2, +b.getAttribute('y'),
+                `<span class="k">${names[i] || ''}</span><b>${eur(values[i])}</b>`);
+        });
+        box.addEventListener('blur', () => { tip.hide(); marks.forEach((o) => o.classList.remove('dim')); });
         return box;
     }
 
@@ -1281,13 +1339,13 @@
 
         // Revenue chart
         const revCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Umsatz pro Monat · ' + ov.year));
-        revCard.append(chartLine(ov.revenue_by_month, MONTHS));
+        revCard.append(chartLine(ov.revenue_by_month, MONTHS, 'Umsatz pro Monat'));
         revCard.append(el('div', { class: 'legend' }, el('span', {}, el('span', { class: 'dotc', style: 'background:var(--primary)' }), 'Miete + Zusatzkosten')));
         page.append(revCard);
 
         // Extra charges per month
         const pcCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Zusatzkosten pro Monat · ' + ov.year));
-        pcCard.append(chartBars(ov.charges_by_month, MONTHS));
+        pcCard.append(chartBars(ov.charges_by_month, MONTHS, 'Zusatzkosten pro Monat'));
         pcCard.append(el('div', { class: 'legend' }, el('span', {}, el('span', { class: 'dotc', style: 'background:var(--primary)' }), 'Zusatzkosten')));
         page.append(pcCard);
 
@@ -1725,7 +1783,7 @@
 
         // statistics at the bottom, below the actionable sections
         const chartCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Kosten pro Monat · ' + stats.year));
-        chartCard.append(chartBars(stats.monthly_accrued, MONTHS));
+        chartCard.append(chartBars(stats.monthly_accrued, MONTHS, 'Aufgelaufene Kosten pro Monat'));
         page.append(chartCard);
         if (stats.years.length) {
             const yc = el('div', { class: 'chart-card' }, el('h3', {}, 'Kosten pro Jahr'));

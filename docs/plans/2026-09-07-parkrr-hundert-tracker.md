@@ -35,7 +35,12 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **17** [Hoch/M] Offene-Posten-Liste als Report
 - [x] **18** [Hoch/M] Storno als Gutschrift-PDF
 - [x] **19** [Mittel/S] Rechnungen und Zusatzkosten als CSV — `internal/handlers/export.go:48`
-- [ ] **20** [Mittel/M] B1-Rest: laufende Periode anteilig fakturieren
+- [>] **20** [Mittel/M] B1-Rest: laufende Periode anteilig fakturieren
+      BETREIBER-ENTSCHEIDUNG: dass Rechnungen nur ABGESCHLOSSENE Perioden
+      fakturieren und die laufende offen bleibt, ist eine in dieser Session
+      bewusst getroffene und bestätigte Regel (Session-Memory invoice-period-lock).
+      Sie hier umzukehren wäre keine Verbesserung, sondern ein Richtungswechsel —
+      wenn gewünscht, bitte explizit beauftragen.
 - [ ] **21** [Mittel/L] E-Rechnung (ZUGFeRD/XRechnung)
 - [ ] **22** [Mittel/M] Buchhaltungsexport DATEV/BMD
 - [ ] **23** [Idee/L] SEPA-Lastschrift
@@ -102,7 +107,7 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **59** [Hoch/S] Live-Region vom Seitencontainer lösen — `web/static/index.html:87`
 - [x] **60** [Hoch/S] document.title je Route setzen — `web/static/js/app.js:897`
 - [x] **61** [Mittel/S] Echte Dialog-Semantik für Overlays — `web/static/js/app.js:5220`
-- [ ] **62** [Mittel/M] Charts tastatur- und screenreader-tauglich — `web/static/js/app.js:591`
+- [x] **62** [Mittel/M] Charts tastatur- und screenreader-tauglich — `web/static/js/app.js:591`
 - [x] **63** [Mittel/S] aria-pressed für Planner-Toolbar — `web/static/js/app.js:6218`
 - [x] **64** [Mittel/S] Suchfeld beschriften, Trefferzahl ansagen — `web/static/js/app.js:771`
 
