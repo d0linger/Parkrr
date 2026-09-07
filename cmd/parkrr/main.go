@@ -32,6 +32,10 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "restore" {
 		os.Exit(runRestore(os.Args[2:]))
 	}
+	// "parkrr seed-demo" befüllt eine FRISCHE Datenbank mit Demo-Daten (Hundert 95).
+	if len(os.Args) > 1 && os.Args[1] == "seed-demo" {
+		os.Exit(runSeedDemo(os.Args[2:]))
+	}
 	setupLogging()
 	if err := run(); err != nil {
 		slog.Error("fatal", "err", err)

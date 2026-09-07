@@ -148,14 +148,14 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **92** [Hoch/M] Vehicle-Lifecycle abdecken — `internal/handlers/vehicles.go:556`
 - [ ] **93** [Mittel/M] E2E-Tests für Login, 2FA und Passkey — `tests/a11y/`
 - [x] **94** [Mittel/S] Coverage-Gate anheben — `.github/workflows/ci.yml`
-- [ ] **95** [Mittel/S] seed-demo-Kommando — `cmd/parkrr/`
+- [x] **95** [Mittel/S] seed-demo-Kommando — `cmd/parkrr/`
 
 ## Ausbau und Zukunft (B10 Ausbau)
 
 - [ ] **96** [Mittel/M] Redesign-Rollout, Phase Tokens
 - [ ] **97** [Mittel/M] Betreiber-Handbuch
 - [ ] **98** [Idee/L] Mehrsprachigkeit der App — `web/static/js/app.js:148`
-- [ ] **99** [Idee/S] CHANGELOG und Release-Notes
+- [x] **99** [Idee/S] CHANGELOG und Release-Notes
 - [ ] **100** [Idee/L] Mandantenfähigkeit
 
 Hinweis Betreiber-Punkte ([>]): 2FA-Pflicht, Passkey-only, Rechnungslauf-Aktivierung,

@@ -455,6 +455,10 @@ export PARKRR_SESSION_SECRET="dev-session-secret-please-change"
 
 go mod tidy
 go run ./cmd/parkrr        # http://localhost:8080
+
+# Optional: eine FRISCHE Datenbank mit erkennbaren Demo-Daten befüllen
+# (Präfix "Demo:", idempotent; weigert sich, sobald echte Personen existieren).
+go run ./cmd/parkrr seed-demo
 ```
 
 Quality gates:
