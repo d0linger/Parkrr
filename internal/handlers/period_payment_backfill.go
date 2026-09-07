@@ -28,7 +28,7 @@ func (h *Handler) BackfillPeriodPayments(ctx context.Context) error {
 			}
 		}
 	}
-	recurByPerson, err := h.loadAllRecurringCharges(ctx, now)
+	recurByPerson, err := h.loadAllRecurringCharges(ctx, now, 0)
 	if err != nil {
 		return err
 	}

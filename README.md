@@ -187,6 +187,7 @@ compose network). Schema migrations run automatically at startup.
 | `PARKRR_SMTP_FROM` / `PARKRR_SMTP_FROM_NAME` | envelope/display sender | – |
 | `PARKRR_SMTP_TLS` | `starttls` \| `tls` \| `none` | `starttls` |
 | `PARKRR_ALERT_EMAIL` | recipients for operational alerts (failed scheduled backup); comma/space separated, empty = off | – |
+| `PARKRR_TIMEZONE` | business time zone (IANA name, e.g. `Europe/Vienna`) deciding what "today" and "this month" mean; empty = container zone | – |
 
 ---
 

@@ -327,11 +327,19 @@ func sumByPerson(ctx context.Context, q interface {
 	return out, rows.Err()
 }
 
-func (h *Handler) lockedPeriodsByPerson(ctx context.Context) (map[int64]map[string]bool, error) {
+// personID = 0 laedt alle; sonst nur die dieser Person — derselbe Grund wie bei
+// loadAllRecurringCharges: die Auskunft ueber eine Person darf nicht den ganzen
+// Rechnungsbestand des Betriebs verbinden (Hundert 36).
+func (h *Handler) lockedPeriodsByPerson(ctx context.Context, personID int64) (map[int64]map[string]bool, error) {
 	out := map[int64]map[string]bool{}
-	rows, err := h.Pool.Query(ctx,
-		`SELECT i.person_id, s.kind, s.ref_id, s.period_key FROM invoice_source s
-		    JOIN invoices i ON i.id = s.invoice_id WHERE NOT i.canceled`)
+	q := `SELECT i.person_id, s.kind, s.ref_id, s.period_key FROM invoice_source s
+	         JOIN invoices i ON i.id = s.invoice_id WHERE NOT i.canceled`
+	var args []any
+	if personID != 0 {
+		q += ` AND i.person_id = $1`
+		args = append(args, personID)
+	}
+	rows, err := h.Pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -649,7 +657,7 @@ func (h *Handler) outstandingByPerson(r *http.Request, personID int64) (map[int6
 	}
 
 	// Recurring extra costs accrue into the same charge totals.
-	recurByPerson, err := h.loadAllRecurringCharges(ctx, now)
+	recurByPerson, err := h.loadAllRecurringCharges(ctx, now, personID)
 	if err != nil {
 		return nil, err
 	}
@@ -697,7 +705,7 @@ func (h *Handler) outstandingByPerson(r *http.Request, personID int64) (map[int6
 	for pid := range invoicedTaxByPerson {
 		personIDs[pid] = struct{}{}
 	}
-	lockedByPerson, lerr := h.lockedPeriodsByPerson(ctx)
+	lockedByPerson, lerr := h.lockedPeriodsByPerson(ctx, personID)
 	if lerr != nil {
 		return nil, lerr
 	}
@@ -880,7 +888,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Recurring extra costs accrue per period into the same charge totals.
-	recurByPerson, err := h.loadAllRecurringCharges(ctx, now)
+	recurByPerson, err := h.loadAllRecurringCharges(ctx, now, 0)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -936,7 +944,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	for pid := range invoicedTaxByPerson {
 		personIDs[pid] = struct{}{}
 	}
-	lockedByPerson, lerr := h.lockedPeriodsByPerson(ctx)
+	lockedByPerson, lerr := h.lockedPeriodsByPerson(ctx, 0)
 	if lerr != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return

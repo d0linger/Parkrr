@@ -48,6 +48,22 @@ func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
 		cfg.ConnConfig.RuntimeParams = map[string]string{}
 	}
 	cfg.ConnConfig.RuntimeParams["statement_timeout"] = "10000" // ms
+	// Die Sitzungszeitzone an die Geschäftszeitzone des Prozesses binden (Hundert 13).
+	// Ohne das rechnet die Anwendung Kalendergrenzen in time.Local, während `now()`,
+	// `CURRENT_DATE` und jeder Cast in der Datenbank in DEREN Zone rechnen. Läuft der
+	// Container in UTC und der Betrieb in Wien, liegt zwischen 00:00 und 02:00 ein
+	// Fenster, in dem beide Seiten einen anderen Tag meinen — und genau dort entstehen
+	// Zahlungen mit dem Datum von gestern.
+	//
+	// NUR bei einem echten IANA-Namen. Ohne gesetztes TZ/PARKRR_TIMEZONE heißt
+	// time.Local schlicht "Local" — das ist kein Zonenname, den Postgres kennt, und
+	// der Verbindungsaufbau scheitert dann mit
+	//   FATAL: invalid value for parameter "TimeZone": "Local"
+	// also mit einer Anwendung, die gar nicht mehr startet. In dem Fall bleibt die
+	// Datenbank bei ihrer eigenen Vorgabe: unverändertes Verhalten.
+	if tz := time.Local.String(); tz != "" && tz != "Local" {
+		cfg.ConnConfig.RuntimeParams["TimeZone"] = tz
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

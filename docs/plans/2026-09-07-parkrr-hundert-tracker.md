@@ -28,7 +28,7 @@ B11 Destruktives + Betreiber-Punkte.
 ## Abrechnung und Finanzen (B2 Abrechnung)
 
 - [x] **12** [Notwendig/M] Injizierbare Uhr in der Abrechnung — `internal/handlers/billing.go:273`
-- [ ] **13** [Notwendig/M] Eine Zeitzonen-Wahrheit statt drei — `internal/handlers/audit.go:37`
+- [x] **13** [Notwendig/M] Eine Zeitzonen-Wahrheit statt drei — `internal/handlers/audit.go:37`
 - [ ] **14** [Notwendig/M] Rechnungs-PDF auf Unicode-Schrift — `internal/handlers/invoice_pdf.go:113`
 - [ ] **15** [Hoch/M] Mahnwesen mit Stufen und Gedächtnis — `internal/handlers/reminders.go:66`
 - [ ] **16** [Hoch/L] Automatischer Rechnungslauf
@@ -53,8 +53,8 @@ B11 Destruktives + Betreiber-Punkte.
 - [ ] **32** [Hoch/M] Retention für wachsende Nebentabellen — `internal/handlers/portal.go:132`
 - [ ] **33** [Mittel/S] Tote Tabelle flatrate_paid_years entfernen — `migrations/006_flatrate_years.sql`
 - [x] **34** [Mittel/S] Checksummen in schema_migrations — `internal/database/database.go:116`
-- [ ] **35** [Mittel/M] Audit-Suche indexfähig machen — `internal/handlers/audit.go:23`
-- [ ] **36** [Mittel/M] Portal-Statistikpfad wirklich scopen — `internal/handlers/stats.go:651`
+- [x] **35** [Mittel/M] Audit-Suche indexfähig machen — `internal/handlers/audit.go:23`
+- [x] **36** [Mittel/M] Portal-Statistikpfad wirklich scopen — `internal/handlers/stats.go:651`
 - [ ] **37** [Idee/L] OpenAPI-Spezifikation
 
 ## Sicherheit und Datenschutz (B8 Sicherheit)

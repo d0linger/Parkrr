@@ -91,6 +91,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// Die Geschäftszeitzone einmal als Prozesszone setzen, VOR jedem time.Now() und
+	// vor dem Verbindungsaufbau (database.Connect bindet die Sitzungszeitzone daran).
+	// Danach meinen Anwendung und Datenbank denselben Kalendertag (Hundert 13).
+	time.Local = cfg.Location
+	slog.Info("business time zone", "zone", time.Local.String())
 
 	ctx, stop := signal.NotifyContext(context.Background(),
 		os.Interrupt, syscall.SIGTERM)

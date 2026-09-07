@@ -99,6 +99,20 @@ func days(a, b time.Time) float64 { return b.Sub(a).Hours() / 24.0 }
 // bound to a whole day makes day counts integral, so the accrued value counts
 // today as a full day, does not drift within the day, and never bills into
 // tomorrow. It is the single source of truth for "up to and including today".
+//
+// ZU DEN ZWEI ZONEN IN DIESER DATEI (Hundert 13) — sie sind kein Versehen:
+//
+//   - WELCHER Kalendertag gemeint ist, entscheidet die GESCHÄFTSZONE. Sie steckt in
+//     t: t.Date() liefert Jahr/Monat/Tag in t's eigener Location, und t kommt aus
+//     time.Now(), also aus time.Local (in main aus PARKRR_TIMEZONE gesetzt).
+//   - WIE dieser Kalendertag dargestellt wird, ist UTC-Mitternacht. Das ist die
+//     Trägerform für DATE-Spalten (paid_on, start_date, issued_on …): pgx liest eine
+//     DATE als UTC-Mitternacht zurück, und ein Vergleich gegen eine lokal verankerte
+//     Zeit wäre um den Zonenversatz daneben.
+//
+// Beides mit time.Local zu bauen wäre also NICHT die gesuchte "eine Wahrheit",
+// sondern ein Fehler. Wer hier etwas ändert: TestDayAfterUsesBusinessCalendarDay
+// hält beide Hälften fest.
 func DayAfter(t time.Time) time.Time {
 	y, m, d := t.Date()
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)

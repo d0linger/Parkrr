@@ -116,11 +116,21 @@ func (h *Handler) loadRecurringCharges(ctx context.Context, personID int64, now 
 	return out, rows.Err()
 }
 
-// loadAllRecurringCharges groups every recurring charge by person (dashboard),
-// settling bound charges via each person's agreements and the global vehicle
-// paid map.
-func (h *Handler) loadAllRecurringCharges(ctx context.Context, now time.Time) (map[int64][]models.RecurringCharge, error) {
-	rows, err := h.Pool.Query(ctx, recurringSelect)
+// loadAllRecurringCharges groups recurring charges by person (dashboard), settling
+// bound charges via each person's agreements and the global vehicle paid map.
+//
+// personID = 0 laedt alle; sonst nur die dieser Person. Der Filter ist nicht bloss
+// Kosmetik: outstandingByPerson ist der Pfad, den auch das oeffentliche Kundenportal
+// nimmt, und der lud bisher fuer die Auskunft ueber EINE Person saemtliche
+// wiederkehrenden Posten des Betriebs (Hundert 36).
+func (h *Handler) loadAllRecurringCharges(ctx context.Context, now time.Time, personID int64) (map[int64][]models.RecurringCharge, error) {
+	q := recurringSelect
+	var args []any
+	if personID != 0 {
+		q += ` WHERE rc.person_id = $1`
+		args = append(args, personID)
+	}
+	rows, err := h.Pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

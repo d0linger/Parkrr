@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config holds all runtime configuration for the application.
@@ -81,6 +82,23 @@ type Config struct {
 	// https://parkrr.example.com), used to build links inside outgoing e-mail.
 	PublicBaseURL string
 
+	// TimeZone ist die GESCHÄFTSZEITZONE: die Zone, in der "heute", "dieser Monat"
+	// und die Tagesgrenzen des Änderungsprotokolls gemeint sind (IANA-Name, etwa
+	// "Europe/Vienna"). Leer = time.Local, also das, was TZ gesetzt hat, sonst UTC —
+	// unverändertes Verhalten (Hundert 13).
+	//
+	// Warum das nicht egal ist: ein Container läuft üblicherweise in UTC. Zwischen
+	// 00:00 und 02:00 Wiener Zeit ist in UTC noch gestern. Eine um 00:30 erfasste
+	// Zahlung bekäme dann das Datum von gestern, eine Rechnung liefe eine Periode
+	// zu kurz, und ein Eintrag im Änderungsprotokoll wäre unter dem gestrigen
+	// Kalendertag zu suchen.
+	TimeZone string
+
+	// Location ist TimeZone bereits geparst — nie nil. Load PRUEFT den Namen nur;
+	// gesetzt wird die Prozesszone in main, damit der Seiteneffekt dort steht, wo
+	// man ihn sucht, und "Konfiguration laden" nichts am Prozess veraendert.
+	Location *time.Location
+
 	// S3-compatible off-site backup target (optional).
 	S3Endpoint  string
 	S3Bucket    string
@@ -137,6 +155,7 @@ func Load() (*Config, error) {
 		SMTPTLS:       getenv("PARKRR_SMTP_TLS", "starttls"),
 		AlertEmail:    splitList(os.Getenv("PARKRR_ALERT_EMAIL")),
 		PublicBaseURL: os.Getenv("PARKRR_PUBLIC_BASE_URL"),
+		TimeZone:      os.Getenv("PARKRR_TIMEZONE"),
 
 		S3Endpoint:  os.Getenv("PARKRR_S3_ENDPOINT"),
 		S3Bucket:    os.Getenv("PARKRR_S3_BUCKET"),
@@ -165,6 +184,24 @@ func Load() (*Config, error) {
 		if ssl == "disable" {
 			slog.Warn("config: database TLS is off (sslmode=disable) — set PARKRR_DB_SSLMODE for a remote/separate-host DB")
 		}
+	}
+
+	// Die Geschäftszeitzone wird als time.Local gesetzt (in main), nicht durch dreißig
+	// Signaturen gereicht: time.Local ist in Go die Prozesszone, und sie EINMAL zu
+	// setzen macht jedes time.Now(), jedes t.Date() und jeden Kalendervergleich der
+	// Anwendung auf einen Schlag einheitlich — statt die Zone an einer Stelle zu
+	// vergessen (Hundert 13).
+	//
+	// Ein unbekannter Zonenname wird ABGEWIESEN statt still auf UTC zurückzufallen:
+	// ein Tippfehler wie "Europe/Wien" würde sonst die Kalendergrenzen still um bis
+	// zu zwei Stunden verschieben, und das fällt erst beim Jahresabschluss auf.
+	cfg.Location = time.Local
+	if tz := strings.TrimSpace(cfg.TimeZone); tz != "" {
+		loc, lerr := time.LoadLocation(tz)
+		if lerr != nil {
+			return nil, fmt.Errorf("PARKRR_TIMEZONE %q is not a known IANA time zone: %w", tz, lerr)
+		}
+		cfg.Location = loc
 	}
 
 	if cfg.AdminPassword == "" {
