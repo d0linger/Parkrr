@@ -108,9 +108,9 @@ B11 Destruktives + Betreiber-Punkte.
 ## Garagenplaner (B7 Planner)
 
 - [ ] **74** [Hoch/M] Batch-Endpunkt für Spot-Layouts — `internal/server/server.go:207`
-- [ ] **75** [Hoch/M] Zeichenpfad entlasten — `web/static/js/app.js:5856`
+- [x] **75** [Hoch/M] Zeichenpfad entlasten — `web/static/js/app.js:5856`
 - [ ] **76** [Hoch/S] Rail und Toolbar nicht pro draw() neu bauen — `web/static/js/app.js:6358`
-- [ ] **77** [Mittel/S] Undo-Snapshots verschlanken — `web/static/js/app.js:5077`
+- [x] **77** [Mittel/S] Undo-Snapshots verschlanken — `web/static/js/app.js:5077`
 - [ ] **78** [Mittel/S] Emoji-Knöpfe durch SVG-Icons ersetzen — `web/static/js/app.js:6230`
 - [ ] **79** [Mittel/M] Belegungshistorie pro Stellplatz
 - [ ] **80** [Mittel/S] Standardmaße je Kategorie

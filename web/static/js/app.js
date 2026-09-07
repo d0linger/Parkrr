@@ -5124,7 +5124,21 @@
             st.spots.forEach((g) => { const s = P.spots.find((x) => x._id === g._id); if (!s) return;
                 if (s.x !== g.x || s.y !== g.y || s.w !== g.w || s.h !== g.h || s.rot !== g.rot || s.status !== g.status || !!s.noBuf !== !!g.noBuf) { s.x = g.x; s.y = g.y; s.w = g.w; s.h = g.h; s.rot = g.rot; s.status = g.status; s.noBuf = !!g.noBuf; s._dirty = true; } });
         }
-        function pushUndo() { P.hist = P.hist.slice(0, P.hpos + 1); P.hist.push(snapshot()); if (P.hist.length > 80) P.hist.shift(); P.hpos = P.hist.length - 1; }
+        // Historie zusaetzlich per GESAMTGROESSE deckeln, nicht nur per Anzahl: ein
+        // Schnappschuss ist der komplette Grundriss als JSON, in einer grossen Halle
+        // also schnell dreistellige Kilobyte. 80 Schritte konnten so zweistellige MB
+        // im Speicher halten (Hundert PLAN-88). Aelteste Schritte fallen zuerst weg,
+        // mindestens 10 bleiben immer erhalten, damit Undo brauchbar bleibt.
+        const UNDO_MAX_STEPS = 80, UNDO_MAX_CHARS = 4 << 20, UNDO_MIN_STEPS = 10;
+        function pushUndo() {
+            P.hist = P.hist.slice(0, P.hpos + 1);
+            P.hist.push(snapshot());
+            while (P.hist.length > UNDO_MAX_STEPS) P.hist.shift();
+            let bytes = 0;
+            for (const h of P.hist) bytes += h.length;
+            while (P.hist.length > UNDO_MIN_STEPS && bytes > UNDO_MAX_CHARS) bytes -= P.hist.shift().length;
+            P.hpos = P.hist.length - 1;
+        }
         function commitGeom(msg, kind) { pushUndo(); markDirty(); draw(); if (msg) toast(msg, kind || ''); }
         let saveTimer = null;
         // Auto-save: geometry/placement edits are batched (atomic floor+spots, so an
@@ -5797,7 +5811,7 @@
         // wall-enclosed outline (so placement/metrics use it); falls back to the wall bbox
         // while the ring is still open. Also grows the canvas to fit the drawing.
         function refreshFloorFromWalls() {
-            _encKey = null;
+            bumpGeom();
             if (P.walls.nodes.length) { const bb = wallsBBox(); P.Wm = Math.max(P.Wm, Math.ceil(bb.maxX + 1.5)); P.Hm = Math.max(P.Hm, Math.ceil(bb.maxY + 1.5)); }
             const poly = traceEnclosurePoly(encNow());
             if (poly && poly.length >= 3) P.floor = poly;
@@ -5859,7 +5873,7 @@
             if (!(l || t || r || b)) return false;
             const sl = planWrap.scrollLeft, st = planWrap.scrollTop;
             if (l || t) shiftWorld(l, t);
-            P.Wm += l + r; P.Hm += t + b; _encKey = null;
+            P.Wm += l + r; P.Hm += t + b; bumpGeom();
             layout();
             planWrap.scrollLeft = sl + l * P.CELL; planWrap.scrollTop = st + t * P.CELL;
             return true;
@@ -5922,10 +5936,16 @@
         // the Bezug via edgeOffs; delegated to the tested PG.roomAreas.
         function roomFaces() { return PG.roomAreas(P.walls.nodes, P.walls.edges, P.wallRef); }
         let _enc = null, _encKey = null;
+        // Geometrie-Stempel: wird von jeder Stelle hochgezaehlt, die Waende, wallRef
+        // oder P.floor aendert (siehe bumpGeom). enclosure() vergleicht nur noch diese
+        // Zahl, statt pro Aufruf saemtliche Wandbloecke zu einem String zu verketten
+        // und P.floor zu serialisieren (Hundert PLAN-85).
+        let _geomStamp = 0;
+        const bumpGeom = () => { _geomStamp++; _encKey = null; };
         function enclosure() {
-            const wb = wallBlocks();
-            const key = P.wallRef + '#' + wb.map((e) => e.kind + ':' + round2(e.x) + ',' + round2(e.y) + ',' + round2(e.w) + ',' + round2(e.h) + ',' + Math.round(e.rot || 0)).join('|') + '#' + JSON.stringify(P.floor);
+            const key = P.wallRef + '#' + _geomStamp;
             if (key === _encKey) return _enc;
+            const wb = wallBlocks();
             _encKey = key; _enc = wb.length ? computeEnclosure(wb) : null;
             // Replace each room's quantised raster area with the exact analytic face area (C1), matched
             // by the raster centroid; subtract interior Stützen inside that room (S1-A). A face is only
