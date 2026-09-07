@@ -166,6 +166,15 @@ func (h *Handler) ImportPersons(w http.ResponseWriter, r *http.Request) {
 
 	res := importResult{Errors: []importRowError{}}
 	ctx := r.Context()
+	// One transaction for the whole file: a DB error mid-import rolls everything back
+	// instead of leaving a half-imported dataset (finding API-25). Validation errors
+	// stay per-row (they never reach the DB); only a DATABASE failure aborts.
+	tx, err := h.Pool.Begin(ctx)
+	if err != nil {
+		serverError(w, r, "Import fehlgeschlagen – nichts wurde übernommen", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 	for i := 1; i < len(records); i++ {
 		rec := records[i]
 		rowNo := i + 1 // 1-based including the header row
@@ -198,25 +207,34 @@ func (h *Handler) ImportPersons(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		// Skip a person whose (non-empty) e-mail already exists, case-insensitive.
+		// The check runs in the SAME transaction as the inserts (indexed via
+		// idx_persons_email_lower), so it also sees rows added earlier in this file
+		// and a dedupe-query failure aborts cleanly instead of slipping a duplicate
+		// through (finding API-26). Two truly concurrent imports can still race in
+		// READ COMMITTED; real uniqueness needs the operator-gated unique index.
 		if req.Email != "" {
 			var exists bool
-			if err := h.Pool.QueryRow(ctx,
-				`SELECT EXISTS(SELECT 1 FROM persons WHERE lower(email) = lower($1))`, req.Email).Scan(&exists); err == nil && exists {
+			if err := tx.QueryRow(ctx,
+				`SELECT EXISTS(SELECT 1 FROM persons WHERE lower(email) = lower($1))`, req.Email).Scan(&exists); err != nil {
+				serverError(w, r, "Import fehlgeschlagen – nichts wurde übernommen", err)
+				return
+			} else if exists {
 				res.Skipped++
 				continue
 			}
 		}
-		if _, err := h.Pool.Exec(ctx,
+		if _, err := tx.Exec(ctx,
 			`INSERT INTO persons (first_name, last_name, email, phone, address, notes)
 			 VALUES ($1,$2,$3,$4,$5,$6)`,
 			req.FirstName, req.LastName, req.Email, req.Phone, req.Address, req.Notes); err != nil {
-			res.Failed++
-			if len(res.Errors) < maxImportErrs {
-				res.Errors = append(res.Errors, importRowError{Row: rowNo, Message: "Datenbankfehler"})
-			}
-			continue
+			serverError(w, r, "Import fehlgeschlagen – nichts wurde übernommen", err)
+			return
 		}
 		res.Imported++
+	}
+	if err := tx.Commit(ctx); err != nil {
+		serverError(w, r, "Import fehlgeschlagen – nichts wurde übernommen", err)
+		return
 	}
 
 	h.audit(r, "import", "person", 0,

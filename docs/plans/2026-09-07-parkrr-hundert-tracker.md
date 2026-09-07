@@ -44,9 +44,9 @@ B11 Destruktives + Betreiber-Punkte.
 
 ## Datenmodell und API (B3 Datenmodell)
 
-- [ ] **26** [Notwendig/S] Personen-Import in eine Transaktion — `internal/handlers/import.go:210`
-- [ ] **27** [Notwendig/S] E-Mail-Dedupe indexieren und absichern — `internal/handlers/import.go:204`
-- [ ] **28** [Hoch/S] Index auf invoices(due_on) — `internal/handlers/billing.go:1101`
+- [x] **26** [Notwendig/S] Personen-Import in eine Transaktion — `internal/handlers/import.go:210`
+- [x] **27** [Notwendig/S] E-Mail-Dedupe indexieren und absichern — `internal/handlers/import.go:204`
+- [x] **28** [Hoch/S] Index auf invoices(due_on) — `internal/handlers/billing.go:1101`
 - [ ] **29** [Hoch/S] Geldlisten paginieren — `internal/handlers/billing.go:1147`
 - [ ] **30** [Hoch/S] total und has_more bei Listen — `internal/handlers/handlers.go:167`
 - [ ] **31** [Hoch/S] users.disabled statt löschen — `internal/handlers/users.go:241`
