@@ -30,7 +30,7 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **12** [Notwendig/M] Injizierbare Uhr in der Abrechnung — `internal/handlers/billing.go:273`
 - [x] **13** [Notwendig/M] Eine Zeitzonen-Wahrheit statt drei — `internal/handlers/audit.go:37`
 - [x] **14** [Notwendig/M] Rechnungs-PDF auf Unicode-Schrift — `internal/handlers/invoice_pdf.go:113`
-- [ ] **15** [Hoch/M] Mahnwesen mit Stufen und Gedächtnis — `internal/handlers/reminders.go:66`
+- [x] **15** [Hoch/M] Mahnwesen mit Stufen und Gedächtnis — `internal/handlers/reminders.go:66`
 - [ ] **16** [Hoch/L] Automatischer Rechnungslauf
 - [x] **17** [Hoch/M] Offene-Posten-Liste als Report
 - [x] **18** [Hoch/M] Storno als Gutschrift-PDF

@@ -53,8 +53,23 @@ func (h *Handler) RemindInvoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	subject := "Zahlungserinnerung – Rechnung " + iv.Number
-	body := h.reminderBody(iv, trim(first+" "+last))
+	// Mahn-Gedächtnis (Hundert 15): die Stufe entsteht aus der Zahl der bisherigen
+	// Versendungen. 1 = Zahlungserinnerung, 2 = 1. Mahnung, 3 = 2./letzte Mahnung;
+	// Stufe 3 wiederholt sich — es gibt keine "5. Mahnung", die eine Eskalation
+	// vortäuscht, die nicht stattfindet.
+	var prior int
+	if err := h.Pool.QueryRow(r.Context(),
+		`SELECT count(*) FROM invoice_reminders WHERE invoice_id=$1`, iv.ID).Scan(&prior); err != nil {
+		serverError(w, r, "query failed", err)
+		return
+	}
+	level := prior + 1
+	if level > 3 {
+		level = 3
+	}
+
+	subject := reminderSubject(level, iv.Number)
+	body := h.reminderBody(iv, trim(first+" "+last), level)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
@@ -63,13 +78,37 @@ func (h *Handler) RemindInvoice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "E-Mail konnte nicht gesendet werden")
 		return
 	}
-	h.audit(r, "remind", "invoice", iv.ID, "Zahlungserinnerung an "+email+" für Rechnung "+iv.Number)
-	writeJSON(w, http.StatusOK, map[string]any{"sent": true, "to": email})
+	// ERST nach erfolgreichem Versand festhalten: eine gescheiterte Mail darf die
+	// Stufe nicht hochzählen — sonst bekäme der Kunde als ERSTE Post die 1. Mahnung.
+	if _, err := h.Pool.Exec(r.Context(),
+		`INSERT INTO invoice_reminders (invoice_id, level, sent_to) VALUES ($1,$2,$3)`,
+		iv.ID, level, email); err != nil {
+		slog.Error("remind invoice: could not record reminder", "invoice_id", iv.ID, "err", err)
+	}
+	h.audit(r, "remind", "invoice", iv.ID,
+		fmt.Sprintf("%s an %s für Rechnung %s", reminderLevelName(level), email, iv.Number))
+	writeJSON(w, http.StatusOK, map[string]any{"sent": true, "to": email, "level": level})
+}
+
+// reminderLevelName benennt die Stufe so, wie sie auch im Betreff steht.
+func reminderLevelName(level int) string {
+	switch level {
+	case 1:
+		return "Zahlungserinnerung"
+	case 2:
+		return "1. Mahnung"
+	default:
+		return "2. Mahnung (letzte Mahnung)"
+	}
+}
+
+func reminderSubject(level int, number string) string {
+	return reminderLevelName(level) + " – Rechnung " + number
 }
 
 // reminderBody composes the plain-text reminder from the invoice's own snapshot
 // (seller/IBAN/footer), so it matches the immutable document exactly.
-func (h *Handler) reminderBody(iv invoice, name string) string {
+func (h *Handler) reminderBody(iv invoice, name string, level int) string {
 	s := iv.Seller
 	const df = "02.01.2006"
 	var b strings.Builder
@@ -78,7 +117,7 @@ func (h *Handler) reminderBody(iv invoice, name string) string {
 	} else {
 		b.WriteString("Guten Tag,\n\n")
 	}
-	fmt.Fprintf(&b, "wir möchten Sie freundlich an die offene Rechnung %s erinnern.\n\n", iv.Number)
+	fmt.Fprintf(&b, "%s\n\n", reminderOpening(level, iv.Number))
 	fmt.Fprintf(&b, "Rechnungsdatum:   %s\n", iv.IssuedOn.Format(df))
 	if iv.DueOn != nil {
 		fmt.Fprintf(&b, "Fällig am:        %s\n", iv.DueOn.Format(df))
@@ -106,4 +145,18 @@ func (h *Handler) reminderBody(iv invoice, name string) string {
 		b.WriteString("\n" + footer + "\n")
 	}
 	return b.String()
+}
+
+// reminderOpening ist der erste Satz je Stufe: freundlich, bestimmt, unmissverständlich.
+// Der Ton eskaliert mit der Stufe — dieselbe Formulierung dreimal zu schicken wäre
+// keine Mahnung, sondern ein Newsletter.
+func reminderOpening(level int, number string) string {
+	switch level {
+	case 1:
+		return "wir möchten Sie freundlich an die offene Rechnung " + number + " erinnern."
+	case 2:
+		return "trotz unserer Zahlungserinnerung ist die Rechnung " + number + " weiterhin offen. Wir bitten Sie, den offenen Betrag umgehend zu begleichen (1. Mahnung)."
+	default:
+		return "die Rechnung " + number + " ist trotz Erinnerung und 1. Mahnung weiterhin offen. Dies ist unsere letzte Mahnung — bitte begleichen Sie den offenen Betrag binnen 7 Tagen, andernfalls behalten wir uns weitere Schritte vor (2. Mahnung)."
+	}
 }

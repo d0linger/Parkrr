@@ -238,9 +238,13 @@ type invoice struct {
 	Canceled         bool           `json:"canceled"`             // storniert (immutable original, superseded)
 	CancelsID        *int64         `json:"cancels_id,omitempty"` // set on a Storno document -> the original
 	PaidAmount       float64        `json:"paid_amount"`          // sum of payments allocated to this invoice
-	OpenAmount       float64        `json:"open_amount"`          // total - paid_amount (the open item)
-	Status           string         `json:"status"`               // offen | teilbezahlt | bezahlt | storniert | storno
-	Items            []invoiceItem  `json:"items,omitempty"`
+	// Mahn-Gedächtnis (Hundert 15): wie oft und wann zuletzt gemahnt wurde. Nur in
+	// der Listenansicht befüllt — dort fällt die Entscheidung, ob (wieder) gemahnt wird.
+	ReminderCount  int           `json:"reminder_count,omitempty"`
+	LastRemindedAt *time.Time    `json:"last_reminded_at,omitempty"`
+	OpenAmount     float64       `json:"open_amount"` // total - paid_amount (the open item)
+	Status         string        `json:"status"`      // offen | teilbezahlt | bezahlt | storniert | storno
+	Items          []invoiceItem `json:"items,omitempty"`
 	// Positions is the structured summary of what the invoice bills (Gefährt/Pauschale
 	// + Periode), for the one-line attribution in the person overview. Distinct from
 	// Items (the detail line snapshot shown on the invoice page).
@@ -1156,8 +1160,11 @@ func (h *Handler) ListInvoices(w http.ResponseWriter, r *http.Request) {
 	limit, offset := pageParams(r, 1000, 5000)
 	h.totalCount(w, r.Context(), `SELECT count(*) FROM invoices WHERE person_id=$1`, pid)
 	rows, err := h.Pool.Query(r.Context(),
-		`SELECT id, number, issued_on, due_on, subtotal, ust_rate, tax_amount, total, kleinunternehmer, canceled, cancels_id, paid_amount
-		   FROM invoices WHERE person_id=$1 ORDER BY issued_on DESC, id DESC LIMIT $2 OFFSET $3`, pid, limit, offset)
+		`SELECT i.id, i.number, i.issued_on, i.due_on, i.subtotal, i.ust_rate, i.tax_amount, i.total,
+		        i.kleinunternehmer, i.canceled, i.cancels_id, i.paid_amount,
+		        (SELECT count(*) FROM invoice_reminders ir WHERE ir.invoice_id = i.id),
+		        (SELECT max(ir.sent_at) FROM invoice_reminders ir WHERE ir.invoice_id = i.id)
+		   FROM invoices i WHERE i.person_id=$1 ORDER BY i.issued_on DESC, i.id DESC LIMIT $2 OFFSET $3`, pid, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -1168,7 +1175,8 @@ func (h *Handler) ListInvoices(w http.ResponseWriter, r *http.Request) {
 		var iv invoice
 		iv.PersonID = pid
 		if err := rows.Scan(&iv.ID, &iv.Number, &iv.IssuedOn, &iv.DueOn, &iv.Subtotal,
-			&iv.UStRate, &iv.TaxAmount, &iv.Total, &iv.Kleinunternehmer, &iv.Canceled, &iv.CancelsID, &iv.PaidAmount); err != nil {
+			&iv.UStRate, &iv.TaxAmount, &iv.Total, &iv.Kleinunternehmer, &iv.Canceled, &iv.CancelsID, &iv.PaidAmount,
+			&iv.ReminderCount, &iv.LastRemindedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "query failed")
 			return
 		}

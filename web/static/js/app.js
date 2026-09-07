@@ -1920,7 +1920,10 @@
             el('div', { class: 'pay-method' }, 'Rechnung ' + esc(iv.number), ' ', invStatusBadge(iv)),
             el('div', { class: 'pay-date' }, new Date(iv.issued_on).toLocaleDateString('de-DE')
                 + (iv.kleinunternehmer ? '' : ' · inkl. USt')
-                + (iv.status === 'teilbezahlt' ? ' · offen ' + eur(iv.open_amount) : '')));
+                + (iv.status === 'teilbezahlt' ? ' · offen ' + eur(iv.open_amount) : '')
+                // Mahn-Gedächtnis (Hundert 15): sichtbar, wie oft und wann zuletzt —
+                // sonst mahnt jeder Kollege noch einmal von vorn.
+                + (iv.reminder_count ? ' · ' + iv.reminder_count + '× gemahnt' + (iv.last_reminded_at ? ' (zuletzt ' + new Date(iv.last_reminded_at).toLocaleDateString('de-DE') + ')' : '') : '')));
         // What the invoice bills (Gefährt/Pauschale · Periode) — one muted line; the
         // card links to the invoice page for the full positions.
         if ((iv.positions || []).length) {
@@ -1958,11 +1961,18 @@
         } catch (e) { toast(e.message, 'error'); }
     }
     async function remindInvoice(iv) {
-        if (!await confirmDialog('Zahlungserinnerung senden?',
-            'Sendet eine E-Mail mit den offenen Rechnungsdaten an den hinterlegten Kontakt der Person.', 'Senden')) return;
+        // Die nächste Stufe VOR dem Senden benennen (Hundert 15): wer auf "Senden"
+        // klickt, soll wissen, ob eine freundliche Erinnerung oder die letzte
+        // Mahnung hinausgeht.
+        const lvl = Math.min((iv.reminder_count || 0) + 1, 3);
+        const name = lvl === 1 ? 'Zahlungserinnerung' : lvl === 2 ? '1. Mahnung' : '2. Mahnung (letzte Mahnung)';
+        if (!await confirmDialog(name + ' senden?',
+            'Sendet eine E-Mail mit den offenen Rechnungsdaten an den hinterlegten Kontakt der Person.'
+            + (iv.reminder_count ? ' Bisher ' + iv.reminder_count + '× gemahnt.' : ''), 'Senden')) return;
         try {
             const r = await api.post('/invoices/' + iv.id + '/remind', {});
-            toast('Erinnerung gesendet' + (r && r.to ? ' an ' + r.to : ''), 'success');
+            const sent = r && r.level === 1 ? 'Zahlungserinnerung' : r && r.level === 2 ? '1. Mahnung' : '2. Mahnung';
+            toast(sent + ' gesendet' + (r && r.to ? ' an ' + r.to : ''), 'success');
         } catch (e) { toast(e.message || 'Senden fehlgeschlagen', 'error'); }
     }
     async function createInvoiceFor(personId, btn) {
