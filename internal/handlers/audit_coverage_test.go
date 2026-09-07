@@ -352,6 +352,7 @@ var auditExemptHandlers = map[string]string{
 	"BackupValidate":       "read-only (decrypt + pg_restore --list), changes nothing",
 	"BackupS3Test":         "read-only connection test, changes nothing",
 	"ClientError":          "forwards a browser error to slog, touches no domain data",
+	"ReorderPhotos":        "reine Darstellungsreihenfolge derselben Fotos — kein Inhalt entsteht, ändert sich oder verschwindet; Upload und Löschen der Fotos selbst sind auditiert",
 }
 
 // TestEveryMutatingRouteIsAudited walks the route table and fails when a
