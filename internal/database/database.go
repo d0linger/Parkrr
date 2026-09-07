@@ -3,7 +3,9 @@ package database
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -12,6 +14,15 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// shortSum abbreviates a checksum for error messages without ever slicing past the
+// end — a stored value is not guaranteed to be a full-length hash.
+func shortSum(s string) string {
+	if len(s) > 12 {
+		return s[:12]
+	}
+	return s
+}
 
 //go:embed migrations/*.sql
 var migrationFS embed.FS
@@ -120,6 +131,14 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	if err != nil {
 		return fmt.Errorf("create migrations table: %w", err)
 	}
+	// Checksum column added later; existing rows keep NULL and are simply not
+	// verifiable (we never saw their original content). Applying it here rather than
+	// as a numbered migration avoids a chicken-and-egg problem: the runner needs the
+	// column before it processes the first file.
+	if _, err = conn.Exec(ctx,
+		`ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT`); err != nil {
+		return fmt.Errorf("add migrations checksum column: %w", err)
+	}
 
 	entries, err := migrationFS.ReadDir("migrations")
 	if err != nil {
@@ -135,19 +154,37 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	sort.Strings(names)
 
 	for _, name := range names {
-		var exists bool
-		if err := conn.QueryRow(ctx,
-			`SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = $1)`, name,
-		).Scan(&exists); err != nil {
-			return fmt.Errorf("check migration %s: %w", name, err)
-		}
-		if exists {
-			continue
-		}
-
 		sqlBytes, err := migrationFS.ReadFile("migrations/" + name)
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", name, err)
+		}
+		sum := fmt.Sprintf("%x", sha256.Sum256(sqlBytes))
+
+		// Versions were keyed by FILENAME only, so editing an already-applied migration
+		// silently never re-ran and two installations could drift apart unnoticed
+		// (finding API-34). The checksum makes that drift a loud startup failure.
+		var applied bool
+		var stored *string
+		if err := conn.QueryRow(ctx,
+			`SELECT true, checksum FROM schema_migrations WHERE version = $1`, name,
+		).Scan(&applied, &stored); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("check migration %s: %w", name, err)
+		}
+		if applied {
+			switch {
+			case stored == nil:
+				// Applied before checksums existed: adopt it, we cannot verify the past.
+				if _, err := conn.Exec(ctx,
+					`UPDATE schema_migrations SET checksum = $2 WHERE version = $1 AND checksum IS NULL`,
+					name, sum); err != nil {
+					return fmt.Errorf("backfill checksum for %s: %w", name, err)
+				}
+			case *stored != sum:
+				return fmt.Errorf("migration %s was modified after it was applied "+
+					"(recorded %s, now %s): an applied migration must never be edited — "+
+					"add a NEW migration instead", name, shortSum(*stored), shortSum(sum))
+			}
+			continue
 		}
 
 		err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
@@ -155,7 +192,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 				return err
 			}
 			_, err := tx.Exec(ctx,
-				`INSERT INTO schema_migrations (version) VALUES ($1)`, name)
+				`INSERT INTO schema_migrations (version, checksum) VALUES ($1, $2)`, name, sum)
 			return err
 		})
 		if err != nil {

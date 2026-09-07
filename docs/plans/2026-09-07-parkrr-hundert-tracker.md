@@ -52,7 +52,7 @@ B11 Destruktives + Betreiber-Punkte.
 - [ ] **31** [Hoch/S] users.disabled statt löschen — `internal/handlers/users.go:241`
 - [ ] **32** [Hoch/M] Retention für wachsende Nebentabellen — `internal/handlers/portal.go:132`
 - [ ] **33** [Mittel/S] Tote Tabelle flatrate_paid_years entfernen — `migrations/006_flatrate_years.sql`
-- [ ] **34** [Mittel/S] Checksummen in schema_migrations — `internal/database/database.go:116`
+- [x] **34** [Mittel/S] Checksummen in schema_migrations — `internal/database/database.go:116`
 - [ ] **35** [Mittel/M] Audit-Suche indexfähig machen — `internal/handlers/audit.go:23`
 - [ ] **36** [Mittel/M] Portal-Statistikpfad wirklich scopen — `internal/handlers/stats.go:651`
 - [ ] **37** [Idee/L] OpenAPI-Spezifikation
@@ -147,3 +147,7 @@ B11 Destruktives + Betreiber-Punkte.
 Hinweis Betreiber-Punkte ([>]): 2FA-Pflicht, Passkey-only, Rechnungslauf-Aktivierung,
 Mahnstufen-Aktivierung, SEPA-Glaeubiger-ID, VAPID-Keys, S3-Retention-Wert, Replikat-Limiter,
 Tabellen-Drop (Backup vorher). Diese landen als Code mit Default aus bzw. warten auf Freigabe.
+
+## Zusatz (aus den Sweeps, nicht Teil der kuratierten 100)
+
+- [x] **Z1** [Mittel/S] Verdrängte Wand-Vorlagen protokollieren statt still löschen — `internal/handlers/wall_templates.go` (Commit 89218e4)

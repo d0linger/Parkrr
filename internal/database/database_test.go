@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -93,5 +94,78 @@ func TestAuditLogAppendOnly(t *testing.T) {
 	}
 	if remaining != 0 {
 		t.Fatalf("retention prune should have removed probe row %d", probeID)
+	}
+}
+
+// TestMigrateDetectsEditedMigration: Versionen waren nur nach Dateinamen verbucht,
+// eine nachträglich editierte Migration lief also nie erneut und zwei Installationen
+// konnten unbemerkt divergieren (Hundert API-34). Migrate vergleicht jetzt eine
+// SHA-256 und bricht laut ab.
+//
+// Der Test legt eine EIGENE Datenbank an: er verstellt eine Zeile in
+// schema_migrations, und die Testpakete teilen sich sonst eine Instanz — auf der
+// gemeinsamen DB würde er parallel laufende Migrate()-Aufrufe anderer Pakete
+// sabotieren.
+func TestMigrateDetectsEditedMigration(t *testing.T) {
+	base := os.Getenv("PARKRR_TEST_DATABASE_URL")
+	if base == "" {
+		t.Skip("PARKRR_TEST_DATABASE_URL not set")
+	}
+	ctx := t.Context()
+	admin, err := Connect(ctx, base)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer admin.Close()
+
+	const dbName = "parkrr_checksum_test"
+	if _, err := admin.Exec(ctx, `DROP DATABASE IF EXISTS `+dbName+` WITH (FORCE)`); err != nil {
+		t.Skipf("kann keine eigene Test-DB anlegen: %v", err)
+	}
+	if _, err := admin.Exec(ctx, `CREATE DATABASE `+dbName); err != nil {
+		t.Skipf("kann keine eigene Test-DB anlegen: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = admin.Exec(context.Background(), `DROP DATABASE IF EXISTS `+dbName+` WITH (FORCE)`)
+	})
+
+	own := base
+	if i := strings.LastIndex(base, "/"); i >= 0 {
+		rest := ""
+		if j := strings.Index(base[i:], "?"); j >= 0 {
+			rest = base[i:][j:]
+		}
+		own = base[:i+1] + dbName + rest
+	}
+	pool, err := Connect(ctx, own)
+	if err != nil {
+		t.Fatalf("connect own db: %v", err)
+	}
+	defer pool.Close()
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("baseline migrate: %v", err)
+	}
+
+	// Eine angewandte Migration "verändern", indem die gespeicherte Summe verstellt
+	// wird. Der kurze Wert prüft nebenbei, dass die Fehlermeldung nicht über das Ende
+	// hinaus schneidet.
+	const victim = "001_init.sql"
+	if _, err := pool.Exec(ctx, `UPDATE schema_migrations SET checksum='short' WHERE version=$1`, victim); err != nil {
+		t.Fatalf("tamper: %v", err)
+	}
+	err = Migrate(ctx, pool)
+	if err == nil {
+		t.Fatal("Migrate muss eine nachträglich veränderte Migration ablehnen")
+	}
+	if !strings.Contains(err.Error(), "modified after it was applied") {
+		t.Errorf("unerwarteter Fehler: %v", err)
+	}
+
+	// Und der Altbestand-Pfad: NULL wird adoptiert, nicht als Manipulation gewertet.
+	if _, err := pool.Exec(ctx, `UPDATE schema_migrations SET checksum=NULL`); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if err := Migrate(ctx, pool); err != nil {
+		t.Errorf("Migrationen ohne gespeicherte Summe müssen adoptiert werden, nicht scheitern: %v", err)
 	}
 }
