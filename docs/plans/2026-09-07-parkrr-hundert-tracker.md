@@ -79,7 +79,7 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **47** [Notwendig/S] Template-Fehler nicht als Offline-Erfolg tarnen — `web/static/js/app.js:5248`
 - [x] **48** [Hoch/S] Zusatzkosten-Empty-State reparieren — `web/static/js/app.js:3151`
 - [x] **49** [Hoch/S] Mehr laden mit Busy- und Fehlerzustand — `web/static/js/app.js:4217`
-- [ ] **50** [Hoch/M] Foto-Upload mit Fortschritt und Downscale — `web/static/js/app.js:3082`
+- [x] **50** [Hoch/M] Foto-Upload mit Fortschritt und Downscale — `web/static/js/app.js:3082`
 - [x] **51** [Hoch/S] formModal-save flächendeckend nutzen — `web/static/js/app.js:444`
 - [x] **52** [Hoch/S] Undo auf alle destruktiven Flows — `web/static/js/app.js:324`
       Vier weitere Flows auf deleteWithUndo: Übergabeprotokoll, Garage, Halle,

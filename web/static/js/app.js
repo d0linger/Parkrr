@@ -3176,17 +3176,20 @@
         const photoCard = el('div', { class: 'card' });
         const ph = el('div', { class: 'page-head' }, el('h3', {}, 'Fotos'));
         if (canManage()) {
+            // Fortschrittsbalken (role=progressbar) neben den Knöpfen; sichtbar nur
+            // während eines Uploads.
+            const prog = el('span', { class: 'upl-progress', role: 'progressbar', 'aria-label': 'Foto-Upload', 'aria-valuemin': '0', 'aria-valuemax': '100', hidden: true }, el('i', {}));
             const fileInput = el('input', { type: 'file', accept: 'image/jpeg,image/png', style: 'display:none' });
-            fileInput.addEventListener('change', () => uploadPhoto(id, fileInput.files[0]));
+            fileInput.addEventListener('change', () => uploadPhoto(id, fileInput.files[0], prog));
             // Camera capture: on mobile the `capture` hint opens the rear camera
             // directly; on desktop it falls back to the normal file picker. Keep the
             // JPEG/PNG restriction the backend enforces (avoids HEIC/WEBP rejects).
             const camInput = el('input', { type: 'file', accept: 'image/jpeg,image/png', capture: 'environment', style: 'display:none' });
-            camInput.addEventListener('change', () => uploadPhoto(id, camInput.files[0]));
+            camInput.addEventListener('change', () => uploadPhoto(id, camInput.files[0], prog));
             ph.append(
                 el('button', { class: 'btn-sect', onclick: () => fileInput.click() }, '+ Foto'),
                 el('button', { class: 'btn-sect', title: 'Mit Kamera aufnehmen', onclick: () => camInput.click() }, icon('camera'), ' Kamera'),
-                fileInput, camInput);
+                prog, fileInput, camInput);
         }
         photoCard.append(ph);
         if (!photos.length) photoCard.append(el('p', { class: 'muted' }, 'Keine Fotos.'));
@@ -3264,11 +3267,66 @@
             render();
         } catch (e) { toast(e.message, 'error'); render(); } // roll back the optimistic slider on a rejected write
     }
-    async function uploadPhoto(vehicleId, file) {
+    // Client-seitiges Verkleinern vor dem Hochladen (Hundert 50): ein 12-MP-Handyfoto
+    // misst 4–8 MB und läuft am Land gegen den 8-MB-Deckel und die Geduld. 2000 px
+    // längste Kante reichen für Zustandsfotos vollauf; der Server kodiert ohnehin neu
+    // (Metadaten weg), Qualität entscheidet also die kleinere der beiden Stufen.
+    // PNG wird dabei zu JPEG: Fahrzeugfotos sind Fotos, keine Screenshots.
+    // Schlägt das Dekodieren fehl (exotische Datei), geht das ORIGINAL hoch — der
+    // Server bleibt der Wächter, das Verkleinern ist nur Beschleunigung.
+    async function downscalePhoto(file, maxDim = 2000, quality = 0.85) {
+        if (!/^image\/(jpeg|png)$/.test(file.type)) return file;
+        try {
+            const bmp = await createImageBitmap(file);
+            const scale = Math.min(1, maxDim / Math.max(bmp.width, bmp.height));
+            if (scale >= 1 && file.size <= 1_500_000) { bmp.close(); return file; }
+            const w = Math.max(1, Math.round(bmp.width * scale)), h = Math.max(1, Math.round(bmp.height * scale));
+            const canvas = document.createElement('canvas');
+            canvas.width = w; canvas.height = h;
+            canvas.getContext('2d').drawImage(bmp, 0, 0, w, h);
+            bmp.close();
+            const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', quality));
+            if (!blob || blob.size >= file.size) return file; // kleiner ist der einzige Zweck
+            return new File([blob], (file.name || 'foto').replace(/\.png$/i, '.jpg'), { type: 'image/jpeg' });
+        } catch (e) { return file; }
+    }
+
+    // XHR statt fetch: nur XMLHttpRequest liefert Upload-FORTSCHRITT (Hundert 50) —
+    // auf einer Hof-Verbindung ist der Unterschied zwischen "lädt seit 20 Sekunden"
+    // und "78 %" der Unterschied zwischen Abbruch und Geduld.
+    function uploadWithProgress(path, fd, onProgress) {
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api' + path);
+            xhr.setRequestHeader('X-CSRF-Token', getCookie('parkrr_csrf'));
+            xhr.upload.addEventListener('progress', (e) => { if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total); });
+            xhr.addEventListener('load', () => {
+                let data = null; try { data = JSON.parse(xhr.responseText); } catch (e) { /* leer */ }
+                if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+                else reject(new Error((data && data.error) || 'HTTP ' + xhr.status));
+            });
+            xhr.addEventListener('error', () => reject(new Error('Netzwerkfehler beim Hochladen')));
+            xhr.send(fd);
+        });
+    }
+
+    async function uploadPhoto(vehicleId, file, progressEl) {
         if (!file) return;
-        const fd = new FormData(); fd.append('photo', file);
-        try { await api.upload('/vehicles/' + vehicleId + '/photos', fd); toast('Foto hochgeladen', 'success'); render(); }
-        catch (e) { toast(e.message, 'error'); }
+        const bar = progressEl && progressEl.querySelector('i');
+        const show = (frac, label) => {
+            if (!progressEl) return;
+            progressEl.hidden = false;
+            if (bar) bar.style.width = Math.round(frac * 100) + '%';
+            progressEl.setAttribute('aria-valuenow', String(Math.round(frac * 100)));
+            if (label) progressEl.title = label;
+        };
+        try {
+            show(0, 'Verkleinere …');
+            const slim = await downscalePhoto(file);
+            const fd = new FormData(); fd.append('photo', slim, slim.name || file.name);
+            await uploadWithProgress('/vehicles/' + vehicleId + '/photos', fd, (f) => show(f));
+            toast('Foto hochgeladen', 'success'); render();
+        } catch (e) { toast(e.message, 'error'); if (progressEl) progressEl.hidden = true; }
     }
     function delPhoto(p, node) {
         deleteWithUndo('Foto löschen?', 'Das Foto wird dauerhaft entfernt — das Original lässt sich nicht wiederherstellen.', () => api.del('/photos/' + p.id), () => render(), node);

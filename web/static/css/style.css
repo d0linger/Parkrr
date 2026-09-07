@@ -1046,6 +1046,12 @@ div.empty .big svg { width: 30px; height: 30px; }
         scroll-behavior: auto !important;
     }
 }
+/* Foto-Upload-Fortschritt (Hundert 50): schmale Leiste neben den Knoepfen, nur
+   waehrend eines Uploads sichtbar; die Breite des <i> traegt den Fortschritt. */
+.upl-progress{display:inline-block;width:90px;height:8px;border-radius:99px;overflow:hidden;
+    background:var(--bg-elev-2);border:1px solid var(--border);vertical-align:middle}
+.upl-progress>i{display:block;height:100%;width:0;border-radius:99px;
+    background:var(--primary);transition:width .15s linear}
 .sr-only {
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
     overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
