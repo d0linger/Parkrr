@@ -1048,6 +1048,9 @@ div.empty .big svg { width: 30px; height: 30px; }
 }
 /* Foto-Upload-Fortschritt (Hundert 50): schmale Leiste neben den Knoepfen, nur
    waehrend eines Uploads sichtbar; die Breite des <i> traegt den Fortschritt. */
+/* Portal-Sprachumschalter (Hundert 89): rechts im Kopf, klein und unaufdringlich */
+.portal-head{position:relative}
+.portal-head .portal-lang{margin-left:auto;align-self:flex-start;min-height:32px;padding:.3rem .6rem;font-size:.8rem}
 /* Aktivitäts-Verlauf je Person (Hundert 56) */
 .tl-row{display:flex;align-items:baseline;gap:.55rem;padding:.35rem 0;border-bottom:1px solid var(--border)}
 .tl-row:last-of-type{border-bottom:0}

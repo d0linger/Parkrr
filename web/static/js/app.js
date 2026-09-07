@@ -8451,6 +8451,35 @@
     }
 
     // #/portal/<token>. Read-only view of one person's vehicles + invoices.
+    // Portal-Zweisprachigkeit (Hundert 89): das Portal ist die einzige Ansicht,
+    // die KUNDEN sehen — und nicht jeder Einsteller liest Deutsch. Ein kleines
+    // eigenes Wörterbuch statt einer App-weiten i18n (die wäre Punkt 98): die
+    // Portal-Oberfläche hat rund fünfzehn Texte, die App tausende.
+    const PORTAL_STR = {
+        de: {
+            invalid: 'Dieser Link ist ungültig oder abgelaufen. Bitte fordern Sie einen neuen an.',
+            open_total: 'Offener Betrag', your_vehicles: 'Ihre Gefährte', no_vehicles: 'Keine aktiven Gefährte.',
+            handovers: 'Übergabeprotokolle', signed: 'unterschrieben: ', storein: 'Einlagerung', storeout: 'Auslagerung',
+            invoices: 'Rechnungen', no_invoices: 'Keine Rechnungen.', invoice: 'Rechnung ', open_part: 'offen ',
+            scan_pay: 'Scan zum Bezahlen (SEPA)', qr_alt: 'SEPA-Zahlungs-QR', foot: 'Read-only Ansicht · Parkrr',
+            status: { reserved: 'reserviert', stored: 'eingestellt', collected: 'abgeholt', cancelled: 'storniert' },
+            inv_status: { offen: 'offen', teilbezahlt: 'teilweise bezahlt', bezahlt: 'bezahlt', storniert: 'storniert', storno: 'Storno' },
+        },
+        en: {
+            invalid: 'This link is invalid or has expired. Please request a new one.',
+            open_total: 'Open balance', your_vehicles: 'Your vehicles', no_vehicles: 'No active vehicles.',
+            handovers: 'Handover protocols', signed: 'signed by ', storein: 'Check-in', storeout: 'Check-out',
+            invoices: 'Invoices', no_invoices: 'No invoices.', invoice: 'Invoice ', open_part: 'open ',
+            scan_pay: 'Scan to pay (SEPA)', qr_alt: 'SEPA payment QR', foot: 'Read-only view · Parkrr',
+            status: { reserved: 'reserved', stored: 'stored', collected: 'collected', cancelled: 'cancelled' },
+            inv_status: { offen: 'open', teilbezahlt: 'partly paid', bezahlt: 'paid', storniert: 'cancelled', storno: 'credit note' },
+        },
+    };
+    function portalLang() {
+        try { const v = localStorage.getItem('parkrr_portal_lang'); if (v === 'de' || v === 'en') return v; } catch (e) { /* egal */ }
+        return String(navigator.language || 'de').toLowerCase().startsWith('de') ? 'de' : 'en';
+    }
+
     async function renderPortal(token) {
         const lv = $('#login-view'); if (lv) lv.hidden = true;
         const av = $('#app-view'); if (av) av.hidden = true;
@@ -8458,13 +8487,16 @@
         pv.hidden = false;
         pv.innerHTML = '';
         pv.append(skeleton(4));
+        const lang = portalLang();
+        const P9 = PORTAL_STR[lang];
+        const locale = lang === 'de' ? 'de-DE' : 'en-GB';
         let sum;
         try { sum = await portalFetch(token, '/summary', 'json'); }
         catch (e) {
             pv.innerHTML = '';
             pv.append(el('div', { class: 'portal-wrap' }, el('div', { class: 'portal-card' },
                 el('h1', {}, 'Parkrr'),
-                el('p', { class: 'muted' }, 'Dieser Link ist ungültig oder abgelaufen. Bitte fordern Sie einen neuen an.'))));
+                el('p', { class: 'muted' }, P9.invalid))));
             return;
         }
         pv.innerHTML = '';
@@ -8473,41 +8505,46 @@
             // Direkt gefüllt: init() lief mit applyBrand(), bevor dieser Kopf
             // existierte — ein zweiter Voll-Lauf würde nur das Favicon neu bauen.
             el('span', { class: 'brand-veh', 'data-veh': '34', 'aria-hidden': 'true', html: brandGlyph(34) }),
-            el('div', {}, el('h1', {}, 'Parkrr'), el('p', { class: 'muted' }, esc(sum.person_name)))));
+            el('div', {}, el('h1', {}, 'Parkrr'), el('p', { class: 'muted' }, esc(sum.person_name))),
+            // Sprachumschalter: die Wahl bleibt im Browser (localStorage) und gilt
+            // beim nächsten Öffnen wieder.
+            el('button', { class: 'btn btn-ghost btn-sm portal-lang', 'aria-label': lang === 'de' ? 'Switch to English' : 'Auf Deutsch umschalten',
+                onclick: () => { try { localStorage.setItem('parkrr_portal_lang', lang === 'de' ? 'en' : 'de'); } catch (e2) { /* egal */ } renderPortal(token); } },
+                lang === 'de' ? 'EN' : 'DE')));
         wrap.append(el('div', { class: 'portal-card' },
-            el('div', { class: 'muted' }, 'Offener Betrag'),
+            el('div', { class: 'muted' }, P9.open_total),
             el('div', { class: 'portal-amt' + (sum.open_total > 0.005 ? ' owe' : '') }, eur(sum.open_total))));
-        const vcard = el('div', { class: 'portal-card' }, el('h2', {}, 'Ihre Gefährte'));
-        if (!sum.vehicles.length) vcard.append(el('p', { class: 'muted' }, 'Keine aktiven Gefährte.'));
+        const vcard = el('div', { class: 'portal-card' }, el('h2', {}, P9.your_vehicles));
+        if (!sum.vehicles.length) vcard.append(el('p', { class: 'muted' }, P9.no_vehicles));
         else sum.vehicles.forEach((v) => vcard.append(el('div', { class: 'portal-row' },
-            el('span', {}, esc(v.label)), statusBadge(v.status))));
+            el('span', {}, esc(v.label)), el('span', { class: 'badge badge-' + v.status }, P9.status[v.status] || v.status))));
         wrap.append(vcard);
         // Übergabeprotokolle (Hundert 84): was der Kunde unterschrieben hat —
         // Richtung, Datum, Zustandsnotizen. Ohne Unterschriftsbild (siehe Server).
         if ((sum.handovers || []).length) {
-            const hcard = el('div', { class: 'portal-card' }, el('h2', {}, 'Übergabeprotokolle'));
+            const hcard = el('div', { class: 'portal-card' }, el('h2', {}, P9.handovers));
             sum.handovers.forEach((ho) => hcard.append(el('div', { class: 'portal-row' },
-                el('span', {}, esc(ho.vehicle_label) + ' · ' + (ho.direction === 'einlagerung' ? 'Einlagerung' : 'Auslagerung'),
+                el('span', {}, esc(ho.vehicle_label) + ' · ' + (ho.direction === 'einlagerung' ? P9.storein : P9.storeout),
                     ho.notes ? el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, esc(ho.notes)) : null),
                 el('span', { class: 'muted', style: 'font-size:.8rem;text-align:right' },
-                    new Date(ho.created_at).toLocaleDateString('de-DE'),
-                    ho.signer_name ? el('span', { style: 'display:block' }, 'unterschrieben: ' + esc(ho.signer_name)) : null))));
+                    new Date(ho.created_at).toLocaleDateString(locale),
+                    ho.signer_name ? el('span', { style: 'display:block' }, P9.signed + esc(ho.signer_name)) : null))));
             wrap.append(hcard);
         }
-        const icard = el('div', { class: 'portal-card' }, el('h2', {}, 'Rechnungen'));
-        if (!sum.invoices.length) icard.append(el('p', { class: 'muted' }, 'Keine Rechnungen.'));
+        const icard = el('div', { class: 'portal-card' }, el('h2', {}, P9.invoices));
+        if (!sum.invoices.length) icard.append(el('p', { class: 'muted' }, P9.no_invoices));
         else sum.invoices.forEach((iv) => {
             icard.append(
                 el('a', { class: 'portal-row link', role: 'button', tabindex: '0', style: 'cursor:pointer',
                     onclick: () => portalOpenPdf(token, iv.id),
                     onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); portalOpenPdf(token, iv.id); } } },
-                    el('span', {}, 'Rechnung ' + esc(iv.number),
-                        el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, new Date(iv.issued_on).toLocaleDateString('de-DE') + (iv.status ? ' · ' + esc(iv.status) : ''))),
+                    el('span', {}, P9.invoice + esc(iv.number),
+                        el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, new Date(iv.issued_on).toLocaleDateString(locale) + (iv.status ? ' · ' + (P9.inv_status[iv.status] || esc(iv.status)) : ''))),
                     el('span', { style: 'text-align:right' }, eur(iv.total),
-                        iv.open > 0.005 ? el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, 'offen ' + eur(iv.open)) : null)));
+                        iv.open > 0.005 ? el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, P9.open_part + eur(iv.open)) : null)));
             // Scan-to-pay QR for each still-open invoice.
             if (iv.open > 0.005) {
-                const qr = el('img', { alt: 'SEPA-Zahlungs-QR', width: 150, height: 150, style: 'max-width:150px;height:auto' });
+                const qr = el('img', { alt: P9.qr_alt, width: 150, height: 150, style: 'max-width:150px;height:auto' });
                 portalFetch(token, '/invoices/' + iv.id + '/pay-qr', 'blob')
                     // Objekt-URL nach dem Laden des Bilds freigeben (PORTAL-91); bei
                     // Fehlschlag das leere img entfernen statt es kaputt stehen zu lassen.
@@ -8515,11 +8552,11 @@
                     .catch(() => { qr.remove(); });
                 icard.append(el('div', { style: 'text-align:center;padding:.4rem 0 .2rem' },
                     qr,
-                    el('div', { class: 'muted', style: 'font-size:.72rem' }, 'Scan zum Bezahlen (SEPA)')));
+                    el('div', { class: 'muted', style: 'font-size:.72rem' }, P9.scan_pay)));
             }
         });
         wrap.append(icard);
-        wrap.append(el('p', { class: 'portal-foot muted' }, 'Read-only Ansicht · Parkrr'));
+        wrap.append(el('p', { class: 'portal-foot muted' }, P9.foot));
         pv.append(wrap);
     }
 

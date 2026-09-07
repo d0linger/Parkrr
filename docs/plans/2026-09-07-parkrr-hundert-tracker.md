@@ -174,7 +174,7 @@ B11 Destruktives + Betreiber-Punkte.
       Dokument zu bannen widerspricht genau diesem Modell — das Papier überlebt
       jede Token-Laufzeit. Der Zahlungs-QR (Girocode) auf der Rechnung deckt den
       eigentlichen Anwendungsfall (bezahlen) bereits ohne Geheimnis ab.
-- [ ] **89** [Idee/M] Portal auf Englisch
+- [x] **89** [Idee/M] Portal auf Englisch
 
 ## Tests und Qualität (B2/B10 Tests)
 
