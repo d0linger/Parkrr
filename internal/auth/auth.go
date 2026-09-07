@@ -51,6 +51,29 @@ type Manager struct {
 	trustedProxyNets []*net.IPNet
 	aead             cipher.AEAD
 	csrfKey          []byte // HMAC key binding the CSRF token to the session
+	// require2FA erzwingt einen zweiten Faktor fuer JEDEN Zugriff jenseits der
+	// Einrichtung: ein Konto ohne TOTP und ohne Passkey bekommt 403 mit dem
+	// maschinenlesbaren Grund "2fa_enrollment_required", bis es einen Faktor
+	// eingerichtet hat. Opt-in ueber PARKRR_REQUIRE_2FA (Hundert 41).
+	require2FA bool
+}
+
+// SetRequire2FA schaltet die 2FA-Pflicht ein (Betreiber-Opt-in, Hundert 41).
+func (m *Manager) SetRequire2FA(on bool) { m.require2FA = on }
+
+// twoFAExemptPrefixes: unter diesen Pfaden darf ein Konto OHNE zweiten Faktor
+// weiter arbeiten — es sind genau die Wege, um einen einzurichten (2FA-Setup,
+// Passkey-Registrierung), sich abzumelden oder den eigenen Zustand abzufragen.
+// Alles andere ist gesperrt, sonst waere die Pflicht keine.
+var twoFAExemptPrefixes = []string{"/api/auth/", "/api/passkeys"}
+
+func twoFAExempt(path string) bool {
+	for _, p := range twoFAExemptPrefixes {
+		if strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // SessionConfig groups the session-lifetime settings for NewManager.
@@ -404,11 +427,12 @@ func (m *Manager) userFromRequest(ctx context.Context, r *http.Request) (*models
 	var expires time.Time
 	err = m.pool.QueryRow(ctx,
 		`SELECT u.id, u.username, u.email, u.password_hash, u.is_admin, u.role,
-		        u.totp_secret, u.totp_enabled, u.disabled, u.created_at, u.updated_at, s.expires_at
+		        u.totp_secret, u.totp_enabled, u.disabled, u.created_at, u.updated_at, s.expires_at,
+		        EXISTS (SELECT 1 FROM webauthn_credentials wc WHERE wc.user_id = u.id)
 		 FROM sessions s JOIN users u ON u.id = s.user_id
 		 WHERE s.token = $1`, tokenHash,
 	).Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.IsAdmin, &u.Role,
-		&u.TOTPSecret, &u.TOTPEnabled, &u.Disabled, &u.CreatedAt, &u.UpdatedAt, &expires)
+		&u.TOTPSecret, &u.TOTPEnabled, &u.Disabled, &u.CreatedAt, &u.UpdatedAt, &expires, &u.HasPasskey)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, errors.New("invalid session")
@@ -465,6 +489,13 @@ func (m *Manager) RequireAuth(next http.Handler) http.Handler {
 		}
 		// Record who this request belongs to for the access log.
 		setRequestLogUser(r.Context(), u.Username, u.ID)
+		// 2FA-Pflicht (Hundert 41): ohne zweiten Faktor bleibt nur der Weg, einen
+		// einzurichten. Der Fehlertext ist maschinenlesbar, damit die Oberflaeche
+		// gezielt zur Einrichtung fuehren kann statt einen nackten 403 zu zeigen.
+		if m.require2FA && !u.TOTPEnabled && !u.HasPasskey && !twoFAExempt(r.URL.Path) {
+			writeJSONError(w, http.StatusForbidden, "2fa_enrollment_required")
+			return
+		}
 		if isStateChanging(r.Method) && !m.csrfOK(r) {
 			writeJSONError(w, http.StatusForbidden, "invalid CSRF token")
 			return

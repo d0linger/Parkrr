@@ -38,6 +38,11 @@ type Handler struct {
 	// FailClosedOnBreach rejects a new password when the HIBP check can't run
 	// (default false = fail open, allowing the change).
 	FailClosedOnBreach bool
+	// PasskeyOnly schaltet den Passwort-Login ab (Hundert 42): Anmeldung nur noch
+	// per Passkey. Opt-in über PARKRR_PASSKEY_ONLY; die Konfiguration verweigert
+	// den Start, wenn dabei kein WebAuthn eingerichtet ist — sonst käme niemand
+	// mehr hinein.
+	PasskeyOnly bool
 	// BackupKey (if set) enables the encrypted-backup endpoint; DatabaseURL is
 	// the connection string handed to pg_dump; BackupDir holds scheduled backups.
 	BackupKey   string

@@ -62,10 +62,10 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **38** [Hoch/M] Übergabeprotokolle unveränderlich machen — `internal/handlers/handover.go:207`
 - [x] **39** [Hoch/M] DSGVO-Anonymisierung auf Signaturen ausweiten — `internal/handlers/persons.go:284`
 - [x] **40** [Mittel/S] E-Mail-Syntax validieren — `internal/handlers/persons.go:104`
-- [ ] **41** [Mittel/M] 2FA-Pflicht als Policy
-- [ ] **42** [Mittel/S] Passkey-only-Modus
-- [ ] **43** [Mittel/M] Revisionssicherer Audit-Export
-- [ ] **44** [Idee/S] CSP-Verstöße an client-error melden — `internal/server/server.go`
+- [x] **41** [Mittel/M] 2FA-Pflicht als Policy
+- [x] **42** [Mittel/S] Passkey-only-Modus
+- [x] **43** [Mittel/M] Revisionssicherer Audit-Export
+- [x] **44** [Idee/S] CSP-Verstöße an client-error melden — `internal/server/server.go`
 - [ ] **45** [Idee/S] Trivy als geprüftes Binary in CI
 
 ## Bedienung und UX (B4 UX)

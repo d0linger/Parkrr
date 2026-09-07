@@ -265,6 +265,8 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("DELETE /api/users/{id}", admin(hf(h.DeleteUser)))
 	mux.Handle("POST /api/users/{id}/reset-2fa", admin(hf(h.ResetUserTOTP)))
 	mux.Handle("GET /api/audit", admin(hf(h.ListAudit)))
+	// Revisionssicherer Export: JSONL mit SHA-256-Hashkette, prüfbar ohne Parkrr.
+	mux.Handle("GET /api/audit/export", admin(hf(h.ExportAudit)))
 	mux.Handle("POST /api/backup", admin(hf(h.CreateBackup)))
 	// Nur die Ampel, bewusst editor+ statt admin: Bearbeiter arbeiten den ganzen Tag
 	// in der App und sollen ein totes Backup sehen, ohne Admin zu sein. Liefert weder

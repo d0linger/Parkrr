@@ -188,6 +188,8 @@ compose network). Schema migrations run automatically at startup.
 | `PARKRR_SMTP_TLS` | `starttls` \| `tls` \| `none` | `starttls` |
 | `PARKRR_ALERT_EMAIL` | recipients for operational alerts (failed scheduled backup); comma/space separated, empty = off | – |
 | `PARKRR_TIMEZONE` | business time zone (IANA name, e.g. `Europe/Vienna`) deciding what "today" and "this month" mean; empty = container zone | – |
+| `PARKRR_REQUIRE_2FA` | require a second factor (TOTP or passkey); unenrolled accounts can only reach the 2FA/passkey setup | `false` |
+| `PARKRR_PASSKEY_ONLY` | disable password login entirely (passkey sign-in only); requires `PARKRR_WEBAUTHN_RP_ID` | `false` |
 
 ---
 

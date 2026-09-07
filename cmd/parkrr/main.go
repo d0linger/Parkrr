@@ -127,6 +127,10 @@ func run() error {
 	if err := authMgr.SetTrustedProxyCIDRs(cfg.TrustedProxyCIDRs); err != nil {
 		return err
 	}
+	if cfg.Require2FA {
+		authMgr.SetRequire2FA(true)
+		slog.Info("2FA-Pflicht aktiv: Konten ohne TOTP/Passkey können nur die Einrichtung erreichen")
+	}
 	if cfg.TrustedProxies && len(cfg.TrustedProxyCIDRs) == 0 {
 		// Fail closed at startup: trusting forwarded headers from ANY direct peer lets a
 		// client with direct backend access spoof audit/rate-limit IPs. Refuse to start
@@ -190,6 +194,10 @@ func run() error {
 	// the process lifetime, and the two could drift as configuration is added.
 	// Injected rather than imported — internal/backup cannot import internal/handlers,
 	// which already imports it.
+	if cfg.PasskeyOnly {
+		apiHandler.PasskeyOnly = true
+		slog.Info("Passkey-only-Modus aktiv: Passwort-Login abgeschaltet")
+	}
 	sysAudit := apiHandler.AuditSystem
 	backup.SetAuditor(sysAudit)
 

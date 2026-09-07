@@ -20,6 +20,14 @@
         };
         window.addEventListener('error', (e) => report(e.message, e.error && e.error.stack));
         window.addEventListener('unhandledrejection', (e) => { const r = e.reason; report((r && r.message) || 'unhandledrejection', r && r.stack); });
+        // CSP-Verstöße mitmelden (Hundert 44): die strikte style-src-'self'-Policy
+        // ist die Wache gegen Inline-Styles — aber ein Verstoß war bisher nur in der
+        // Browser-Konsole des betroffenen Nutzers sichtbar, also nirgends. Über
+        // dasselbe gedeckelte Telemetrie-Ventil landet er jetzt im Server-Log.
+        document.addEventListener('securitypolicyviolation', (e) => {
+            report('CSP: ' + (e.violatedDirective || '?') + ' blockierte ' + (e.blockedURI || 'inline'),
+                (e.sourceFile || '') + ':' + (e.lineNumber || 0) + ' — ' + String(e.originalPolicy || '').slice(0, 200));
+        });
     })();
 
     // ---------- utilities ----------
@@ -199,6 +207,11 @@
     const totalCounts = new Map();
     const totalFor = (path) => totalCounts.get(path);
 
+    // 2FA-Pflicht (Hundert 41): der Server sperrt Konten ohne zweiten Faktor mit
+    // diesem maschinenlesbaren Grund. EINMAL hinführen statt bei jedem Aufruf einen
+    // nackten Fehler zu zeigen.
+    let twoFARedirected = false;
+
     async function handle(res, path) {
         if (res.status === 204) return null;
         let data = null;
@@ -210,6 +223,11 @@
         }
         if (ct.includes('application/json')) data = await res.json();
         if (!res.ok) {
+            if (res.status === 403 && data && data.error === '2fa_enrollment_required' && !twoFARedirected) {
+                twoFARedirected = true;
+                toast('Dieser Betrieb verlangt einen zweiten Faktor — bitte jetzt einrichten.', 'warn');
+                navigate('settings');
+            }
             const err = new Error((data && data.error) || 'HTTP ' + res.status);
             err.status = res.status;
             err.data = data;
@@ -4304,7 +4322,10 @@
     routes.audit = async (page) => {
         if (!isAdmin()) { page.innerHTML = ''; page.append(emptyState('settings', 'Nur für Administratoren.')); return; }
         page.innerHTML = '';
-        page.append(el('div', { class: 'detail-head' }, el('button', { class: 'back-btn', onclick: () => navigate('dashboard') }, '‹'), el('h2', { style: 'margin:0' }, 'Audit-Log')));
+        page.append(el('div', { class: 'detail-head' }, el('button', { class: 'back-btn', onclick: () => navigate('dashboard') }, '‹'), el('h2', { style: 'margin:0' }, 'Audit-Log'),
+            // Revisionssicherer Export (Hundert 43): JSONL mit SHA-256-Hashkette —
+            // jede Zeile versiegelt alle vorigen, prüfbar ohne Parkrr.
+            el('a', { class: 'btn btn-ghost btn-sm', href: '/api/audit/export', download: '', title: 'Vollständiger Export mit SHA-256-Hashkette (JSONL)' }, icon('download', 15), ' Revisionsexport')));
 
         const q = { text: '', action: '', entity: '', from: '', to: '', offset: 0, limit: 50 };
         const search = el('input', { type: 'search', placeholder: 'Suchen (Benutzer, Beschreibung)…', 'aria-label': 'Audit-Log durchsuchen' });
@@ -7738,7 +7759,21 @@
         const showPk = !!(state.capabilities.passkeys && webauthnSupported());
         if (pkBtn) pkBtn.hidden = !showPk;
         const or = $('#login-or'); if (or) or.hidden = !showPk;
-        $('#login-username').focus();
+        // Passkey-only (Hundert 42): den Passwortteil GAR NICHT zeigen, statt ihn
+        // beim Absenden am Server scheitern zu lassen. Ohne Passkey-Unterstützung im
+        // Browser bleibt die Maske sichtbar — mit Hinweis wäre schöner, aber ein
+        // Formular, das der Server sicher ablehnt, ist die schlechteste Variante.
+        const pkOnly = !!state.capabilities.passkey_only && showPk;
+        $('#login-form').classList.toggle('pk-only', pkOnly);
+        [document.querySelector('label[for="login-username"]'),
+            $('#login-username'),
+            document.querySelector('label[for="login-password"]'),
+            $('#login-password') && $('#login-password').closest('.input-affix'),
+            $('#login-form button[type="submit"]'),
+        ].forEach((n) => { if (n) n.hidden = pkOnly; });
+        if (or) or.hidden = !showPk || pkOnly;
+        if (!pkOnly) $('#login-username').focus();
+        else if (pkBtn) pkBtn.focus();
     }
     async function logout() {
         try { await api.post('/auth/logout'); } catch { /* ignore */ }

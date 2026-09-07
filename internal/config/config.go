@@ -82,6 +82,17 @@ type Config struct {
 	// https://parkrr.example.com), used to build links inside outgoing e-mail.
 	PublicBaseURL string
 
+	// Require2FA erzwingt einen zweiten Faktor (TOTP oder Passkey) für jeden
+	// Zugriff jenseits der Einrichtung. Opt-in, Default aus: Bestandsinstallationen
+	// ändern ihr Verhalten nicht, bis der Betreiber es einschaltet (Hundert 41).
+	Require2FA bool
+
+	// PasskeyOnly schaltet den Passwort-Login ab: Anmeldung nur noch per Passkey
+	// (Hundert 42). Verlangt eingerichtetes WebAuthn (PARKRR_WEBAUTHN_RP_ID),
+	// sonst bricht der Start ab — eine Installation ohne einen einzigen
+	// Anmeldeweg wäre unrettbar ausgesperrt.
+	PasskeyOnly bool
+
 	// TimeZone ist die GESCHÄFTSZEITZONE: die Zone, in der "heute", "dieser Monat"
 	// und die Tagesgrenzen des Änderungsprotokolls gemeint sind (IANA-Name, etwa
 	// "Europe/Vienna"). Leer = time.Local, also das, was TZ gesetzt hat, sonst UTC —
@@ -154,6 +165,8 @@ func Load() (*Config, error) {
 		SMTPFromName:  getenv("PARKRR_SMTP_FROM_NAME", "Parkrr"),
 		SMTPTLS:       getenv("PARKRR_SMTP_TLS", "starttls"),
 		AlertEmail:    splitList(os.Getenv("PARKRR_ALERT_EMAIL")),
+		Require2FA:    getenvBool("PARKRR_REQUIRE_2FA", false),
+		PasskeyOnly:   getenvBool("PARKRR_PASSKEY_ONLY", false),
 		PublicBaseURL: os.Getenv("PARKRR_PUBLIC_BASE_URL"),
 		TimeZone:      os.Getenv("PARKRR_TIMEZONE"),
 
@@ -202,6 +215,10 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("PARKRR_TIMEZONE %q is not a known IANA time zone: %w", tz, lerr)
 		}
 		cfg.Location = loc
+	}
+
+	if cfg.PasskeyOnly && strings.TrimSpace(cfg.WebAuthnRPID) == "" {
+		return nil, fmt.Errorf("PARKRR_PASSKEY_ONLY=true requires PARKRR_WEBAUTHN_RP_ID: without WebAuthn there would be no way to log in at all")
 	}
 
 	if cfg.AdminPassword == "" {

@@ -46,6 +46,9 @@ func (h *AuthHandler) Capabilities(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{
 		"passkeys": h.WebAuthn != nil && h.WebAuthn.Enabled(),
 		"mail":     h.Mail != nil && h.Mail.Enabled(),
+		// Passkey-only (Hundert 42): die Anmeldemaske soll den Passwortteil gar
+		// nicht erst zeigen, statt ihn beim Absenden scheitern zu lassen.
+		"passkey_only": h.PasskeyOnly,
 	})
 }
 

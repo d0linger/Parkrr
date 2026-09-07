@@ -79,3 +79,18 @@ func TestCalendarDayFollowsTheBusinessZone(t *testing.T) {
 		t.Errorf("in der Geschäftszone muss es der 7. sein, war %s", got)
 	}
 }
+
+// Passkey-only ohne WebAuthn wäre eine Installation ohne einen einzigen
+// Anmeldeweg — der Start muss das ABLEHNEN, nicht später der erste Login-Versuch.
+func TestPasskeyOnlyRequiresWebAuthn(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("PARKRR_PASSKEY_ONLY", "true")
+	os.Unsetenv("PARKRR_WEBAUTHN_RP_ID")
+	if _, err := Load(); err == nil {
+		t.Fatal("Passkey-only ohne RP-ID muss den Start verweigern")
+	}
+	t.Setenv("PARKRR_WEBAUTHN_RP_ID", "parkrr.example.com")
+	if _, err := Load(); err != nil {
+		t.Fatalf("mit RP-ID muss der Start gelingen: %v", err)
+	}
+}
