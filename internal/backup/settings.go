@@ -15,6 +15,28 @@ type Settings struct {
 	VolumeKeep int    `json:"volume_keep"`
 	S3Cron     string `json:"s3_cron"`
 	S3Keep     int    `json:"s3_keep"`
+	// Mindestalter in Tagen, bevor ein Archiv jenseits der Anzahl gelöscht werden
+	// darf. 0 = keine Altersgrenze (Vorgabe, bisheriges Verhalten). Siehe
+	// prunableS3 fuer den Grund (Hundert 09).
+	VolumeKeepDays int `json:"volume_keep_days"`
+	S3KeepDays     int `json:"s3_keep_days"`
+}
+
+// Retention beschreibt fuer EIN Ziel, wie viel Historie es behaelt. Als eigener Typ,
+// damit die beiden Zahlen nicht als zwei namenlose ints durch fuenf Signaturen
+// gereicht werden und sich dabei vertauschen lassen.
+type Retention struct {
+	Keep     int // Anzahl der neuesten Archive; 0 = gar nicht aufraeumen
+	KeepDays int // Mindestalter in Tagen, bevor geloescht werden darf; 0 = keine Grenze
+}
+
+// VolumeRetention und S3Retention buendeln die Einstellungen je Ziel.
+func (s Settings) VolumeRetention() Retention {
+	return Retention{Keep: s.VolumeKeep, KeepDays: s.VolumeKeepDays}
+}
+
+func (s Settings) S3Retention() Retention {
+	return Retention{Keep: s.S3Keep, KeepDays: s.S3KeepDays}
 }
 
 // Status is the runtime record of the last scheduled runs (one row, id=1). The
@@ -112,8 +134,9 @@ func BackupHealth(s Settings, st Status, volumeConfigured, s3Configured bool, no
 func LoadSettings(ctx context.Context, pool *pgxpool.Pool) (Settings, error) {
 	var s Settings
 	err := pool.QueryRow(ctx,
-		`SELECT volume_cron, volume_keep, s3_cron, s3_keep FROM backup_settings WHERE id = 1`,
-	).Scan(&s.VolumeCron, &s.VolumeKeep, &s.S3Cron, &s.S3Keep)
+		`SELECT volume_cron, volume_keep, s3_cron, s3_keep, volume_keep_days, s3_keep_days
+		   FROM backup_settings WHERE id = 1`,
+	).Scan(&s.VolumeCron, &s.VolumeKeep, &s.S3Cron, &s.S3Keep, &s.VolumeKeepDays, &s.S3KeepDays)
 	return s, err
 }
 
@@ -126,11 +149,18 @@ func SaveSettings(ctx context.Context, pool *pgxpool.Pool, s Settings) error {
 	if s.S3Keep < 0 {
 		s.S3Keep = 0
 	}
+	if s.VolumeKeepDays < 0 {
+		s.VolumeKeepDays = 0
+	}
+	if s.S3KeepDays < 0 {
+		s.S3KeepDays = 0
+	}
 	_, err := pool.Exec(ctx,
 		`UPDATE backup_settings
-		    SET volume_cron = $1, volume_keep = $2, s3_cron = $3, s3_keep = $4
+		    SET volume_cron = $1, volume_keep = $2, s3_cron = $3, s3_keep = $4,
+		        volume_keep_days = $5, s3_keep_days = $6
 		  WHERE id = 1`,
-		s.VolumeCron, s.VolumeKeep, s.S3Cron, s.S3Keep)
+		s.VolumeCron, s.VolumeKeep, s.S3Cron, s.S3Keep, s.VolumeKeepDays, s.S3KeepDays)
 	return err
 }
 

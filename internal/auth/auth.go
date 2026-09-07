@@ -253,6 +253,12 @@ func (m *Manager) Authenticate(ctx context.Context, username, password string) (
 	if !CheckPassword(u.PasswordHash, password) {
 		return nil, errors.New("invalid credentials")
 	}
+	// Erst NACH dem Passwortvergleich prüfen: ein früher Ausstieg würde deaktivierte
+	// Konten über die Antwortzeit verraten. Die Meldung bleibt bewusst dieselbe wie
+	// bei falschen Zugangsdaten (keine Kontoaufklärung).
+	if u.Disabled {
+		return nil, errors.New("invalid credentials")
+	}
 	return u, nil
 }
 
@@ -260,10 +266,10 @@ func (m *Manager) userByUsername(ctx context.Context, username string) (*models.
 	var u models.User
 	err := m.pool.QueryRow(ctx,
 		`SELECT id, username, email, password_hash, is_admin, role,
-		        totp_secret, totp_enabled, created_at, updated_at
+		        totp_secret, totp_enabled, disabled, created_at, updated_at
 		 FROM users WHERE lower(username) = lower($1)`, username,
 	).Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.IsAdmin, &u.Role,
-		&u.TOTPSecret, &u.TOTPEnabled, &u.CreatedAt, &u.UpdatedAt)
+		&u.TOTPSecret, &u.TOTPEnabled, &u.Disabled, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -398,16 +404,21 @@ func (m *Manager) userFromRequest(ctx context.Context, r *http.Request) (*models
 	var expires time.Time
 	err = m.pool.QueryRow(ctx,
 		`SELECT u.id, u.username, u.email, u.password_hash, u.is_admin, u.role,
-		        u.totp_secret, u.totp_enabled, u.created_at, u.updated_at, s.expires_at
+		        u.totp_secret, u.totp_enabled, u.disabled, u.created_at, u.updated_at, s.expires_at
 		 FROM sessions s JOIN users u ON u.id = s.user_id
 		 WHERE s.token = $1`, tokenHash,
 	).Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.IsAdmin, &u.Role,
-		&u.TOTPSecret, &u.TOTPEnabled, &u.CreatedAt, &u.UpdatedAt, &expires)
+		&u.TOTPSecret, &u.TOTPEnabled, &u.Disabled, &u.CreatedAt, &u.UpdatedAt, &expires)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, errors.New("invalid session")
 		}
 		return nil, err
+	}
+	// Die Sitzung wird pro Request aufgelöst, also greift eine Deaktivierung SOFORT
+	// und nicht erst mit dem Ablauf der Sitzung (API-31).
+	if u.Disabled {
+		return nil, errors.New("account disabled")
 	}
 	if time.Now().After(expires) {
 		_, _ = m.pool.Exec(ctx, `DELETE FROM sessions WHERE token = $1`, tokenHash)

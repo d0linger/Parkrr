@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"math"
 	"net/http"
@@ -232,6 +233,24 @@ func mkStoredVehicle(t *testing.T, h *Handler, pid int64, monthly float64, start
 		ID int64 `json:"id"`
 	}
 	_ = json.Unmarshal(crec.Body.Bytes(), &cat)
+	// Der Tarif hing an KEINEM Aufräumpfad: cleanupPersons entfernt die Person und
+	// mit ihr das Gefährt, der Tarif blieb liegen. Über hunderte Testläufe sammelten
+	// sich so 400+ Karten in der geteilten Test-Datenbank an, bis die Tarif-Ansicht
+	// im a11y-Lauf in ihr 30-Sekunden-Limit lief.
+	//
+	// t.Cleanup ist LIFO: dieser Eintrag läuft VOR dem in testHandler registrierten
+	// cleanupPersons, das Gefährt steht also noch und vehicles.category_id ist
+	// RESTRICT. Deshalb erst die Gefährte dieses Tarifs, dann den Tarif.
+	t.Cleanup(func() {
+		ctx := context.Background()
+		if err := purgeExec(ctx, h.Pool, `DELETE FROM vehicles WHERE category_id=$1`, cat.ID); err != nil {
+			t.Logf("cleanup vehicles of category %d: %v", cat.ID, err)
+			return
+		}
+		if _, err := h.Pool.Exec(ctx, `DELETE FROM categories WHERE id=$1`, cat.ID); err != nil {
+			t.Logf("cleanup category %d: %v", cat.ID, err)
+		}
+	})
 
 	vbody, _ := json.Marshal(map[string]any{
 		"person_id": pid, "category_id": cat.ID, "billing_period": "monthly",

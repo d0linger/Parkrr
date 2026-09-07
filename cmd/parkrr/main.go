@@ -188,8 +188,27 @@ func run() error {
 	sysAudit := apiHandler.AuditSystem
 	backup.SetAuditor(sysAudit)
 
+	// Alarm bei fehlgeschlagenem Backup (Hundert 04). Nur wenn BEIDES eingerichtet
+	// ist: ein SMTP-Relay und mindestens eine Empfängeradresse. Fehlt eines, bleibt
+	// es beim bisherigen Verhalten — Log, Änderungsprotokoll und die Backup-Kachel.
+	var backupAlert backup.Alerter
+	if mailer.Enabled() && len(cfg.AlertEmail) > 0 {
+		to := cfg.AlertEmail
+		backupAlert = func(ctx context.Context, subject, body string) {
+			// Eigener, kurzer Context: der Alarm hängt am 30-Minuten-Context des
+			// Backup-Laufs, und wenn DER gerade abgelaufen ist, käme die Warnung nie
+			// heraus — also genau dann nicht, wenn ein Timeout die Ursache war.
+			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			if err := mailer.Send(sctx, to, subject, body); err != nil {
+				slog.Error("backup alert e-mail failed", "err", err)
+			}
+		}
+		slog.Info("backup failure alerts enabled", "recipients", len(cfg.AlertEmail))
+	}
+
 	if cfg.BackupKey != "" && (cfg.BackupDir != "" || s3.Enabled()) {
-		go backup.StartScheduler(cleanupStop, pool, cfg.DatabaseURL, cfg.BackupKey, cfg.BackupDir, s3)
+		go backup.StartScheduler(cleanupStop, pool, cfg.DatabaseURL, cfg.BackupKey, cfg.BackupDir, s3, backupAlert)
 		slog.Info("scheduled backups enabled", "dir", cfg.BackupDir, "s3", s3.Enabled())
 	}
 

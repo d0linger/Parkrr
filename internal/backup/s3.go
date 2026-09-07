@@ -59,8 +59,9 @@ type S3Object struct {
 	Modified time.Time `json:"modified"`
 }
 
-// UploadS3 stores an encrypted backup in the bucket; keep>0 prunes to the newest N.
-func UploadS3(ctx context.Context, c S3Config, name string, data []byte, keep int) error {
+// UploadS3 stores an encrypted backup in the bucket; keep>0 prunes to the newest N
+// (keepDays hält zusätzlich eine Mindest-Historie vor, siehe prunableS3).
+func UploadS3(ctx context.Context, c S3Config, name string, data []byte, r Retention) error {
 	cl, err := c.client()
 	if err != nil {
 		return err
@@ -69,8 +70,8 @@ func UploadS3(ctx context.Context, c S3Config, name string, data []byte, keep in
 		minio.PutObjectOptions{ContentType: "application/octet-stream"}); err != nil {
 		return err
 	}
-	if keep > 0 {
-		pruneS3(ctx, cl, c, keep)
+	if r.Keep > 0 {
+		pruneS3(ctx, cl, c, r)
 	}
 	return nil
 }
@@ -214,28 +215,52 @@ func DeleteS3(ctx context.Context, c S3Config, name string) error {
 // aufrufbar, weil ein Upload erst NACH bestandener Prüfung etwas verdrängen
 // darf: sonst räumt ein abgebrochener Upload einen guten alten Stand weg und
 // hinterlässt an dessen Stelle ein kaputtes Objekt.
-func PruneS3(ctx context.Context, c S3Config, keep int) error {
-	if keep < 1 {
+func PruneS3(ctx context.Context, c S3Config, r Retention) error {
+	if r.Keep < 1 {
 		return nil
 	}
 	cl, err := c.client()
 	if err != nil {
 		return err
 	}
-	pruneS3(ctx, cl, c, keep)
+	pruneS3(ctx, cl, c, r)
 	return nil
 }
 
-func pruneS3(ctx context.Context, cl *minio.Client, c S3Config, keep int) {
+// prunableS3 wählt die Objekte, die weggeräumt werden dürfen: alles jenseits der
+// neuesten `keep` UND älter als `keepDays` Tage.
+//
+// Die Altersgrenze ist ein BODEN, keine Obergrenze — sie kann nur dazu führen, dass
+// mehr aufbewahrt wird (Hundert 09). Der Grund: die Anzahl allein sagt nichts über
+// den abgedeckten Zeitraum. Wer "die neuesten 7" aufbewahrt und aus irgendeinem
+// Anlass sieben Läufe an einem Nachmittag anstößt, hat danach sieben Sicherungen
+// von heute und keine einzige von gestern — und merkt es erst, wenn er sie braucht.
+// keepDays=0 (Vorgabe) lässt das bisherige Verhalten unverändert.
+func prunableS3(objs []S3Object, r Retention, now time.Time) []S3Object {
+	if r.Keep < 1 || len(objs) <= r.Keep {
+		return nil
+	}
+	cand := objs[r.Keep:] // objs ist bereits neueste-zuerst sortiert
+	if r.KeepDays <= 0 {
+		return cand
+	}
+	cutoff := now.AddDate(0, 0, -r.KeepDays)
+	var out []S3Object
+	for _, o := range cand {
+		if o.Modified.Before(cutoff) {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+func pruneS3(ctx context.Context, cl *minio.Client, c S3Config, r Retention) {
 	objs, err := listWith(ctx, cl, c)
 	if err != nil {
 		slog.Warn("backup: S3 prune list failed", "bucket", c.Bucket, "err", err)
 		return
 	}
-	if len(objs) <= keep {
-		return
-	}
-	for _, old := range objs[keep:] {
+	for _, old := range prunableS3(objs, r, time.Now()) {
 		if err := cl.RemoveObject(ctx, c.Bucket, c.objectKey(old.Name), minio.RemoveObjectOptions{}); err != nil {
 			slog.Warn("backup: S3 prune remove failed", "bucket", c.Bucket, "object", old.Name, "err", err)
 		}

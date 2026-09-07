@@ -70,6 +70,13 @@ type Config struct {
 	SMTPFromName string // optional display name
 	SMTPTLS      string // "starttls" (default) | "tls" (implicit) | "none"
 
+	// AlertEmail bekommt Betriebsalarme (derzeit: fehlgeschlagene geplante
+	// Backups). Leer = kein Versand; der Fehlschlag steht dann weiterhin im Log,
+	// im Änderungsprotokoll und auf der Backup-Kachel. Bewusst getrennt von den
+	// Empfängern der Zahlungserinnerungen: das ist Post an den BETREIBER, nicht an
+	// Kunden, und sie darf nicht mit einer Kundenliste vermischt werden (Hundert 04).
+	AlertEmail []string
+
 	// PublicBaseURL is the externally reachable base URL (e.g.
 	// https://parkrr.example.com), used to build links inside outgoing e-mail.
 	PublicBaseURL string
@@ -128,6 +135,7 @@ func Load() (*Config, error) {
 		SMTPFrom:      os.Getenv("PARKRR_SMTP_FROM"),
 		SMTPFromName:  getenv("PARKRR_SMTP_FROM_NAME", "Parkrr"),
 		SMTPTLS:       getenv("PARKRR_SMTP_TLS", "starttls"),
+		AlertEmail:    splitList(os.Getenv("PARKRR_ALERT_EMAIL")),
 		PublicBaseURL: os.Getenv("PARKRR_PUBLIC_BASE_URL"),
 
 		S3Endpoint:  os.Getenv("PARKRR_S3_ENDPOINT"),

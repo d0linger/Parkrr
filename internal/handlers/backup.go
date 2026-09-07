@@ -153,6 +153,19 @@ func (h *Handler) SaveBackupSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "retention count must not be negative")
 		return
 	}
+	// Eine negative Tagesgrenze wäre eine Grenze in der ZUKUNFT: dann wäre nie etwas
+	// alt genug und das Aufräumen stünde still, ohne dass jemand es merkt. Die
+	// Obergrenze ist keine Willkür, sondern hält die Zahl in einem Bereich, in dem
+	// "mindestens so lange aufbewahren" noch eine Aussage ist (Hundert 09).
+	const maxKeepDays = 3650 // 10 Jahre
+	if in.VolumeKeepDays < 0 || in.S3KeepDays < 0 {
+		writeError(w, http.StatusBadRequest, "Mindestalter darf nicht negativ sein")
+		return
+	}
+	if in.VolumeKeepDays > maxKeepDays || in.S3KeepDays > maxKeepDays {
+		writeError(w, http.StatusBadRequest, "Mindestalter darf höchstens 3650 Tage betragen")
+		return
+	}
 	// Read the previous schedule first so the trail carries the before/after values —
 	// retention counts in particular decide how long backups survive.
 	prev, prevErr := backup.LoadSettings(r.Context(), h.Pool)
@@ -213,7 +226,7 @@ func (h *Handler) RunScheduledBackup(w http.ResponseWriter, r *http.Request) {
 		// treating nil-error as success would report "Volume gesichert" for a backup
 		// that cannot be restored — and backup_status simultaneously records it as
 		// failed. Same distinction the scheduler makes.
-		switch _, verified, err := backup.RunVolume(ctx, h.Pool, h.DatabaseURL, h.BackupKey, h.BackupDir, settings.VolumeKeep); {
+		switch _, verified, err := backup.RunVolume(ctx, h.Pool, h.DatabaseURL, h.BackupKey, h.BackupDir, settings.VolumeRetention()); {
 		case err != nil:
 			slog.Error("run-now volume backup failed", "err", err)
 			firstErr = err
@@ -225,7 +238,7 @@ func (h *Handler) RunScheduledBackup(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if h.S3.Enabled() {
-		if _, err := backup.RunS3(ctx, h.Pool, h.DatabaseURL, h.BackupKey, h.S3, settings.S3Keep); err != nil {
+		if _, err := backup.RunS3(ctx, h.Pool, h.DatabaseURL, h.BackupKey, h.S3, settings.S3Retention()); err != nil {
 			slog.Error("run-now S3 backup failed", "err", err)
 			if firstErr == nil {
 				firstErr = err
@@ -424,8 +437,8 @@ func (h *Handler) CreateBackupS3(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
 	defer cancel()
-	// keep=0: a manual upload never prunes. RunS3 records the status row.
-	name, err := backup.RunS3(ctx, h.Pool, h.DatabaseURL, h.BackupKey, h.S3, 0)
+	// Leere Retention: ein manueller Upload räumt nie auf. RunS3 schreibt die Statuszeile.
+	name, err := backup.RunS3(ctx, h.Pool, h.DatabaseURL, h.BackupKey, h.S3, backup.Retention{})
 	if err != nil {
 		slog.Error("backup: S3 upload failed", "err", err)
 		writeError(w, http.StatusBadGateway, "S3 upload failed")

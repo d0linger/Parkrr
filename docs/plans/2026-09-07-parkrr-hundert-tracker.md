@@ -16,12 +16,12 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **01** [Notwendig/S] Fehler vor jedem 500 loggen — `internal/handlers/billing.go:1104`
 - [x] **02** [Notwendig/S] Request-ID in den Context propagieren — `internal/server/middleware.go:47`
 - [x] **03** [Hoch/S] Access-Log-Level nach Status eskalieren — `internal/server/middleware.go:69`
-- [ ] **04** [Hoch/S] Alarm bei Backup-Fehlschlag — `internal/backup/schedule.go:328`
+- [x] **04** [Hoch/S] Alarm bei Backup-Fehlschlag — `internal/backup/schedule.go:328`
 - [x] **05** [Hoch/S] CSV-Writer-Fehler prüfen — `internal/handlers/export.go:246`
 - [x] **06** [Hoch/S] Belegungstrend-Fehler nicht verschlucken — `internal/handlers/stats.go:1120`
 - [x] **07** [Hoch/S] Archiv-Sweep-Fehler sichtbar machen — `internal/handlers/agreements.go:553`
-- [ ] **08** [Mittel/S] Backfill hinter Done-Marker legen — `internal/server/server.go:56`
-- [ ] **09** [Mittel/S] S3-Retention konfigurierbar machen — `internal/backup/s3.go`
+- [x] **08** [Mittel/S] Backfill hinter Done-Marker legen — `internal/server/server.go:56`
+- [x] **09** [Mittel/S] S3-Retention konfigurierbar machen — `internal/backup/s3.go`
 - [ ] **10** [Mittel/M] Beispiel-Alerts und Dashboard mitliefern
 - [x] **11** [Idee/M] Geteilter Rate-Limiter für Replikate — `internal/auth/ratelimit.go`
 
@@ -49,7 +49,7 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **28** [Hoch/S] Index auf invoices(due_on) — `internal/handlers/billing.go:1101`
 - [x] **29** [Hoch/S] Geldlisten paginieren — `internal/handlers/billing.go:1147`
 - [x] **30** [Hoch/S] total und has_more bei Listen — `internal/handlers/handlers.go:167`
-- [ ] **31** [Hoch/S] users.disabled statt löschen — `internal/handlers/users.go:241`
+- [x] **31** [Hoch/S] users.disabled statt löschen — `internal/handlers/users.go:241`
 - [ ] **32** [Hoch/M] Retention für wachsende Nebentabellen — `internal/handlers/portal.go:132`
 - [ ] **33** [Mittel/S] Tote Tabelle flatrate_paid_years entfernen — `migrations/006_flatrate_years.sql`
 - [x] **34** [Mittel/S] Checksummen in schema_migrations — `internal/database/database.go:116`

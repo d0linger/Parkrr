@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -51,9 +52,15 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 
 	// Idempotent one-shot: book real Zahlungseingänge for Pauschale/Nebenkosten
 	// period settlements made before migration 036 (they only flipped an off-book
-	// flag). Runs in the background so a large dataset never delays serving.
+	// flag). Runs in the background so a large dataset never delays serving — und
+	// hinter einem Done-Marker, damit der Vollscan über sämtliche Vereinbarungen
+	// nicht bei JEDEM Start erneut anfällt (Hundert 08).
 	go func() {
-		if err := h.BackfillPeriodPayments(context.Background()); err != nil {
+		switch err := h.RunPeriodPaymentBackfillOnce(context.Background()); {
+		case err == nil:
+		case errors.Is(err, handlers.ErrTaskBusy):
+			slog.Info("period-payment backfill runs on another instance")
+		default:
 			slog.Error("period-payment backfill failed", "err", err)
 		}
 	}()

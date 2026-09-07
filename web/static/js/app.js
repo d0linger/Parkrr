@@ -3755,9 +3755,14 @@
     const CRON_MODES = [['daily', 'Täglich'], ['hours', 'Alle N Std.'], ['weekly', 'Wöchentlich'], ['cron', 'Cron']];
     // A per-target schedule editor (Volume or S3): mode tabs + fields, a live cron
     // string, a plain-language description, the next runs, and a retention count.
-    function scheduleColumn(label, iconKey, expr, keep, configured, note) {
+    function scheduleColumn(label, iconKey, expr, keep, keepDays, configured, note) {
         const f = cronToForm(expr);
         const keepIn = el('input', { type: 'number', min: '0', step: '1', value: String(keep ?? 0), 'aria-label': 'Behalten' });
+        // Die Anzahl allein sagt nichts über den abgedeckten ZEITRAUM: wer "die
+        // neuesten 7" behält und an einem Nachmittag sieben Läufe anstößt, hat danach
+        // sieben Sicherungen von heute und keine von gestern. Diese Grenze wirkt nur
+        // in eine Richtung — sie kann Aufbewahrung verlängern, nie verkürzen.
+        const daysIn = el('input', { type: 'number', min: '0', max: '3650', step: '1', value: String(keepDays ?? 0), 'aria-label': 'Mindestalter in Tagen' });
         const controls = el('div', { class: 'sched-controls' });
         const cronOut = el('code', { class: 'sched-cron' });
         const descOut = el('div', { class: 'card-meta' });
@@ -3821,7 +3826,8 @@
 
         bodyWrap.append(tabsWrap, controls,
             el('div', { class: 'sched-preview' }, cronOut, descOut, runsOut),
-            el('div', { class: 'sched-keep' }, el('label', { class: 'sched-lbl' }, 'Behalten (Anzahl · 0 = alle)'), keepIn));
+            el('div', { class: 'sched-keep' }, el('label', { class: 'sched-lbl' }, 'Behalten (Anzahl · 0 = alle)'), keepIn),
+            el('div', { class: 'sched-keep' }, el('label', { class: 'sched-lbl' }, 'Mindestens aufbewahren (Tage · 0 = ohne)'), daysIn));
         renderTabs(); renderControls(); refresh(); applyOn();
 
         const col = el('div', { class: 'sched-col' + (configured ? '' : ' is-off') },
@@ -3830,13 +3836,20 @@
                 el('label', { class: 'sched-switch' }, toggle, el('span', {}, 'Automatisch'))));
         if (!configured && note) col.append(el('div', { class: 'card-meta', style: 'margin:.2rem 0 .4rem' }, note));
         col.append(bodyWrap);
-        return { node: col, read: () => ({ cron: formToCron(f), keep: Math.max(0, parseInt(keepIn.value, 10) || 0) }) };
+        return {
+            node: col,
+            read: () => ({
+                cron: formToCron(f),
+                keep: Math.max(0, parseInt(keepIn.value, 10) || 0),
+                keepDays: Math.min(3650, Math.max(0, parseInt(daysIn.value, 10) || 0)),
+            }),
+        };
     }
     function scheduleCard(st) {
         const s = st.settings || {};
-        const volCol = scheduleColumn('Volume', 'archive', s.volume_cron || '', s.volume_keep ?? 14, !!st.scheduled,
+        const volCol = scheduleColumn('Volume', 'archive', s.volume_cron || '', s.volume_keep ?? 14, s.volume_keep_days ?? 0, !!st.scheduled,
             'Kein Volume gemountet — setze PARKRR_BACKUP_DIR. Der Zeitplan lässt sich trotzdem speichern.');
-        const s3Col = scheduleColumn('S3', 'box', s.s3_cron || '', s.s3_keep ?? 0, !!st.s3,
+        const s3Col = scheduleColumn('S3', 'box', s.s3_cron || '', s.s3_keep ?? 0, s.s3_keep_days ?? 0, !!st.s3,
             'Kein S3 konfiguriert — setze PARKRR_S3_* (Env). Der Zeitplan lässt sich trotzdem speichern.');
         const saveBtn = el('button', { class: 'btn btn-primary' }, 'Zeitplan speichern');
         const runBtn = el('button', { class: 'btn btn-ghost' }, 'Jetzt sichern');
@@ -3852,7 +3865,10 @@
     async function saveSchedule(vol, s3, btn) {
         const o = btn.textContent; btn.disabled = true; btn.textContent = 'Speichere …';
         try {
-            await api.post('/backup/schedule', { volume_cron: vol.cron, volume_keep: vol.keep, s3_cron: s3.cron, s3_keep: s3.keep });
+            await api.post('/backup/schedule', {
+                volume_cron: vol.cron, volume_keep: vol.keep, volume_keep_days: vol.keepDays,
+                s3_cron: s3.cron, s3_keep: s3.keep, s3_keep_days: s3.keepDays,
+            });
             toast('Zeitplan gespeichert', 'success');
         } catch (e) { toast(e.message, 'error'); }
         btn.disabled = false; btn.textContent = o;
@@ -4086,7 +4102,10 @@
                 // phrasing content, so a heading here would be invalid HTML.
                 el('span', { class: 'u-name' }, esc(u.username), ' ',
                     el('span', { class: 'badge badge-role' }, ROLE_LABEL[u.role] || u.role),
-                    u.totp_enabled ? el('span', { class: 'badge badge-stored badge-ic', title: '2FA aktiv', 'aria-label': '2FA aktiv' }, icon('shield', 12), '2FA') : null),
+                    u.totp_enabled ? el('span', { class: 'badge badge-stored badge-ic', title: '2FA aktiv', 'aria-label': '2FA aktiv' }, icon('shield', 12), '2FA') : null,
+                    // Gesperrte Konten müssen in der Liste sofort erkennbar sein — sonst
+                    // sucht man den fehlenden Zugang beim Passwort statt beim Schalter.
+                    u.disabled ? el('span', { class: 'badge badge-cancelled badge-ic', title: 'Zugang gesperrt', 'aria-label': 'Zugang gesperrt' }, icon('power', 12), 'Gesperrt') : null),
                 el('span', { class: 'u-sub' }, esc(u.email) || 'keine E-Mail')),
             el('span', { class: 'tf-chev', 'aria-hidden': 'true' }, icon('chevron', 18)));
 
@@ -4105,6 +4124,10 @@
 
         const dz = el('div', { class: 'u-dz-actions' });
         if (u.totp_enabled) dz.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => resetUserMfa(u) }, icon('unlock', 15), ' 2FA zurücksetzen'));
+        // Sperren steht VOR dem Löschen: es ist die reversible Variante desselben
+        // Ziels und erhält im Gegensatz zum Löschen die Urheberschaft auf Belegen.
+        if (!isSelf) dz.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => toggleUserDisabled(u) },
+            icon('power', 15), u.disabled ? ' Zugang entsperren' : ' Zugang sperren'));
         if (!isSelf) dz.append(el('button', { class: 'btn btn-danger btn-sm', onclick: (e) => delUser(u, e.currentTarget.closest('.card')) }, icon('trash', 15), ' Benutzer löschen'));
         const hasDanger = u.totp_enabled || !isSelf;
 
@@ -4125,6 +4148,17 @@
             panel.inert = open;
         });
         return card;
+    }
+    // Sperren statt Löschen: ein Löschen nullt die Urheberschaft des Kontos auf
+    // Rechnungen, Zahlungen, Stornos und Übergabeprotokollen (API-31).
+    async function toggleUserDisabled(u) {
+        const off = !u.disabled;
+        if (off && !await confirmDialog('Zugang sperren?', `„${u.username}" kann sich danach nicht mehr anmelden; laufende Sitzungen enden sofort. Das Konto und seine Spur im Änderungsprotokoll bleiben erhalten.`, 'Sperren')) return;
+        try {
+            await api.put('/users/' + u.id, { username: u.username, email: u.email, role: u.role, disabled: off });
+            toast(off ? 'Zugang gesperrt' : 'Zugang entsperrt', 'success');
+            render();
+        } catch (e) { toast(e.message, 'error'); }
     }
     async function resetUserMfa(u) {
         if (!await confirmDialog('2FA zurücksetzen?', `Für „${u.username}" wird die Zwei-Faktor-Authentifizierung deaktiviert und alle Recovery-Codes gelöscht. Der Benutzer kann sich dann ohne 2FA anmelden und es neu einrichten.`, 'Zurücksetzen')) return;

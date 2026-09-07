@@ -119,16 +119,21 @@ func fractionCents(cents int64, num, den float64) int64 {
 
 // User is an application login account. Admins manage other users.
 type User struct {
-	ID           int64     `json:"id"`
-	Username     string    `json:"username"`
-	Email        string    `json:"email"`
-	PasswordHash string    `json:"-"`
-	IsAdmin      bool      `json:"is_admin"`
-	Role         string    `json:"role"`
-	TOTPSecret   string    `json:"-"`
-	TOTPEnabled  bool      `json:"totp_enabled"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           int64  `json:"id"`
+	Username     string `json:"username"`
+	Email        string `json:"email"`
+	PasswordHash string `json:"-"`
+	IsAdmin      bool   `json:"is_admin"`
+	Role         string `json:"role"`
+	TOTPSecret   string `json:"-"`
+	TOTPEnabled  bool   `json:"totp_enabled"`
+	// Disabled sperrt den Zugang, ohne das Konto zu löschen. Löschen würde über
+	// ON DELETE SET NULL die Urheberschaft auf Rechnungen, Zahlungen, Stornos und
+	// Übergabeprotokollen nullen — Aufzeichnungen, die unverändert bleiben sollen
+	// (API-31).
+	Disabled  bool      `json:"disabled"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Person is a customer who stores one or more vehicles. Flat-rate billing lives
