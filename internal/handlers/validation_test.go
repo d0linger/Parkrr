@@ -81,3 +81,33 @@ func TestLengthPredicates(t *testing.T) {
 		t.Errorf("expected %d-rune (%d-byte) umlaut string to exceed the byte cap", maxNameLen, len(umlauts))
 	}
 }
+
+// TestValidEmailSyntax pins the syntax half of validEmail (finding SEC-81). Length
+// alone used to pass, so a typo'd address reached mail.cleanAddrs, was dropped there,
+// and only surfaced as a confusing 502 when a reminder was sent.
+func TestValidEmailSyntax(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"", true},                // optional field
+		{"max@example.com", true}, // plain address
+		{"a.b+tag@sub.example.co.uk", true},
+		{"not-an-email", false}, // the typo case
+		{"max@", false},
+		{"@example.com", false},
+		{"max example.com", false},
+		{"Max <max@example.com>", false}, // display-name form is not a bare address
+		{"max@example.com, other@x.com", false},
+	}
+	for _, tc := range cases {
+		if got := validEmail(tc.in); got != tc.want {
+			t.Errorf("validEmail(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+	// Length still applies on top of syntax.
+	long := strings.Repeat("a", maxEmailLen) + "@example.com"
+	if validEmail(long) {
+		t.Errorf("validEmail should reject an over-long address (len=%d)", len(long))
+	}
+}

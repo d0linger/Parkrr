@@ -76,8 +76,8 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Das Passwort muss zwischen 8 und 72 Zeichen lang sein (Umlaute und Sonderzeichen zählen doppelt)")
 		return
 	}
-	if !validEmailLength(req.Email) {
-		writeError(w, http.StatusBadRequest, "E-Mail ist zu lang")
+	if !validEmail(req.Email) {
+		writeError(w, http.StatusBadRequest, "E-Mail ist ungültig oder zu lang")
 		return
 	}
 	if h.rejectBreachedPassword(w, r, req.Password) {
@@ -132,8 +132,8 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Benutzername ist erforderlich (höchstens 100 Zeichen)")
 		return
 	}
-	if !validEmailLength(req.Email) {
-		writeError(w, http.StatusBadRequest, "E-Mail ist zu lang")
+	if !validEmail(req.Email) {
+		writeError(w, http.StatusBadRequest, "E-Mail ist ungültig oder zu lang")
 		return
 	}
 	role, ok := normalizeRole(req.Role)

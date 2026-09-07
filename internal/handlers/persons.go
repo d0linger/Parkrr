@@ -101,8 +101,8 @@ func (req *personRequest) validate() string {
 	if !validNameLength(req.FirstName) || !validNameLength(req.LastName) {
 		return "Name ist zu lang"
 	}
-	if !validEmailLength(req.Email) {
-		return "E-Mail ist zu lang"
+	if !validEmail(req.Email) {
+		return "E-Mail ist ungültig oder zu lang"
 	}
 	if !validPhoneLength(req.Phone) {
 		return "Telefonnummer ist zu lang"

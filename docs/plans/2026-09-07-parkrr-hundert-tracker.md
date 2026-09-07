@@ -61,7 +61,7 @@ B11 Destruktives + Betreiber-Punkte.
 
 - [x] **38** [Hoch/M] Übergabeprotokolle unveränderlich machen — `internal/handlers/handover.go:207`
 - [ ] **39** [Hoch/M] DSGVO-Anonymisierung auf Signaturen ausweiten — `internal/handlers/persons.go:284`
-- [ ] **40** [Mittel/S] E-Mail-Syntax validieren — `internal/handlers/persons.go:104`
+- [x] **40** [Mittel/S] E-Mail-Syntax validieren — `internal/handlers/persons.go:104`
 - [ ] **41** [Mittel/M] 2FA-Pflicht als Policy
 - [ ] **42** [Mittel/S] Passkey-only-Modus
 - [ ] **43** [Mittel/M] Revisionssicherer Audit-Export
