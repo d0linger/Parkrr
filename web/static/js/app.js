@@ -1242,7 +1242,9 @@
             el('div', { class: 'muted', style: 'font-size:.82rem;margin:-.35rem 0 .7rem' }, 'Für Buchhaltung/Steuerberater — öffnet direkt in Excel/LibreOffice.'),
             el('div', { class: 'btn-row', style: 'flex-wrap:wrap;gap:.5rem' },
                 expLink('outstanding', 'Offene Posten'),
+                expLink('invoices', 'Rechnungen'),
                 expLink('payments', 'Zahlungen'),
+                expLink('charges', 'Zusatzkosten'),
                 expLink('persons', 'Personen'),
                 expLink('vehicles', 'Gefährte'),
                 expLink('occupancy', 'Belegung'))));

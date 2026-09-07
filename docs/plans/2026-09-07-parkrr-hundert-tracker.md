@@ -34,7 +34,7 @@ B11 Destruktives + Betreiber-Punkte.
 - [ ] **16** [Hoch/L] Automatischer Rechnungslauf
 - [ ] **17** [Hoch/M] Offene-Posten-Liste als Report
 - [ ] **18** [Hoch/M] Storno als Gutschrift-PDF
-- [ ] **19** [Mittel/S] Rechnungen und Zusatzkosten als CSV — `internal/handlers/export.go:48`
+- [x] **19** [Mittel/S] Rechnungen und Zusatzkosten als CSV — `internal/handlers/export.go:48`
 - [ ] **20** [Mittel/M] B1-Rest: laufende Periode anteilig fakturieren
 - [ ] **21** [Mittel/L] E-Rechnung (ZUGFeRD/XRechnung)
 - [ ] **22** [Mittel/M] Buchhaltungsexport DATEV/BMD
@@ -50,7 +50,7 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **29** [Hoch/S] Geldlisten paginieren — `internal/handlers/billing.go:1147`
 - [x] **30** [Hoch/S] total und has_more bei Listen — `internal/handlers/handlers.go:167`
 - [x] **31** [Hoch/S] users.disabled statt löschen — `internal/handlers/users.go:241`
-- [ ] **32** [Hoch/M] Retention für wachsende Nebentabellen — `internal/handlers/portal.go:132`
+- [x] **32** [Hoch/M] Retention für wachsende Nebentabellen — `internal/handlers/portal.go:132`
 - [ ] **33** [Mittel/S] Tote Tabelle flatrate_paid_years entfernen — `migrations/006_flatrate_years.sql`
 - [x] **34** [Mittel/S] Checksummen in schema_migrations — `internal/database/database.go:116`
 - [x] **35** [Mittel/M] Audit-Suche indexfähig machen — `internal/handlers/audit.go:23`
@@ -60,7 +60,7 @@ B11 Destruktives + Betreiber-Punkte.
 ## Sicherheit und Datenschutz (B8 Sicherheit)
 
 - [x] **38** [Hoch/M] Übergabeprotokolle unveränderlich machen — `internal/handlers/handover.go:207`
-- [ ] **39** [Hoch/M] DSGVO-Anonymisierung auf Signaturen ausweiten — `internal/handlers/persons.go:284`
+- [x] **39** [Hoch/M] DSGVO-Anonymisierung auf Signaturen ausweiten — `internal/handlers/persons.go:284`
 - [x] **40** [Mittel/S] E-Mail-Syntax validieren — `internal/handlers/persons.go:104`
 - [ ] **41** [Mittel/M] 2FA-Pflicht als Policy
 - [ ] **42** [Mittel/S] Passkey-only-Modus
@@ -99,7 +99,7 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **66** [Notwendig/S] SW-Cache-Version an den Build koppeln — `web/static/sw.js:2`
 - [x] **67** [Hoch/S] Update-Hinweis statt stillem Austausch — `web/static/sw.js:17`
 - [x] **68** [Hoch/S] Precache vervollständigen — `web/static/sw.js:3`
-- [ ] **69** [Mittel/S] Manifest ausbauen — `web/static/manifest.webmanifest:44`
+- [x] **69** [Mittel/S] Manifest ausbauen — `web/static/manifest.webmanifest:44`
 - [x] **70** [Mittel/S] theme-color dem Theme folgen lassen — `web/static/index.html:6`
 - [ ] **71** [Idee/L] Offline-Queue für Schreibaktionen
 - [ ] **72** [Idee/M] Web-Push-Benachrichtigungen

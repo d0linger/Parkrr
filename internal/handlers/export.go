@@ -225,6 +225,93 @@ func (h *Handler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+	// Rechnungen und Zusatzkosten fehlten als einzige Geldarten im Export: die
+	// Buchhaltung bekam Zahlungen und offene Posten, aber nicht die Belege, aus denen
+	// sie entstehen (Hundert 19).
+	case "invoices":
+		name = "rechnungen"
+		header = []string{"nummer", "datum", "faellig", "person", "netto_eur", "ust_prozent",
+			"ust_eur", "brutto_eur", "bezahlt_eur", "storniert", "storno_zu_nummer", "notiz"}
+		rr, err := h.Pool.Query(r.Context(),
+			// LEFT JOIN auf die stornierte Rechnung: eine Gutschrift ohne auflösbaren
+			// Bezug soll in der Zeile stehen bleiben, nicht aus dem Export fallen.
+			`SELECT i.number, i.issued_on, i.due_on, per.first_name, per.last_name,
+			        i.subtotal, i.ust_rate, i.tax_amount, i.total, i.paid_amount,
+			        i.canceled, COALESCE(c.number, ''), i.note
+			   FROM invoices i
+			   JOIN persons per ON per.id = i.person_id
+			   LEFT JOIN invoices c ON c.id = i.cancels_id
+			  ORDER BY i.issued_on DESC, i.id DESC`)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Export fehlgeschlagen")
+			return
+		}
+		defer rr.Close()
+		for rr.Next() {
+			var number, fn, ln, cancelsNumber, note string
+			var issuedOn time.Time
+			var dueOn *time.Time
+			var subtotal, ustRate, tax, total, paid float64
+			var canceled bool
+			if err := rr.Scan(&number, &issuedOn, &dueOn, &fn, &ln,
+				&subtotal, &ustRate, &tax, &total, &paid, &canceled, &cancelsNumber, &note); err != nil {
+				writeError(w, http.StatusInternalServerError, "Export fehlgeschlagen")
+				return
+			}
+			rows = append(rows, []string{
+				number, csvDate(issuedOn), csvDateP(dueOn), strings.TrimSpace(fn + " " + ln),
+				csvMoney(subtotal), strconv.FormatFloat(ustRate, 'f', 2, 64), csvMoney(tax),
+				csvMoney(total), csvMoney(paid), boolJaNein(canceled), cancelsNumber, note,
+			})
+		}
+		if rr.Err() != nil {
+			writeError(w, http.StatusInternalServerError, "Export fehlgeschlagen")
+			return
+		}
+
+	case "charges":
+		name = "zusatzkosten"
+		header = []string{"datum", "person", "gefaehrt_id", "beschreibung", "menge",
+			"einzelbetrag_eur", "gesamt_eur", "bezahlt"}
+		rr, err := h.Pool.Query(r.Context(),
+			`SELECT c.charged_on, per.first_name, per.last_name, c.vehicle_id,
+			        c.description, c.quantity, c.amount, c.paid
+			   FROM charges c
+			   JOIN persons per ON per.id = c.person_id
+			  ORDER BY c.charged_on DESC, c.id DESC`)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Export fehlgeschlagen")
+			return
+		}
+		defer rr.Close()
+		for rr.Next() {
+			var chargedOn time.Time
+			var fn, ln, description string
+			var vid *int64
+			var quantity, amount float64
+			var paid bool
+			if err := rr.Scan(&chargedOn, &fn, &ln, &vid, &description, &quantity, &amount, &paid); err != nil {
+				writeError(w, http.StatusInternalServerError, "Export fehlgeschlagen")
+				return
+			}
+			veh := ""
+			if vid != nil {
+				veh = strconv.FormatInt(*vid, 10)
+			}
+			// Die Gesamtsumme wird MITGELIEFERT statt der Tabellenkalkulation überlassen:
+			// amount ist der Einzelbetrag, und wer das übersieht, addiert die falsche
+			// Spalte — bei einer Menge von 3 um den Faktor 3 daneben.
+			rows = append(rows, []string{
+				csvDate(chargedOn), strings.TrimSpace(fn + " " + ln), veh, description,
+				strconv.FormatFloat(quantity, 'f', 2, 64), csvMoney(amount),
+				csvMoney(amount * quantity), boolJaNein(paid),
+			})
+		}
+		if rr.Err() != nil {
+			writeError(w, http.StatusInternalServerError, "Export fehlgeschlagen")
+			return
+		}
+
 	default:
 		writeError(w, http.StatusNotFound, "unbekannter Export")
 		return

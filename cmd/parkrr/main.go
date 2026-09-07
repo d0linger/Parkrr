@@ -217,7 +217,7 @@ func run() error {
 		slog.Info("scheduled backups enabled", "dir", cfg.BackupDir, "s3", s3.Enabled())
 	}
 
-	go server.StartSessionCleanup(authMgr, cleanupStop)
+	go server.StartExpiryCleanup(pool, authMgr, cleanupStop)
 	go server.StartAuditRetention(pool,
 		time.Duration(cfg.AuditRetentionDays)*24*time.Hour,
 		time.Duration(cfg.AuditRetentionShortDays)*24*time.Hour, cleanupStop, sysAudit)

@@ -283,8 +283,10 @@ func (h *Handler) AnonymizePerson(w http.ResponseWriter, r *http.Request) {
 	// Anonymize the person AND revoke their self-service portal links in ONE
 	// transaction: a live magic link would still expose the (now-scrubbed) record, so
 	// the scrub and the revocation must commit or roll back together (findings H-05,
-	// atomicity). Broader PII in linked tables (vehicle plates, handover signatures,
-	// photos) is a separate, legally-scoped decision.
+	// atomicity). Die Löschung reicht jetzt bis zur UNTERSCHRIFT: signer_name und das
+	// gezeichnete Bild im Übergabeprotokoll sind der personenbezogenste Datenpunkt der
+	// Anwendung, und sie blieben bisher stehen (Hundert 39). Was NICHT mit gelöscht
+	// wird und warum, steht unten am UPDATE.
 	var wasAnon bool
 	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
 		if e := tx.QueryRow(r.Context(),
@@ -297,8 +299,25 @@ func (h *Handler) AnonymizePerson(w http.ResponseWriter, r *http.Request) {
 			  RETURNING (SELECT anonymized FROM prev)`, id).Scan(&wasAnon); e != nil {
 			return e
 		}
+		if _, e := tx.Exec(r.Context(),
+			`UPDATE self_service_tokens SET revoked = TRUE WHERE person_id = $1 AND NOT revoked`, id); e != nil {
+			return e
+		}
+		// Übergabeprotokolle sind seit Migration 051 unveränderlich. SET LOCAL öffnet
+		// den ENGEN Schalter aus 056, der ausschließlich signer_name und signature
+		// freigibt — nicht parkrr.purge, der jede Unveränderlichkeit aushebeln würde.
+		// LOCAL heißt: nur in dieser Transaktion, sie endet mit ihr.
+		if _, e := tx.Exec(r.Context(), `SET LOCAL parkrr.anonymize = 'on'`); e != nil {
+			return e
+		}
+		// Der Beleg BLEIBT ein Beleg: Richtung, Datum, Zustandsnotizen und der Bezug
+		// zum Gefährt sind der Nachweis über die Sache, nicht über die Person, und
+		// gehören zur Aufbewahrung. Entfernt wird, wer unterschrieben hat.
 		_, e := tx.Exec(r.Context(),
-			`UPDATE self_service_tokens SET revoked = TRUE WHERE person_id = $1 AND NOT revoked`, id)
+			`UPDATE handover_protocols
+			    SET signer_name = 'Anonymisiert', signature = NULL
+			  WHERE vehicle_id IN (SELECT id FROM vehicles WHERE person_id = $1)
+			    AND (signer_name <> 'Anonymisiert' OR signature IS NOT NULL)`, id)
 		return e
 	})
 	if errors.Is(txErr, pgx.ErrNoRows) {

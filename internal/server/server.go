@@ -576,16 +576,58 @@ func fingerprintAsset(html []byte, fsys fs.FS, ref, fsPath string) []byte {
 	return bytes.ReplaceAll(html, []byte(ref+`"`), []byte(ref+`?v=`+v+`"`))
 }
 
-// StartSessionCleanup runs a background loop pruning expired sessions.
-func StartSessionCleanup(authMgr *auth.Manager, stop <-chan struct{}) {
+// expirySweeps sind die Nebentabellen, deren Zeilen von sich aus ablaufen. Alle drei
+// wurden bisher NUR beiläufig aufgeräumt — beim Anlegen des nächsten Portal-Links,
+// beim Start der nächsten Passkey-Zeremonie. Passiert das nicht mehr (der letzte
+// Portal-Link wurde vor einem Jahr verschickt, niemand nutzt Passkeys), bleiben die
+// abgelaufenen Zeilen für immer liegen: aufräumen tut nur, wer die Tabelle ohnehin
+// benutzt (Hundert 32).
+//
+// Die Bedingungen sind absichtlich dieselben wie an den beiläufigen Stellen, damit
+// der Sweep nichts entfernt, was jene stehen lassen würden.
+var expirySweeps = []struct {
+	table string
+	sql   string
+}{
+	// Abgelaufene Sitzungen; identisch zu auth.CleanupExpired, hier nur der Vollständigkeit
+	// halber NICHT aufgeführt — die läuft weiter über den Manager (eigener Pool-Zugriff).
+	{"webauthn_ceremonies", `DELETE FROM webauthn_ceremonies WHERE expires_at < now()`},
+	// 30 Tage Nachlauf: ein gerade abgelaufener Link soll in der Verwaltung noch als
+	// "abgelaufen" sichtbar sein, statt spurlos zu verschwinden.
+	{"self_service_tokens", `DELETE FROM self_service_tokens WHERE revoked OR expires_at < now() - interval '30 days'`},
+}
+
+// StartExpiryCleanup runs a background loop pruning expired sessions and the
+// other self-expiring side tables.
+func StartExpiryCleanup(pool *pgxpool.Pool, authMgr *auth.Manager, stop <-chan struct{}) {
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
+	sweep := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		// Nicht mehr `_ =`: ein dauerhaft scheiternder Lauf sah bisher exakt aus wie ein
+		// funktionierender, und genau so wächst eine Tabelle unbemerkt (Hundert 32).
+		if err := authMgr.CleanupExpired(ctx); err != nil {
+			slog.Warn("expiry cleanup: sessions failed", "err", err)
+		}
+		for _, s := range expirySweeps {
+			tag, err := pool.Exec(ctx, s.sql)
+			if err != nil {
+				slog.Warn("expiry cleanup failed", "table", s.table, "err", err)
+				continue
+			}
+			if n := tag.RowsAffected(); n > 0 {
+				slog.Info("expiry cleanup: removed expired rows", "table", s.table, "rows", n)
+			}
+		}
+	}
+	sweep() // einmal beim Start, damit ein lange nicht gelaufener Bestand nicht erst in einer Stunde schrumpft
 	for {
 		select {
 		case <-stop:
 			return
 		case <-ticker.C:
-			_ = authMgr.CleanupExpired(context.Background())
+			sweep()
 		}
 	}
 }

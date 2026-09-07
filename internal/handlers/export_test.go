@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,7 +29,7 @@ func TestExportCSV(t *testing.T) {
 		return w
 	}
 
-	for _, ent := range []string{"outstanding", "payments", "persons", "vehicles"} {
+	for _, ent := range []string{"outstanding", "payments", "persons", "vehicles", "invoices", "charges"} {
 		w := call(ent)
 		if w.Code != http.StatusOK {
 			t.Fatalf("%s: status %d", ent, w.Code)
@@ -65,5 +66,63 @@ func TestExportCSV(t *testing.T) {
 	// Unknown entity -> 404.
 	if w := call("bogus"); w.Code != http.StatusNotFound {
 		t.Errorf("unknown export: want 404, got %d", w.Code)
+	}
+}
+
+// Rechnungen und Zusatzkosten fehlten als einzige Geldarten im Export (Hundert 19):
+// die Buchhaltung bekam Zahlungen und offene Posten, aber nicht die Belege, aus
+// denen sie entstehen.
+func TestExportInvoicesAndCharges(t *testing.T) {
+	h := testHandler(t)
+	ctx := t.Context()
+	pid := createIntegrationPerson(t, h)
+
+	// Eine Zusatzkostenzeile mit MENGE 3 — der Fall, an dem sich zeigt, ob der Export
+	// den Einzelbetrag oder die Gesamtsumme meint.
+	if _, err := h.Pool.Exec(ctx,
+		`INSERT INTO charges (person_id, description, amount, quantity) VALUES ($1,'Stromanschluss',10.00,3)`,
+		pid); err != nil {
+		t.Fatalf("seed charge: %v", err)
+	}
+	if _, err := h.Pool.Exec(ctx,
+		`INSERT INTO invoices (number, person_id, subtotal, ust_rate, tax_amount, total, note)
+		 VALUES ('EXP-2026-0001', $1, 100.00, 20.00, 20.00, 120.00, 'Testbeleg')`, pid); err != nil {
+		t.Fatalf("seed invoice: %v", err)
+	}
+	t.Cleanup(func() {
+		c := context.Background()
+		_ = purgeExec(c, h.Pool, `DELETE FROM invoices WHERE number='EXP-2026-0001'`)
+	})
+
+	call := func(entity string) string {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/export/"+entity, nil)
+		req.SetPathValue("entity", entity)
+		w := httptest.NewRecorder()
+		h.ExportCSV(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: status %d %s", entity, w.Code, w.Body.String())
+		}
+		return w.Body.String()
+	}
+
+	inv := call("invoices")
+	for _, want := range []string{"EXP-2026-0001", "100,00", "20,00", "120,00", "Testbeleg"} {
+		if !strings.Contains(inv, want) {
+			t.Errorf("der Rechnungsexport enthält %q nicht", want)
+		}
+	}
+
+	ch := call("charges")
+	if !strings.Contains(ch, "Stromanschluss") {
+		t.Error("der Zusatzkostenexport enthält die Position nicht")
+	}
+	// Einzelbetrag 10,00 UND Gesamtsumme 30,00 müssen beide dastehen — sonst addiert
+	// die Buchhaltung die falsche Spalte.
+	if !strings.Contains(ch, "10,00") {
+		t.Error("der Einzelbetrag fehlt")
+	}
+	if !strings.Contains(ch, "30,00") {
+		t.Error("die Gesamtsumme (Menge × Einzelbetrag) fehlt — genau die Spalte, die gebraucht wird")
 	}
 }
