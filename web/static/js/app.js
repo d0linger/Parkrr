@@ -178,24 +178,36 @@
                 opts.body = JSON.stringify(body);
             }
             if (method !== 'GET') opts.headers['X-CSRF-Token'] = getCookie('parkrr_csrf');
-            return handle(await fetch('/api' + path, opts));
+            return handle(await fetch('/api' + path, opts), path);
         },
         async upload(path, formData, method = 'POST') {
             const res = await fetch('/api' + path, {
                 method, body: formData, credentials: 'same-origin',
                 headers: { 'X-CSRF-Token': getCookie('parkrr_csrf') },
             });
-            return handle(res);
+            return handle(res, path);
         },
         get: (p) => api.request('GET', p),
         post: (p, b) => api.request('POST', p, b),
         put: (p, b) => api.request('PUT', p, b),
         del: (p) => api.request('DELETE', p),
     };
-    async function handle(res) {
+    // Letzte gemeldete Gesamtzahl je Pfad. Der Server schickt X-Total-Count auf allen
+    // Listen-Endpunkten, das Frontend hat ihn nie gelesen: eine am Serverlimit
+    // abgeschnittene Liste war von einer vollständigen nicht zu unterscheiden — man
+    // sah 1000 Personen und glaubte, das seien alle (Hundert UX-53).
+    const totalCounts = new Map();
+    const totalFor = (path) => totalCounts.get(path);
+
+    async function handle(res, path) {
         if (res.status === 204) return null;
         let data = null;
         const ct = res.headers.get('content-type') || '';
+        const total = res.headers.get('X-Total-Count');
+        if (path && total != null && total !== '') {
+            const n = Number(total);
+            if (Number.isFinite(n)) totalCounts.set(path, n);
+        }
         if (ct.includes('application/json')) data = await res.json();
         if (!res.ok) {
             const err = new Error((data && data.error) || 'HTTP ' + res.status);
@@ -318,6 +330,9 @@
     // cancelled prompt throws an error flagged { cancelled: true } so callers can
     // bail silently.
     async function promptStepUpPassword() {
+        // BEWUSST OHNE save (Hundert UX-51): dieser Dialog SAMMELT nur das Passwort,
+        // die eigentliche Aktion wiederholt withStepUp danach. Ein save hier kennte
+        // die Aktion gar nicht, die es absenden soll.
         const data = await formModal({
             title: 'Bestätigung erforderlich',
             submitLabel: 'Bestätigen',
@@ -800,7 +815,12 @@
         const listEl = el('div', {});
         const pagerEl = el('div', {});
         const countEl = el('p', { class: 'sr-only', role: 'status', 'aria-live': 'polite' });
-        page.append(countEl, listEl, pagerEl);
+        // Warnt, wenn der Server MEHR Datensätze hat, als er geliefert hat. Ohne das
+        // blättert man durch eine abgeschnittene Liste und hält sie für vollständig
+        // (Hundert UX-53). opts.sourcePath ist der Listen-Endpunkt, aus dem
+        // opts.items stammen; fehlt er, ist der Hinweis schlicht aus.
+        const truncEl = el('div', { class: 'list-trunc', role: 'status', hidden: true });
+        page.append(countEl, truncEl, listEl, pagerEl);
 
         search.addEventListener('input', () => { qRaw = search.value; q = norm(qRaw); pageNum = 1; refresh(); });
         sortSel.addEventListener('change', () => { sortIdx = Number(sortSel.value); refresh(); });
@@ -821,6 +841,18 @@
             // Trefferzahl fuer Screenreader ansagen (A11Y-77): die gefilterte Menge war
             // bisher nur visuell im Pager ablesbar.
             countEl.textContent = q ? `${total} Treffer` : '';
+            // Abgeschnitten? Dann sagen, WIE viele fehlen, statt so zu tun, als sei das
+            // alles. Die Suche geht über die geladene Menge — deshalb der Hinweis, dass
+            // sie hier nicht weiterhilft.
+            const serverTotal = opts.sourcePath ? totalFor(opts.sourcePath) : undefined;
+            const loaded = opts.items.length;
+            if (serverTotal != null && serverTotal > loaded) {
+                truncEl.textContent = `Es werden ${loaded} von ${serverTotal} Einträgen angezeigt. `
+                    + 'Die restlichen sind nicht geladen — auch die Suche findet sie nicht.';
+                truncEl.hidden = false;
+            } else {
+                truncEl.hidden = true;
+            }
             if (!slice.length) listEl.append(emptyState(opts.emptyIcon || 'box', opts.emptyText || 'Keine Einträge.'));
             else slice.forEach((it) => listEl.append(opts.render(it)));
             pagerEl.innerHTML = '';
@@ -898,7 +930,16 @@
         });
         return det;
     }
+    // Laufende Nummer je Seitenaufbau. Ohne sie kann ein Routenwechsel WÄHREND eines
+    // laufenden Aufbaus die neue Seite wieder zerstören: die alte Route wacht später
+    // aus ihrem await auf und schreibt in dasselbe #page — oder, häufiger, ihr
+    // abgebrochener fetch landet im catch und ersetzt die inzwischen fertige Seite
+    // durch "Fehler: …". Genau das passierte beim schnellen Wechsel zwischen zwei
+    // Reitern, und es war die Ursache der wechselnd fehlschlagenden Oberflächentests.
+    // Die Befehlspalette löst dasselbe Problem seit jeher mit einer Sequenznummer.
+    let renderSeq = 0;
     async function render() {
+        const mySeq = ++renderSeq;
         const { name, id } = parseHash();
         const routeName = id != null && (name === 'persons' || name === 'vehicles') ? name.slice(0, -1) : name;
         $$('.tab').forEach((t) => {
@@ -907,16 +948,31 @@
             if (on) t.setAttribute('aria-current', 'page');
             else t.removeAttribute('aria-current');
         });
-        const page = $('#page');
-        page.innerHTML = '';
+        const host = $('#page');
+        // EIGENER Container je Aufbau, und die Route bekommt IHN statt #page. Der
+        // Sequenzvergleich unten allein genügt nicht: die Routen schreiben INNERHALB
+        // ihrer async-Funktion, also lange bevor sie zurückkehrt. Räumt ein neuerer
+        // Aufbau #page leer, ist der Container des älteren damit aus dem Dokument
+        // gelöst — seine späten Schreibzugriffe landen im Nichts statt auf der Seite,
+        // die der Benutzer inzwischen sieht.
+        host.innerHTML = '';
+        const page = el('div', { class: 'route-view' });
+        host.append(page);
         page.append(skeleton());
         const fn = routes[routeName] || routes.dashboard;
-        try { await fn(page, id); window.scrollTo(0, 0); syncPageTitle(page); }
-        catch (err) {
+        try {
+            await fn(page, id);
+            if (mySeq !== renderSeq) return; // überholt: eine neuere Route hat die Seite schon
+            window.scrollTo(0, 0);
+            syncPageTitle(host);
+        } catch (err) {
+            // 401 IMMER behandeln, auch wenn überholt: die Sitzung ist weg, unabhängig
+            // davon, welche Route gerade gewinnt.
+            if (err.status === 401) { logout(); return; }
+            if (mySeq !== renderSeq) return; // der Abbruch gehört zur alten Route — nicht anzeigen
             page.innerHTML = '';
             page.append(el('div', { class: 'empty' }, 'Fehler: ' + err.message));
-            syncPageTitle(page);
-            if (err.status === 401) logout();
+            syncPageTitle(host);
         }
     }
     // Mirror each route's leading heading into the visually-hidden page-level h1
@@ -1236,7 +1292,7 @@
 
         // CSV export for accounting — a plain download link carries the session
         // cookie; the server sends it as a ;-separated, BOM-prefixed attachment.
-        const expLink = (entity, label) => el('a', { class: 'btn btn-ghost btn-sm', href: '/api/export/' + entity, download: '' }, '⭳ ' + label);
+        const expLink = (entity, label) => el('a', { class: 'btn btn-ghost btn-sm', href: '/api/export/' + entity, download: '' }, icon('download', 15), ' ' + label);
         page.append(el('div', { class: 'chart-card' },
             el('h3', {}, 'Export (CSV)'),
             el('div', { class: 'muted', style: 'font-size:.82rem;margin:-.35rem 0 .7rem' }, 'Für Buchhaltung/Steuerberater — öffnet direkt in Excel/LibreOffice.'),
@@ -1264,7 +1320,7 @@
         try { ((await api.get('/invoices/overdue')) || []).forEach((o) => { overdueByPerson[o.person_id] = Math.max(overdueByPerson[o.person_id] || 0, o.days_overdue); }); }
         catch (e) { /* dashboard already surfaces overdue; ignore here */ }
         mountList(page, {
-            title: 'Personen', emptyIcon: 'users', emptyText: 'Noch keine Personen.',
+            title: 'Personen', emptyIcon: 'users', emptyText: 'Noch keine Personen.', sourcePath: '/persons',
             onAdd: canManage() ? () => personForm() : null,
             items: state.persons,
             searchText: (p) => norm(personName(p) + ' ' + p.email + ' ' + p.phone),
@@ -2043,7 +2099,7 @@
         await refreshLookups();
         const vehicles = await api.get('/vehicles');
         mountList(page, {
-            title: 'Gefährte', emptyIcon: 'car', emptyText: 'Keine Gefährte in dieser Ansicht.',
+            title: 'Gefährte', emptyIcon: 'car', emptyText: 'Keine Gefährte in dieser Ansicht.', sourcePath: '/vehicles',
             onAdd: canManage() ? () => vehicleForm() : null,
             items: vehicles,
             searchText: (v) => norm([v.label, v.license_plate, v.category_name, v.person_name].join(' ')),
@@ -2123,7 +2179,7 @@
                 el('img', { src: '/api/planner-icons/' + ic.id + '?t=' + (ic.byte_size || 0), alt: ic.name }),
                 el('span', { title: ic.name }, ic.name),
                 el('button', { class: 'btn btn-ghost btn-sm iconedit', title: 'Umbenennen / Bild ersetzen', onclick: () => { editId = ic.id; editName = ic.name; render(); } }, '✎'),
-                el('button', { class: 'btn btn-ghost btn-sm icondel', title: 'Löschen', onclick: async () => { if (!await confirmDialog('Icon löschen?', `„${ic.name}" wird entfernt. Fahrzeuge, die es nutzen, fallen aufs Kategorie-Symbol zurück.`, 'Löschen')) return; try { await api.del('/planner-icons/' + ic.id); if (editId === ic.id) editId = null; await render(); } catch (e) { toast('Löschen fehlgeschlagen', 'error'); } } }, '✕'))));
+                el('button', { class: 'btn btn-ghost btn-sm icondel', title: 'Löschen', onclick: async () => { if (!await confirmDialog('Icon löschen?', `„${ic.name}" wird entfernt. Fahrzeuge, die es nutzen, fallen aufs Kategorie-Symbol zurück.`, 'Löschen')) return; try { await api.del('/planner-icons/' + ic.id); if (editId === ic.id) editId = null; await render(); } catch (e) { toast('Löschen fehlgeschlagen', 'error'); } } }, icon('close', 14)))));
             body.append(grid);
             // Built-in category icons (read-only): always available per vehicle under
             // „Planer-Symbol", not stored in the DB and therefore not editable/deletable.
@@ -2426,6 +2482,9 @@
     async function periodPayDialog(label, defAmt, current) {
         const mode = current ? current.mode : 'full';
         const amtVal = current && current.mode === 'partial' ? current.amount : (defAmt != null ? defAmt : '');
+        // BEWUSST OHNE save (Hundert UX-51): der Dialog ermittelt nur, WAS gebucht
+        // werden soll; gebucht wird beim Aufrufer. Es gibt hier nichts, das scheitern
+        // und den Dialog offen halten könnte.
         const data = await formModal({
             title: 'Zahlung ' + label,
             submitLabel: 'Speichern',
@@ -2872,18 +2931,20 @@
         catch (e) { toast(e.message, 'error'); render(); }
     }
     async function duplicateVehicle(v) {
-        const d = await formModal({
+        // save statt "sammeln, schliessen, absenden": scheitert der Aufruf, bleibt der
+        // Dialog samt eingegebenem Datum offen und zeigt den Grund an der Stelle an,
+        // an der man ihn beheben kann (Hundert UX-51).
+        let created = null;
+        await formModal({
             title: 'Erneut einstellen',
             submitLabel: 'Einstellen',
             fields: [{ name: 'start_date', label: 'Neues Einstelldatum', type: 'date', required: true, value: today(),
                 help: 'Typ, Kennzeichen, Preis und Fotos werden übernommen.' }],
+            save: async (d) => { created = await api.post('/vehicles/' + v.id + '/duplicate', { start_date: d.start_date }); },
         });
-        if (!d) return;
-        try {
-            const nv = await api.post('/vehicles/' + v.id + '/duplicate', { start_date: d.start_date });
-            toast('Erneut eingestellt', 'success');
-            navigate('vehicles/' + nv.id);
-        } catch (e) { toast(e.message, 'error'); }
+        if (!created) return;
+        toast('Erneut eingestellt', 'success');
+        navigate('vehicles/' + created.id);
     }
 
     async function vehicleForm(existing, presetPerson) {
@@ -3185,7 +3246,7 @@
         await refreshLookups();
         const charges = await api.get('/charges');
         mountList(page, {
-            title: 'Zusatzkosten', emptyIcon: 'receipt', emptyText: 'Keine Zusatzkosten erfasst.',
+            title: 'Zusatzkosten', emptyIcon: 'receipt', emptyText: 'Keine Zusatzkosten erfasst.', sourcePath: '/charges',
             onAdd: canBill() ? () => chargeForm() : null,
             items: charges,
             searchText: (c) => norm([c.person_name, c.description].join(' ')),
@@ -3983,7 +4044,7 @@
             chipWrap.append(el('span', { class: 'bk-filechip' },
                 esc(f.name) + ' · ' + fmtBytes(f.size),
                 el('button', { type: 'button', 'aria-label': 'Auswahl entfernen',
-                    onclick: () => { fileIn.value = ''; fileIn.dispatchEvent(new Event('change')); } }, '✕')));
+                    onclick: () => { fileIn.value = ''; fileIn.dispatchEvent(new Event('change')); } }, icon('close', 14))));
         };
         drop.addEventListener('click', () => fileIn.click());
         drop.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileIn.click(); } });
@@ -4068,27 +4129,32 @@
         } catch (e) { toast(e.message, 'error'); btn.disabled = false; btn.textContent = o; }
     }
     async function restoreFromS3(name) {
-        const data = await formModal({
+        // Das schmerzhafteste Formular der Anwendung, um es zweimal auszufuellen: ein
+        // langer Backup-Schluessel plus das Wort RESTORE. Deshalb ueber save — ein
+        // Tippfehler oder ein abgelehnter Schluessel laesst beides stehen (Hundert UX-51).
+        let done = false;
+        await formModal({
             title: 'Aus S3 wiederherstellen',
             submitLabel: 'Wiederherstellen',
             fields: [
                 { name: 'key', label: 'Backup-Schlüssel', type: 'password', required: true },
                 { name: 'confirm', label: 'Zum Bestätigen RESTORE eingeben', required: true, help: 'Überschreibt die gesamte Datenbank — atomar (rollt bei Fehler zurück).' },
             ],
+            save: async (data) => {
+                if (data.confirm !== 'RESTORE') throw new Error('Zum Bestätigen RESTORE eingeben');
+                const res = await fetch('/api/backup/restore-s3', {
+                    method: 'POST',
+                    headers: { 'X-CSRF-Token': getCookie('parkrr_csrf'), 'Content-Type': 'application/x-www-form-urlencoded' },
+                    credentials: 'same-origin',
+                    body: new URLSearchParams({ name, key: data.key, confirm: 'RESTORE' }).toString(),
+                });
+                if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Restore fehlgeschlagen'); }
+                done = true;
+            },
         });
-        if (!data) return;
-        if (data.confirm !== 'RESTORE') { toast('Zum Bestätigen RESTORE eingeben', 'error'); return; }
-        try {
-            const res = await fetch('/api/backup/restore-s3', {
-                method: 'POST',
-                headers: { 'X-CSRF-Token': getCookie('parkrr_csrf'), 'Content-Type': 'application/x-www-form-urlencoded' },
-                credentials: 'same-origin',
-                body: new URLSearchParams({ name, key: data.key, confirm: 'RESTORE' }).toString(),
-            });
-            if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Restore fehlgeschlagen'); }
-            toast('Wiederhergestellt — bitte neu anmelden', 'success');
-            setTimeout(() => logout(), 1800);
-        } catch (e) { toast(e.message, 'error'); }
+        if (!done) return;
+        toast('Wiederhergestellt — bitte neu anmelden', 'success');
+        setTimeout(() => logout(), 1800);
     }
     // Expandable user card: name + role/2FA badges in the header; the panel holds a
     // quick password reset, a full edit, and a clearly separated "Gefahrenzone" for
@@ -4246,7 +4312,7 @@
             // sonst fällt er mit dem zerstörten Knopf auf <body> zurück.
             const mk = (label, clear, focusEl) => el('span', { class: 'audit-chip' }, label,
                 el('button', { type: 'button', 'aria-label': 'Filter ' + label + ' entfernen',
-                    onclick: () => { clear(); focusEl.focus(); } }, '✕'));
+                    onclick: () => { clear(); focusEl.focus(); } }, icon('close', 14)));
             if (q.text) chipsBar.append(mk('„' + q.text + '“', () => { search.value = ''; q.text = ''; apply(); }, search));
             if (q.action) chipsBar.append(mk('Aktion: ' + (AUDIT_ACTIONS[q.action] || q.action), () => { actSel.value = ''; q.action = ''; apply(); }, actSel));
             if (q.entity) chipsBar.append(mk('Objekt: ' + (AUDIT_ENTITIES[q.entity] || q.entity), () => { entSel.value = ''; q.entity = ''; apply(); }, entSel));
@@ -4538,17 +4604,22 @@
         });
     }
     async function regenerateRecoveryCodes() {
-        const data = await formModal({
+        // Ein falsches Passwort ist hier der WAHRSCHEINLICHSTE Ausgang. Mit save bleibt
+        // der Dialog stehen und meldet es im Formular, statt ihn zu schliessen und den
+        // Nutzer von vorne anfangen zu lassen (Hundert UX-51).
+        let codes = null;
+        await formModal({
             title: 'Recovery-Codes neu generieren', submitLabel: 'Generieren',
             danger: 'Alle bisherigen Recovery-Codes werden sofort ungültig.',
             fields: [{ name: 'password', label: 'Passwort zur Bestätigung', type: 'password', required: true }],
+            save: async (data) => {
+                const res = await api.post('/auth/2fa/backup-codes/regenerate', { password: data.password });
+                codes = res.backup_codes || [];
+            },
         });
-        if (!data) return;
-        try {
-            const res = await api.post('/auth/2fa/backup-codes/regenerate', { password: data.password });
-            toast('Neue Recovery-Codes erstellt', 'success');
-            showBackupCodes(res.backup_codes || []);
-        } catch (e) { toast(e.message, 'error'); }
+        if (!codes) return;
+        toast('Neue Recovery-Codes erstellt', 'success');
+        showBackupCodes(codes);
     }
     async function revokeSession(handle) {
         try { await api.del('/auth/sessions/' + handle); toast('Sitzung abgemeldet', 'success'); render(); }
@@ -5023,8 +5094,8 @@
         const wallThUnit = el('span', { class: 'muted' }, 'cm');
         const wallDoorFlip = el('button', { class: 'gp-wallpop-btn', title: 'Öffnungsrichtung spiegeln (F)' }, '⇅');
         const wallDoorHinge = el('button', { class: 'gp-wallpop-btn', title: 'Anschlag links/rechts (Leertaste)' }, '⇄');
-        const wallZoneRot = el('button', { class: 'gp-wallpop-btn', title: 'Fläche 90° drehen (R) · Knopf oben = frei drehen' }, '⟳');
-        const wallPopDel = el('button', { class: 'gp-wallpop-del', title: 'Löschen', 'aria-label': 'Löschen' }, '🗑');
+        const wallZoneRot = el('button', { class: 'gp-wallpop-btn', title: 'Fläche 90° drehen (R) · Knopf oben = frei drehen', 'aria-label': 'Fläche 90° drehen' }, icon('redo', 14));
+        const wallPopDel = el('button', { class: 'gp-wallpop-del', title: 'Löschen', 'aria-label': 'Löschen' }, icon('trash', 14));
         const wallPop = el('div', { class: 'gp-wallpop' }, wallPopLabel, wallLenIn, wallPopUnit, wallThLabel, wallThIn, wallThUnit, wallDoorFlip, wallDoorHinge, wallZoneRot, wallPopDel);
         wallZoneRot.addEventListener('click', (e) => { e.stopPropagation(); if (P.sel != null) { const b = P.excl.find((x) => x.id === P.sel); if (b) { b.rot = ((b.rot || 0) + 90) % 360; commitGeom('Fläche gedreht'); } } });
         wallThIn.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') wallThIn.blur(); });
@@ -5226,7 +5297,7 @@
             ];
             const modal = el('div', { class: 'gp-help-backdrop', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Tastaturkürzel' });
             const card = el('div', { class: 'gp-help-card' });
-            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '⌨ Tastaturkürzel'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => toggleShortcutHelp() }, '✕')));
+            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '⌨ Tastaturkürzel'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => toggleShortcutHelp() }, icon('close', 16))));
             const list = el('div', { class: 'gp-help-list' });
             rows.forEach(([k, d]) => { list.append(el('kbd', { class: 'gp-help-k' }, k), el('span', { class: 'gp-help-d' }, d)); });
             card.append(list, el('div', { class: 'gp-help-foot' }, 'Werkzeuge liegen rechts in der Leiste · „Passen" zentriert den Plan.'));
@@ -5330,7 +5401,7 @@
             const modal = el('div', { class: 'gp-help-backdrop', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Exportieren' });
             const card = el('div', { class: 'gp-help-card', style: 'max-width:320px' });
             const list = el('div', { style: 'display:flex;flex-direction:column;gap:.4rem;padding:16px 18px' });
-            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '⭳ Exportieren'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => close() }, '✕')));
+            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '⭳ Exportieren'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => close() }, icon('close', 16))));
             opts.forEach(([lab, fn]) => list.append(el('button', { class: 'gp-tbtn', style: 'justify-content:flex-start', onclick: () => { close(); fn(); } }, lab)));
             card.append(list); modal.append(card); (root || document.body).append(modal);
             const close = wireDialog(modal, card);
@@ -5351,18 +5422,29 @@
         const loadTemplates = () => tplCache || lsLoad();
         async function saveCurrentTemplate() {
             if (!P.walls.edges.length) { toast('Keine Wände zum Speichern', 'warn'); return; }
-            const data = await formModal({ title: 'Wand-Vorlage speichern', submitLabel: 'Speichern', fields: [{ name: 'name', label: 'Name der Vorlage', type: 'text', required: true, value: (P.hallName || 'Vorlage') + ' ' + (loadTemplates().length + 1) }] });
-            if (!data || !data.name) return;
-            const name = String(data.name).slice(0, 60), walls = JSON.parse(JSON.stringify(P.walls));
-            try { await api.post('/wall-templates', { name, walls }); await fetchTemplates(); toast('Vorlage gespeichert', 'ok'); }
-            catch (e) {
-                // Nur ein NETZWERK-Fehler (kein e.status) fällt auf den lokalen Spiegel
-                // zurück. Ein HTTP-Fehler (403, Validierung, 500) ist eine echte
-                // Ablehnung: die als "lokal gespeichert (offline)" zu melden, täuscht
-                // einen Erfolg vor, der nie wieder synct (Hundert UX-55).
-                if (e && e.status) { toast('Vorlage speichern fehlgeschlagen: ' + e.message, 'error'); return; }
-                const tpls = lsLoad(); tpls.unshift({ id: Date.now(), name, walls, local: true }); lsSave(tpls); tplCache = tpls; toast('Vorlage lokal gespeichert (offline)', 'warn');
-            }
+            // Über save: ein abgelehnter Name (zu lang, Rechte) lässt den Dialog stehen,
+            // statt die Eingabe zu verwerfen (Hundert UX-51). Der Offline-Zweig ist
+            // KEIN Fehler — er speichert lokal und darf deshalb schliessen.
+            let outcome = null;
+            await formModal({
+                title: 'Wand-Vorlage speichern', submitLabel: 'Speichern',
+                fields: [{ name: 'name', label: 'Name der Vorlage', type: 'text', required: true, value: (P.hallName || 'Vorlage') + ' ' + (loadTemplates().length + 1) }],
+                save: async (data) => {
+                    const name = String(data.name || '').slice(0, 60), walls = JSON.parse(JSON.stringify(P.walls));
+                    if (!name) throw new Error('Name der Vorlage fehlt');
+                    try { await api.post('/wall-templates', { name, walls }); await fetchTemplates(); outcome = 'server'; }
+                    catch (e) {
+                        // Nur ein NETZWERK-Fehler (kein e.status) fällt auf den lokalen Spiegel
+                        // zurück. Ein HTTP-Fehler (403, Validierung, 500) ist eine echte
+                        // Ablehnung: die als "lokal gespeichert (offline)" zu melden, täuscht
+                        // einen Erfolg vor, der nie wieder synct (Hundert UX-55).
+                        if (e && e.status) throw e;
+                        const tpls = lsLoad(); tpls.unshift({ id: Date.now(), name, walls, local: true }); lsSave(tpls); tplCache = tpls; outcome = 'local';
+                    }
+                },
+            });
+            if (outcome === 'server') toast('Vorlage gespeichert', 'ok');
+            else if (outcome === 'local') toast('Vorlage lokal gespeichert (offline)', 'warn');
         }
         async function deleteTemplate(t) {
             if (t.local) { const tpls = lsLoad().filter((x) => x.id !== t.id); lsSave(tpls); tplCache = tpls; return; } // local-only: remove from storage, no server call
@@ -5382,7 +5464,7 @@
             await fetchTemplates();
             const modal = el('div', { class: 'gp-help-backdrop', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Wand-Vorlagen' });
             const card = el('div', { class: 'gp-help-card', style: 'max-width:380px' });
-            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '▤ Wand-Vorlagen'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => modal.remove() }, '✕')));
+            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '▤ Wand-Vorlagen'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => modal.remove() }, icon('close', 16))));
             const body = el('div', { style: 'display:flex;flex-direction:column;gap:.45rem;padding:16px 18px' });
             body.append(el('button', { class: 'gp-tbtn', style: 'justify-content:flex-start', onclick: () => { modal.remove(); saveCurrentTemplate(); } }, '＋ Aktuelle Wände als Vorlage speichern'));
             const tpls = loadTemplates();
@@ -5390,7 +5472,7 @@
             tpls.forEach((t) => {
                 const row = el('div', { style: 'display:flex;gap:.4rem;align-items:center' });
                 row.append(el('button', { class: 'gp-tbtn', style: 'flex:1;justify-content:flex-start', onclick: () => { modal.remove(); applyTemplate(t); } }, '▤ ' + t.name + ' · ' + (t.walls && t.walls.edges ? t.walls.edges.length : 0) + ' Wände'));
-                row.append(el('button', { class: 'gp-help-x', title: 'Löschen', onclick: async () => { await deleteTemplate(t); modal.remove(); openTemplateMenu(); } }, '🗑'));
+                row.append(el('button', { class: 'gp-help-x', title: 'Löschen', 'aria-label': 'Vorlage löschen', onclick: async () => { await deleteTemplate(t); modal.remove(); openTemplateMenu(); } }, icon('trash', 15)));
                 body.append(row);
             });
             card.append(body); modal.append(card); modal.addEventListener('click', (ev) => { if (ev.target === modal) modal.remove(); }); (root || document.body).append(modal);

@@ -75,9 +75,17 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **48** [Hoch/S] Zusatzkosten-Empty-State reparieren — `web/static/js/app.js:3151`
 - [x] **49** [Hoch/S] Mehr laden mit Busy- und Fehlerzustand — `web/static/js/app.js:4217`
 - [ ] **50** [Hoch/M] Foto-Upload mit Fortschritt und Downscale — `web/static/js/app.js:3082`
-- [ ] **51** [Hoch/S] formModal-save flächendeckend nutzen — `web/static/js/app.js:444`
+- [x] **51** [Hoch/S] formModal-save flächendeckend nutzen — `web/static/js/app.js:444`
 - [ ] **52** [Hoch/S] Undo auf alle destruktiven Flows — `web/static/js/app.js:324`
-- [ ] **53** [Hoch/M] Server-Pagination auch im Frontend — `web/static/js/app.js:786`
+- [~] **53** [Hoch/M] Server-Pagination auch im Frontend — `web/static/js/app.js:786`
+      TEILWEISE: Das Frontend liest jetzt X-Total-Count und WARNT sichtbar, wenn die
+      Liste am Serverdeckel (1000) abgeschnitten ist — vorher war das von einer
+      vollständigen Liste nicht zu unterscheiden. /vehicles und /charges melden die
+      Gesamtzahl jetzt ebenfalls. Echte Server-Pagination BLEIBT OFFEN: mountList
+      filtert und sortiert clientseitig über die geladene Menge, mit diakritika-
+      faltender Suche (norm()). Das serverseitig nachzubauen heißt, für jede Liste
+      Suche und Sortierung im SQL zu spiegeln — sonst liefert dieselbe Eingabe je
+      nach Seite andere Treffer. Das ist ein eigenes Vorhaben, kein Batch-Schritt.
 - [ ] **54** [Mittel/M] Bulk-Aktionen für Gefährte
 - [ ] **55** [Mittel/M] Kalenderansicht
 - [ ] **56** [Mittel/M] Aktivitäts-Timeline pro Person
@@ -111,7 +119,7 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **75** [Hoch/M] Zeichenpfad entlasten — `web/static/js/app.js:5856`
 - [ ] **76** [Hoch/S] Rail und Toolbar nicht pro draw() neu bauen — `web/static/js/app.js:6358`
 - [x] **77** [Mittel/S] Undo-Snapshots verschlanken — `web/static/js/app.js:5077`
-- [ ] **78** [Mittel/S] Emoji-Knöpfe durch SVG-Icons ersetzen — `web/static/js/app.js:6230`
+- [x] **78** [Mittel/S] Emoji-Knöpfe durch SVG-Icons ersetzen — `web/static/js/app.js:6230`
 - [ ] **79** [Mittel/M] Belegungshistorie pro Stellplatz
 - [ ] **80** [Mittel/S] Standardmaße je Kategorie
 - [ ] **81** [Idee/L] Mehrere Ebenen je Halle
@@ -151,3 +159,12 @@ Tabellen-Drop (Backup vorher). Diese landen als Code mit Default aus bzw. warten
 ## Zusatz (aus den Sweeps, nicht Teil der kuratierten 100)
 
 - [x] **Z1** [Mittel/S] Verdrängte Wand-Vorlagen protokollieren statt still löschen — `internal/handlers/wall_templates.go` (Commit 89218e4)
+- [x] **Z2** Render-Wettlauf im Router: ein Routenwechsel während eines laufenden
+      Seitenaufbaus ließ die überholte Route ihr (spätes) Ergebnis oder ihren
+      Abbruchfehler über die neue Seite schreiben. Jeder Aufbau bekommt jetzt einen
+      eigenen Container; ein neuerer Aufbau löst den alten aus dem Dokument, dessen
+      späte Schreibzugriffe laufen ins Leere. Reproduziert und fixiert durch
+      tests/a11y/render-race.spec.js (fällt auf dem alten Stand nachweislich um).
+- [x] **Z3** Client-Abbrüche (context canceled) werden im Access-Log nicht mehr als
+      ERROR/500-Rauschen geführt; die betroffenen Listen-Endpunkte melden ihre
+      500-Ursache jetzt über serverError (OPS-01-Rest, gezielt).

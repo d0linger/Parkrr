@@ -1107,7 +1107,7 @@ func (h *Handler) OverdueInvoices(w http.ResponseWriter, r *http.Request) {
 		    AND i.due_on < CURRENT_DATE AND (i.total - i.paid_amount) > 0.005
 		  ORDER BY i.due_on LIMIT $1 OFFSET $2`, limit, offset)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -1116,7 +1116,7 @@ func (h *Handler) OverdueInvoices(w http.ResponseWriter, r *http.Request) {
 		var o overdueInvoice
 		var paid float64
 		if err := rows.Scan(&o.ID, &o.Number, &o.PersonID, &o.PersonName, &o.DueOn, &o.Total, &paid, &o.DaysOverdue); err != nil {
-			writeError(w, http.StatusInternalServerError, "query failed")
+			serverError(w, r, "query failed", err)
 			return
 		}
 		o.OpenAmount = round2(o.Total - paid)
@@ -1124,7 +1124,7 @@ func (h *Handler) OverdueInvoices(w http.ResponseWriter, r *http.Request) {
 		out = append(out, o)
 	}
 	if rows.Err() != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)

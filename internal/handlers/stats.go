@@ -784,17 +784,17 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM persons`).Scan(&resp.TotalPersons); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM categories`).Scan(&resp.TotalCategories); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 
 	vehicles, cats, err := h.loadVehiclesWithCategories(r, 0)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 
@@ -839,7 +839,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	// time. Aggregate across every person that has vehicles or agreements.
 	agByPerson, err := h.loadAllAgreements(ctx, 0)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 
@@ -848,7 +848,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	// standalone charge via its own flag. Reused for the totals and open balances.
 	crows, err := h.Pool.Query(ctx, `SELECT person_id, vehicle_id, amount, quantity, charged_on, paid FROM charges`)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	vehPaid := vehiclePaidMap(vehicles)
@@ -865,7 +865,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		var ownPaid bool
 		if serr := crows.Scan(&pid, &vid, &amount, &qty, &chargedOn, &ownPaid); serr != nil {
 			crows.Close()
-			writeError(w, http.StatusInternalServerError, "query failed")
+			serverError(w, r, "query failed", err)
 			return
 		}
 		t, _ := chargeAmounts(agByPerson[pid], vehPaid, vid, amount, qty, chargedOn, ownPaid)
@@ -883,14 +883,14 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 	crows.Close()
 	if cerr := crows.Err(); cerr != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 
 	// Recurring extra costs accrue per period into the same charge totals.
 	recurByPerson, err := h.loadAllRecurringCharges(ctx, now, 0)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	for pid, list := range recurByPerson {
@@ -923,7 +923,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	paymentsByPerson, perr := sumByPerson(ctx, h.Pool,
 		`SELECT person_id, COALESCE(SUM(amount),0) FROM payments WHERE NOT reversed GROUP BY person_id`)
 	if perr != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	var paymentsTotal float64
@@ -935,7 +935,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	invoicedTaxByPerson, terr := sumByPerson(ctx, h.Pool,
 		`SELECT person_id, COALESCE(SUM(tax_amount),0) FROM invoices WHERE NOT canceled AND cancels_id IS NULL GROUP BY person_id`)
 	if terr != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 
@@ -946,12 +946,12 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 	lockedByPerson, lerr := h.lockedPeriodsByPerson(ctx, 0)
 	if lerr != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	settledByPerson, serr := h.periodSettledByPaymentByPerson(ctx)
 	if serr != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 
@@ -1027,7 +1027,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	resp.PaymentsByMonth = make([]float64, 12)
 	prows, perr := h.Pool.Query(ctx, `SELECT amount, paid_on FROM payments WHERE NOT reversed`)
 	if perr != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	for prows.Next() {
@@ -1035,7 +1035,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		var on time.Time
 		if err := prows.Scan(&amt, &on); err != nil {
 			prows.Close()
-			writeError(w, http.StatusInternalServerError, "query failed")
+			serverError(w, r, "query failed", err)
 			return
 		}
 		resp.PaymentsTotal += amt
@@ -1046,7 +1046,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 	prows.Close()
 	if err := prows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	resp.PaymentsTotal = round2(resp.PaymentsTotal)

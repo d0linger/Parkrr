@@ -16,7 +16,7 @@ func (h *Handler) ListCategories(w http.ResponseWriter, r *http.Request) {
 		        archived, created_at, updated_at
 		 FROM categories ORDER BY archived, name`)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -26,13 +26,13 @@ func (h *Handler) ListCategories(w http.ResponseWriter, r *http.Request) {
 		var c models.Category
 		if err := rows.Scan(&c.ID, &c.Name, &c.DefaultMonthlyCost,
 			&c.DefaultYearlyCost, &c.RatesSynced, &c.Archived, &c.CreatedAt, &c.UpdatedAt); err != nil {
-			writeError(w, http.StatusInternalServerError, "scan failed")
+			serverError(w, r, "scan failed", err)
 			return
 		}
 		cats = append(cats, c)
 	}
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, cats)

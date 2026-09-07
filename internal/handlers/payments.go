@@ -68,7 +68,7 @@ func (h *Handler) ListPayments(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.Pool.Query(r.Context(),
 		`SELECT `+paymentColumns+` FROM payments WHERE person_id=$1 ORDER BY paid_on DESC, id DESC LIMIT $2 OFFSET $3`, id, limit, offset)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -76,19 +76,19 @@ func (h *Handler) ListPayments(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		p, serr := scanPayment(rows)
 		if serr != nil {
-			writeError(w, http.StatusInternalServerError, "query failed")
+			serverError(w, r, "query failed", err)
 			return
 		}
 		out = append(out, p)
 	}
 	if rows.Err() != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	// Attach the resolved positions (Gefährt/Pauschale/Zeitraum) each payment settles.
 	items, ierr := h.resolvePaymentItems(r.Context(), id)
 	if ierr != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	for i := range out {

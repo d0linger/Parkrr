@@ -1,8 +1,10 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -75,6 +77,14 @@ func requestLogger(mgr *auth.Manager, next http.Handler) http.Handler {
 		}
 		// Escalate the level by status so a 500 doesn't read like a 200 (OPS-03).
 		switch {
+		// Der Client hat die Anfrage ABGEBROCHEN (weggeblättert, Tab zu, Reload
+		// mittendrin). Der Handler sieht dann "context canceled" und quittiert 500,
+		// aber es ist niemand mehr da, dem geantwortet würde — das als Serverfehler zu
+		// protokollieren erzeugt genau das Rauschen, in dem ein echter 500 untergeht.
+		// NUR Canceled: ein DeadlineExceeded ist unsere eigene Zeitgrenze und bleibt
+		// ein Fehler (Hundert 01, gefunden beim Messen des a11y-Laufs).
+		case errors.Is(ctx.Err(), context.Canceled):
+			slog.Info("request aborted by client", attrs...)
 		case rec.status >= 500:
 			slog.Error("request", attrs...)
 		case rec.status >= 400:

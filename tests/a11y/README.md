@@ -12,5 +12,12 @@ npx playwright install --with-deps chromium
 PARKRR_BASE_URL=http://localhost:8099 npm test
 ```
 
+**Wichtig:** Die Ziel-Instanz braucht `PARKRR_RATE_LIMIT_PER_MIN` deutlich erhöht
+(z. B. `20000`). Die Suite feuert von EINER IP, und der Standardwert (600/min)
+drosselt sie mit HTTP 429 — die Tests fallen dann an wechselnden Stellen um und
+sehen aus wie Flakiness. Für die Backup-Prüfungen muss außerdem
+`PARKRR_BACKUP_KEY` gesetzt sein, sonst rendert die Backup-Ansicht nur
+„Nicht aktiviert".
+
 The current suite audits the login screen (reachable unauthenticated). Extend
 `a11y.spec.js` with authenticated flows as coverage grows.

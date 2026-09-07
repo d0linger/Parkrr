@@ -7,6 +7,13 @@
 // gerendert.
 const { test, expect } = require('@playwright/test');
 
+// Diese Pruefungen laufen gegen DENSELBEN Backend wie die uebrigen Worker und
+// oeffnen schwere Seiten (Finanzuebersicht mit Diagrammen, Benutzerliste). Unter
+// paralleler Last reicht das Standardbudget von 30 s nicht: Login und Seitenaufbau
+// zusammen liegen dann darueber. Kein Retry-Pflaster, sondern ein Budget, das zur
+// tatsaechlichen Arbeit passt.
+test.setTimeout(60000);
+
 const USER = process.env.PARKRR_E2E_USER || 'admin';
 const PASS = process.env.PARKRR_E2E_PASS || 'ci-a11y-admin-password';
 
@@ -14,8 +21,9 @@ const PASS = process.env.PARKRR_E2E_PASS || 'ci-a11y-admin-password';
 // geladenen Seite feuert das nicht zuverlaessig — deshalb den Hash im Dokument setzen
 // und auf das erwartete Element warten.
 async function goRoute(page, route, waitFor) {
-  await page.evaluate((r) => { location.hash = '#/' + r; }, route);
-  await page.waitForSelector(waitFor, { timeout: 15000 });
+  await page.goto('/#/' + route);
+  await page.waitForSelector('#page:not(:empty)', { timeout: 30000 });
+  await page.waitForSelector(waitFor, { timeout: 30000 });
 }
 
 async function login(page) {
