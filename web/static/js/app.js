@@ -1298,6 +1298,7 @@
             el('div', { class: 'muted', style: 'font-size:.82rem;margin:-.35rem 0 .7rem' }, 'Für Buchhaltung/Steuerberater — öffnet direkt in Excel/LibreOffice.'),
             el('div', { class: 'btn-row', style: 'flex-wrap:wrap;gap:.5rem' },
                 expLink('outstanding', 'Offene Posten'),
+                el('a', { class: 'btn btn-ghost btn-sm', href: '/api/reports/outstanding.pdf', download: '' }, icon('receipt', 15), ' Offene Posten (PDF)'),
                 expLink('invoices', 'Rechnungen'),
                 expLink('payments', 'Zahlungen'),
                 expLink('charges', 'Zusatzkosten'),

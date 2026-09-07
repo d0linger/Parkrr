@@ -216,8 +216,12 @@ type invoiceItem struct {
 }
 
 type invoice struct {
-	ID               int64          `json:"id"`
-	Number           string         `json:"number"`
+	ID     int64  `json:"id"`
+	Number string `json:"number"`
+	// CancelsNumber ist die Nummer der stornierten Rechnung — auf dem Storno-Dokument
+	// Pflichtangabe, sonst ist der Beleg nicht auf seinen Ursprung rückführbar (§11
+	// UStG: eindeutiger Bezug). Nur auf Storno-Dokumenten gesetzt (Hundert 18).
+	CancelsNumber    string         `json:"cancels_number,omitempty"`
 	PersonID         int64          `json:"person_id"`
 	IssuedOn         time.Time      `json:"issued_on"`
 	DueOn            *time.Time     `json:"due_on"`
@@ -1197,13 +1201,14 @@ func (h *Handler) fetchInvoice(ctx context.Context, id int64) (invoice, bool, er
 	var iv invoice
 	var sellerJSON, buyerJSON []byte
 	if err := h.Pool.QueryRow(ctx,
-		`SELECT id, number, person_id, issued_on, due_on, subtotal, ust_rate, tax_amount, total,
-		        kleinunternehmer, seller_snapshot, buyer_snapshot, note, canceled, cancels_id, paid_amount,
-		        leistung_from, leistung_to
-		   FROM invoices WHERE id=$1`, id,
+		`SELECT i.id, i.number, i.person_id, i.issued_on, i.due_on, i.subtotal, i.ust_rate, i.tax_amount, i.total,
+		        i.kleinunternehmer, i.seller_snapshot, i.buyer_snapshot, i.note, i.canceled, i.cancels_id, i.paid_amount,
+		        i.leistung_from, i.leistung_to, COALESCE(c.number, '')
+		   FROM invoices i LEFT JOIN invoices c ON c.id = i.cancels_id
+		  WHERE i.id=$1`, id,
 	).Scan(&iv.ID, &iv.Number, &iv.PersonID, &iv.IssuedOn, &iv.DueOn, &iv.Subtotal, &iv.UStRate,
 		&iv.TaxAmount, &iv.Total, &iv.Kleinunternehmer, &sellerJSON, &buyerJSON, &iv.Note,
-		&iv.Canceled, &iv.CancelsID, &iv.PaidAmount, &iv.LeistungFrom, &iv.LeistungTo); err != nil {
+		&iv.Canceled, &iv.CancelsID, &iv.PaidAmount, &iv.LeistungFrom, &iv.LeistungTo, &iv.CancelsNumber); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return invoice{}, false, nil
 		}
