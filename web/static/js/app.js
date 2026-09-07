@@ -790,7 +790,7 @@
         }
         page.append(head);
 
-        const search = el('input', { class: 'search', type: 'search', placeholder: 'Suche …', value: qRaw });
+        const search = el('input', { class: 'search', type: 'search', placeholder: 'Suche …', value: qRaw, 'aria-label': 'In ' + (opts.title || 'Liste') + ' suchen' });
         const sortSel = el('select', { 'aria-label': 'Sortierung' }, ...opts.sorts.map((s, i) => el('option', { value: i, selected: i === sortIdx }, s.label)));
         const toolbar = el('div', { class: 'toolbar' }, search, sortSel);
         const controlState = {};
@@ -799,7 +799,8 @@
 
         const listEl = el('div', {});
         const pagerEl = el('div', {});
-        page.append(listEl, pagerEl);
+        const countEl = el('p', { class: 'sr-only', role: 'status', 'aria-live': 'polite' });
+        page.append(countEl, listEl, pagerEl);
 
         search.addEventListener('input', () => { qRaw = search.value; q = norm(qRaw); pageNum = 1; refresh(); });
         sortSel.addEventListener('change', () => { sortIdx = Number(sortSel.value); refresh(); });
@@ -817,6 +818,9 @@
             const start = (pageNum - 1) * pageSize;
             const slice = items.slice(start, start + pageSize);
             listEl.innerHTML = '';
+            // Trefferzahl fuer Screenreader ansagen (A11Y-77): die gefilterte Menge war
+            // bisher nur visuell im Pager ablesbar.
+            countEl.textContent = q ? `${total} Treffer` : '';
             if (!slice.length) listEl.append(emptyState(opts.emptyIcon || 'box', opts.emptyText || 'Keine Einträge.'));
             else slice.forEach((it) => listEl.append(opts.render(it)));
             pagerEl.innerHTML = '';
@@ -921,7 +925,15 @@
         const h1 = $('#page-title');
         if (!h1) return;
         const lead = page.querySelector('.page-head h2, .page-head h3, .detail-head h2');
-        h1.textContent = lead ? lead.textContent.trim() : 'Parkrr';
+        const name = lead ? lead.textContent.trim() : '';
+        h1.textContent = name || 'Parkrr';
+        // Tab, History-Eintrag und Task-Switcher der installierten App hiessen bisher
+        // immer nur "Parkrr" (Hundert A11Y-73).
+        document.title = name ? name + ' · Parkrr' : 'Parkrr';
+        // Routenwechsel gezielt ansagen. Vorher war das ganze <main> aria-live, was
+        // bei jedem render() die KOMPLETTE Seite vorlesen liess (A11Y-72).
+        const st = $('#route-status');
+        if (st && name) st.textContent = name;
     }
 
     // ================= DASHBOARD =================
@@ -5247,14 +5259,31 @@
             const dxf = '0\nSECTION\n2\nENTITIES\n' + L.join('\n') + '\n0\nENDSEC\n0\nEOF\n';
             dlBlob('grundriss.dxf', dxf, 'application/dxf'); toast('DXF exportiert', 'ok');
         }
+        // Overlays als echte Dialoge fuehren: Rolle, Escape, Fokus hinein und beim
+        // Schliessen zurueck zum Ausloeser (Hundert A11Y-74). Der Shortcut-Overlay
+        // hatte die Rollen schon, aber keine Fokusfuehrung.
+        function wireDialog(modal, card) {
+            const prev = document.activeElement;
+            const onKey = (ev) => { if (ev.key === 'Escape') { ev.stopPropagation(); close(); } };
+            function close() {
+                document.removeEventListener('keydown', onKey, true);
+                modal.remove();
+                try { if (prev && prev.focus) prev.focus(); } catch { /* weg */ }
+            }
+            document.addEventListener('keydown', onKey, true);
+            modal.addEventListener('click', (ev) => { if (ev.target === modal) close(); });
+            setTimeout(() => { const f = card.querySelector('button, [href], input, select, textarea'); if (f) f.focus(); }, 0);
+            return close;
+        }
         function openExportMenu() {
             const opts = [['🖼 PNG', exportPlanPNG], ['📄 PDF (Drucken)', exportPlanPDF], ['⬔ SVG (Vektor)', exportPlanSVG], ['📐 DXF (CAD)', exportPlanDXF]];
-            const modal = el('div', { class: 'gp-help-backdrop' });
+            const modal = el('div', { class: 'gp-help-backdrop', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Exportieren' });
             const card = el('div', { class: 'gp-help-card', style: 'max-width:320px' });
-            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '⭳ Exportieren'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => modal.remove() }, '✕')));
             const list = el('div', { style: 'display:flex;flex-direction:column;gap:.4rem;padding:16px 18px' });
-            opts.forEach(([lab, fn]) => list.append(el('button', { class: 'gp-tbtn', style: 'justify-content:flex-start', onclick: () => { modal.remove(); fn(); } }, lab)));
-            card.append(list); modal.append(card); modal.addEventListener('click', (ev) => { if (ev.target === modal) modal.remove(); }); (root || document.body).append(modal);
+            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '⭳ Exportieren'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => close() }, '✕')));
+            opts.forEach(([lab, fn]) => list.append(el('button', { class: 'gp-tbtn', style: 'justify-content:flex-start', onclick: () => { close(); fn(); } }, lab)));
+            card.append(list); modal.append(card); (root || document.body).append(modal);
+            const close = wireDialog(modal, card);
         }
 
         // ---- FE3: reusable wall-layout templates (the building shape), stored client-side. ----
@@ -5301,7 +5330,7 @@
         }
         async function openTemplateMenu() {
             await fetchTemplates();
-            const modal = el('div', { class: 'gp-help-backdrop' });
+            const modal = el('div', { class: 'gp-help-backdrop', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Wand-Vorlagen' });
             const card = el('div', { class: 'gp-help-card', style: 'max-width:380px' });
             card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '▤ Wand-Vorlagen'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => modal.remove() }, '✕')));
             const body = el('div', { style: 'display:flex;flex-direction:column;gap:.45rem;padding:16px 18px' });
@@ -6257,7 +6286,14 @@
         // ---- toolbar ----
         function renderToolbar() {
             toolbar.innerHTML = '';
-            const tb = (label, title, fn, on, cls) => { const b = el('button', { class: 'gp-tbtn ' + (cls || '') + (on ? ' on' : ''), title: title || label, onclick: fn }, label); return b; };
+            const tb = (label, title, fn, on, cls) => {
+                // on === undefined -> reiner Befehl; sonst Umschalter, dessen Zustand
+                // bisher nur ueber die CSS-Klasse .on sichtbar war (A11Y-76). Titel auch
+                // als aria-label, damit Icon-Knoepfe einen Namen haben.
+                const attrs = { class: 'gp-tbtn ' + (cls || '') + (on ? ' on' : ''), title: title || label, 'aria-label': title || label, onclick: fn };
+                if (on !== undefined) attrs['aria-pressed'] = String(!!on);
+                return el('button', attrs, label);
+            };
             const undoB = tb('↶', 'Rückgängig (Strg+Z)', doUndo); undoB.disabled = P.hpos <= 0;
             const redoB = tb('↷', 'Wiederholen (Strg+Umschalt+Z)', doRedo); redoB.disabled = P.hpos >= P.hist.length - 1;
             toolbar.append(undoB, redoB);

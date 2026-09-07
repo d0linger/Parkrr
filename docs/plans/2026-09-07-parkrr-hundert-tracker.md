@@ -86,12 +86,12 @@ B11 Destruktives + Betreiber-Punkte.
 
 ## Barrierefreiheit (B6 A11y)
 
-- [ ] **59** [Hoch/S] Live-Region vom Seitencontainer lösen — `web/static/index.html:87`
-- [ ] **60** [Hoch/S] document.title je Route setzen — `web/static/js/app.js:897`
-- [ ] **61** [Mittel/S] Echte Dialog-Semantik für Overlays — `web/static/js/app.js:5220`
+- [x] **59** [Hoch/S] Live-Region vom Seitencontainer lösen — `web/static/index.html:87`
+- [x] **60** [Hoch/S] document.title je Route setzen — `web/static/js/app.js:897`
+- [x] **61** [Mittel/S] Echte Dialog-Semantik für Overlays — `web/static/js/app.js:5220`
 - [ ] **62** [Mittel/M] Charts tastatur- und screenreader-tauglich — `web/static/js/app.js:591`
-- [ ] **63** [Mittel/S] aria-pressed für Planner-Toolbar — `web/static/js/app.js:6218`
-- [ ] **64** [Mittel/S] Suchfeld beschriften, Trefferzahl ansagen — `web/static/js/app.js:771`
+- [x] **63** [Mittel/S] aria-pressed für Planner-Toolbar — `web/static/js/app.js:6218`
+- [x] **64** [Mittel/S] Suchfeld beschriften, Trefferzahl ansagen — `web/static/js/app.js:771`
 
 ## PWA und Offline (B5 PWA)
 
