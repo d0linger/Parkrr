@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -550,7 +551,9 @@ func (h *Handler) persistAgreement(w http.ResponseWriter, r *http.Request, id, p
 	// and the only place that knows the final vehicle set and the pre-state).
 	// Archive bound vehicles right away if the agreement is now finished and
 	// settled, rather than waiting for the periodic sweep.
-	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), pid)
+	if _, err := h.ArchiveSettledExpiredVehicles(r.Context(), pid); err != nil {
+		slog.Warn("archive settled/expired vehicles failed", "err", err, "person_id", pid)
+	}
 	h.writeAgreements(w, r, pid)
 }
 
@@ -825,7 +828,9 @@ func (h *Handler) DeleteAgreement(w http.ResponseWriter, r *http.Request) {
 	// Coverage changed: kept vehicles may now be archive-eligible (or, no longer
 	// covered by a finished agreement, due to wake) — reconcile immediately like
 	// every other agreement mutation.
-	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), pid)
+	if _, err := h.ArchiveSettledExpiredVehicles(r.Context(), pid); err != nil {
+		slog.Warn("archive settled/expired vehicles failed", "err", err, "person_id", pid)
+	}
 	h.writeAgreements(w, r, pid)
 }
 
@@ -958,7 +963,9 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Settling the last open period may finish the agreement -> archive vehicles.
-	_, _ = h.ArchiveSettledExpiredVehicles(ctx, pid)
+	if _, err := h.ArchiveSettledExpiredVehicles(ctx, pid); err != nil {
+		slog.Warn("archive settled/expired vehicles failed", "err", err, "person_id", pid)
+	}
 	h.writeAgreements(w, r, pid)
 }
 
@@ -1227,7 +1234,9 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	// Settling the last open period may finish the agreement -> archive vehicles.
-	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), a.PersonID)
+	if _, err := h.ArchiveSettledExpiredVehicles(r.Context(), a.PersonID); err != nil {
+		slog.Warn("archive settled/expired vehicles failed", "err", err, "person_id", a.PersonID)
+	}
 	h.writeAgreements(w, r, a.PersonID)
 }
 

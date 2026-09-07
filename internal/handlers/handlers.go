@@ -132,6 +132,15 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+// serverError writes a 500 with a safe public message and stashes the underlying cause
+// on the request record, so the central request logger emits it at Error level with the
+// request id (finding OPS-01) instead of the handler dropping err silently. Prefer this
+// over a bare writeError(w, 500, ...) at any DB/internal failure.
+func serverError(w http.ResponseWriter, r *http.Request, publicMsg string, err error) {
+	auth.SetRequestError(r.Context(), err)
+	writeError(w, http.StatusInternalServerError, publicMsg)
+}
+
 var errNotJSON = errors.New("content type must be application/json")
 
 func decodeJSON(r *http.Request, dst any) error {

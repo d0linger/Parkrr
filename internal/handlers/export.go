@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/csv"
 	"net/http"
 	"sort"
@@ -229,22 +230,37 @@ func (h *Handler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Disposition",
-		`attachment; filename="parkrr-`+name+`-`+time.Now().Format("2006-01-02")+`.csv"`)
-	_, _ = w.Write([]byte{0xEF, 0xBB, 0xBF}) // UTF-8 BOM for Excel
-	cw := csv.NewWriter(w)
-	cw.Comma = ';'
 	// Guard every data cell against formula injection (header is developer-controlled).
 	for i := range rows {
 		for j := range rows[i] {
 			rows[i][j] = csvSafe(rows[i][j])
 		}
 	}
-	_ = cw.Write(header)
-	_ = cw.WriteAll(rows)
+	// Build the whole CSV in memory first. A csv.NewWriter(w) streams straight into the
+	// already-committed 200 response, so a mid-write failure shipped a TRUNCATED file as
+	// HTTP 200; buffering lets a writer error become a clean 500 (finding OPS-05).
+	var buf bytes.Buffer
+	buf.Write([]byte{0xEF, 0xBB, 0xBF}) // UTF-8 BOM for Excel
+	cw := csv.NewWriter(&buf)
+	cw.Comma = ';'
+	if err := cw.Write(header); err != nil {
+		serverError(w, r, "Export fehlgeschlagen", err)
+		return
+	}
+	if err := cw.WriteAll(rows); err != nil {
+		serverError(w, r, "Export fehlgeschlagen", err)
+		return
+	}
 	cw.Flush()
+	if err := cw.Error(); err != nil {
+		serverError(w, r, "Export fehlgeschlagen", err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Disposition",
+		`attachment; filename="parkrr-`+name+`-`+time.Now().Format("2006-01-02")+`.csv"`)
+	_, _ = w.Write(buf.Bytes())
 }
 
 func boolJaNein(b bool) string {

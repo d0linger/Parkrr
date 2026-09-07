@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math"
 	"net/http"
 	"sort"
@@ -1123,10 +1124,19 @@ func (h *Handler) Occupancy(w http.ResponseWriter, r *http.Request) {
 		defer trows.Close()
 		for trows.Next() {
 			var d occDay
-			if trows.Scan(&d.Day, &d.Placed, &d.Active) == nil {
-				resp.Trend = append(resp.Trend, d)
+			if err := trows.Scan(&d.Day, &d.Placed, &d.Active); err != nil {
+				slog.Warn("occupancy trend scan failed", "err", err)
+				continue
 			}
+			resp.Trend = append(resp.Trend, d)
 		}
+		// Don't let a read error silently shorten the sparkline (finding OPS-06/11):
+		// the dashboard still renders, but the truncation is now visible in the log.
+		if err := trows.Err(); err != nil {
+			slog.Warn("occupancy trend read failed", "err", err)
+		}
+	} else {
+		slog.Warn("occupancy trend query failed", "err", terr)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

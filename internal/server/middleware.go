@@ -46,8 +46,10 @@ func requestLogger(mgr *auth.Manager, next http.Handler) http.Handler {
 		start := time.Now()
 		id := requestID()
 		w.Header().Set("X-Request-ID", id)
-		// Install a request-log record so auth middleware can add the user.
+		// Install a request-log record so auth middleware can add the user, and
+		// record the id there too so handlers can correlate their own logs (OPS-02).
 		ctx := auth.WithRequestLog(r.Context())
+		auth.SetRequestID(ctx, id)
 		r = r.WithContext(ctx)
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
@@ -66,7 +68,20 @@ func requestLogger(mgr *auth.Manager, next http.Handler) http.Handler {
 		if user, uid := auth.RequestLogUser(ctx); user != "" {
 			attrs = append(attrs, "user", user, "user_id", uid)
 		}
-		slog.Info("request", attrs...)
+		// Surface the underlying cause of a 5xx that a handler stashed (OPS-01), so a
+		// DB fault is never invisible even where the handler wrote only a generic body.
+		if err := auth.RequestError(ctx); err != nil {
+			attrs = append(attrs, "err", err.Error())
+		}
+		// Escalate the level by status so a 500 doesn't read like a 200 (OPS-03).
+		switch {
+		case rec.status >= 500:
+			slog.Error("request", attrs...)
+		case rec.status >= 400:
+			slog.Warn("request", attrs...)
+		default:
+			slog.Info("request", attrs...)
+		}
 	})
 }
 
