@@ -76,7 +76,12 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **49** [Hoch/S] Mehr laden mit Busy- und Fehlerzustand — `web/static/js/app.js:4217`
 - [ ] **50** [Hoch/M] Foto-Upload mit Fortschritt und Downscale — `web/static/js/app.js:3082`
 - [x] **51** [Hoch/S] formModal-save flächendeckend nutzen — `web/static/js/app.js:444`
-- [ ] **52** [Hoch/S] Undo auf alle destruktiven Flows — `web/static/js/app.js:324`
+- [x] **52** [Hoch/S] Undo auf alle destruktiven Flows — `web/static/js/app.js:324`
+      Vier weitere Flows auf deleteWithUndo: Übergabeprotokoll, Garage, Halle,
+      Planer-Icon. BEWUSST ohne Undo bleiben: Sitzung abmelden und Passkey
+      entfernen (ein Rückgängig-Fenster würde den Sicherheitsentzug VERZÖGERN —
+      wer widerruft, meint sofort) sowie die Planner-internen Löschungen
+      (eigene Strg+Z-Historie) und die Storno-Zahlung (Kommentar im Code).
 - [~] **53** [Hoch/M] Server-Pagination auch im Frontend — `web/static/js/app.js:786`
       TEILWEISE: Das Frontend liest jetzt X-Total-Count und WARNT sichtbar, wenn die
       Liste am Serverdeckel (1000) abgeschnitten ist — vorher war das von einer

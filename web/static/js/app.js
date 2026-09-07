@@ -2208,7 +2208,7 @@
                 el('img', { src: '/api/planner-icons/' + ic.id + '?t=' + (ic.byte_size || 0), alt: ic.name }),
                 el('span', { title: ic.name }, ic.name),
                 el('button', { class: 'btn btn-ghost btn-sm iconedit', title: 'Umbenennen / Bild ersetzen', onclick: () => { editId = ic.id; editName = ic.name; render(); } }, '✎'),
-                el('button', { class: 'btn btn-ghost btn-sm icondel', title: 'Löschen', onclick: async () => { if (!await confirmDialog('Icon löschen?', `„${ic.name}" wird entfernt. Fahrzeuge, die es nutzen, fallen aufs Kategorie-Symbol zurück.`, 'Löschen')) return; try { await api.del('/planner-icons/' + ic.id); if (editId === ic.id) editId = null; await render(); } catch (e) { toast('Löschen fehlgeschlagen', 'error'); } } }, icon('close', 14)))));
+                el('button', { class: 'btn btn-ghost btn-sm icondel', title: 'Löschen', onclick: (e) => deleteWithUndo('Icon löschen?', `„${ic.name}" wird entfernt. Fahrzeuge, die es nutzen, fallen aufs Kategorie-Symbol zurück.`, () => api.del('/planner-icons/' + ic.id), () => { if (editId === ic.id) editId = null; render(); }, e.currentTarget.closest('.iconcell')) }, icon('close', 14)))));
             body.append(grid);
             // Built-in category icons (read-only): always available per vehicle under
             // „Planer-Symbol", not stored in the DB and therefore not editable/deletable.
@@ -3215,10 +3215,11 @@
     function delPhoto(p, node) {
         deleteWithUndo('Foto löschen?', 'Das Foto wird dauerhaft entfernt — das Original lässt sich nicht wiederherstellen.', () => api.del('/photos/' + p.id), () => render(), node);
     }
-    async function delHandover(ho, node) {
-        if (!await confirmDialog('Protokoll löschen?', 'Das Übergabeprotokoll wird dauerhaft entfernt.', 'Löschen')) return;
-        try { await api.del('/handovers/' + ho.id); if (node) node.remove(); toast('Protokoll gelöscht', 'success'); }
-        catch (e) { toast(e.message || 'Löschen fehlgeschlagen', 'error'); }
+    function delHandover(ho, node) {
+        // deleteWithUndo (Hundert UX-52): ein unterschriebener Beleg ist das Letzte,
+        // das ein Fehlklick unwiederbringlich entfernen sollte.
+        deleteWithUndo('Protokoll löschen?', 'Das Übergabeprotokoll wird dauerhaft entfernt.',
+            () => api.del('/handovers/' + ho.id), () => render(), node);
     }
     // Übergabeprotokoll form: direction + condition notes + signer + a drawn signature.
     async function handoverForm(vehicleId) {
@@ -4922,7 +4923,7 @@
                 el('div', { class: 'card-actions' },
                     el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': g.name + ' öffnen', onclick: () => navigate('garage/' + g.id) }, '›'),
                     canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Umbenennen', onclick: () => garageForm(g) }, icon('edit')),
-                    canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: () => delGarage(g) }, icon('trash')))))));
+                    canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: (e) => delGarage(g, e.currentTarget.closest('.card')) }, icon('trash')))))));
         page.append(list);
     };
     async function garageForm(g) {
@@ -4931,9 +4932,11 @@
             save: async (d) => { if (g) await api.put('/garages/' + g.id, { name: d.name.trim() }); else await api.post('/garages', { name: d.name.trim() }); } });
         render();
     }
-    async function delGarage(g) {
-        if (!await confirmDialog('Garage löschen?', `„${g.name}" samt allen Hallen und Stellplätzen wird entfernt. Zugewiesene Gefährte werden freigegeben (nicht gelöscht).`, 'Löschen')) return;
-        await api.del('/garages/' + g.id); toast('Garage gelöscht'); render();
+    function delGarage(g, node) {
+        // deleteWithUndo (Hundert UX-52): eine Garage nimmt alle Hallen und Plätze
+        // mit — genau die Sorte Klick, für die das Rückgängig-Fenster existiert.
+        deleteWithUndo('Garage löschen?', `„${g.name}" samt allen Hallen und Stellplätzen wird entfernt. Zugewiesene Gefährte werden freigegeben (nicht gelöscht).`,
+            () => api.del('/garages/' + g.id), () => render(), node);
     }
 
     // ---- halls of a garage ----
@@ -4959,7 +4962,7 @@
                     el('div', { class: 'card-actions' },
                         el('button', { class: 'btn btn-ghost btn-sm', onclick: () => navigate('hall/' + hl.id) }, 'Planer ›'),
                         canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Umbenennen', onclick: () => hallForm(id, hl) }, icon('edit')),
-                        canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: () => delHall(hl) }, icon('trash'))))));
+                        canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: (e) => delHall(hl, e.currentTarget.closest('.card')) }, icon('trash'))))));
         });
         page.append(list);
     };
@@ -4972,9 +4975,9 @@
             } });
         render();
     }
-    async function delHall(hl) {
-        if (!await confirmDialog('Halle löschen?', `„${hl.name}" samt Stellplätzen wird entfernt. Zugewiesene Gefährte werden freigegeben.`, 'Löschen')) return;
-        await api.del('/halls/' + hl.id); toast('Halle gelöscht'); render();
+    function delHall(hl, node) {
+        deleteWithUndo('Halle löschen?', `„${hl.name}" samt Stellplätzen wird entfernt. Zugewiesene Gefährte werden freigegeben.`,
+            () => api.del('/halls/' + hl.id), () => render(), node);
     }
 
     // ---- the planner ----
