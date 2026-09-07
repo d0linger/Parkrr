@@ -71,9 +71,9 @@ B11 Destruktives + Betreiber-Punkte.
 ## Bedienung und UX (B4 UX)
 
 - [ ] **46** [Notwendig/S] Speichern erhält den Listenzustand — `web/static/js/app.js:884`
-- [ ] **47** [Notwendig/S] Template-Fehler nicht als Offline-Erfolg tarnen — `web/static/js/app.js:5248`
-- [ ] **48** [Hoch/S] Zusatzkosten-Empty-State reparieren — `web/static/js/app.js:3151`
-- [ ] **49** [Hoch/S] Mehr laden mit Busy- und Fehlerzustand — `web/static/js/app.js:4217`
+- [x] **47** [Notwendig/S] Template-Fehler nicht als Offline-Erfolg tarnen — `web/static/js/app.js:5248`
+- [x] **48** [Hoch/S] Zusatzkosten-Empty-State reparieren — `web/static/js/app.js:3151`
+- [x] **49** [Hoch/S] Mehr laden mit Busy- und Fehlerzustand — `web/static/js/app.js:4217`
 - [ ] **50** [Hoch/M] Foto-Upload mit Fortschritt und Downscale — `web/static/js/app.js:3082`
 - [ ] **51** [Hoch/S] formModal-save flächendeckend nutzen — `web/static/js/app.js:444`
 - [ ] **52** [Hoch/S] Undo auf alle destruktiven Flows — `web/static/js/app.js:324`
@@ -119,7 +119,7 @@ B11 Destruktives + Betreiber-Punkte.
 
 ## Portal und Kommunikation (B9 Portal)
 
-- [ ] **83** [Hoch/S] Portal: Blob-URLs freigeben, Fehler abfangen — `web/static/js/app.js:7986`
+- [x] **83** [Hoch/S] Portal: Blob-URLs freigeben, Fehler abfangen — `web/static/js/app.js:7986`
 - [ ] **84** [Mittel/M] Portal: Übergabeprotokolle einsehen
 - [ ] **85** [Mittel/M] Portal: Stammdaten-Änderungswunsch
 - [ ] **86** [Mittel/S] E-Mail-Versandprotokoll

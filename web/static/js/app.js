@@ -3148,7 +3148,7 @@
         await refreshLookups();
         const charges = await api.get('/charges');
         mountList(page, {
-            title: 'Zusatzkosten', emptyIcon: '€', emptyText: 'Keine Zusatzkosten erfasst.',
+            title: 'Zusatzkosten', emptyIcon: 'receipt', emptyText: 'Keine Zusatzkosten erfasst.',
             onAdd: canBill() ? () => chargeForm() : null,
             items: charges,
             searchText: (c) => norm([c.person_name, c.description].join(' ')),
@@ -4213,9 +4213,16 @@
             if (q.entity) p.set('entity', q.entity);
             if (q.from) p.set('from', q.from);
             if (q.to) p.set('to', q.to);
-            let entries = [];
-            try { entries = await api.get('/audit?' + p.toString()); } catch { /* ignore */ }
+            let entries = [], loadErr = null;
+            moreBtn.disabled = true;
+            try { entries = await api.get('/audit?' + p.toString()); }
+            catch (e) { loadErr = e; }
+            finally { moreBtn.disabled = false; }
             if (seq !== loadSeq) return;
+            // Ein Netz-/Serverfehler ist von "keine weiteren Einträge" unterscheidbar:
+            // Fehler melden und den Knopf sichtbar lassen, damit ein Retry möglich
+            // bleibt (Hundert UX-57). Vorher verschwand der Knopf kommentarlos.
+            if (loadErr) { toast('Audit-Log laden fehlgeschlagen: ' + (loadErr.message || loadErr), 'error'); return; }
             const now = new Date();
             const yest = new Date(now); yest.setDate(now.getDate() - 1);
             const heute = dayKey(now), gestern = dayKey(yest);
@@ -5246,12 +5253,24 @@
             if (!data || !data.name) return;
             const name = String(data.name).slice(0, 60), walls = JSON.parse(JSON.stringify(P.walls));
             try { await api.post('/wall-templates', { name, walls }); await fetchTemplates(); toast('Vorlage gespeichert', 'ok'); }
-            catch (e) { const tpls = lsLoad(); tpls.unshift({ id: Date.now(), name, walls, local: true }); lsSave(tpls); tplCache = tpls; toast('Vorlage lokal gespeichert (offline)', 'warn'); }
+            catch (e) {
+                // Nur ein NETZWERK-Fehler (kein e.status) fällt auf den lokalen Spiegel
+                // zurück. Ein HTTP-Fehler (403, Validierung, 500) ist eine echte
+                // Ablehnung: die als "lokal gespeichert (offline)" zu melden, täuscht
+                // einen Erfolg vor, der nie wieder synct (Hundert UX-55).
+                if (e && e.status) { toast('Vorlage speichern fehlgeschlagen: ' + e.message, 'error'); return; }
+                const tpls = lsLoad(); tpls.unshift({ id: Date.now(), name, walls, local: true }); lsSave(tpls); tplCache = tpls; toast('Vorlage lokal gespeichert (offline)', 'warn');
+            }
         }
         async function deleteTemplate(t) {
             if (t.local) { const tpls = lsLoad().filter((x) => x.id !== t.id); lsSave(tpls); tplCache = tpls; return; } // local-only: remove from storage, no server call
             try { await api.del('/wall-templates/' + t.id); await fetchTemplates(); }
-            catch (e) { const tpls = lsLoad().filter((x) => x.id !== t.id); lsSave(tpls); tplCache = tpls; }
+            catch (e) {
+                // Wie beim Speichern (UX-55): HTTP-Fehler ist eine echte Ablehnung, die
+                // Server-Vorlage bleibt bestehen; nur offline wird lokal gespiegelt.
+                if (e && e.status) { toast('Vorlage löschen fehlgeschlagen: ' + e.message, 'error'); return; }
+                const tpls = lsLoad().filter((x) => x.id !== t.id); lsSave(tpls); tplCache = tpls;
+            }
         }
         async function applyTemplate(t) {
             if (P.walls.edges.length && !(await confirmDialog('Vorlage laden', 'Aktuelle Wände durch die Vorlage „' + t.name + '" ersetzen?', 'Ersetzen'))) return;
@@ -7933,6 +7952,10 @@
         try {
             const url = URL.createObjectURL(await portalFetch(token, '/invoices/' + id + '/pdf', 'blob'));
             if (win) win.location = url; else window.open(url, '_blank', 'noopener');
+            // Nach der Übergabe an den Tab wieder freigeben (großzügige Frist, der Tab
+            // hat den Blob dann geladen) — vorher leckte jede geöffnete Rechnung eine
+            // Objekt-URL pro Sitzung (Hundert PORTAL-91; dlBlob macht es vor).
+            setTimeout(() => URL.revokeObjectURL(url), 60000);
         } catch { if (win) win.close(); toast('PDF konnte nicht geladen werden', 'error'); }
     }
 
@@ -7983,7 +8006,10 @@
             if (iv.open > 0.005) {
                 const qr = el('img', { alt: 'SEPA-Zahlungs-QR', width: 150, height: 150, style: 'max-width:150px;height:auto' });
                 portalFetch(token, '/invoices/' + iv.id + '/pay-qr', 'blob')
-                    .then((b) => { qr.src = URL.createObjectURL(b); }).catch(() => { });
+                    // Objekt-URL nach dem Laden des Bilds freigeben (PORTAL-91); bei
+                    // Fehlschlag das leere img entfernen statt es kaputt stehen zu lassen.
+                    .then((b) => { qr.onload = () => URL.revokeObjectURL(qr.src); qr.src = URL.createObjectURL(b); })
+                    .catch(() => { qr.remove(); });
                 icard.append(el('div', { style: 'text-align:center;padding:.4rem 0 .2rem' },
                     qr,
                     el('div', { class: 'muted', style: 'font-size:.72rem' }, 'Scan zum Bezahlen (SEPA)')));
