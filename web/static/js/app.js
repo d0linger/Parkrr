@@ -8439,6 +8439,18 @@
         else sum.vehicles.forEach((v) => vcard.append(el('div', { class: 'portal-row' },
             el('span', {}, esc(v.label)), statusBadge(v.status))));
         wrap.append(vcard);
+        // Übergabeprotokolle (Hundert 84): was der Kunde unterschrieben hat —
+        // Richtung, Datum, Zustandsnotizen. Ohne Unterschriftsbild (siehe Server).
+        if ((sum.handovers || []).length) {
+            const hcard = el('div', { class: 'portal-card' }, el('h2', {}, 'Übergabeprotokolle'));
+            sum.handovers.forEach((ho) => hcard.append(el('div', { class: 'portal-row' },
+                el('span', {}, esc(ho.vehicle_label) + ' · ' + (ho.direction === 'einlagerung' ? 'Einlagerung' : 'Auslagerung'),
+                    ho.notes ? el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, esc(ho.notes)) : null),
+                el('span', { class: 'muted', style: 'font-size:.8rem;text-align:right' },
+                    new Date(ho.created_at).toLocaleDateString('de-DE'),
+                    ho.signer_name ? el('span', { style: 'display:block' }, 'unterschrieben: ' + esc(ho.signer_name)) : null))));
+            wrap.append(hcard);
+        }
         const icard = el('div', { class: 'portal-card' }, el('h2', {}, 'Rechnungen'));
         if (!sum.invoices.length) icard.append(el('p', { class: 'muted' }, 'Keine Rechnungen.'));
         else sum.invoices.forEach((iv) => {

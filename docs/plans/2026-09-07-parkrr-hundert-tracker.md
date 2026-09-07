@@ -147,7 +147,7 @@ B11 Destruktives + Betreiber-Punkte.
 ## Portal und Kommunikation (B9 Portal)
 
 - [x] **83** [Hoch/S] Portal: Blob-URLs freigeben, Fehler abfangen — `web/static/js/app.js:7986`
-- [ ] **84** [Mittel/M] Portal: Übergabeprotokolle einsehen
+- [x] **84** [Mittel/M] Portal: Übergabeprotokolle einsehen
 - [ ] **85** [Mittel/M] Portal: Stammdaten-Änderungswunsch
 - [x] **86** [Mittel/S] E-Mail-Versandprotokoll
 - [ ] **87** [Idee/M] Portal: Terminwunsch für Abholung

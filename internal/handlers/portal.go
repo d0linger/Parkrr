@@ -301,6 +301,20 @@ type portalSummary struct {
 	OpenTotal  float64         `json:"open_total"`
 	Vehicles   []portalVehicle `json:"vehicles"`
 	Invoices   []portalInvoice `json:"invoices"`
+	// Übergabeprotokolle (Hundert 84): der Kunde sieht, was er unterschrieben hat —
+	// Richtung, Datum, Zustandsnotizen. BEWUSST ohne das Unterschriftsbild: das
+	// Portal ist ein Bearer-Link, und die gezeichnete Unterschrift ist der
+	// personenbezogenste Datenpunkt der Anwendung — wer den Link mitliest, bekommt
+	// sie nicht dazu.
+	Handovers []portalHandover `json:"handovers"`
+}
+
+type portalHandover struct {
+	VehicleLabel string    `json:"vehicle_label"`
+	Direction    string    `json:"direction"` // einlagerung | auslagerung
+	Notes        string    `json:"notes"`
+	SignerName   string    `json:"signer_name"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // PortalSummary is the PUBLIC read-only view behind a valid magic-link token.
@@ -373,6 +387,35 @@ func (h *Handler) PortalSummary(w http.ResponseWriter, r *http.Request) {
 		out.Invoices = append(out.Invoices, pi)
 	}
 	if irows.Err() != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+
+	// Übergabeprotokolle der eigenen Gefährte (Hundert 84) — Metadaten und
+	// Zustandsnotizen, ohne Unterschriftsbild (Begründung am Struct).
+	out.Handovers = []portalHandover{}
+	hrows, err := h.Pool.Query(r.Context(),
+		`SELECT COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), 'Gefährt'),
+		        ho.direction, ho.notes, ho.signer_name, ho.created_at
+		   FROM handover_protocols ho
+		   JOIN vehicles v ON v.id = ho.vehicle_id
+		  WHERE v.person_id = $1
+		  ORDER BY ho.created_at DESC LIMIT 50`, pid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	for hrows.Next() {
+		var ph portalHandover
+		if err := hrows.Scan(&ph.VehicleLabel, &ph.Direction, &ph.Notes, &ph.SignerName, &ph.CreatedAt); err != nil {
+			hrows.Close()
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		out.Handovers = append(out.Handovers, ph)
+	}
+	hrows.Close()
+	if hrows.Err() != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
