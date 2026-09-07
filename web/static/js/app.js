@@ -3591,12 +3591,22 @@
         const syncId = 'cat-sync-' + (c ? c.id : 'new');
         syncI.id = syncId;
 
+        // Standardmaße (Hundert 80): erste Näherung für ungemessene Gefährte dieser
+        // Kategorie im Garagenplaner. Leer = keine Vorgabe.
+        const dimI = (val, label, max) => el('input', { type: 'number', step: '0.01', min: 0, max: String(max), value: val != null ? val : '', 'aria-label': label, placeholder: '–' });
+        const dLenI = dimI(c && c.default_length_m, 'Standardlänge in Metern', 60);
+        const dWidI = dimI(c && c.default_width_m, 'Standardbreite in Metern', 15);
+        const dHgtI = dimI(c && c.default_height_m, 'Standardhöhe in Metern', 15);
+        const dWgtI = dimI(c && c.default_weight_t, 'Standardgewicht in Tonnen', 200);
+        const optNum = (i) => { const v = i.value.trim(); if (v === '') return null; const n = Number(v.replace(',', '.')); return Number.isFinite(n) && n > 0 ? n : null; };
+
         const saveBtn = el('button', { class: 'btn btn-primary' }, icon('check', 15), ' Speichern');
         saveBtn.addEventListener('click', async () => {
             const name = nameI.value.trim();
             if (!name) { toast('Name ist erforderlich', 'error'); nameI.focus(); return; }
             saveBtn.disabled = true;
-            const payload = { name, default_monthly_cost: Number(monI.value) || 0, default_yearly_cost: Number(yearI.value) || 0, rates_synced: syncI.checked };
+            const payload = { name, default_monthly_cost: Number(monI.value) || 0, default_yearly_cost: Number(yearI.value) || 0, rates_synced: syncI.checked,
+                default_length_m: optNum(dLenI), default_width_m: optNum(dWidI), default_height_m: optNum(dHgtI), default_weight_t: optNum(dWgtI) };
             try {
                 if (c) await api.put('/categories/' + c.id, payload); else await api.post('/categories', payload);
                 toast('Tarif gespeichert', 'success'); render();
@@ -3610,6 +3620,14 @@
             el('div', { class: 'field-row', style: 'margin-top:.5rem' },
                 el('div', {}, el('label', {}, 'Preis / Monat (€)'), monI),
                 el('div', {}, el('label', {}, 'Preis / Jahr (€)'), yearI)),
+            el('div', { class: 'card-meta', style: 'margin-top:.6rem' },
+                'Standardmaße für den Garagenplaner — gelten für Gefährte dieses Tarifs ohne eigene Messung. Leer = keine Vorgabe.'),
+            el('div', { class: 'field-row' },
+                el('div', {}, el('label', {}, 'Länge (m)'), dLenI),
+                el('div', {}, el('label', {}, 'Breite (m)'), dWidI)),
+            el('div', { class: 'field-row' },
+                el('div', {}, el('label', {}, 'Höhe (m)'), dHgtI),
+                el('div', {}, el('label', {}, 'Gewicht (t)'), dWgtI)),
             saveRow);
         if (c) {
             inner.append(el('div', { class: 'cfg-actions2' }, c.archived

@@ -35,8 +35,12 @@ jobs:
       # collectively exhaust the DB's connections (honored by database.Connect).
       PARKRR_TEST_DATABASE_URL: postgres://parkrr:parkrr@localhost:5432/parkrr_test?sslmode=disable&pool_max_conns=4
       # Coverage ratchet floor. Raise this as coverage grows; the gate fails the
-      # build if total statement coverage drops below it. (Actual ~48.7%.)
-      COVERAGE_MIN: "45"
+      # build if total statement coverage drops below it. Gemessen 2026-09-07:
+      # 69,5 % — der Sprung kommt aus internal/server (4 % -> 98 %): server.New
+      # samt Routen-Verdrahtung war bis dahin von KEINEM Test ausgefuehrt, und
+      # das Paket traegt ein Drittel aller Statements. Der Boden liegt bewusst
+      # unter dem Istwert, damit normale Arbeit nicht sofort anschlaegt (Hundert 94).
+      COVERAGE_MIN: "60"
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

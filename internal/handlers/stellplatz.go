@@ -668,7 +668,8 @@ func (h *Handler) ListUnassignedVehicles(w http.ResponseWriter, r *http.Request)
 		        COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), cat.name, 'Gefährt'),
 		        COALESCE(cat.name, ''),
 		        v.person_id, trim(p.first_name || ' ' || p.last_name),
-		        v.length_m, v.width_m, v.height_m, v.weight_t
+		        COALESCE(v.length_m, cat.default_length_m), COALESCE(v.width_m, cat.default_width_m),
+		        COALESCE(v.height_m, cat.default_height_m), COALESCE(v.weight_t, cat.default_weight_t)
 		   FROM vehicles v
 		   LEFT JOIN categories cat ON cat.id = v.category_id
 		   LEFT JOIN persons    p   ON p.id = v.person_id

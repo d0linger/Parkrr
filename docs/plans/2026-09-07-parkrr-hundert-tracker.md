@@ -121,7 +121,7 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **77** [Mittel/S] Undo-Snapshots verschlanken — `web/static/js/app.js:5077`
 - [x] **78** [Mittel/S] Emoji-Knöpfe durch SVG-Icons ersetzen — `web/static/js/app.js:6230`
 - [ ] **79** [Mittel/M] Belegungshistorie pro Stellplatz
-- [ ] **80** [Mittel/S] Standardmaße je Kategorie
+- [x] **80** [Mittel/S] Standardmaße je Kategorie
 - [ ] **81** [Idee/L] Mehrere Ebenen je Halle
 - [ ] **82** [Idee/M] Stellplatz-Reservierung mit Zeitraum
 
@@ -138,10 +138,10 @@ B11 Destruktives + Betreiber-Punkte.
 ## Tests und Qualität (B2/B10 Tests)
 
 - [x] **90** [Notwendig/M] Datums-Grenzfall-Matrix mit gepinnter Uhr
-- [ ] **91** [Hoch/M] photos.go und planner_icons.go testen — `internal/handlers/photos.go:90`
-- [ ] **92** [Hoch/M] Vehicle-Lifecycle abdecken — `internal/handlers/vehicles.go:556`
+- [x] **91** [Hoch/M] photos.go und planner_icons.go testen — `internal/handlers/photos.go:90`
+- [x] **92** [Hoch/M] Vehicle-Lifecycle abdecken — `internal/handlers/vehicles.go:556`
 - [ ] **93** [Mittel/M] E2E-Tests für Login, 2FA und Passkey — `tests/a11y/`
-- [ ] **94** [Mittel/S] Coverage-Gate anheben — `.github/workflows/ci.yml`
+- [x] **94** [Mittel/S] Coverage-Gate anheben — `.github/workflows/ci.yml`
 - [ ] **95** [Mittel/S] seed-demo-Kommando — `cmd/parkrr/`
 
 ## Ausbau und Zukunft (B10 Ausbau)

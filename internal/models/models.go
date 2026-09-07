@@ -466,6 +466,13 @@ type Category struct {
 	DefaultMonthlyCost float64 `json:"default_monthly_cost"`
 	DefaultYearlyCost  float64 `json:"default_yearly_cost"`
 	RatesSynced        bool    `json:"rates_synced"`
+	// Standardmaße für den Garagenplaner: erste Näherung für Gefährte dieser
+	// Kategorie OHNE eigene Messung; eigene Maße am Gefährt gewinnen immer
+	// (Hundert 80). Nil = keine Vorgabe.
+	DefaultLengthM *float64 `json:"default_length_m,omitempty"`
+	DefaultWidthM  *float64 `json:"default_width_m,omitempty"`
+	DefaultHeightM *float64 `json:"default_height_m,omitempty"`
+	DefaultWeightT *float64 `json:"default_weight_t,omitempty"`
 	// Archived hides a tariff from the pickers (new vehicle / agreement) while
 	// keeping it valid for existing vehicles, whose rate is locked anyway.
 	Archived  bool      `json:"archived"`
