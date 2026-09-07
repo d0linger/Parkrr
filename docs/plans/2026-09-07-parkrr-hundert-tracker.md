@@ -151,7 +151,7 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **90** [Notwendig/M] Datums-Grenzfall-Matrix mit gepinnter Uhr
 - [x] **91** [Hoch/M] photos.go und planner_icons.go testen — `internal/handlers/photos.go:90`
 - [x] **92** [Hoch/M] Vehicle-Lifecycle abdecken — `internal/handlers/vehicles.go:556`
-- [ ] **93** [Mittel/M] E2E-Tests für Login, 2FA und Passkey — `tests/a11y/`
+- [x] **93** [Mittel/M] E2E-Tests für Login, 2FA und Passkey — `tests/a11y/`
 - [x] **94** [Mittel/S] Coverage-Gate anheben — `.github/workflows/ci.yml`
 - [x] **95** [Mittel/S] seed-demo-Kommando — `cmd/parkrr/`
 
