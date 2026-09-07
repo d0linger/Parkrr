@@ -3,7 +3,9 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -85,9 +87,43 @@ func (h *Handler) CreateWallTemplate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not save template")
 		return
 	}
-	_, _ = h.Pool.Exec(r.Context(),
-		`DELETE FROM wall_templates WHERE id IN (SELECT id FROM wall_templates ORDER BY created_at DESC OFFSET $1)`,
-		maxWallTemplates)
+	// Ringpuffer: alles jenseits der jüngsten maxWallTemplates fällt weg. Die
+	// verdrängten Namen werden zurückgegeben und protokolliert — vorher lief das als
+	// stilles `_, _ =`, sodass Vorlagen spurlos verschwanden, während DeleteWallTemplate
+	// nebenan großen Aufwand gegen Phantom-Löschungen treibt (Hundert API-84).
+	trimmed, terr := h.Pool.Query(r.Context(),
+		`DELETE FROM wall_templates WHERE id IN (
+		     SELECT id FROM wall_templates ORDER BY created_at DESC OFFSET $1)
+		 RETURNING id, name`, maxWallTemplates)
+	if terr != nil {
+		slog.Warn("wall-template trim failed", "err", terr)
+	} else {
+		type droppedTpl struct {
+			id   int64
+			name string
+		}
+		var dropped []droppedTpl
+		for trimmed.Next() {
+			var d droppedTpl
+			if err := trimmed.Scan(&d.id, &d.name); err != nil {
+				slog.Warn("wall-template trim scan failed", "err", err)
+				break
+			}
+			dropped = append(dropped, d)
+		}
+		trimmed.Close()
+		if err := trimmed.Err(); err != nil {
+			slog.Warn("wall-template trim read failed", "err", err)
+		}
+		for _, d := range dropped {
+			// auditDeleted (nicht h.audit) ist Pflicht: der Eintrag muss die entfernte
+			// Zeile mitschreiben, damit er auflösbar bleibt, wenn sie weg ist. Genau
+			// darauf besteht TestAuditDeletesCarryASnapshot.
+			h.auditDeleted(r, "wall_template", d.id,
+				"Wand-Vorlage verdrängt (Limit "+strconv.Itoa(maxWallTemplates)+"): "+d.name,
+				map[string]any{"name": d.name})
+		}
+	}
 	// The walls payload is opaque planner geometry, not business data — record the
 	// identifying fields only, so the trail stays readable.
 	h.auditCreated(r, "wall_template", t.ID, "Wand-Vorlage angelegt: "+t.Name,
