@@ -1048,6 +1048,12 @@ div.empty .big svg { width: 30px; height: 30px; }
 }
 /* Foto-Upload-Fortschritt (Hundert 50): schmale Leiste neben den Knoepfen, nur
    waehrend eines Uploads sichtbar; die Breite des <i> traegt den Fortschritt. */
+/* Aktivitäts-Verlauf je Person (Hundert 56) */
+.tl-row{display:flex;align-items:baseline;gap:.55rem;padding:.35rem 0;border-bottom:1px solid var(--border)}
+.tl-row:last-of-type{border-bottom:0}
+.tl-ic{flex:none;color:var(--text-muted);transform:translateY(2px)}
+.tl-text{flex:1;font-size:.9rem}
+.tl-date{flex:none;font-size:.78rem;color:var(--text-muted);font-variant-numeric:tabular-nums}
 /* Fotoreihenfolge + Titelbild (Hundert 58) */
 .photo-thumb{position:relative}
 .photo-thumb .title-badge{position:absolute;top:4px;left:4px;background:var(--primary);color:var(--on-primary);

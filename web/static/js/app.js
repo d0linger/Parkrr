@@ -1781,6 +1781,32 @@
         if (!invoices.length) page.append(el('p', { class: 'muted' }, 'Noch keine Rechnungen. „+ Rechnung" erstellt eine aus den offenen Einzelposten.'));
         else page.append(collapsibleRows(invoices, (iv) => invoiceRow(iv)));
 
+        // Verlauf (Hundert 56): alles, was bei dieser Person passiert ist, in EINEM
+        // Strom — statt fünfmal blättern (Zahlungen, Rechnungen, Posten, Status,
+        // Übergaben). Nachgeladen, damit die Seite nicht auf die Historie wartet.
+        {
+            const tlCard = el('div', { class: 'card' });
+            const tlHead = el('div', { class: 'page-head section-head' },
+                el('div', { class: 'sec-group' }, el('h3', { class: 'sec-eyebrow' }, 'Verlauf')));
+            page.append(tlHead, tlCard);
+            const KIND_ICON = { payment: 'receipt', invoice: 'receipt', charge: 'tag', status: 'car', handover: 'key', agreement: 'check' };
+            api.get('/persons/' + id + '/timeline').then((events) => {
+                if (!events || !events.length) { tlCard.append(el('p', { class: 'muted' }, 'Noch keine Ereignisse.')); return; }
+                const rows = events.map((ev) => el('div', { class: 'tl-row' },
+                    el('span', { class: 'tl-ic' }, icon(KIND_ICON[ev.kind] || 'log', 14)),
+                    el('span', { class: 'tl-text' }, esc(ev.text)),
+                    el('span', { class: 'tl-date' }, new Date(ev.at).toLocaleDateString('de-DE'))));
+                // collapsibleRows erwartet Items+Renderer — hier sind die Zeilen schon gebaut.
+                const first = rows.slice(0, 8), rest = rows.slice(8);
+                first.forEach((r) => tlCard.append(r));
+                if (rest.length) {
+                    const more = el('button', { class: 'btn btn-ghost btn-sm' }, rest.length + ' weitere anzeigen');
+                    more.addEventListener('click', () => { rest.forEach((r) => tlCard.append(r)); more.remove(); });
+                    tlCard.append(more);
+                }
+            }).catch(() => { tlCard.append(el('p', { class: 'muted' }, 'Verlauf konnte nicht geladen werden.')); });
+        }
+
         // statistics at the bottom, below the actionable sections
         const chartCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Kosten pro Monat · ' + stats.year));
         chartCard.append(chartBars(stats.monthly_accrued, MONTHS, 'Aufgelaufene Kosten pro Monat'));
@@ -3260,6 +3286,23 @@
                     el('div', { class: 't-time' }, fmtDateTime(h.created_at) + (h.changed_by ? ' · ' + esc(h.changed_by) : ''))));
             }
             hc.append(ul); page.append(hc);
+        }
+
+        // Stellplatz-Verlauf (Hundert 79): wo dieses Gefährt stand, mit Zeiträumen —
+        // gespeist vom Belegungs-Trigger, der jeden Umplatzierungsweg sieht.
+        // Nachgeladen, damit die Seite nicht auf die Historie wartet.
+        {
+            const shCard = el('div', { class: 'card' }, el('h3', {}, 'Stellplatz-Verlauf'));
+            page.append(shCard);
+            api.get('/vehicles/' + id + '/spot-history').then((entries) => {
+                if (!entries || !entries.length) { shCard.append(el('p', { class: 'muted' }, 'Noch nie platziert.')); return; }
+                const ul = el('ul', { class: 'timeline' });
+                entries.forEach((e2) => ul.append(el('li', {},
+                    el('div', {}, esc(e2.spot_label || ('Platz #' + e2.spot_id))),
+                    el('div', { class: 't-time' }, new Date(e2.started_at).toLocaleDateString('de-DE')
+                        + ' – ' + (e2.ended_at ? new Date(e2.ended_at).toLocaleDateString('de-DE') : 'heute')))));
+                shCard.append(ul);
+            }).catch(() => shCard.append(el('p', { class: 'muted' }, 'Verlauf konnte nicht geladen werden.')));
         }
     };
 

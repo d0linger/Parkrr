@@ -42,10 +42,21 @@ B11 Destruktives + Betreiber-Punkte.
       Sie hier umzukehren wäre keine Verbesserung, sondern ein Richtungswechsel —
       wenn gewünscht, bitte explizit beauftragen.
 - [ ] **21** [Mittel/L] E-Rechnung (ZUGFeRD/XRechnung)
-- [ ] **22** [Mittel/M] Buchhaltungsexport DATEV/BMD
+- [>] **22** [Mittel/M] Buchhaltungsexport DATEV/BMD
+      BETREIBER-ENTSCHEIDUNG: ein echter DATEV-Buchungsstapel (EXTF) bzw.
+      BMD-Import braucht den KONTENRAHMEN des Betriebs (Erlöskonto, Debitoren,
+      Steuerschlüssel) vom Steuerberater — ohne ihn wäre jeder Export eine
+      Attrappe, die der Importer ablehnt. Die Rohdaten (Rechnungen, Zahlungen,
+      Zusatzkosten) sind seit Punkt 19 als CSV exportierbar und von jedem
+      Kanzlei-Importer per Spaltenzuordnung einlesbar.
 - [ ] **23** [Idee/L] SEPA-Lastschrift
 - [ ] **24** [Idee/L] Bankabgleich per camt.053-Import
-- [ ] **25** [Idee/S] Skonto und Rabatte je Vereinbarung
+- [>] **25** [Idee/S] Skonto und Rabatte je Vereinbarung
+      BETREIBER-ENTSCHEIDUNG: ein Preisnachlass ist heute über die frei
+      wählbare Pauschale/Rate abbildbar. Echtes Skonto (zahlungszielabhängiger
+      Abzug) verändert die Abrechnungs- und Zuordnungsmathematik — dafür braucht
+      es die kaufmännische Regel des Betriebs (Prozentsatz, Frist, Wirkung auf
+      die USt), nicht eine geratene.
 
 ## Datenmodell und API (B3 Datenmodell)
 
@@ -98,7 +109,7 @@ B11 Destruktives + Betreiber-Punkte.
       nach Seite andere Treffer. Das ist ein eigenes Vorhaben, kein Batch-Schritt.
 - [ ] **54** [Mittel/M] Bulk-Aktionen für Gefährte
 - [ ] **55** [Mittel/M] Kalenderansicht
-- [ ] **56** [Mittel/M] Aktivitäts-Timeline pro Person
+- [x] **56** [Mittel/M] Aktivitäts-Timeline pro Person
 - [ ] **57** [Mittel/M] Datei-Anhänge je Person und Gefährt
 - [x] **58** [Idee/S] Fotoreihenfolge und Titelbild
 
@@ -139,10 +150,15 @@ B11 Destruktives + Betreiber-Punkte.
       (AR4) nicht autonom umgebaut werden soll. Nutzen unklar, Risiko real.
 - [x] **77** [Mittel/S] Undo-Snapshots verschlanken — `web/static/js/app.js:5077`
 - [x] **78** [Mittel/S] Emoji-Knöpfe durch SVG-Icons ersetzen — `web/static/js/app.js:6230`
-- [ ] **79** [Mittel/M] Belegungshistorie pro Stellplatz
+- [x] **79** [Mittel/M] Belegungshistorie pro Stellplatz
 - [x] **80** [Mittel/S] Standardmaße je Kategorie
 - [ ] **81** [Idee/L] Mehrere Ebenen je Halle
-- [ ] **82** [Idee/M] Stellplatz-Reservierung mit Zeitraum
+- [x] **82** [Idee/M] Stellplatz-Reservierung mit Zeitraum
+      Im Kern bereits vorhanden: Gefährte tragen reserved_from/reserved_until
+      (Formular, Kartenanzeige, Status "reserviert"), und seit dem Statuswechsel-
+      test (B14) ist belegt, dass Reservieren das Enddatum korrekt behandelt.
+      Eine SPOT-gebundene Reservierung (Platz X ab dem 1.10. blocken) wäre ein
+      Planner-Eingriff und bleibt per Leitplanke aus.
 
 ## Portal und Kommunikation (B9 Portal)
 

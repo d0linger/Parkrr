@@ -129,6 +129,9 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	// ablehnt — dieselbe Rolle wie das Löschen, weil es dieselbe Entscheidung ist.
 	mux.Handle("POST /api/persons/{id}/anonymize", editor(hf(h.AnonymizePerson)))
 	mux.Handle("GET /api/persons/{id}/stats", authed(hf(h.PersonStats)))
+	// Aktivitäts-Verlauf: Zahlungen, Rechnungen, Posten, Statuswechsel, Übergaben,
+	// Pauschalen in EINEM Strom (Hundert 56).
+	mux.Handle("GET /api/persons/{id}/timeline", authed(hf(h.PersonTimeline)))
 
 	// --- Payments (recorded money-in / Kontoauszug) ---
 	mux.Handle("GET /api/persons/{id}/payments", authed(hf(h.ListPayments)))
@@ -225,6 +228,9 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("DELETE /api/spots/{id}", editor(hf(h.DeleteSpot)))
 	mux.Handle("PUT /api/spots/{id}/vehicle", editor(hf(h.AssignSpotVehicle)))
 	mux.Handle("DELETE /api/spots/{id}/vehicle", editor(hf(h.UnassignSpotVehicle)))
+	// Belegungshistorie: wer stand wann auf dem Platz / wo stand das Gefährt (Hundert 79).
+	mux.Handle("GET /api/spots/{id}/history", authed(hf(h.SpotHistory)))
+	mux.Handle("GET /api/vehicles/{id}/spot-history", authed(hf(h.VehicleSpotHistory)))
 	mux.Handle("PUT /api/vehicles/{id}/dimensions", editor(hf(h.SetVehicleDimensions)))
 	mux.Handle("PUT /api/vehicles/{id}/planner", editor(hf(h.UpdateVehiclePlanner)))
 
