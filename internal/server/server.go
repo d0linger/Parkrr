@@ -184,7 +184,10 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/vehicles/{id}/handovers", editor(hf(h.CreateHandover)))
 	mux.Handle("GET /api/handovers/{id}/signature", authed(hf(h.GetHandoverSignature)))
 	mux.Handle("GET /api/handovers/{id}/pdf", authed(hf(h.HandoverPDF)))
-	mux.Handle("DELETE /api/handovers/{id}", editor(hf(h.DeleteHandover)))
+	// Ein unterschriebenes Übergabeprotokoll ist ein Beleg: nur Admins dürfen es
+	// entfernen, nicht jeder Bearbeiter (Hundert SEC-79). Gegen nachträgliche
+	// Änderungen schützt zusätzlich der Trigger aus Migration 051.
+	mux.Handle("DELETE /api/handovers/{id}", admin(hf(h.DeleteHandover)))
 
 	// --- Categories (tariffs) ---
 	mux.Handle("GET /api/categories", authed(hf(h.ListCategories)))
