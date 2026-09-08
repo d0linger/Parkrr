@@ -116,3 +116,47 @@ func TestPortalPickupRequestValidationAndCap(t *testing.T) {
 		t.Errorf("unbekannte Art: %d, erwartet 400", rec.Code)
 	}
 }
+
+// Ein Kontaktdaten-Wunsch kann AELTER sein als die Loeschung der Person. Ihn
+// danach zu uebernehmen schriebe genau die Daten zurueck, die Art. 17 entfernt
+// hat — die Loeschung waere rueckgaengig gemacht, ohne dass es auffaellt.
+// Ablehnen und Erledigen bleiben moeglich, damit der Briefkasten leer wird.
+func TestUebernahmeNachAnonymisierungWirdAbgelehnt(t *testing.T) {
+	h := testHandler(t)
+	ctx := context.Background()
+	pid := createIntegrationPerson(t, h)
+	var reqID int64
+	if err := h.Pool.QueryRow(ctx,
+		`INSERT INTO portal_requests (person_id, kind, payload)
+		 VALUES ($1, 'contact_update', '{"email":"zurueck@example.com"}'::jsonb) RETURNING id`,
+		pid).Scan(&reqID); err != nil {
+		t.Fatalf("Wunsch anlegen: %v", err)
+	}
+	if rec := anonymize(t, h, pid); rec.Code != http.StatusOK {
+		t.Fatalf("anonymisieren: %d %s", rec.Code, rec.Body.String())
+	}
+	resolve := func(action string) *httptest.ResponseRecorder {
+		b, _ := json.Marshal(map[string]string{"action": action})
+		req := httptest.NewRequest(http.MethodPost,
+			"/api/portal-requests/"+strconv.FormatInt(reqID, 10)+"/resolve", bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		req.SetPathValue("id", strconv.FormatInt(reqID, 10))
+		rec := httptest.NewRecorder()
+		h.ResolvePortalRequest(rec, req)
+		return rec
+	}
+	if rec := resolve("apply"); rec.Code != http.StatusConflict {
+		t.Fatalf("apply auf eine anonymisierte Person muss 409 liefern, war %d %s", rec.Code, rec.Body.String())
+	}
+	var email string
+	if err := h.Pool.QueryRow(ctx, `SELECT email FROM persons WHERE id=$1`, pid).Scan(&email); err != nil {
+		t.Fatalf("read person: %v", err)
+	}
+	if email != "" {
+		t.Errorf("die Loeschung wurde rueckgaengig gemacht: email=%q", email)
+	}
+	// Der Vorgang muss sich trotzdem schliessen lassen.
+	if rec := resolve("reject"); rec.Code != http.StatusOK {
+		t.Errorf("ablehnen muss weiter gehen: %d %s", rec.Code, rec.Body.String())
+	}
+}

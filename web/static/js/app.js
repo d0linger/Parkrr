@@ -615,8 +615,13 @@
                 + ', letzter Wert ' + (names[hi] || '') + ' ' + eur(values[hi]) + '.')
             + ' Mit den Pfeiltasten durch die Monate.';
         svg.setAttribute('aria-label', label);
+        svg.setAttribute('role', 'img');
         box.tabIndex = 0;
-        box.setAttribute('role', 'img');
+        // Die Huelle ist eine GRUPPE, kein Bild. Mit role="img" auf dem Container waeren
+        // alle Nachfahren aus dem Accessibility-Baum gefallen — der aria-live-Ansager und
+        // die sr-only-Tabelle darunter kamen dann bei genau dem Publikum nicht an, fuer
+        // das sie geschrieben wurden. Das Bild selbst traegt role="img" samt Beschriftung.
+        box.setAttribute('role', 'group');
         box.setAttribute('aria-label', label);
         const live = el('span', { class: 'sr-only', 'aria-live': 'polite' });
         box.append(live);
@@ -643,7 +648,10 @@
 
     // Shared hover tooltip positioned over the chart (viewBox coords -> pixels).
     function chartTip(box, svg, W, H) {
-        const tip = el('div', { class: 'c-tip' });
+        // Rein visuell: derselbe Wert geht fuer Screenreader ueber den aria-live-Ansager
+        // in chartA11y hinaus. Ohne aria-hidden wuerde er jetzt doppelt angesagt, seit
+        // die Huelle eine Gruppe statt eines Bildes ist.
+        const tip = el('div', { class: 'c-tip', 'aria-hidden': 'true' });
         box.append(tip);
         return {
             show: (vx, vy, html) => {
@@ -885,7 +893,15 @@
         const sortSel = el('select', { 'aria-label': 'Sortierung' }, ...opts.sorts.map((s, i) => el('option', { value: i, selected: i === sortIdx }, s.label)));
         const toolbar = el('div', { class: 'toolbar' }, search, sortSel);
         const controlState = {};
-        if (opts.controls) for (const c of opts.controls(() => { pageNum = 1; refresh(); }, controlState)) toolbar.append(c);
+        // `c == null` ueberspringen wie el() es tut: controls() liefert je nach Rolle
+        // Loecher (die Mehrfachauswahl gibt es nur fuer Verwalter), und append(null)
+        // schreibt nach WebIDL das WORT "null" als Textknoten in die Werkzeugleiste.
+        if (opts.controls) {
+            for (const c of opts.controls(() => { pageNum = 1; refresh(); }, controlState)) {
+                if (c == null || c === false) continue;
+                toolbar.append(c);
+            }
+        }
         page.append(toolbar);
 
         const listEl = el('div', {});
@@ -2309,7 +2325,7 @@
     const bulkSel = new Set();
     let bulkMode = false;
 
-    function bulkBar(listRefresh) {
+    function bulkBar() {
         const bar = el('div', { class: 'bulk-bar', hidden: !bulkMode });
         const count = el('b', {}, '0');
         const run = async (status, label) => {
@@ -2349,6 +2365,14 @@
     routes.vehicles = async (page) => {
         await refreshLookups();
         const vehicles = await api.get('/vehicles');
+        // Die Leiste MUSS vor mountList entstehen: mountList zeichnet die Liste noch im
+        // selben Zug (refresh() laeuft synchron), und der render-Rueckruf reicht
+        // page._bulkBar an jede Checkbox weiter. Wurde sie erst danach gesetzt, fing die
+        // erste Darstellung `undefined` ein — die Haken landeten zwar in bulkSel, aber
+        // der Zaehler der Leiste blieb bei "0 ausgewaehlt", und der Betreiber startete
+        // eine Massenaktion mit einer Zahl, die er auf dem Bildschirm nicht pruefen konnte.
+        const bulkBarEl = canManage() ? bulkBar() : null;
+        if (bulkBarEl) page._bulkBar = bulkBarEl;
         mountList(page, {
             title: 'Gefährte', emptyIcon: 'car', emptyText: 'Keine Gefährte in dieser Ansicht.', sourcePath: '/vehicles',
             onAdd: canManage() ? () => vehicleForm() : null,
@@ -2380,11 +2404,9 @@
                 (!cs.status || v.status === cs.status) && (!cs.person || String(v.person_id) === cs.person),
             render: (v) => bulkWrap(vehicleCard(v, { linkable: !bulkMode }), v, page._bulkBar),
         });
-        if (canManage()) {
-            const bar = bulkBar();
-            page._bulkBar = bar;
-            page.append(bar);
-            bar._sync();
+        if (bulkBarEl) {
+            page.append(bulkBarEl);
+            bulkBarEl._sync();
         }
     };
 
@@ -3416,7 +3438,12 @@
                             + (ho.created_by ? ' · ' + esc(ho.created_by) : ''))),
                     el('div', { class: 'card-actions' },
                         el('a', { class: 'btn btn-ghost btn-sm', href: '/api/handovers/' + ho.id + '/pdf', target: '_blank', rel: 'noopener' }, icon('receipt', 14), ' PDF'),
-                        canManage() ? el('button', { class: 'btn btn-ghost btn-sm', title: 'Protokoll löschen', 'aria-label': 'Protokoll löschen', onclick: (e) => delHandover(ho, e.currentTarget.closest('.pay-row')) }, icon('trash', 14)) : null));
+                        // Nur Admins: das Löschen eines Übergabeprotokolls ist seit der
+                        // Unveränderlichkeit (Migration 051) admin-only. Mit canManage()
+                        // bekam ein Bearbeiter den Knopf angeboten, das Löschen wurde
+                        // optimistisch angezeigt — und schlug 4,5 Sekunden später mit 403
+                        // fehl, wonach die Zeile wieder auftauchte.
+                        isAdmin() ? el('button', { class: 'btn btn-ghost btn-sm', title: 'Protokoll löschen', 'aria-label': 'Protokoll löschen', onclick: (e) => delHandover(ho, e.currentTarget.closest('.pay-row')) }, icon('trash', 14)) : null));
                 if (ho.notes) row.querySelector('.pay-main').append(el('div', { class: 'inv-bills' }, esc(ho.notes)));
                 hoCard.append(row);
             });
@@ -5276,8 +5303,18 @@
             el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Nächster Monat', onclick: () => nav(1) }, '›')));
 
         let vehicles = [], overdue = [], requests = [];
+        // Fälligkeiten bis zum LETZTEN Tag des angezeigten Monats holen, nicht nur die
+        // bereits überfälligen: ohne das Fenster konnte die Ebene "Fällige Rechnung"
+        // im laufenden Monat nur Vergangenes zeigen und in jedem künftigen Monat gar
+        // nichts — ausgerechnet in der Ansicht, die vorausschauen soll.
+        const lastOfMonth = new Date(y, m, 0);
+        const dueUntil = lastOfMonth.getFullYear() + '-'
+            + String(lastOfMonth.getMonth() + 1).padStart(2, '0') + '-'
+            + String(lastOfMonth.getDate()).padStart(2, '0');
         try {
-            [vehicles, overdue] = await Promise.all([api.get('/vehicles'), api.get('/invoices/overdue')]);
+            [vehicles, overdue] = await Promise.all([
+                api.get('/vehicles'),
+                api.get('/invoices/overdue?due_until=' + dueUntil)]);
             if (canManage()) { try { requests = await api.get('/portal-requests'); } catch (e) { requests = []; } }
         } catch (e) { page.append(el('div', { class: 'empty' }, 'Kalender konnte nicht geladen werden: ' + e.message)); return; }
 
@@ -5698,6 +5735,10 @@
             const st = JSON.parse(js); P.floor = st.floor; P.Wm = st.Wm; P.Hm = st.Hm; P.tor = st.tor; P.load = st.load; P.shape = st.shape; P.excl = st.excl; if (st.walls) P.walls = st.walls; P.structSel = null;
             st.spots.forEach((g) => { const s = P.spots.find((x) => x._id === g._id); if (!s) return;
                 if (s.x !== g.x || s.y !== g.y || s.w !== g.w || s.h !== g.h || s.rot !== g.rot || s.status !== g.status || !!s.noBuf !== !!g.noBuf) { s.x = g.x; s.y = g.y; s.w = g.w; s.h = g.h; s.rot = g.rot; s.status = g.status; s.noBuf = !!g.noBuf; s._dirty = true; } });
+            // Undo/Redo tauscht P.excl, P.walls und P.floor KOMPLETT aus — also genau
+            // die Eingaben des Umschluss-Caches. Ohne diesen Stempel bliebe die
+            // berechnete Parkflaeche auf dem Stand VOR dem Zurueckgehen stehen.
+            bumpGeom();
         }
         // Historie zusaetzlich per GESAMTGROESSE deckeln, nicht nur per Anzahl: ein
         // Schnappschuss ist der komplette Grundriss als JSON, in einer grossen Halle
@@ -5714,7 +5755,13 @@
             while (P.hist.length > UNDO_MIN_STEPS && bytes > UNDO_MAX_CHARS) bytes -= P.hist.shift().length;
             P.hpos = P.hist.length - 1;
         }
-        function commitGeom(msg, kind) { pushUndo(); markDirty(); draw(); if (msg) toast(msg, kind || ''); }
+        // commitGeom ist der Sammelpunkt JEDER diskreten Geometrieaenderung: Wand oder
+        // Stuetze hinzufuegen, verschieben, drehen, loeschen, Art wechseln. Der
+        // Umschluss-Cache muss hier ungueltig werden — sonst zeichnet draw() die neue
+        // Wand, waehrend Parkflaeche, Raumbeschriftungen, der m²-Chip und der Titelblock
+        // im Export die Flaeche von VORHER weiterzeigen, bis zufaellig eine andere
+        // Aktion (fitView, expandCanvas) den Stempel hochzaehlt.
+        function commitGeom(msg, kind) { bumpGeom(); pushUndo(); markDirty(); draw(); if (msg) toast(msg, kind || ''); }
         let saveTimer = null;
         // Auto-save: geometry/placement edits are batched (atomic floor+spots, so an
         // undo across a refit can't desync them) but persisted automatically on a
@@ -5853,7 +5900,17 @@
         // hatte die Rollen schon, aber keine Fokusfuehrung.
         function wireDialog(modal, card) {
             const prev = document.activeElement;
-            const onKey = (ev) => { if (ev.key === 'Escape') { ev.stopPropagation(); close(); } };
+            const onKey = (ev) => {
+                // Der Dialog kann verschwinden, OHNE dass close() lief — ein Routenwechsel
+                // leert #page und nimmt ihn mit. Der Capture-Listener am Dokument bliebe
+                // dann liegen und verschluckte jedes weitere Escape der Sitzung: weder der
+                // Planer-Shortcut noch die Befehlspalette kaemen je wieder dran, und jeder
+                // erneute Aufruf legte einen weiteren tauben Faenger obendrauf. Deshalb
+                // zuerst pruefen, ob der Dialog ueberhaupt noch im Dokument haengt — wenn
+                // nicht, sich selbst abmelden und das Ereignis unberuehrt weiterlaufen lassen.
+                if (!modal.isConnected) { document.removeEventListener('keydown', onKey, true); return; }
+                if (ev.key === 'Escape') { ev.stopPropagation(); close(); }
+            };
             function close() {
                 document.removeEventListener('keydown', onKey, true);
                 modal.remove();
@@ -5932,18 +5989,22 @@
             await fetchTemplates();
             const modal = el('div', { class: 'gp-help-backdrop', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Wand-Vorlagen' });
             const card = el('div', { class: 'gp-help-card', style: 'max-width:380px' });
-            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '▤ Wand-Vorlagen'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => modal.remove() }, icon('close', 16))));
+            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '▤ Wand-Vorlagen'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => close() }, icon('close', 16))));
             const body = el('div', { style: 'display:flex;flex-direction:column;gap:.45rem;padding:16px 18px' });
-            body.append(el('button', { class: 'gp-tbtn', style: 'justify-content:flex-start', onclick: () => { modal.remove(); saveCurrentTemplate(); } }, '＋ Aktuelle Wände als Vorlage speichern'));
+            body.append(el('button', { class: 'gp-tbtn', style: 'justify-content:flex-start', onclick: () => { close(); saveCurrentTemplate(); } }, '＋ Aktuelle Wände als Vorlage speichern'));
             const tpls = loadTemplates();
             if (!tpls.length) body.append(el('div', { class: 'muted', style: 'font-size:.82rem;padding:.3rem 0' }, 'Noch keine Vorlagen. Zeichne Wände und speichere sie hier.'));
             tpls.forEach((t) => {
                 const row = el('div', { style: 'display:flex;gap:.4rem;align-items:center' });
-                row.append(el('button', { class: 'gp-tbtn', style: 'flex:1;justify-content:flex-start', onclick: () => { modal.remove(); applyTemplate(t); } }, '▤ ' + t.name + ' · ' + (t.walls && t.walls.edges ? t.walls.edges.length : 0) + ' Wände'));
-                row.append(el('button', { class: 'gp-help-x', title: 'Löschen', 'aria-label': 'Vorlage löschen', onclick: async () => { await deleteTemplate(t); modal.remove(); openTemplateMenu(); } }, icon('trash', 15)));
+                row.append(el('button', { class: 'gp-tbtn', style: 'flex:1;justify-content:flex-start', onclick: () => { close(); applyTemplate(t); } }, '▤ ' + t.name + ' · ' + (t.walls && t.walls.edges ? t.walls.edges.length : 0) + ' Wände'));
+                row.append(el('button', { class: 'gp-help-x', title: 'Löschen', 'aria-label': 'Vorlage löschen', onclick: async () => { await deleteTemplate(t); close(); openTemplateMenu(); } }, icon('trash', 15)));
                 body.append(row);
             });
-            card.append(body); modal.append(card); modal.addEventListener('click', (ev) => { if (ev.target === modal) modal.remove(); }); (root || document.body).append(modal);
+            // Wie das Exportmenue nebenan ueber wireDialog: Escape schliesst, der Fokus
+            // wandert hinein und beim Schliessen zurueck zum Ausloeser. Ohne das war der
+            // eine Dialog tastaturbedienbar und der andere zwei Funktionen weiter nicht.
+            card.append(body); modal.append(card); (root || document.body).append(modal);
+            const close = wireDialog(modal, card);
         }
         window.addEventListener('keydown', keyHandler);
         window.addEventListener('keyup', keyUpHandler);
@@ -8206,6 +8267,16 @@
     async function logout() {
         try { await api.post('/auth/logout'); } catch { /* ignore */ }
         state.user = null;
+        // Die Oberfläche wird beim Abmelden NICHT neu geladen — die Anwendung bleibt
+        // dieselbe Seite. Ohne das Zurücksetzen erbte der nächste Anmeldende am selben
+        // Rechner die Ansichtszustände des vorigen: dessen getippte Suchbegriffe
+        // (oft Kundennamen) standen wieder im Suchfeld, die Liste war stumm
+        // vorgefiltert, und die Mehrfachauswahl trug noch fremde Gefährte.
+        listState.clear();
+        bulkSel.clear();
+        bulkMode = false;
+        dashYear = null;
+        calMonth = null;
         showLogin();
     }
 
@@ -8694,7 +8765,10 @@
             req_date: 'Wunschtermin', req_note: 'Anmerkung (optional)', req_send: 'Absenden',
             req_sent: 'Übermittelt — der Betreiber meldet sich.', req_err: 'Senden fehlgeschlagen.',
             req_hint: 'Änderungen werden vom Betreiber geprüft und übernommen.',
-            status: { reserved: 'reserviert', stored: 'eingestellt', collected: 'abgeholt', cancelled: 'storniert' },
+            // Dieselben Worte wie in der Betreiberansicht (STATUS_LABEL): der Kunde las
+            // "eingestellt", wo am Telefon von "eingelagert" die Rede ist — derselbe
+            // Zustand unter zwei Namen.
+            status: { reserved: 'reserviert', stored: 'eingelagert', collected: 'abgeholt', cancelled: 'storniert' },
             inv_status: { offen: 'offen', teilbezahlt: 'teilweise bezahlt', bezahlt: 'bezahlt', storniert: 'storniert', storno: 'Storno' },
         },
         en: {

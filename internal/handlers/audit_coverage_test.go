@@ -163,7 +163,15 @@ var auditIgnoredPerFunc = map[string]map[string]bool{
 	// That is the consequence of the anonymize action, whose own audit entry is the
 	// trail, not a user edit of the token rows. Scoped here; RevokePortalLink still
 	// audits `revoked` directly (finding H-05).
-	"AnonymizePerson": {"revoked": true},
+	//
+	// payload (portal_requests) und recipients (mail_log) gehören zur selben Klasse:
+	// die Löschung greift bis in jede Nebentabelle mit Personenbezug durch, und der
+	// Sinn der Sache ist, dass die alten Werte VERSCHWINDEN. Ein Vorher/Nachher-Diff
+	// würde genau die gelöschten Daten ins Änderungsprotokoll schreiben und die
+	// Löschung damit aufheben — dieselbe Begründung, aus der der Anonymisierungs-
+	// Eintrag schon bisher keine Personendaten trägt (siehe Test
+	// TestAuditEintragEnthaeltDieGeloeschtenDatenNicht).
+	"AnonymizePerson": {"revoked": true, "payload": true, "recipients": true},
 }
 
 // TestAuditDiffsCoverEveryWrittenColumn fails when a handler records field changes

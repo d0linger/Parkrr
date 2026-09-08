@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -59,7 +60,33 @@ func auditChainStep(prevHex string, rowWithoutChain []byte) string {
 // Admin-only wie die Audit-Ansicht selbst. Ohne Limit: ein Revisionsexport, der
 // still abschneidet, wäre schlimmer als keiner — deshalb gestreamt statt gepuffert.
 func (h *Handler) ExportAudit(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.Pool.Query(r.Context(),
+	// Der Export ist bewusst unbegrenzt — genau deshalb braucht er eine EIGENE
+	// Verbindung ohne die 10-Sekunden-Bremse, unter der jede Poolverbindung läuft.
+	// Sonst bricht PostgreSQL die Abfrage nach zehn Sekunden ab, NACHDEM Status 200
+	// und ein Teil der Datei schon draußen sind: der Prüfer bekommt eine
+	// abgeschnittene Datei, deren einziges Erkennungsmerkmal die fehlende
+	// Manifest-Zeile ist. Bei einem Protokoll mit sieben Jahren Aufbewahrung ist das
+	// nicht der Ausnahme-, sondern der Normalfall. Muster wie in database.go: Bremse
+	// lösen, vor der Rückgabe wieder setzen, sonst die Verbindung verwerfen.
+	conn, cerr := h.Pool.Acquire(r.Context())
+	if cerr != nil {
+		serverError(w, r, "query failed", cerr)
+		return
+	}
+	defer conn.Release()
+	if _, terr := conn.Exec(r.Context(), `SET statement_timeout = 0`); terr != nil {
+		serverError(w, r, "query failed", terr)
+		return
+	}
+	defer func() {
+		resetCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, rerr := conn.Exec(resetCtx, `SET statement_timeout = 10000`); rerr != nil {
+			_ = conn.Conn().Close(resetCtx)
+		}
+	}()
+
+	rows, err := conn.Query(r.Context(),
 		`SELECT id, user_id, username, action, entity, entity_id, summary, changes, created_at
 		   FROM audit_log ORDER BY id ASC`)
 	if err != nil {

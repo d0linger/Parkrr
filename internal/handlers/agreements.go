@@ -551,9 +551,7 @@ func (h *Handler) persistAgreement(w http.ResponseWriter, r *http.Request, id, p
 	// and the only place that knows the final vehicle set and the pre-state).
 	// Archive bound vehicles right away if the agreement is now finished and
 	// settled, rather than waiting for the periodic sweep.
-	if _, err := h.ArchiveSettledExpiredVehicles(r.Context(), pid); err != nil {
-		slog.Warn("archive settled/expired vehicles failed", "err", err, "person_id", pid)
-	}
+	h.archiveSettled(r.Context(), pid)
 	h.writeAgreements(w, r, pid)
 }
 
@@ -828,9 +826,7 @@ func (h *Handler) DeleteAgreement(w http.ResponseWriter, r *http.Request) {
 	// Coverage changed: kept vehicles may now be archive-eligible (or, no longer
 	// covered by a finished agreement, due to wake) — reconcile immediately like
 	// every other agreement mutation.
-	if _, err := h.ArchiveSettledExpiredVehicles(r.Context(), pid); err != nil {
-		slog.Warn("archive settled/expired vehicles failed", "err", err, "person_id", pid)
-	}
+	h.archiveSettled(r.Context(), pid)
 	h.writeAgreements(w, r, pid)
 }
 
@@ -963,9 +959,7 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Settling the last open period may finish the agreement -> archive vehicles.
-	if _, err := h.ArchiveSettledExpiredVehicles(ctx, pid); err != nil {
-		slog.Warn("archive settled/expired vehicles failed", "err", err, "person_id", pid)
-	}
+	h.archiveSettled(ctx, pid)
 	h.writeAgreements(w, r, pid)
 }
 
@@ -1234,9 +1228,7 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	// Settling the last open period may finish the agreement -> archive vehicles.
-	if _, err := h.ArchiveSettledExpiredVehicles(r.Context(), a.PersonID); err != nil {
-		slog.Warn("archive settled/expired vehicles failed", "err", err, "person_id", a.PersonID)
-	}
+	h.archiveSettled(r.Context(), a.PersonID)
 	h.writeAgreements(w, r, a.PersonID)
 }
 
@@ -1332,6 +1324,20 @@ func coveringAgreements(agreements []models.FlatRatePeriod, vehicleID int64, veh
 		out = append(out, agreements[i])
 	}
 	return out
+}
+
+// archiveSettled räumt abgelaufene, beglichene Pauschalen-Gefährte sofort weg,
+// statt auf den periodischen Lauf zu warten. Ein Fehlschlag ist kein Grund, die
+// gerade erfolgreiche Änderung scheitern zu lassen — der periodische Lauf holt es
+// nach —, er gehört aber ins Protokoll.
+//
+// EIN Helfer statt vier gleicher Blöcke: die vier Aufrufstellen mussten bisher im
+// Gleichschritt gepflegt werden, und eine davon reichte eine andere Variable
+// herein als die übrigen.
+func (h *Handler) archiveSettled(ctx context.Context, personID int64) {
+	if _, err := h.ArchiveSettledExpiredVehicles(ctx, personID); err != nil {
+		slog.Warn("archive settled/expired vehicles failed", "err", err, "person_id", personID)
+	}
 }
 
 // ArchiveSettledExpiredVehicles reconciles bound vehicles with their Pauschalen:

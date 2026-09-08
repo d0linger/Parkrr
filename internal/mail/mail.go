@@ -230,6 +230,11 @@ func WithLog(s Sender, log Log) Sender {
 func (l *loggingSender) Enabled() bool { return l.inner.Enabled() }
 func (l *loggingSender) Send(ctx context.Context, to []string, subject, body string) error {
 	err := l.inner.Send(ctx, to, subject, body)
-	l.log(to, subject, err == nil, err)
+	// Protokolliert werden die Adressen, die der Versender TATSÄCHLICH auf den
+	// Umschlag schreibt — cleanAddrs verwirft unparsbare stillschweigend. Mit der
+	// Rohliste behauptete das Protokoll eine Zustellung an eine Adresse, die nie
+	// angesprochen wurde, und der Betreiber las in der Versandübersicht ein "ja"
+	// auf die Frage, ob der Kunde die Mahnung bekommen hat.
+	l.log(cleanAddrs(to), subject, err == nil, err)
 	return err
 }

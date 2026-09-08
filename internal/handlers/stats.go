@@ -277,11 +277,22 @@ func (h *Handler) periodSettledByPayment(ctx context.Context, personID int64) (m
 
 // periodSettledByPaymentByPerson is the bulk equivalent for the dashboard/outstanding
 // paths — one query, person_id → settled-key set.
-func (h *Handler) periodSettledByPaymentByPerson(ctx context.Context) (map[int64]map[string]bool, error) {
+//
+// personID != 0 schraenkt auf EINE Person ein, wie beim Geschwister
+// lockedPeriodsByPerson. Der Portalpfad (outstandingByPerson) filtert alles andere
+// auf die Person, holte hier aber weiterhin die Abgleichsdaten des GESAMTEN
+// Betriebs in den Speicher, nur um einen Schluessel daraus zu lesen — auf einer
+// Anlage mit tausenden Kunden bei jedem anonymen Portalaufruf.
+func (h *Handler) periodSettledByPaymentByPerson(ctx context.Context, personID int64) (map[int64]map[string]bool, error) {
 	out := map[int64]map[string]bool{}
-	rows, err := h.Pool.Query(ctx,
-		`SELECT person_id, settles_kind, settles_ref, settles_period FROM payments
-		   WHERE settles_kind IS NOT NULL AND NOT reversed`)
+	q := `SELECT person_id, settles_kind, settles_ref, settles_period FROM payments
+	        WHERE settles_kind IS NOT NULL AND NOT reversed`
+	var args []any
+	if personID != 0 {
+		q += ` AND person_id = $1`
+		args = append(args, personID)
+	}
+	rows, err := h.Pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -709,7 +720,7 @@ func (h *Handler) outstandingByPerson(r *http.Request, personID int64) (map[int6
 	if lerr != nil {
 		return nil, lerr
 	}
-	settledByPerson, serr := h.periodSettledByPaymentByPerson(ctx)
+	settledByPerson, serr := h.periodSettledByPaymentByPerson(ctx, personID)
 	if serr != nil {
 		return nil, serr
 	}
@@ -865,7 +876,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		var ownPaid bool
 		if serr := crows.Scan(&pid, &vid, &amount, &qty, &chargedOn, &ownPaid); serr != nil {
 			crows.Close()
-			serverError(w, r, "query failed", err)
+			serverError(w, r, "query failed", serr)
 			return
 		}
 		t, _ := chargeAmounts(agByPerson[pid], vehPaid, vid, amount, qty, chargedOn, ownPaid)
@@ -883,7 +894,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 	crows.Close()
 	if cerr := crows.Err(); cerr != nil {
-		serverError(w, r, "query failed", err)
+		serverError(w, r, "query failed", cerr)
 		return
 	}
 
@@ -923,7 +934,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	paymentsByPerson, perr := sumByPerson(ctx, h.Pool,
 		`SELECT person_id, COALESCE(SUM(amount),0) FROM payments WHERE NOT reversed GROUP BY person_id`)
 	if perr != nil {
-		serverError(w, r, "query failed", err)
+		serverError(w, r, "query failed", perr)
 		return
 	}
 	var paymentsTotal float64
@@ -935,7 +946,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	invoicedTaxByPerson, terr := sumByPerson(ctx, h.Pool,
 		`SELECT person_id, COALESCE(SUM(tax_amount),0) FROM invoices WHERE NOT canceled AND cancels_id IS NULL GROUP BY person_id`)
 	if terr != nil {
-		serverError(w, r, "query failed", err)
+		serverError(w, r, "query failed", terr)
 		return
 	}
 
@@ -946,12 +957,12 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 	lockedByPerson, lerr := h.lockedPeriodsByPerson(ctx, 0)
 	if lerr != nil {
-		serverError(w, r, "query failed", err)
+		serverError(w, r, "query failed", lerr)
 		return
 	}
-	settledByPerson, serr := h.periodSettledByPaymentByPerson(ctx)
+	settledByPerson, serr := h.periodSettledByPaymentByPerson(ctx, 0)
 	if serr != nil {
-		serverError(w, r, "query failed", err)
+		serverError(w, r, "query failed", serr)
 		return
 	}
 
@@ -1027,7 +1038,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	resp.PaymentsByMonth = make([]float64, 12)
 	prows, perr := h.Pool.Query(ctx, `SELECT amount, paid_on FROM payments WHERE NOT reversed`)
 	if perr != nil {
-		serverError(w, r, "query failed", err)
+		serverError(w, r, "query failed", perr)
 		return
 	}
 	for prows.Next() {

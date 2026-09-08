@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -83,7 +84,7 @@ func (h *Handler) PortalCreateRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Ein Abholtermin in der Vergangenheit ist ein Tippfehler, keine Absicht.
-		if d.Before(models_DayBefore(h.now())) {
+		if d.Before(startOfDayUTC(h.now())) {
 			writeError(w, http.StatusBadRequest, "date must not be in the past")
 			return
 		}
@@ -100,35 +101,57 @@ func (h *Handler) PortalCreateRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var open int
-	if err := h.Pool.QueryRow(r.Context(),
-		`SELECT count(*) FROM portal_requests WHERE person_id=$1 AND status='offen'`, pid).Scan(&open); err != nil {
-		serverError(w, r, "query failed", err)
-		return
-	}
-	if open >= maxOpenPortalRequests {
-		writeError(w, http.StatusTooManyRequests, "zu viele offene Anfragen — bitte warten Sie auf eine Antwort")
-		return
-	}
-
+	// Zählen und Einfügen gehören in EINE Transaktion, serialisiert über eine
+	// transaktionsgebundene Sperre je Person. Als zwei getrennte Abfragen war der
+	// Deckel eine Prüf-dann-Handle-Lücke: zwanzig gleichzeitige Einreichungen mit
+	// demselben gültigen Portal-Link lasen alle 0 offene Anfragen und legten alle
+	// zwanzig an — samt zwanzig Protokolleinträgen. Dasselbe Muster wie beim
+	// Zahlungsabgleich (payments.go) und bei den Planer-Icons.
 	raw, _ := json.Marshal(payload)
 	var reqID int64
-	if err := h.Pool.QueryRow(r.Context(),
-		`INSERT INTO portal_requests (person_id, kind, payload) VALUES ($1,$2,$3) RETURNING id`,
-		pid, req.Kind, raw).Scan(&reqID); err != nil {
-		serverError(w, r, "could not store request", err)
+	var capped bool
+	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		if _, e := tx.Exec(r.Context(), `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
+			"portal_request:"+strconv.FormatInt(pid, 10)); e != nil {
+			return e
+		}
+		var open int
+		if e := tx.QueryRow(r.Context(),
+			`SELECT count(*) FROM portal_requests WHERE person_id=$1 AND status='offen'`, pid).Scan(&open); e != nil {
+			return e
+		}
+		if open >= maxOpenPortalRequests {
+			capped = true
+			return nil
+		}
+		return tx.QueryRow(r.Context(),
+			`INSERT INTO portal_requests (person_id, kind, payload) VALUES ($1,$2,$3) RETURNING id`,
+			pid, req.Kind, raw).Scan(&reqID)
+	})
+	if txErr != nil {
+		serverError(w, r, "could not store request", txErr)
+		return
+	}
+	if capped {
+		writeError(w, http.StatusTooManyRequests, "zu viele offene Anfragen — bitte warten Sie auf eine Antwort")
 		return
 	}
 	// Der Wunsch ist eine Handlung von außen und gehört ins Protokoll — als
 	// System-Eintrag, denn hinter dem Token steht kein angemeldeter Benutzer.
 	h.AuditSystem(r.Context(), "create", "portal_request", reqID,
-		"Kundenwunsch aus dem Portal ("+req.Kind+")", map[string]any{"person_id": pid, "kind": req.Kind})
+		"Kundenwunsch aus dem Portal ("+req.Kind+")",
+		// auditSnapshot, nicht die rohe Map: die Audit-Ansicht liest je Feld {old,new}.
+		// Ein blanker Wert erschien dort als "∅ → ∅" — der Eintrag verlor genau die
+		// Angaben, für die er geschrieben wurde.
+		auditSnapshot(map[string]any{"person_id": pid, "kind": req.Kind}))
 	writeJSON(w, http.StatusCreated, map[string]any{"status": "eingereicht", "id": reqID})
 }
 
-// models_DayBefore: Mitternacht des heutigen Kalendertags (UTC-verankert wie die
-// DATE-Trägerform) — "heute" zählt noch als gültiger Abholtermin.
-func models_DayBefore(now time.Time) time.Time {
+// startOfDayUTC: Mitternacht des heutigen Kalendertags, UTC-verankert wie die
+// Trägerform der DATE-Spalten (siehe models.DayAfter) — "heute" zählt noch als
+// gültiger Abholtermin. Der frühere Name models_DayBefore täuschte eine
+// Zugehörigkeit zum models-Paket vor, die es nicht gibt.
+func startOfDayUTC(now time.Time) time.Time {
 	y, m, d := now.Date()
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
@@ -225,9 +248,19 @@ func (h *Handler) ResolvePortalRequest(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			var oldE, oldP, oldA string
+			var anonymized bool
 			if err := tx.QueryRow(r.Context(),
-				`SELECT email, phone, address FROM persons WHERE id=$1 FOR UPDATE`, pid).Scan(&oldE, &oldP, &oldA); err != nil {
+				`SELECT email, phone, address, anonymized FROM persons WHERE id=$1 FOR UPDATE`, pid).
+				Scan(&oldE, &oldP, &oldA, &anonymized); err != nil {
 				return err
+			}
+			// Ein Wunsch kann älter sein als die Löschung der Person. Ihn danach zu
+			// übernehmen schriebe genau die Kontaktdaten zurück, die eine Auskunfts-
+			// sperre bzw. Art.-17-Löschung entfernt hat — die Löschung wäre rückgängig
+			// gemacht, ohne dass es jemandem auffällt. Der Wunsch wird deshalb nicht
+			// angewandt; abweisen und erledigen bleiben möglich.
+			if anonymized {
+				return errApplyAnonymized
 			}
 			newE, newP, newA := oldE, oldP, oldA
 			if v, ok := want["email"]; ok {
@@ -267,6 +300,10 @@ func (h *Handler) ResolvePortalRequest(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(txErr, errApplyNotContact):
 		writeError(w, http.StatusBadRequest, "apply gilt nur für Kontaktdaten-Wünsche")
 		return
+	case errors.Is(txErr, errApplyAnonymized):
+		writeError(w, http.StatusConflict,
+			"Person ist anonymisiert — der Wunsch kann nicht übernommen werden (nur ablehnen oder erledigen)")
+		return
 	case txErr != nil:
 		serverError(w, r, "could not resolve request", txErr)
 		return
@@ -281,3 +318,7 @@ func (h *Handler) ResolvePortalRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 var errApplyNotContact = errors.New("apply is only for contact_update")
+
+// errApplyAnonymized: die Person wurde inzwischen anonymisiert. Das Übernehmen
+// eines älteren Kontaktdaten-Wunsches würde die Löschung rückgängig machen.
+var errApplyAnonymized = errors.New("person is anonymized")

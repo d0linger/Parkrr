@@ -48,10 +48,11 @@ func requestLogger(mgr *auth.Manager, next http.Handler) http.Handler {
 		start := time.Now()
 		id := requestID()
 		w.Header().Set("X-Request-ID", id)
-		// Install a request-log record so auth middleware can add the user, and
-		// record the id there too so handlers can correlate their own logs (OPS-02).
+		// Install a request-log record so auth middleware can add the user and any
+		// handler can stash the 5xx cause. Die Anfrage-Kennung selbst wandert NICHT
+		// hinein: sie steht im Antwortkopf (X-Request-ID) und wird unten aus der
+		// lokalen Variablen geloggt — der Ablageplatz im Kontext hatte nie einen Leser.
 		ctx := auth.WithRequestLog(r.Context())
-		auth.SetRequestID(ctx, id)
 		r = r.WithContext(ctx)
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)

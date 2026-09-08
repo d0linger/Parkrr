@@ -16,7 +16,7 @@ import (
 // (no final money yet), matching the live toggle path. A reversed period payment is
 // left reversed — the guard sees the existing row and skips it.
 func (h *Handler) BackfillPeriodPayments(ctx context.Context) error {
-	now := time.Now()
+	now := h.now()
 	agByPerson, err := h.loadAllAgreements(ctx, 0)
 	if err != nil {
 		return err

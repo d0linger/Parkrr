@@ -231,10 +231,37 @@ func (h *Handler) DeletePerson(w http.ResponseWriter, r *http.Request) {
 	}
 	// RETURNING captures who was deleted, atomically with the delete — once the row
 	// is gone an id-only audit entry could never be resolved back to a person.
+	//
+	// Zwei Nebentabellen hängen BEWUSST an keinem Fremdschlüssel und überleben die
+	// Kaskade deshalb: spot_occupancy_history (Migration 061 verzichtet ausdrücklich
+	// auf CASCADE, damit die Platzgeschichte Gefährt und Person überdauert) und
+	// mail_log (kennt nur die Empfängerzeile). Beide tragen Personenbezug und müssen
+	// vor dem DELETE entschärft werden — danach ist die alte Adresse nicht mehr
+	// abrufbar. Der Platz behält seine Belegungszeiten, verliert aber den Namen.
 	var delFirst, delLast, delEmail string
-	err := h.Pool.QueryRow(r.Context(),
-		`DELETE FROM persons WHERE id = $1 RETURNING first_name, last_name, email`, id).
-		Scan(&delFirst, &delLast, &delEmail)
+	err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		var prevEmail string
+		if e := tx.QueryRow(r.Context(), `SELECT email FROM persons WHERE id=$1 FOR UPDATE`, id).
+			Scan(&prevEmail); e != nil {
+			return e
+		}
+		if _, e := tx.Exec(r.Context(),
+			`UPDATE spot_occupancy_history
+			    SET vehicle_label = 'Anonymisiert', person_id = NULL
+			  WHERE person_id = $1`, id); e != nil {
+			return e
+		}
+		if prevEmail != "" {
+			if _, e := tx.Exec(r.Context(),
+				`UPDATE mail_log SET recipients = 'anonymisiert'
+				  WHERE recipients ILIKE '%' || $1 || '%'`, prevEmail); e != nil {
+				return e
+			}
+		}
+		return tx.QueryRow(r.Context(),
+			`DELETE FROM persons WHERE id = $1 RETURNING first_name, last_name, email`, id).
+			Scan(&delFirst, &delLast, &delEmail)
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "person not found")
@@ -288,20 +315,63 @@ func (h *Handler) AnonymizePerson(w http.ResponseWriter, r *http.Request) {
 	// Anwendung, und sie blieben bisher stehen (Hundert 39). Was NICHT mit gelöscht
 	// wird und warum, steht unten am UPDATE.
 	var wasAnon bool
+	var prevEmail string
 	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
 		if e := tx.QueryRow(r.Context(),
-			`WITH prev AS (SELECT anonymized FROM persons WHERE id=$1)
+			`WITH prev AS (SELECT anonymized, email FROM persons WHERE id=$1)
 			 UPDATE persons
 			    SET first_name = 'Anonymisiert', last_name = '#' || id,
 			        email = '', phone = '', address = '', notes = '',
 			        anonymized = TRUE, updated_at = now()
 			  WHERE id = $1 AND NOT anonymized
-			  RETURNING (SELECT anonymized FROM prev)`, id).Scan(&wasAnon); e != nil {
+			  RETURNING (SELECT anonymized FROM prev), (SELECT email FROM prev)`, id).
+			Scan(&wasAnon, &prevEmail); e != nil {
 			return e
 		}
 		if _, e := tx.Exec(r.Context(),
 			`UPDATE self_service_tokens SET revoked = TRUE WHERE person_id = $1 AND NOT revoked`, id); e != nil {
 			return e
+		}
+		// Die Löschung muss JEDE Tabelle erreichen, in der Personenbezug liegt — sonst
+		// ist sie keine. Die vier folgenden sind mit dem Verbesserungsprogramm dazu-
+		// gekommen und wurden dabei übersehen; drei davon hängen NICHT am Fremdschlüssel
+		// der Person, überleben also auch ein DELETE (siehe DeletePerson).
+		//
+		// portal_requests: die payload trägt bei contact_update die GEWÜNSCHTE neue
+		// Adresse im Klartext — also genau die Daten, die hier verschwinden sollen. Die
+		// Zeile selbst bleibt als Vorgang stehen, ihr Inhalt nicht.
+		if _, e := tx.Exec(r.Context(),
+			`UPDATE portal_requests SET payload = '{}'::jsonb
+			  WHERE person_id = $1 AND payload <> '{}'::jsonb`, id); e != nil {
+			return e
+		}
+		// attachments: Verträge, Typenscheine, Gutachten — Dokumente ÜBER die Person.
+		// Anders als das Übergabeprotokoll sind sie kein Beleg über die Sache, sondern
+		// eine Sammlung personenbezogener Unterlagen; sie werden entfernt, nicht geleert.
+		if _, e := tx.Exec(r.Context(),
+			`DELETE FROM attachments
+			  WHERE person_id = $1
+			     OR vehicle_id IN (SELECT id FROM vehicles WHERE person_id = $1)`, id); e != nil {
+			return e
+		}
+		// spot_occupancy_history: vehicle_label ist häufig das Kennzeichen, person_id der
+		// direkte Bezug. Die Geschichte des PLATZES (wann war er belegt) ist eine Aussage
+		// über die Sache und bleibt; wer dort stand, geht.
+		if _, e := tx.Exec(r.Context(),
+			`UPDATE spot_occupancy_history
+			    SET vehicle_label = 'Anonymisiert', person_id = NULL
+			  WHERE person_id = $1`, id); e != nil {
+			return e
+		}
+		// mail_log: kennt keine person_id, nur die Empfängerzeile. Deshalb über die
+		// ALTE Adresse, die oben im RETURNING gesichert wurde. Betreff, Zeitpunkt und
+		// Erfolg bleiben als Versandnachweis stehen — die Adresse nicht.
+		if prevEmail != "" {
+			if _, e := tx.Exec(r.Context(),
+				`UPDATE mail_log SET recipients = 'anonymisiert'
+				  WHERE recipients ILIKE '%' || $1 || '%'`, prevEmail); e != nil {
+				return e
+			}
 		}
 		// Übergabeprotokolle sind seit Migration 051 unveränderlich. SET LOCAL öffnet
 		// den ENGEN Schalter aus 056, der ausschließlich signer_name und signature

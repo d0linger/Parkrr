@@ -356,7 +356,14 @@ func (h *Handler) spotsOfHall(r *http.Request, hallID int64) ([]models.Spot, err
 		        COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), cat.name, 'Gefährt'),
 		        COALESCE(cat.name, ''),
 		        v.person_id, trim(p.first_name || ' ' || p.last_name),
-		        v.length_m, v.width_m, v.height_m, v.weight_t, COALESCE(v.needs_power, false),
+		        -- Tarif-Standardmaße auch HIER einsetzen, nicht nur in der Ablageleiste
+		        -- (ListUnassignedVehicles). Sonst trägt dasselbe Gefährt in der Leiste
+		        -- Höhe und Gewicht, verliert sie aber in dem Moment, in dem es auf einem
+		        -- Platz liegt — und der Planer schaltet damit still seine Torhöhen- und
+		        -- Traglastwarnung ab (heightOK/weightOK behandeln null als "passt").
+		        COALESCE(v.length_m, cat.default_length_m), COALESCE(v.width_m, cat.default_width_m),
+		        COALESCE(v.height_m, cat.default_height_m), COALESCE(v.weight_t, cat.default_weight_t),
+		        COALESCE(v.needs_power, false),
 		        v.planner_symbol,
 		        (SELECT vp.id FROM vehicle_photos vp WHERE vp.vehicle_id = v.id ORDER BY vp.sort_order, vp.created_at DESC, vp.id LIMIT 1)
 		   FROM spots s

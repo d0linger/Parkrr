@@ -76,19 +76,19 @@ func (h *Handler) ListPayments(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		p, serr := scanPayment(rows)
 		if serr != nil {
-			serverError(w, r, "query failed", err)
+			serverError(w, r, "query failed", serr)
 			return
 		}
 		out = append(out, p)
 	}
-	if rows.Err() != nil {
-		serverError(w, r, "query failed", err)
+	if rerr := rows.Err(); rerr != nil {
+		serverError(w, r, "query failed", rerr)
 		return
 	}
 	// Attach the resolved positions (Gefährt/Pauschale/Zeitraum) each payment settles.
 	items, ierr := h.resolvePaymentItems(r.Context(), id)
 	if ierr != nil {
-		serverError(w, r, "query failed", err)
+		serverError(w, r, "query failed", ierr)
 		return
 	}
 	for i := range out {

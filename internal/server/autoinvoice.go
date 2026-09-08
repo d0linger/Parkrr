@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http/httptest"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -81,7 +82,7 @@ func runAutoInvoice(pool *pgxpool.Pool, h *handlers.Handler) {
 		return
 	}
 
-	var created, skipped, failed int
+	var created, skipped, failed, incomplete int
 	var complianceStop bool
 	for _, pid := range pids {
 		if ctx.Err() != nil {
@@ -93,23 +94,51 @@ func runAutoInvoice(pool *pgxpool.Pool, h *handlers.Handler) {
 		req = req.WithContext(ctx)
 		req.SetPathValue("id", strconv.FormatInt(pid, 10))
 		rec := httptest.NewRecorder()
-		h.CreateInvoice(rec, req)
+		// Der Handler läuft hier OHNE die recoverPanics-Middleware, die ihn bei jedem
+		// echten HTTP-Aufruf umgibt — der synthetische Weg umgeht die ganze Kette. Ohne
+		// eigenes recover risse ein Panic aus den Daten EINER Person die Goroutine und
+		// damit den Prozess mit: der Container liefe jede Nacht in eine Neustartschleife,
+		// während derselbe Datensatz über den Knopf nur ein 500 erzeugt hätte.
+		func() {
+			defer func() {
+				if p := recover(); p != nil {
+					failed++
+					slog.Error("auto-invoice: Panic bei einer Person — übersprungen",
+						"person_id", pid, "panic", p, "stack", string(debug.Stack()))
+				}
+			}()
+			h.CreateInvoice(rec, req)
+		}()
+		// Die Einordnung liest den maschinenlesbaren Ausgang des Handlers, nicht den
+		// deutschen Meldungstext: eine Umformulierung in billing.go hätte sonst
+		// stillschweigend die Bedeutung dieses Laufs verändert.
+		outcome := rec.Header().Get(handlers.InvoiceOutcomeHeader)
 		switch {
 		case rec.Code == 201:
 			created++
-		// NUR die eine erwartete 400 ist ein stiller Überspringer. Jede andere 400
-		// (kaputter Request, Validierung) ist ein Fehler des Automaten und muss
-		// laut werden — ein pauschales "400 = skip" hat im Test genau den Bug
-		// versteckt, dass der synthetische Request keinen JSON-Body trug.
-		case rec.Code == 400 && strings.Contains(rec.Body.String(), "keine offenen Positionen"):
+		case rec.Code == 400 && outcome == handlers.OutcomeNoOpenItems:
 			skipped++
-		case rec.Code == 422:
-			// Pflichtangaben (Verkäuferdaten/Adresse) fehlen: das betrifft JEDE
-			// Rechnung dieses Laufs gleich — einmal laut, dann abbrechen, statt
-			// dieselbe Meldung hundertmal zu erzeugen.
-			slog.Error("auto-invoice: Pflichtangaben unvollständig — Lauf abgebrochen",
+		case rec.Code == 409 && outcome == handlers.OutcomeRaced:
+			// Ein gleichzeitiger Lauf (oder der Knopf) war schneller. Der Handler nennt
+			// das ausdrücklich unkritisch: keine Doppelrechnung, keine verbrannte Nummer.
+			// Als Fehlschlag gezählt schickte es den Betreiber auf die Suche nach einem
+			// Vorfall, den es nicht gab.
+			skipped++
+		case rec.Code == 422 && outcome == handlers.OutcomeComplianceSeller:
+			// Verkäuferdaten fehlen: das betrifft JEDE Rechnung dieses Laufs gleich —
+			// einmal laut, dann abbrechen, statt dieselbe Meldung hundertmal zu erzeugen.
+			slog.Error("auto-invoice: Pflichtangaben des Ausstellers unvollständig — Lauf abgebrochen",
 				"person_id", pid, "detail", strings.TrimSpace(rec.Body.String()))
 			complianceStop = true
+		case rec.Code == 422:
+			// Empfängerdaten fehlen (z. B. die ab 400 € brutto nötige Anschrift): das
+			// betrifft GENAU DIESE Person. Früher brach der Lauf auch hier ab — ein
+			// einzelner unvollständiger Datensatz hielt damit die Fakturierung aller
+			// nachfolgenden Personen an, Nacht für Nacht, ohne dass die Zusammenfassung
+			// es erwähnte.
+			incomplete++
+			slog.Warn("auto-invoice: Empfängerdaten unvollständig — Person übersprungen",
+				"person_id", pid, "detail", strings.TrimSpace(rec.Body.String()))
 		default:
 			failed++
 			slog.Error("auto-invoice: Rechnung fehlgeschlagen",
@@ -120,13 +149,31 @@ func runAutoInvoice(pool *pgxpool.Pool, h *handlers.Handler) {
 		}
 	}
 
-	slog.Info("auto-invoice: Lauf beendet", "created", created, "skipped", skipped, "failed", failed)
+	slog.Info("auto-invoice: Lauf beendet",
+		"created", created, "skipped", skipped, "incomplete", incomplete, "failed", failed,
+		"aborted", complianceStop)
 	// Der Lauf selbst ist eine Handlung und gehört ins Protokoll — die einzelnen
 	// Rechnungen auditiert der Handler bereits selbst.
-	if created > 0 || failed > 0 || complianceStop {
-		h.AuditSystem(ctx, "create", "system", 0,
-			"Automatischer Rechnungslauf: "+strconv.Itoa(created)+" erstellt, "+
-				strconv.Itoa(skipped)+" ohne offene Positionen, "+strconv.Itoa(failed)+" fehlgeschlagen",
-			nil)
+	//
+	// Die Zusammenfassung nennt AUSDRÜCKLICH, wenn der Lauf vorzeitig endete oder
+	// Personen wegen unvollständiger Empfängerdaten ausgelassen wurden. Ein Eintrag,
+	// der nur "N erstellt" meldet, während Hunderte nicht fakturiert wurden, ist
+	// schlimmer als keiner: er sieht nach einem geglückten Lauf aus.
+	summary := "Automatischer Rechnungslauf: " + strconv.Itoa(created) + " erstellt, " +
+		strconv.Itoa(skipped) + " ohne offene Positionen, " + strconv.Itoa(failed) + " fehlgeschlagen"
+	if incomplete > 0 {
+		summary += ", " + strconv.Itoa(incomplete) + " wegen fehlender Empfängerdaten übersprungen"
+	}
+	if complianceStop {
+		summary += " — ABGEBROCHEN: Pflichtangaben des Ausstellers fehlen, verbleibende Personen wurden nicht fakturiert"
+	}
+	if created > 0 || failed > 0 || incomplete > 0 || complianceStop {
+		// WithoutCancel: genau der Lauf, der an der 15-Minuten-Grenze abgeschnitten
+		// wurde, ist der, dessen Protokolleintrag am wichtigsten wäre — und mit dem
+		// abgelaufenen ctx wäre er der einzige, der nicht geschrieben werden kann.
+		// Dasselbe Muster nutzen backup/schedule.go und server/observability.go.
+		wctx, wcancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer wcancel()
+		h.AuditSystem(wctx, "create", "system", 0, summary, nil)
 	}
 }

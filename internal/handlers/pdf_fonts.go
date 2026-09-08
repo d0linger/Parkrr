@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"embed"
+	"sync"
 
 	"github.com/go-pdf/fpdf"
 )
@@ -32,13 +33,29 @@ const pdfFontName = "DejaVu"
 // Laden der Schrift je (ein kaputtes Build wäre die einzige Ursache), fällt der
 // Aufbau auf Helvetica samt cp1252-Übersetzer zurück, und die Dokumente bleiben
 // lesbar statt leer.
-func newPDF() (*fpdf.Fpdf, func(string) string) {
-	pdf := fpdf.New("P", "mm", "A4", "")
+// Die beiden Schriftdateien EINMAL aus dem eingebetteten Dateisystem holen.
+// embed.FS.ReadFile liefert je Aufruf eine frische Kopie — bei 1,46 MB für beide
+// Schnitte hieß das: jede Rechnung, jedes Übergabeprotokoll und jeder Bericht
+// kopierte anderthalb Megabyte, nur um sie sofort wieder wegzuwerfen.
+var pdfFontsOnce = sync.OnceValues(func() ([]byte, []byte) {
 	reg, rerr := pdfFontFS.ReadFile("fonts/DejaVuSans.ttf")
 	bold, berr := pdfFontFS.ReadFile("fonts/DejaVuSans-Bold.ttf")
 	if rerr != nil || berr != nil {
-		// Eingebettete Dateien können praktisch nicht fehlen; der Zweig existiert,
-		// damit ein theoretischer Fehler Dokumente degradiert statt verhindert.
+		return nil, nil
+	}
+	return reg, bold
+})
+
+func newPDF() (*fpdf.Fpdf, func(string) string) {
+	pdf := fpdf.New("P", "mm", "A4", "")
+	reg, bold := pdfFontsOnce()
+	if reg == nil || bold == nil {
+		// Unerreichbar: //go:embed lässt das Programm gar nicht erst übersetzen, wenn
+		// eine der Schriftdateien fehlt — ReadFile kann für einen eingebetteten Pfad
+		// nicht scheitern. Der Zweig bleibt als Absturzschutz stehen, aber er ist KEINE
+		// Degradierung auf Helvetica: die Aufrufer setzen unbedingt SetFont("DejaVu"),
+		// und eine unbekannte Schrift lässt fpdf beim Output scheitern. Ein früherer
+		// Kommentar hier versprach lesbare Dokumente — das wäre nicht eingetreten.
 		return pdf, pdf.UnicodeTranslatorFromDescriptor("")
 	}
 	pdf.AddUTF8FontFromBytes(pdfFontName, "", reg)

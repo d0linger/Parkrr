@@ -32,21 +32,28 @@ func (h *Handler) PersonTimeline(w http.ResponseWriter, r *http.Request) {
 	// Ein UNION über die Quellen, einheitlich (at, kind, text, ref): sortiert und
 	// begrenzt IN der Datenbank, damit eine lange Kundengeschichte nicht komplett
 	// in den Speicher wandert.
+	//
+	// DATE-Spalten werden ueber `::timestamp AT TIME ZONE 'UTC'` zur UTC-Mitternacht
+	// gehoben, NICHT ueber `::timestamptz`. Letzteres legt die Zeitzone der Sitzung
+	// zugrunde — und die ist seit der Geschaeftszeitzone (PARKRR_TIMEZONE) an den
+	// Betrieb gebunden. Dieselbe Zahlung kaeme dann hier auf 09.09. 22:00 UTC und
+	// ueber /payments (pgx dekodiert DATE als UTC-Mitternacht) auf 10.09. 00:00 UTC;
+	// im Browser waere sie je nach dessen Zeitzone zwei verschiedene Kalendertage.
 	rows, err := h.Pool.Query(r.Context(), `
 		SELECT at, kind, text, ref FROM (
-			SELECT p.paid_on::timestamptz AS at, 'payment' AS kind,
+			SELECT p.paid_on::timestamp AT TIME ZONE 'UTC' AS at, 'payment' AS kind,
 			       CASE WHEN p.reversed THEN 'Zahlung storniert: ' ELSE 'Zahlung erhalten: ' END
 			         || to_char(p.amount, 'FM999G999G990D00') || ' € (' || p.method || ')' AS text,
 			       p.id AS ref
 			  FROM payments p WHERE p.person_id = $1
 			UNION ALL
-			SELECT i.issued_on::timestamptz, 'invoice',
+			SELECT i.issued_on::timestamp AT TIME ZONE 'UTC', 'invoice',
 			       CASE WHEN i.cancels_id IS NOT NULL THEN 'Storno-Rechnung ' ELSE 'Rechnung ' END
 			         || i.number || ' über ' || to_char(i.total, 'FM999G999G990D00') || ' €',
 			       i.id
 			  FROM invoices i WHERE i.person_id = $1
 			UNION ALL
-			SELECT c.charged_on::timestamptz, 'charge',
+			SELECT c.charged_on::timestamp AT TIME ZONE 'UTC', 'charge',
 			       'Zusatzkosten: ' || c.description || ' (' || to_char(c.amount * c.quantity, 'FM999G999G990D00') || ' €)',
 			       c.id
 			  FROM charges c WHERE c.person_id = $1
@@ -67,7 +74,7 @@ func (h *Handler) PersonTimeline(w http.ResponseWriter, r *http.Request) {
 			  FROM handover_protocols ho JOIN vehicles v ON v.id = ho.vehicle_id
 			 WHERE v.person_id = $1
 			UNION ALL
-			SELECT fp.start_date::timestamptz, 'agreement',
+			SELECT fp.start_date::timestamp AT TIME ZONE 'UTC', 'agreement',
 			       'Pauschale vereinbart: ' || to_char(fp.amount, 'FM999G999G990D00') || ' € / '
 			         || CASE WHEN fp.period = 'monthly' THEN 'Monat' ELSE 'Jahr' END,
 			       fp.id

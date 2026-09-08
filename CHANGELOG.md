@@ -73,6 +73,76 @@ Stand des Verbesserungsprogramms „Parkrr-Hundert" (September 2026).
 - Die Symbol-Knöpfe (✕, 🗑, ⟳, ⭳) sind echte Icons statt Emojis — einheitlich
   auf allen Plattformen und für Screenreader benannt.
 
+### Behoben (Mehr-Augen-Durchsicht des Programms)
+
+Eine Durchsicht über alle 41 Programm-Commits, aus elf unabhängigen Blickwinkeln,
+hat die folgenden Fehler gefunden. Jeder wurde am Code nachgeprüft, bevor er
+angefasst wurde.
+
+- **Aussperr-Sperre beim Sperren von Konten:** Der Schutz vor „null Admins"
+  zählte auch bereits gesperrte Admins mit. Damit ließ sich ein Konto nach dem
+  anderen sperren, bis sich niemand mehr anmelden konnte — und das Entsperren
+  liegt selbst hinter der Admin-Rolle. Gezählt werden jetzt nur anmeldbare
+  Admins; der erzwungene Bootstrap-Lauf
+  (`PARKRR_ADMIN_PASSWORD_FORCE`) hebt zusätzlich eine Sperre auf und ist damit
+  der dokumentierte Notausgang.
+- **Kundenwunsch konnte eine DSGVO-Löschung rückgängig machen:** Ein vor der
+  Löschung eingereichter Kontaktdaten-Wunsch schrieb beim „Übernehmen" E-Mail,
+  Telefon und Anschrift wieder auf die anonymisierte Person. Wird jetzt
+  abgelehnt (ablehnen/erledigen bleibt möglich).
+- **Die Löschung erreicht jetzt alle Nebentabellen:** Portal-Wünsche (die
+  gewünschte neue Anschrift stand dort im Klartext), Datei-Anhänge, das
+  Versandprotokoll und die Stellplatz-Historie (Kennzeichen + Personenbezug)
+  blieben unberührt — drei davon hängen an keinem Fremdschlüssel und überlebten
+  auch ein echtes Löschen.
+- **Passkey-Anmeldung ignorierte die Konto-Sperre:** Ein gesperrtes Konto konnte
+  sich per Passkey anmelden und bekam eine neue Sitzung samt „angemeldet"-Eintrag
+  im Protokoll.
+- **Automatischer Rechnungslauf hielt bei EINEM lückenhaften Datensatz an:** Eine
+  fehlende Empfängeranschrift (ab 400 € Pflicht) galt als betriebsweiter Mangel
+  und brach den ganzen Lauf ab — alle nachfolgenden Personen blieben unfakturiert,
+  Nacht für Nacht, ohne Hinweis in der Zusammenfassung. Verkäufer- und
+  Empfängermängel werden jetzt unterschieden; die Zusammenfassung nennt
+  übersprungene Personen und einen Abbruch ausdrücklich.
+- **Ein Programmfehler im Rechnungslauf konnte den Dienst beenden:** Der Lauf
+  umging die Absturzsicherung, die bei jedem normalen Aufruf greift.
+- **Planer: Torhöhe und Traglast wurden nach dem Ablegen nicht mehr geprüft.**
+  Tarif-Standardmaße galten nur in der Ablageleiste; auf einem Platz meldete
+  dasselbe Gefährt keine Maße, und die Warnung blieb still.
+- **Planer: Fläche und Raumangaben blieben nach Wandänderungen und Rückgängig
+  stehen** (auch im Export) — bis zufällig eine andere Aktion neu rechnete.
+- **Ein neu hochgeladenes Foto verdrängte das gewählte Titelbild.**
+- **Mehrfachauswahl: der Zähler blieb bei „0 ausgewählt"**, obwohl die Auswahl
+  griff — eine Massenaktion ohne prüfbare Zahl.
+- **Kalender: die Ebene „Fällige Rechnung" konnte nur Vergangenes zeigen** und war
+  in jedem künftigen Monat garantiert leer.
+- **Revisionsexport brach bei großem Protokoll still nach zehn Sekunden ab** —
+  mit bereits gesendetem Status 200.
+- **Widerrufene Portal-Links verschwanden binnen einer Stunde** statt der
+  zugesagten 30 Tage; der Betreiber sah nicht mehr, dass je einer bestand.
+- **500er-Fehler wurden ohne Ursache protokolliert:** elf Stellen reichten die
+  falsche Fehlervariable weiter. Ein Quelltext-Test verhindert den Rückfall.
+- **Diagramme: Tastatur-Ansage und Datentabelle kamen bei Screenreadern nie an**
+  (beide lagen innerhalb einer als Bild ausgezeichneten Hülle).
+- **Escape wirkte nach einem Planer-Dialog sitzungsweit nicht mehr**, wenn der
+  Dialog durch einen Seitenwechsel verschwand.
+- **Abmelden räumt die Ansichtszustände auf:** der nächste Anmeldende am selben
+  Rechner sah sonst die Suchbegriffe und Filter des vorigen.
+- **Das Versandprotokoll nennt die tatsächlich angeschriebenen Adressen**, nicht
+  die Rohliste (unparsbare werden vom Versand verworfen).
+- **Personen-Verlauf zeigte Datumsangaben um einen Tag versetzt**, sobald eine
+  Geschäftszeitzone gesetzt ist.
+- **Audit-Suche:** `%` und `_` wirkten als Jokerzeichen; eine Ein-Zeichen-Eingabe
+  lieferte das gesamte Protokoll als „Treffer".
+- **Portal-Briefkasten:** der Deckel gegen Spam ließ sich durch gleichzeitige
+  Einreichungen umgehen.
+- **„Protokoll löschen"** wurde Bearbeitern angeboten, obwohl nur Admins es
+  dürfen (Fehlschlag erst nach dem Rückgängig-Fenster).
+- Kleinere Korrekturen: Kunden- und Betreiberansicht nennen denselben Zustand
+  jetzt gleich („eingelagert"), das Portal-Wunsch-Protokoll zeigt wieder Werte
+  statt „leer → leer", PDF-Schriften werden einmal statt je Dokument geladen, und
+  der Portal-Kennzahlenpfad lädt nicht mehr die Abgleichsdaten aller Kunden.
+
 ### Entfernt
 - Die seit Migration 012 tote Alt-Tabelle `flatrate_paid_years`; noch vorhandene
   historische Zeilen werden beim Update automatisch ins Änderungsprotokoll

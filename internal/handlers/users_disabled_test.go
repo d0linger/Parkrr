@@ -173,3 +173,73 @@ func TestDisablingDropsExistingSessions(t *testing.T) {
 		t.Errorf("nach dem Sperren blieben %d Sitzungen bestehen", n)
 	}
 }
+
+// Der Schutz vor "null Admins" zaehlte bisher JEDE Zeile mit is_admin — auch
+// bereits gesperrte. Damit liess sich die Sperre nacheinander auf alle Admins
+// anwenden: jeder Schritt sah die schon gesperrten Vorgaenger als Rueckfallebene
+// und erlaubte sich deshalb selbst. Am Ende war die Installation ohne
+// erreichbares Admin-Konto, und der Weg zurueck (PUT /api/users/{id}) liegt
+// selbst hinter admin().
+//
+// Der Test faehrt genau diese Folge: zwei Admins, den ersten sperren (muss
+// gehen), dann den zweiten (darf NICHT gehen).
+func TestDisablingAdminsOneAfterAnotherCannotLockEveryoneOut(t *testing.T) {
+	h := testHandler(t)
+	ctx := context.Background()
+	if _, err := h.Pool.Exec(ctx, `UPDATE users SET is_admin=false, role='editor' WHERE is_admin`); err != nil {
+		t.Fatalf("clear admins: %v", err)
+	}
+	t.Cleanup(func() { _, _ = h.Pool.Exec(ctx, `UPDATE users SET is_admin=true, role='admin' WHERE username='admin'`) })
+
+	first := mkUser(t, h, "reihum_admin_a", true)
+	second := mkUser(t, h, "reihum_admin_b", true)
+	on := true
+
+	// Der erste darf weg — einer bleibt ja uebrig.
+	if rec := putUser(t, h, first, userRequest{
+		Username: "reihum_admin_a", Email: "reihum_admin_a@example.com", Role: "admin", Disabled: &on,
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("den ersten von zwei Admins zu sperren muss erlaubt sein: %d %s", rec.Code, rec.Body.String())
+	}
+	// Der zweite ist jetzt der einzige, der sich noch anmelden kann.
+	rec := putUser(t, h, second, userRequest{
+		Username: "reihum_admin_b", Email: "reihum_admin_b@example.com", Role: "admin", Disabled: &on,
+	})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("den letzten NICHT gesperrten Admin zu sperren muss 409 liefern, war %d %s", rec.Code, rec.Body.String())
+	}
+	var usable int
+	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM users WHERE is_admin AND NOT disabled`).Scan(&usable); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if usable == 0 {
+		t.Fatal("die Installation steht ohne anmeldbares Admin-Konto da")
+	}
+}
+
+// Kehrseite derselben Zaehlung: ein BEREITS gesperrter Admin ist keine
+// Rueckfallebene und darf deshalb auch nicht als "letzter Admin" den Weg
+// blockieren. Sonst liesse sich ein gesperrtes Konto nicht mehr degradieren oder
+// loeschen, obwohl das niemandem den Zugang nimmt.
+func TestDisabledAdminDoesNotCountAsTheLastOne(t *testing.T) {
+	h := testHandler(t)
+	ctx := context.Background()
+	if _, err := h.Pool.Exec(ctx, `UPDATE users SET is_admin=false, role='editor' WHERE is_admin`); err != nil {
+		t.Fatalf("clear admins: %v", err)
+	}
+	t.Cleanup(func() { _, _ = h.Pool.Exec(ctx, `UPDATE users SET is_admin=true, role='admin' WHERE username='admin'`) })
+
+	live := mkUser(t, h, "aktiver_admin", true)
+	locked := mkUser(t, h, "gesperrter_admin", true)
+	if _, err := h.Pool.Exec(ctx, `UPDATE users SET disabled=true WHERE id=$1`, locked); err != nil {
+		t.Fatalf("sperren: %v", err)
+	}
+	_ = live
+	// Den gesperrten Admin degradieren: erlaubt, weil er ohnehin nicht zaehlt.
+	off := false
+	if rec := putUser(t, h, locked, userRequest{
+		Username: "gesperrter_admin", Email: "gesperrter_admin@example.com", Role: "editor", Disabled: &off,
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("einen gesperrten Admin zu degradieren muss erlaubt sein: %d %s", rec.Code, rec.Body.String())
+	}
+}

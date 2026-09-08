@@ -141,10 +141,18 @@ func (h *Handler) UploadPhoto(w http.ResponseWriter, r *http.Request) {
 	if len(filename) > 200 {
 		filename = filename[:200]
 	}
+	// sort_order EXPLIZIT ans Ende setzen, statt den Spaltenstandard 0 zu nehmen.
+	// Mit 0 landete jedes neue Foto auf demselben Platz wie das bewusst gewählte
+	// Titelbild, und der Gleichstand-Tiebreak (created_at DESC in ListPhotos und in
+	// der Titelbild-Unterabfrage des Planers) entschied für das neuere — das
+	// Titelbild sprang nach jedem Upload zurück auf den letzten Schnappschuss,
+	// also genau auf das Verhalten, das Migration 059 beseitigen sollte.
 	var photoID int64
 	if err := h.Pool.QueryRow(r.Context(),
-		`INSERT INTO vehicle_photos (vehicle_id, filename, content_type, byte_size, data)
-		 VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+		`INSERT INTO vehicle_photos (vehicle_id, filename, content_type, byte_size, data, sort_order)
+		 VALUES ($1,$2,$3,$4,$5,
+		         COALESCE((SELECT max(sort_order) + 1 FROM vehicle_photos WHERE vehicle_id = $1), 0))
+		 RETURNING id`,
 		id, filename, contentType, len(data), data).Scan(&photoID); err != nil {
 		if isForeignKeyViolation(err) {
 			writeError(w, http.StatusNotFound, "vehicle not found")

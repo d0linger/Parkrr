@@ -346,7 +346,7 @@ func (h *Handler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Disposition",
-		`attachment; filename="parkrr-`+name+`-`+time.Now().Format("2006-01-02")+`.csv"`)
+		`attachment; filename="parkrr-`+name+`-`+h.now().Format("2006-01-02")+`.csv"`)
 	_, _ = w.Write(buf.Bytes())
 }
 

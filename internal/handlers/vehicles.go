@@ -118,7 +118,7 @@ func (h *Handler) ListVehicles(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	now := time.Now()
+	now := h.now()
 	vehicles := []models.Vehicle{}
 	for rows.Next() {
 		v, cat, err := scanVehicleRow(rows)
@@ -944,7 +944,7 @@ func (h *Handler) writeVehicle(w http.ResponseWriter, ctx context.Context, id in
 		writeError(w, http.StatusInternalServerError, "could not load vehicle")
 		return
 	}
-	now := time.Now()
+	now := h.now()
 	enrich(&v, cat, now)
 	// Coverage must be accurate — a silent fallback would report a bound vehicle
 	// as uncovered (wrong paid-slider/amounts), so fail loudly instead.

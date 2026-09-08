@@ -7,6 +7,24 @@ L-Projekte, die ein eigenes Vorhaben brauchen), 2 nach Prüfung übersprungen [!
 Batches B1–B34 einzeln auf dev committet; jeder Batch mit go build+vet+test und,
 bei Frontend-Anteil, der Playwright-Suite (zuletzt 39 Tests, --retries=0) validiert.
 
+NACHTRAG 2026-09-08 (Durchsicht R1): Eine Mehr-Augen-Durchsicht über alle 41
+Programm-Commits, aus elf unabhängigen Blickwinkeln, hat 15 bestätigte Fehler
+gefunden — darunter eine Aussperr-Lücke beim Sperren von Konten, eine
+zurückdrehbare DSGVO-Löschung, vier von der Löschung nicht erfasste Nebentabellen
+und ein Rechnungslauf, den ein einzelner lückenhafter Datensatz anhielt. Alle
+bestätigten Befunde sind behoben und durch Regressionstests belegt, die auf dem
+Stand VOR dem Fix nachweislich fehlschlagen. Details im CHANGELOG unter
+"Behoben (Mehr-Augen-Durchsicht des Programms)".
+
+Bewusst NICHT geändert: (a) die strengere E-Mail-Prüfung könnte theoretisch das
+Bearbeiten von Altdatensätzen mit ungültig gespeicherter Adresse blockieren —
+gemessen: null solche Zeilen in Test- und lokaler Datenbank, deshalb als bekanntes
+Restrisiko notiert statt drei Handler umzubauen; (b) das unbedingte COUNT(*) je
+Listenabruf (Index-Only-Scan, ~1 ms; der Umbau beträfe neun Aufrufstellen);
+(c) die Mahnstufen ohne eigenes Opt-in-Flag — sie feuern nur auf ausdrücklichen
+Klick, und der Dialog nennt die Stufe vorher, anders als bei den automatisch
+laufenden Funktionen, für die die Leitplanke gedacht ist.
+
 Stand: 2026-09-07. Quelle: Artifact "Die Parkrr-Hundert" (100 kuratierte Punkte aus zwei
 Code-Sweeps + Sessionwissen). Abarbeitung in validierten Batches, jeder Batch einzeln
 committet. Leitplanken: kundenwirksames Verhalten landet hinter Opt-in-Flags (Default aus),

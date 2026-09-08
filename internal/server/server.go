@@ -621,9 +621,22 @@ var expirySweeps = []struct {
 	// Abgelaufene Sitzungen; identisch zu auth.CleanupExpired, hier nur der Vollständigkeit
 	// halber NICHT aufgeführt — die läuft weiter über den Manager (eigener Pool-Zugriff).
 	{"webauthn_ceremonies", `DELETE FROM webauthn_ceremonies WHERE expires_at < now()`},
-	// 30 Tage Nachlauf: ein gerade abgelaufener Link soll in der Verwaltung noch als
-	// "abgelaufen" sichtbar sein, statt spurlos zu verschwinden.
-	{"self_service_tokens", `DELETE FROM self_service_tokens WHERE revoked OR expires_at < now() - interval '30 days'`},
+	// 30 Tage Nachlauf: ein gerade abgelaufener ODER widerrufener Link soll in der
+	// Verwaltung noch als "abgelaufen"/"widerrufen" sichtbar sein, statt spurlos zu
+	// verschwinden.
+	//
+	// Der `revoked`-Zweig stand ungeklammert daneben und wirkte damit ALLEIN: seit
+	// dieser Lauf stündlich statt nur gelegentlich läuft, war ein widerrufener Link
+	// binnen einer Stunde weg, und der Betreiber konnte nicht mehr sehen, dass je
+	// einer bestand — obwohl der Kommentar darüber genau das zusagt. Auch das
+	// Anonymisieren setzt revoked, dessen Spuren also mit.
+	//
+	// Die Frist hängt jetzt allein am Ablaufdatum, das auch ein widerrufener Link
+	// trägt. Ein Widerruf wirkt sofort (die Prüfung im Anmeldeweg liest `revoked`),
+	// er muss die Zeile also nicht vorzeitig entfernen — er soll sie nur nicht
+	// länger als nötig aufheben. Eine eigene `revoked_at`-Spalte wäre die genauere,
+	// aber teurere Antwort; das Ablaufdatum ist die vorhandene und ausreichende.
+	{"self_service_tokens", `DELETE FROM self_service_tokens WHERE expires_at < now() - interval '30 days'`},
 }
 
 // StartExpiryCleanup runs a background loop pruning expired sessions and the

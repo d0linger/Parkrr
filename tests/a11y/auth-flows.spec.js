@@ -155,8 +155,30 @@ test('Passkey: registrieren, abmelden, per Passkey anmelden', async ({ page }) =
   await pkBtn.click();
   await page.waitForSelector('#app-view:not([hidden])', { timeout: 15000 });
 
-  // Aufräumen.
+  // Ein GESPERRTES Konto darf auch mit gültigem Passkey nicht hineinkommen. Die
+  // Assertion beweist den Besitz des Schlüssels, nicht die Berechtigung — und beim
+  // Sperren werden gerade alle Sitzungen gelöscht, was wertlos wäre, wenn der
+  // Passkey-Weg sofort eine neue anlegt.
   await apiCall(page, 'POST', '/auth/logout');
+  await loginAs(page, ADMIN, APASS);
+  await page.waitForSelector('#app-view:not([hidden])', { timeout: 15000 });
+  const users = await apiCall(page, 'GET', '/users');
+  const acct = (users.data || []).find((u) => u.username === uname);
+  expect(acct, 'Testkonto nicht gefunden').toBeTruthy();
+  const lock = await apiCall(page, 'PUT', '/users/' + acct.id,
+    { username: uname, email: uname + '@example.com', role: 'editor', disabled: true });
+  expect(lock.status).toBe(200);
+  await apiCall(page, 'POST', '/auth/logout');
+
+  await page.goto('/');
+  await page.waitForSelector('#login-view:not([hidden])', { timeout: 15000 });
+  await page.locator('#passkey-login').click();
+  // Die Anmeldung muss scheitern: die App-Ansicht darf nicht erscheinen.
+  await page.waitForTimeout(2500);
+  await expect(page.locator('#app-view')).toBeHidden();
+  await expect(page.locator('#login-view')).toBeVisible();
+
+  // Aufräumen.
   await loginAs(page, ADMIN, APASS);
   await page.waitForSelector('#app-view:not([hidden])', { timeout: 15000 });
   const list = await apiCall(page, 'GET', '/users');

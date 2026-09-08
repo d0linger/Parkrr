@@ -386,21 +386,35 @@ func (h *Handler) ResetUserTOTP(w http.ResponseWriter, r *http.Request) {
 
 // adminsRemaining locks every admin row (FOR UPDATE, ordered by id so concurrent
 // callers acquire the locks in the same order and serialize instead of
-// deadlocking), then returns the current admin count and whether id is one of
-// them. Run inside the caller's transaction, this makes the last-admin check and
-// the following demotion/deletion atomic: a racing operation blocks on the locked
-// rows until we commit, then sees the updated state (finding SH-04). The caller
-// must treat a returned error as fail-closed and abort the mutation.
+// deadlocking), then returns the count of admins who can actually still sign in
+// and whether id is one of them. Run inside the caller's transaction, this makes
+// the last-admin check and the following demotion/deletion atomic: a racing
+// operation blocks on the locked rows until we commit, then sees the updated
+// state (finding SH-04). The caller must treat a returned error as fail-closed
+// and abort the mutation.
+//
+// Gezählt werden nur NICHT gesperrte Admins. Ein gesperrtes Konto ist als Admin
+// wertlos — Authenticate und die Sitzungsauflösung weisen es ab —, und wer es
+// mitzählt, lässt zu, dass nacheinander JEDER Admin gesperrt wird: jeder Schritt
+// sieht die bereits gesperrten Vorgänger als Rückfallebene und erlaubt sich
+// deshalb selbst. Am Ende steht eine Installation ohne erreichbares Admin-Konto,
+// und der einzige Weg zurück (PUT /api/users/{id}) liegt hinter admin().
+// Aus demselben Grund zählt ein bereits gesperrter Zielbenutzer nicht als
+// "letzter Admin": ihn zu löschen oder zu degradieren nimmt niemandem den Zugang.
 func adminsRemaining(ctx context.Context, tx pgx.Tx, id int64) (count int, targetIsAdmin bool, err error) {
-	rows, err := tx.Query(ctx, `SELECT id FROM users WHERE is_admin ORDER BY id FOR UPDATE`)
+	rows, err := tx.Query(ctx, `SELECT id, disabled FROM users WHERE is_admin ORDER BY id FOR UPDATE`)
 	if err != nil {
 		return 0, false, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var aid int64
-		if err := rows.Scan(&aid); err != nil {
+		var disabled bool
+		if err := rows.Scan(&aid, &disabled); err != nil {
 			return 0, false, err
+		}
+		if disabled {
+			continue
 		}
 		count++
 		if aid == id {

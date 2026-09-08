@@ -18,9 +18,18 @@ func (h *Handler) ListAudit(w http.ResponseWriter, r *http.Request) {
 	var where []string
 	var args []any
 	if q := trim(r.URL.Query().Get("q")); q != "" {
-		args = append(args, "%"+q+"%")
+		// Platzhalter der Eingabe entschärfen, wie es die Suche (search.go) tut: ohne
+		// das wirken % und _ als Jokerzeichen. Eine Suche nach dem Wort
+		// "wall_template" träfe damit auch "wallXtemplate", und die Eingabe eines
+		// einzelnen % lieferte JEDE Zeile eines Protokolls mit sieben Jahren
+		// Aufbewahrung — als wären es Treffer. Ein reiner Jokerausdruck verhindert
+		// zudem, dass der Trigramm-Index aus Migration 055 überhaupt greifen kann.
+		//
+		// Escapen in SQL, nicht in Go: dann ist entschärft, was auch verglichen wird.
+		args = append(args, q)
 		n := len(args)
-		where = append(where, fmt.Sprintf("(username ILIKE $%d OR summary ILIKE $%d)", n, n))
+		pat := fmt.Sprintf(`('%%' || replace(replace(replace($%d::text, '\', '\\'), '%%', '\%%'), '_', '\_') || '%%')`, n)
+		where = append(where, fmt.Sprintf(`(username ILIKE %s ESCAPE '\' OR summary ILIKE %s ESCAPE '\')`, pat, pat))
 	}
 	if a := trim(r.URL.Query().Get("action")); a != "" {
 		args = append(args, a)

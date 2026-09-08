@@ -72,6 +72,27 @@ test('Bulk: zwei Gefaehrte gemeinsam als abgeholt markieren', async ({ page }) =
   } finally { await cleanup(page); }
 });
 
+test('Bulk: der Zaehler zaehlt schon beim ERSTEN Anhaken', async ({ page }) => {
+  await login(page);
+  const seed = await seedVehicles(page, 2);
+  try {
+    await page.goto('/#/vehicles');
+    await page.waitForSelector('#page:not(:empty)', { timeout: 30000 });
+    // BEWUSST ohne Suche/Filter dazwischen: genau die erste Darstellung nach dem
+    // Einschalten war kaputt. Die Leiste entstand erst NACH mountList, dessen
+    // refresh() synchron laeuft — jede Checkbox fing damit `undefined` statt der
+    // Leiste ein, und der Zaehler blieb bei 0. Der aeltere Bulk-Test hier fiel nicht
+    // darauf herein, weil er vor dem Anhaken die Suche benutzt: die loest ein
+    // zweites refresh() aus, bei dem die Leiste dann steht.
+    await page.getByRole('button', { name: 'Mehrfachauswahl' }).click();
+    await page.waitForSelector('.bulk-cb', { timeout: 15000 });
+    await page.locator('.bulk-cb').first().check();
+    await expect(page.locator('.bulk-bar b')).toHaveText('1', { timeout: 5000 });
+    await page.locator('.bulk-cb').nth(1).check();
+    await expect(page.locator('.bulk-bar b')).toHaveText('2', { timeout: 5000 });
+  } finally { await cleanup(page); }
+});
+
 test('Kalender: Abholung des Monats erscheint als Eintrag', async ({ page }) => {
   await login(page);
   const seed = await seedVehicles(page, 1);

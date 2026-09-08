@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
-	"time"
 )
 
 // OutstandingReportPDF liefert die Offene-Posten-Liste als druckfertiges A4-PDF
@@ -96,7 +95,7 @@ func (h *Handler) OutstandingReportPDF(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/pdf")
 	w.Header().Set("Content-Disposition",
-		`attachment; filename="parkrr-offene-posten-`+time.Now().Format("2006-01-02")+`.pdf"`)
+		`attachment; filename="parkrr-offene-posten-`+h.now().Format("2006-01-02")+`.pdf"`)
 	if err := pdf.Output(w); err != nil {
 		// Header sind schon raus; mehr als loggen geht hier nicht.
 		serverError(w, r, "PDF-Erzeugung fehlgeschlagen", err)

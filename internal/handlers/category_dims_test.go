@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"testing"
 )
 
@@ -114,6 +113,5 @@ func TestCategoryDefaultDimsValidated(t *testing.T) {
 		}
 		_ = json.Unmarshal(rec.Body.Bytes(), &c)
 		_, _ = h.Pool.Exec(context.Background(), `DELETE FROM categories WHERE id=$1`, c.ID)
-		_ = strconv.Itoa(0)
 	}
 }
