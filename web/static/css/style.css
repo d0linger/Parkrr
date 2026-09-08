@@ -1048,6 +1048,32 @@ div.empty .big svg { width: 30px; height: 30px; }
 }
 /* Foto-Upload-Fortschritt (Hundert 50): schmale Leiste neben den Knoepfen, nur
    waehrend eines Uploads sichtbar; die Breite des <i> traegt den Fortschritt. */
+/* Bulk-Aktionen Gefaehrte (Hundert 54) */
+.bulk-wrap{display:flex;align-items:flex-start;gap:.5rem}
+.bulk-wrap>.bulk-cb{margin-top:1.1rem;width:18px;height:18px;flex:none;accent-color:var(--primary)}
+.bulk-wrap>*:last-child{flex:1;min-width:0}
+.bulk-bar{position:sticky;bottom:.6rem;z-index:20;display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;
+    margin-top:.8rem;padding:.55rem .8rem;border-radius:var(--radius-sm);
+    background:var(--bg-elev-2);border:1px solid var(--primary);box-shadow:0 8px 22px -10px rgba(0,0,0,.4)}
+/* Kalenderansicht (Hundert 55) */
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-top:.6rem}
+.cal-head{font-size:.72rem;font-weight:700;color:var(--text-muted);text-align:center;padding:.2rem 0;text-transform:uppercase;letter-spacing:.04em}
+.cal-cell{min-height:74px;border:1px solid var(--border);border-radius:8px;padding:.25rem;background:var(--card-bg,var(--bg-elev-1));display:flex;flex-direction:column;gap:2px;overflow:hidden}
+.cal-cell.empty{border:0;background:transparent}
+.cal-cell.today{border-color:var(--primary);box-shadow:inset 0 0 0 1px var(--primary)}
+.cal-day{font-size:.72rem;color:var(--text-muted);font-variant-numeric:tabular-nums}
+.cal-ev{display:block;font-size:.68rem;line-height:1.25;padding:1px 5px;border-radius:6px;color:#fff;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-decoration:none}
+.cal-pickup{background:#0F7A73}.cal-reserve{background:#5B6DC8}.cal-due{background:#B4552F}.cal-wish{background:#8a6d1f}
+.cal-legend{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.6rem;font-size:.75rem;align-items:center}
+.cal-legend .cal-ev{display:inline-block}
+@media (max-width:640px){.cal-cell{min-height:56px}.cal-ev{font-size:.6rem}}
+/* Datei-Anhaenge (Hundert 57) */
+.att-row{display:flex;align-items:center;gap:.55rem;padding:.4rem 0;border-bottom:1px solid var(--border)}
+.att-row:last-of-type{border-bottom:0}
+.att-ic{flex:none;color:var(--text-muted)}
+.att-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.att-meta{flex:none;font-size:.78rem;color:var(--text-muted);font-variant-numeric:tabular-nums}
 /* Portal-Anliegen-Formulare (Hundert 85/87) */
 .portal-form{display:flex;flex-wrap:wrap;gap:.45rem;margin:.35rem 0 .2rem}
 .portal-form input{flex:1 1 160px;min-width:0;padding:.5rem .6rem;border:1px solid var(--border);

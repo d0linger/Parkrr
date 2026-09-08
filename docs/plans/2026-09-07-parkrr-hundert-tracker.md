@@ -76,7 +76,7 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **30** [Hoch/S] total und has_more bei Listen — `internal/handlers/handlers.go:167`
 - [x] **31** [Hoch/S] users.disabled statt löschen — `internal/handlers/users.go:241`
 - [x] **32** [Hoch/M] Retention für wachsende Nebentabellen — `internal/handlers/portal.go:132`
-- [ ] **33** [Mittel/S] Tote Tabelle flatrate_paid_years entfernen — `migrations/006_flatrate_years.sql`
+- [x] **33** [Mittel/S] Tote Tabelle flatrate_paid_years entfernen — `migrations/006_flatrate_years.sql`
 - [x] **34** [Mittel/S] Checksummen in schema_migrations — `internal/database/database.go:116`
 - [x] **35** [Mittel/M] Audit-Suche indexfähig machen — `internal/handlers/audit.go:23`
 - [x] **36** [Mittel/M] Portal-Statistikpfad wirklich scopen — `internal/handlers/stats.go:651`
@@ -119,8 +119,8 @@ B11 Destruktives + Betreiber-Punkte.
       faltender Suche (norm()). Das serverseitig nachzubauen heißt, für jede Liste
       Suche und Sortierung im SQL zu spiegeln — sonst liefert dieselbe Eingabe je
       nach Seite andere Treffer. Das ist ein eigenes Vorhaben, kein Batch-Schritt.
-- [ ] **54** [Mittel/M] Bulk-Aktionen für Gefährte
-- [ ] **55** [Mittel/M] Kalenderansicht
+- [x] **54** [Mittel/M] Bulk-Aktionen für Gefährte
+- [x] **55** [Mittel/M] Kalenderansicht
 - [x] **56** [Mittel/M] Aktivitäts-Timeline pro Person
 - [x] **57** [Mittel/M] Datei-Anhänge je Person und Gefährt
 - [x] **58** [Idee/S] Fotoreihenfolge und Titelbild

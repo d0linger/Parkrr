@@ -50,6 +50,19 @@ func cleanupPersons(t *testing.T, pool *pgxpool.Pool) {
 		`DELETE FROM persons WHERE last_name = 'Integration'`); err != nil {
 		t.Logf("cleanup: %v", err)
 	}
+	// Test-Tarife abräumen (Hundert-Nacharbeit): etliche Tests taufen Kategorien
+	// "<Name>-<UnixNano>" und ließen sie liegen — über hunderte Läufe wuchs die
+	// geteilte Tarif-Ansicht auf 400+ Karten, bis die a11y-Prüfung in ihr
+	// Zeitlimit lief (schon einmal passiert, siehe VehTarif-Fix). EIN Aufräumer
+	// hier statt zwanzig einzelner t.Cleanup: gelöscht wird nur, was den
+	// 15+-stelligen Zeitstempel-Suffix trägt UND von keinem Gefährt mehr
+	// referenziert wird — die laufenden Tests anderer Pakete bleiben unberührt.
+	if _, err := pool.Exec(ctx,
+		`DELETE FROM categories c
+		  WHERE c.name ~ '-[0-9]{15,}$'
+		    AND NOT EXISTS (SELECT 1 FROM vehicles v WHERE v.category_id = c.id)`); err != nil {
+		t.Logf("cleanup categories: %v", err)
+	}
 }
 
 // purgeExec runs a teardown delete that the immutability triggers (migration 034)

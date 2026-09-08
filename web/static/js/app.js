@@ -1183,7 +1183,9 @@
             el('span', { class: 'info' }, String(ov.year)),
             el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Nächstes Jahr', disabled: ov.year >= nowYear,
                 onclick: () => { dashYear = ov.year + 1; render(); } }, '›'));
-        page.append(el('div', { class: 'page-head' }, el('h2', {}, 'Übersicht'), yearSel));
+        page.append(el('div', { class: 'page-head' }, el('h2', {}, 'Übersicht'),
+            el('a', { class: 'btn btn-ghost btn-sm', href: '#/calendar', title: 'Abholungen, Reservierungen, fällige Rechnungen und Abholwünsche im Monat' }, 'Kalender'),
+            yearSel));
 
         // Empty state for a fresh install: no persons yet -> onboard instead of
         // showing a wall of zeros and empty charts.
@@ -1676,6 +1678,52 @@
     }
 
     // ---------- PERSON DETAIL ----------
+    // Datei-Anhänge (Hundert 57): eine Karte für Person UND Gefährt. ownerPath ist
+    // '/persons/<id>' bzw. '/vehicles/<id>'. Nachgeladen; Upload mit demselben
+    // Fortschritts-XHR wie die Fotos.
+    function attachmentsCard(ownerPath) {
+        const card = el('div', { class: 'card' });
+        const head = el('div', { class: 'page-head' }, el('h3', {}, 'Anhänge'));
+        const listEl = el('div', {});
+        const prog = el('span', { class: 'upl-progress', role: 'progressbar', 'aria-label': 'Anhang-Upload', 'aria-valuemin': '0', 'aria-valuemax': '100', hidden: true }, el('i', {}));
+        const reload = async () => {
+            listEl.innerHTML = '';
+            let items = [];
+            try { items = await api.get(ownerPath + '/attachments'); } catch (e) { listEl.append(el('p', { class: 'muted' }, 'Anhänge konnten nicht geladen werden.')); return; }
+            if (!items.length) { listEl.append(el('p', { class: 'muted' }, 'Keine Anhänge.')); return; }
+            items.forEach((a) => {
+                const row = el('div', { class: 'att-row' },
+                    el('span', { class: 'att-ic' }, icon(a.content_type === 'application/pdf' ? 'receipt' : 'camera', 15)),
+                    el('a', { class: 'att-name', href: '/api/attachments/' + a.id, download: '' }, esc(a.filename || ('Anhang #' + a.id))),
+                    el('span', { class: 'att-meta' }, Math.max(1, Math.round(a.byte_size / 1024)) + ' KB · ' + new Date(a.created_at).toLocaleDateString('de-DE')));
+                if (canManage()) row.append(el('button', { class: 'btn btn-ghost btn-sm', title: (a.filename || 'Anhang') + ' löschen', 'aria-label': (a.filename || 'Anhang') + ' löschen',
+                    onclick: (e) => deleteWithUndo('Anhang löschen?', `„${a.filename || 'Anhang'}" wird dauerhaft entfernt.`, () => api.del('/attachments/' + a.id), () => reload(), e.currentTarget.closest('.att-row')) }, icon('trash', 14)));
+                listEl.append(row);
+            });
+        };
+        if (canManage()) {
+            const fileIn = el('input', { type: 'file', accept: 'application/pdf,image/jpeg,image/png', style: 'display:none' });
+            fileIn.addEventListener('change', async () => {
+                const f = fileIn.files[0];
+                if (!f) return;
+                const bar = prog.querySelector('i');
+                const show = (frac) => { prog.hidden = false; if (bar) bar.style.width = Math.round(frac * 100) + '%'; prog.setAttribute('aria-valuenow', String(Math.round(frac * 100))); };
+                try {
+                    show(0);
+                    const fd = new FormData(); fd.append('file', f, f.name);
+                    await uploadWithProgress(ownerPath + '/attachments', fd, show);
+                    toast('Anhang hochgeladen', 'success');
+                    prog.hidden = true; fileIn.value = '';
+                    reload();
+                } catch (e) { toast(e.message, 'error'); prog.hidden = true; }
+            });
+            head.append(el('button', { class: 'btn-sect', onclick: () => fileIn.click() }, '+ Anhang'), prog, fileIn);
+        }
+        card.append(head, listEl);
+        reload();
+        return card;
+    }
+
     routes.person = async (page, id) => {
         await refreshLookups();
         const stats = await api.get('/persons/' + id + '/stats');
@@ -1823,6 +1871,9 @@
         page.append(rz);
         if (!invoices.length) page.append(el('p', { class: 'muted' }, 'Noch keine Rechnungen. „+ Rechnung" erstellt eine aus den offenen Einzelposten.'));
         else page.append(collapsibleRows(invoices, (iv) => invoiceRow(iv)));
+
+        // Anhänge (Hundert 57): Vertrag, Typenschein, Gutachten — beim Datensatz.
+        page.append(attachmentsCard('/persons/' + id));
 
         // Verlauf (Hundert 56): alles, was bei dieser Person passiert ist, in EINEM
         // Strom — statt fünfmal blättern (Zahlungen, Rechnungen, Posten, Status,
@@ -2251,6 +2302,50 @@
     };
 
     // ================= VEHICLES =================
+    // Bulk-Aktionen für Gefährte (Hundert 54): mehrere auf einmal abholen oder
+    // stornieren — Saisonende heißt sonst dreißigmal derselbe Klickpfad. Der Bulk
+    // ruft je Gefährt DENSELBEN Status-Endpunkt wie der Einzelweg (gleiche Regeln:
+    // Enddatum, Archivierung, Historie) und meldet das ECHTE Ergebnis (ok/fehl).
+    const bulkSel = new Set();
+    let bulkMode = false;
+
+    function bulkBar(listRefresh) {
+        const bar = el('div', { class: 'bulk-bar', hidden: !bulkMode });
+        const count = el('b', {}, '0');
+        const run = async (status, label) => {
+            const ids = Array.from(bulkSel);
+            if (!ids.length) { toast('Nichts ausgewählt', 'error'); return; }
+            if (!await confirmDialog(label + '?', ids.length + ' Gefährt(e) werden ' + (status === 'collected' ? 'als abgeholt (heute) markiert' : 'storniert') + '. Jeder Wechsel folgt denselben Regeln wie der Einzelweg.', label)) return;
+            let ok = 0, fail = 0, firstErr = '';
+            for (const id of ids) {
+                try { await api.post('/vehicles/' + id + '/status', { status, note: 'Bulk-Aktion' }); ok++; }
+                catch (e) { fail++; if (!firstErr) firstErr = e.message || ''; }
+            }
+            bulkSel.clear(); bulkMode = false;
+            toast(fail ? ok + ' erledigt · ' + fail + ' fehlgeschlagen' + (firstErr ? ' (' + firstErr + ')' : '') : ok + ' erledigt', fail ? 'warn' : 'success');
+            render();
+        };
+        bar.append(
+            el('span', {}, count, ' ausgewählt'),
+            el('button', { class: 'btn btn-primary btn-sm', onclick: () => run('collected', 'Abholen') }, 'Als abgeholt markieren'),
+            el('button', { class: 'btn btn-ghost btn-sm', onclick: () => run('cancelled', 'Stornieren') }, 'Stornieren'),
+            el('button', { class: 'btn btn-ghost btn-sm', onclick: () => { bulkSel.clear(); bulkMode = false; render(); } }, 'Abbrechen'));
+        bar._sync = () => { count.textContent = String(bulkSel.size); bar.hidden = !bulkMode; };
+        return bar;
+    }
+
+    // Umhüllt eine Gefährt-Karte mit einer Auswahl-Checkbox, wenn der Bulk aktiv ist.
+    function bulkWrap(card, v, bar) {
+        if (!bulkMode) return card;
+        const cb = el('input', { type: 'checkbox', class: 'bulk-cb', 'aria-label': (v.label || v.category_name || 'Gefährt') + ' auswählen' });
+        cb.checked = bulkSel.has(v.id);
+        cb.addEventListener('change', () => { if (cb.checked) bulkSel.add(v.id); else bulkSel.delete(v.id); if (bar && bar._sync) bar._sync(); });
+        // Klicks auf die Checkbox dürfen nicht zur Detailseite springen.
+        cb.addEventListener('click', (e) => e.stopPropagation());
+        const wrap = el('div', { class: 'bulk-wrap' }, cb, card);
+        return wrap;
+    }
+
     routes.vehicles = async (page) => {
         await refreshLookups();
         const vehicles = await api.get('/vehicles');
@@ -2272,16 +2367,25 @@
                 const peSel = el('select', { 'aria-label': 'Person filtern' }, el('option', { value: '' }, 'Alle Personen'),
                     ...state.persons.map((p) => el('option', { value: p.id }, personName(p))));
                 peSel.addEventListener('change', () => { cs.person = peSel.value; refresh(); });
+                // Mehrfachauswahl (Hundert 54): schaltet die Checkbox-Hülle der Karten an.
+                const bulkBtn = canManage() ? el('button', { class: 'btn btn-ghost btn-sm' + (bulkMode ? ' active' : ''), 'aria-pressed': String(bulkMode) }, 'Mehrfachauswahl') : null;
+                if (bulkBtn) bulkBtn.addEventListener('click', () => { bulkMode = !bulkMode; if (!bulkMode) bulkSel.clear(); render(); });
                 const arChk = el('input', { type: 'checkbox' });
                 arChk.addEventListener('change', () => { cs.showArchived = arChk.checked; refresh(); });
                 const arLabel = el('label', { class: 'toggle-inline' }, arChk, el('span', {}, 'Archiv'));
-                return [stSel, peSel, arLabel];
+                return [stSel, peSel, arLabel, bulkBtn];
             },
             // Hide archived (closed) vehicles unless the Archiv toggle is on.
             extraFilter: (v, cs) => (cs.showArchived || !v.archived) &&
                 (!cs.status || v.status === cs.status) && (!cs.person || String(v.person_id) === cs.person),
-            render: (v) => vehicleCard(v, { linkable: true }),
+            render: (v) => bulkWrap(vehicleCard(v, { linkable: !bulkMode }), v, page._bulkBar),
         });
+        if (canManage()) {
+            const bar = bulkBar();
+            page._bulkBar = bar;
+            page.append(bar);
+            bar._sync();
+        }
     };
 
     // coverage summarises a vehicle's flat-rate state for display:
@@ -3330,6 +3434,9 @@
             }
             hc.append(ul); page.append(hc);
         }
+
+        // Anhänge (Hundert 57) — z. B. der Typenschein-Scan direkt beim Gefährt.
+        page.append(attachmentsCard('/vehicles/' + id));
 
         // Stellplatz-Verlauf (Hundert 79): wo dieses Gefährt stand, mit Zeiträumen —
         // gespeist vom Belegungs-Trigger, der jeden Umplatzierungsweg sieht.
@@ -5148,6 +5255,73 @@
     }
 
     // ---- garages list ----
+    // Kalenderansicht (Hundert 55): die Termine des Betriebs in einem Monat —
+    // Abholungen (Enddatum), Reservierungsbeginne, faellige Rechnungen und
+    // Abholwuensche aus dem Portal. Alles aus vorhandenen APIs; der Kalender ist
+    // eine LESART, keine neue Datenquelle.
+    let calMonth = null; // 'YYYY-MM'; null = aktueller Monat
+    routes.calendar = async (page) => {
+        const now = new Date();
+        const [y, m] = calMonth ? calMonth.split('-').map(Number) : [now.getFullYear(), now.getMonth() + 1];
+        const first = new Date(y, m - 1, 1);
+        const label = first.toLocaleDateString('de-DE', { month: 'long', year: 'numeric' });
+
+        page.innerHTML = '';
+        const nav = (d) => { const t = new Date(y, m - 1 + d, 1); calMonth = t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0'); render(); };
+        page.append(el('div', { class: 'detail-head' },
+            el('button', { class: 'back-btn', onclick: () => navigate('dashboard'), 'aria-label': 'Zurück' }, '‹'),
+            el('h2', { style: 'margin:0;flex:1' }, 'Kalender · ' + label),
+            el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Voriger Monat', onclick: () => nav(-1) }, '‹'),
+            el('button', { class: 'btn btn-ghost btn-sm', onclick: () => { calMonth = null; render(); } }, 'Heute'),
+            el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Nächster Monat', onclick: () => nav(1) }, '›')));
+
+        let vehicles = [], overdue = [], requests = [];
+        try {
+            [vehicles, overdue] = await Promise.all([api.get('/vehicles'), api.get('/invoices/overdue')]);
+            if (canManage()) { try { requests = await api.get('/portal-requests'); } catch (e) { requests = []; } }
+        } catch (e) { page.append(el('div', { class: 'empty' }, 'Kalender konnte nicht geladen werden: ' + e.message)); return; }
+
+        // Ereignisse je Tag einsammeln (nur dieser Monat).
+        const inMonth = (iso) => iso && iso.slice(0, 7) === (y + '-' + String(m).padStart(2, '0'));
+        const byDay = {};
+        const add = (iso, kind, text, href) => {
+            if (!inMonth(iso)) return;
+            const d = Number(iso.slice(8, 10));
+            (byDay[d] = byDay[d] || []).push({ kind, text, href });
+        };
+        vehicles.forEach((v) => {
+            const who = v.label || v.category_name || 'Gefährt';
+            if (v.status !== 'cancelled') add(v.end_date, 'pickup', 'Abholung: ' + who, '#/vehicles/' + v.id);
+            add(v.reserved_from, 'reserve', 'Reservierung: ' + who, '#/vehicles/' + v.id);
+        });
+        (overdue || []).forEach((iv) => add(iv.due_on, 'due', 'Fällig: Rechnung ' + iv.number, '#/invoices/' + iv.id));
+        (requests || []).filter((r) => r.status === 'offen' && r.kind === 'pickup').forEach((r) => {
+            const pl = asObj(r.payload);
+            add(pl.date, 'wish', 'Abholwunsch: ' + r.person_name, '#/person/' + r.person_id);
+        });
+
+        // Monatsraster: Mo-So, fuehrende Leerzellen aus dem Wochentag des Ersten.
+        const days = new Date(y, m, 0).getDate();
+        const lead = (first.getDay() + 6) % 7; // Mo=0
+        const grid = el('div', { class: 'cal-grid', role: 'grid', 'aria-label': 'Kalender ' + label });
+        ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'].forEach((d) => grid.append(el('div', { class: 'cal-head', role: 'columnheader' }, d)));
+        for (let i = 0; i < lead; i++) grid.append(el('div', { class: 'cal-cell empty' }));
+        const today = now.getFullYear() === y && now.getMonth() + 1 === m ? now.getDate() : -1;
+        for (let d = 1; d <= days; d++) {
+            const cell = el('div', { class: 'cal-cell' + (d === today ? ' today' : ''), role: 'gridcell' },
+                el('span', { class: 'cal-day' }, String(d)));
+            (byDay[d] || []).forEach((ev) => cell.append(
+                el('a', { class: 'cal-ev cal-' + ev.kind, href: ev.href, title: ev.text }, ev.text)));
+            grid.append(cell);
+        }
+        page.append(grid);
+        page.append(el('div', { class: 'cal-legend muted' },
+            el('span', { class: 'cal-ev cal-pickup' }, 'Abholung'), ' ',
+            el('span', { class: 'cal-ev cal-reserve' }, 'Reservierung'), ' ',
+            el('span', { class: 'cal-ev cal-due' }, 'Fällige Rechnung'), ' ',
+            el('span', { class: 'cal-ev cal-wish' }, 'Abholwunsch (Portal)')));
+    };
+
     routes.garages = async (page) => {
         const garages = await api.get('/garages');
         page.innerHTML = '';
