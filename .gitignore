@@ -70,3 +70,4 @@ graphify-out/
 
 # Stray instrumented/profiling copies of source files (benchmark artifacts)
 *.inst.js
+backups/
