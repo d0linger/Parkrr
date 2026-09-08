@@ -1,5 +1,12 @@
 # Parkrr-Hundert: Umsetzungs-Tracker
 
+ABSCHLUSS 2026-09-08: Alle 101 Punkte (100 kuratierte + 1 Zusatz) sind aufgelöst —
+87 umgesetzt [x], 13 begründet vertagt [>] (Betreiber-Entscheidungen und
+L-Projekte, die ein eigenes Vorhaben brauchen), 2 nach Prüfung übersprungen [!]
+(Begründung jeweils am Punkt). Dazu drei Zusatzfunde aus dem Messen (Z1–Z3).
+Batches B1–B34 einzeln auf dev committet; jeder Batch mit go build+vet+test und,
+bei Frontend-Anteil, der Playwright-Suite (zuletzt 39 Tests, --retries=0) validiert.
+
 Stand: 2026-09-07. Quelle: Artifact "Die Parkrr-Hundert" (100 kuratierte Punkte aus zwei
 Code-Sweeps + Sessionwissen). Abarbeitung in validierten Batches, jeder Batch einzeln
 committet. Leitplanken: kundenwirksames Verhalten landet hinter Opt-in-Flags (Default aus),

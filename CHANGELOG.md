@@ -40,6 +40,23 @@ Stand des Verbesserungsprogramms „Parkrr-Hundert" (September 2026).
 - **`parkrr seed-demo`:** befüllt eine frische Datenbank mit erkennbaren
   Demo-Daten (idempotent; weigert sich auf einer benutzten Datenbank).
 - **Storno-Dokumente nennen die stornierte Rechnungsnummer** (§11 UStG).
+- **Portal-Briefkasten:** Kunden können Kontaktdaten-Änderungen und Abholtermine
+  einreichen; der Betreiber übernimmt sie per Klick auf der Übersicht — das
+  Portal selbst schreibt nie in Stammdaten.
+- **Portal auf Englisch:** folgt der Browsersprache, umschaltbar, mit Gedächtnis.
+- **Kalenderansicht:** Abholungen, Reservierungen, fällige Rechnungen und
+  Abholwünsche im Monatsraster.
+- **Bulk-Aktionen:** mehrere Gefährte gemeinsam als abgeholt markieren oder
+  stornieren.
+- **Datei-Anhänge** (PDF/JPEG/PNG) je Person und Gefährt, mit erzwungenem
+  Download und Prüfung am Dateiinhalt.
+- **Verlauf je Person** (alle Ereignisse in einem Strom) und
+  **Belegungshistorie je Stellplatz** ("wer stand wann auf Platz 3?").
+- **Titelbild & Fotoreihenfolge** für Gefährt-Fotos; der Planer zeigt das
+  Titelbild.
+- **E2E-Tests für Login, 2FA und Passkey** (echter TOTP, virtueller
+  WebAuthn-Authenticator).
+- **Betreiber-Handbuch** (docs/betreiber-handbuch.md).
 
 ### Geändert
 - **PDFs (Rechnung, Übergabeprotokoll, Berichte) mit eingebetteter
@@ -55,6 +72,11 @@ Stand des Verbesserungsprogramms „Parkrr-Hundert" (September 2026).
   (u. a. S3-Wiederherstellung, Recovery-Codes).
 - Die Symbol-Knöpfe (✕, 🗑, ⟳, ⭳) sind echte Icons statt Emojis — einheitlich
   auf allen Plattformen und für Screenreader benannt.
+
+### Entfernt
+- Die seit Migration 012 tote Alt-Tabelle `flatrate_paid_years`; noch vorhandene
+  historische Zeilen werden beim Update automatisch ins Änderungsprotokoll
+  archiviert.
 
 ### Betrieb
 - Neue optionale Umgebungsvariablen: `PARKRR_ALERT_EMAIL`, `PARKRR_TIMEZONE`,
