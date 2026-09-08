@@ -353,6 +353,23 @@ func TestInputLengthValidation(t *testing.T) {
 	}
 }
 
+func TestSearchQueryLengthValidation(t *testing.T) {
+	shortQuery := "test"
+	if !validSearchQueryLength(shortQuery) {
+		t.Errorf("validSearchQueryLength(%d) = false, want true", len(shortQuery))
+	}
+
+	exactQuery := strings.Repeat("x", maxSearchQueryLen)
+	if !validSearchQueryLength(exactQuery) {
+		t.Errorf("validSearchQueryLength(%d) = false, want true", len(exactQuery))
+	}
+
+	longQuery := strings.Repeat("x", maxSearchQueryLen+1)
+	if validSearchQueryLength(longQuery) {
+		t.Errorf("validSearchQueryLength(%d) = true, want false", len(longQuery))
+	}
+}
+
 func floatPtr(f float64) *float64 {
 	return &f
 }
