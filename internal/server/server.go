@@ -137,6 +137,13 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	// Aktivitäts-Verlauf: Zahlungen, Rechnungen, Posten, Statuswechsel, Übergaben,
 	// Pauschalen in EINEM Strom (Hundert 56).
 	mux.Handle("GET /api/persons/{id}/timeline", authed(hf(h.PersonTimeline)))
+	// Datei-Anhänge (PDF/JPEG/PNG) je Person und Gefährt (Hundert 57).
+	mux.Handle("GET /api/persons/{id}/attachments", authed(hf(h.ListAttachments)))
+	mux.Handle("POST /api/persons/{id}/attachments", editor(hf(h.UploadAttachment)))
+	mux.Handle("GET /api/vehicles/{id}/attachments", authed(hf(h.ListAttachments)))
+	mux.Handle("POST /api/vehicles/{id}/attachments", editor(hf(h.UploadAttachment)))
+	mux.Handle("GET /api/attachments/{id}", authed(hf(h.GetAttachment)))
+	mux.Handle("DELETE /api/attachments/{id}", editor(hf(h.DeleteAttachment)))
 
 	// --- Payments (recorded money-in / Kontoauszug) ---
 	mux.Handle("GET /api/persons/{id}/payments", authed(hf(h.ListPayments)))

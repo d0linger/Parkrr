@@ -41,7 +41,11 @@ B11 Destruktives + Betreiber-Punkte.
       bewusst getroffene und bestätigte Regel (Session-Memory invoice-period-lock).
       Sie hier umzukehren wäre keine Verbesserung, sondern ein Richtungswechsel —
       wenn gewünscht, bitte explizit beauftragen.
-- [ ] **21** [Mittel/L] E-Rechnung (ZUGFeRD/XRechnung)
+- [>] **21** [Mittel/L] E-Rechnung (ZUGFeRD/XRechnung)
+      EIGENES VORHABEN, nicht Batch-tauglich: EN-16931-XML plus PDF/A-3-Einbettung,
+      validiert gegen den KOSIT-Validator — eine formal falsche E-Rechnung ist
+      rechtlich schlechter als keine. Braucht zudem die Entscheidung des Betreibers
+      (Profil ZUGFeRD vs. XRechnung, Leitweg-ID bei Behoerdenkunden).
 - [>] **22** [Mittel/M] Buchhaltungsexport DATEV/BMD
       BETREIBER-ENTSCHEIDUNG: ein echter DATEV-Buchungsstapel (EXTF) bzw.
       BMD-Import braucht den KONTENRAHMEN des Betriebs (Erlöskonto, Debitoren,
@@ -49,8 +53,13 @@ B11 Destruktives + Betreiber-Punkte.
       Attrappe, die der Importer ablehnt. Die Rohdaten (Rechnungen, Zahlungen,
       Zusatzkosten) sind seit Punkt 19 als CSV exportierbar und von jedem
       Kanzlei-Importer per Spaltenzuordnung einlesbar.
-- [ ] **23** [Idee/L] SEPA-Lastschrift
-- [ ] **24** [Idee/L] Bankabgleich per camt.053-Import
+- [>] **23** [Idee/L] SEPA-Lastschrift
+      BETREIBER-ENTSCHEIDUNG + eigenes Vorhaben: braucht Glaeubiger-ID, Mandats-
+      verwaltung (Unterschriften!), pain.008-Export und die Bank des Betreibers.
+- [>] **24** [Idee/L] Bankabgleich per camt.053-Import
+      Eigenes Vorhaben: ohne ECHTE camt.053-Dateien der Betreiber-Bank ist jeder
+      Parser ungeprueft — und ein Abgleich, der Zahlungen falsch zuordnet, ist
+      gefaehrlicher als Handarbeit. Vorarbeit liegt bereit (payments-API, Zuordnung).
 - [>] **25** [Idee/S] Skonto und Rabatte je Vereinbarung
       BETREIBER-ENTSCHEIDUNG: ein Preisnachlass ist heute über die frei
       wählbare Pauschale/Rate abbildbar. Echtes Skonto (zahlungszielabhängiger
@@ -71,7 +80,10 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **34** [Mittel/S] Checksummen in schema_migrations — `internal/database/database.go:116`
 - [x] **35** [Mittel/M] Audit-Suche indexfähig machen — `internal/handlers/audit.go:23`
 - [x] **36** [Mittel/M] Portal-Statistikpfad wirklich scopen — `internal/handlers/stats.go:651`
-- [ ] **37** [Idee/L] OpenAPI-Spezifikation
+- [>] **37** [Idee/L] OpenAPI-Spezifikation
+      Eigenes Vorhaben: ~150 Routen ehrlich zu spezifizieren ist Tagesarbeit, und
+      eine Teil-Spezifikation, die Routen verschweigt, fuehrt Nutzer in die Irre.
+      Kandidat fuer Generierung aus dem Code statt Handpflege.
 
 ## Sicherheit und Datenschutz (B8 Sicherheit)
 
@@ -110,7 +122,7 @@ B11 Destruktives + Betreiber-Punkte.
 - [ ] **54** [Mittel/M] Bulk-Aktionen für Gefährte
 - [ ] **55** [Mittel/M] Kalenderansicht
 - [x] **56** [Mittel/M] Aktivitäts-Timeline pro Person
-- [ ] **57** [Mittel/M] Datei-Anhänge je Person und Gefährt
+- [x] **57** [Mittel/M] Datei-Anhänge je Person und Gefährt
 - [x] **58** [Idee/S] Fotoreihenfolge und Titelbild
 
 ## Barrierefreiheit (B6 A11y)
@@ -130,8 +142,16 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **68** [Hoch/S] Precache vervollständigen — `web/static/sw.js:3`
 - [x] **69** [Mittel/S] Manifest ausbauen — `web/static/manifest.webmanifest:44`
 - [x] **70** [Mittel/S] theme-color dem Theme folgen lassen — `web/static/index.html:6`
-- [ ] **71** [Idee/L] Offline-Queue für Schreibaktionen
-- [ ] **72** [Idee/M] Web-Push-Benachrichtigungen
+- [>] **71** [Idee/L] Offline-Queue für Schreibaktionen
+      Eigenes Vorhaben mit echtem Verlustrisiko: Konfliktloesung (zwei Bearbeiter,
+      ein Datensatz), Wiedergabe-Reihenfolge und die Frage, welche Aktionen
+      ueberhaupt offline-faehig sein DUERFEN (Geld sicher nicht), brauchen ein
+      Design-Dokument, keinen Batch.
+- [>] **72** [Idee/M] Web-Push-Benachrichtigungen
+      Braucht Betreiber-Infrastruktur (VAPID-Schluesselpaar, Abo-Verwaltung je
+      Geraet) und die Entscheidung, WAS pushen darf. Der Wert gegenueber der
+      vorhandenen Alarm-Mail (PARKRR_ALERT_EMAIL) ist fuer Ein-Betreiber-Betriebe
+      gering — erst nach Bedarf bauen.
 - [x] **73** [Idee/S] Kamera-Direktaufnahme
       War bereits umgesetzt (Commit bbdced0, vor dem Programm): der "Kamera"-Knopf
       an den Gefährt-Fotos nutzt capture=environment und öffnet am Handy direkt
@@ -152,7 +172,9 @@ B11 Destruktives + Betreiber-Punkte.
 - [x] **78** [Mittel/S] Emoji-Knöpfe durch SVG-Icons ersetzen — `web/static/js/app.js:6230`
 - [x] **79** [Mittel/M] Belegungshistorie pro Stellplatz
 - [x] **80** [Mittel/S] Standardmaße je Kategorie
-- [ ] **81** [Idee/L] Mehrere Ebenen je Halle
+- [>] **81** [Idee/L] Mehrere Ebenen je Halle
+      Planner-Grossumbau (Datenmodell + Zeichenflaeche + Auto-Anordnen je Ebene) —
+      per stehender Leitplanke (AR4) nichts fuer autonome Umsetzung.
 - [x] **82** [Idee/M] Stellplatz-Reservierung mit Zeitraum
       Im Kern bereits vorhanden: Gefährte tragen reserved_from/reserved_until
       (Formular, Kartenanzeige, Status "reserviert"), und seit dem Statuswechsel-
@@ -194,9 +216,15 @@ B11 Destruktives + Betreiber-Punkte.
       ist genau der Schritt, der menschliche Freigabe braucht — die
       Vorher/Nachher-Artifacts aus dieser Session sind die Entscheidungsgrundlage.
 - [x] **97** [Mittel/M] Betreiber-Handbuch
-- [ ] **98** [Idee/L] Mehrsprachigkeit der App — `web/static/js/app.js:148`
+- [>] **98** [Idee/L] Mehrsprachigkeit der App — `web/static/js/app.js:148`
+      Eigenes Vorhaben: tausende Strings in einer 8000-Zeilen-Datei. Das Portal —
+      die einzige KUNDEN-Ansicht — ist seit B29 zweisprachig; die Betreiber-App
+      ist bewusst deutsch, bis ein realer Bedarf den Umbau rechtfertigt.
 - [x] **99** [Idee/S] CHANGELOG und Release-Notes
-- [ ] **100** [Idee/L] Mandantenfähigkeit
+- [>] **100** [Idee/L] Mandantenfähigkeit
+      Architektur-Entscheidung des Betreibers (getrennte Instanzen vs. tenant_id
+      durch jede Tabelle, jede Abfrage, jeden Index und jede Sperre). Bis dahin:
+      eine Instanz je Betrieb ist der sichere, heute funktionierende Weg.
 
 Hinweis Betreiber-Punkte ([>]): 2FA-Pflicht, Passkey-only, Rechnungslauf-Aktivierung,
 Mahnstufen-Aktivierung, SEPA-Glaeubiger-ID, VAPID-Keys, S3-Retention-Wert, Replikat-Limiter,
