@@ -145,6 +145,12 @@ var auditIgnoredPerFunc = map[string]map[string]bool{
 	// the user's change (the agreement flag) and must stay audited, which is why this
 	// is scoped to the handler instead of living in auditIgnoredColumns.
 	"DeletePayment": {"paid": true},
+	// ResolvePortalRequest stempelt beim Erledigen resolved_at/resolved_by — das
+	// "wer/wann", das die Audit-Zeile selbst trägt (Nutzer + Zeitpunkt stehen in
+	// ihr), plus der status, den der Eintrag als Text nennt. Kein eigener Diff
+	// nötig; die inhaltliche Übernahme (Kontaktdaten) diffst der Handler separat
+	// mit Vorher/Nachher auf der PERSON.
+	"ResolvePortalRequest": {"resolved_at": true, "resolved_by": true},
 	// TOTPSetup DOES record this column — as `two_factor_active`, because
 	// isSecretField substring-matches "totp" and would rewrite a `totp_enabled` key to
 	// ***REDACTED***, turning a harmless boolean into a payload that carries nothing

@@ -87,6 +87,9 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.HandleFunc("GET /api/portal/summary", h.PortalSummary)
 	mux.HandleFunc("GET /api/portal/invoices/{id}/pdf", h.PortalInvoicePDF)
 	mux.HandleFunc("GET /api/portal/invoices/{id}/pay-qr", h.PortalPayQR)
+	// Der einzige öffentliche SCHREIBWEG: ein Briefkasten, kein Stift. Wünsche
+	// (Kontaktdaten, Abholtermin) landen als Anfrage beim Betreiber (Hundert 85/87).
+	mux.HandleFunc("POST /api/portal/requests", h.PortalCreateRequest)
 
 	// --- Auth (protected) ---
 	mux.Handle("POST /api/auth/logout", authed(hf(ah.Logout)))
@@ -123,6 +126,8 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/persons/{id}/portal-links", editor(hf(h.ListPortalLinks)))
 	mux.Handle("POST /api/persons/{id}/portal-link/revoke", editor(hf(h.RevokePortalLinks)))
 	mux.Handle("POST /api/portal-links/{id}/revoke", editor(hf(h.RevokePortalLink)))
+	mux.Handle("GET /api/portal-requests", editor(hf(h.ListPortalRequests)))
+	mux.Handle("POST /api/portal-requests/{id}/resolve", editor(hf(h.ResolvePortalRequest)))
 	mux.Handle("PUT /api/persons/{id}", editor(hf(h.UpdatePerson)))
 	mux.Handle("DELETE /api/persons/{id}", editor(hf(h.DeletePerson)))
 	// Anonymisieren ist der Ausweg, wenn DeletePerson wegen bestehender Rechnungen

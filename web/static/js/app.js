@@ -1129,6 +1129,45 @@
             : pct >= 0 ? '▲ +' + pct + ' %' : '▼ ' + Math.abs(pct) + ' %';
         return { txt, cls, title: 'ggü. gleichem Zeitraum ' + (ov.year - 1), label: lbl('ggü. ' + (ov.year - 1)) };
     }
+    // Kundenwünsche aus dem Portal (Hundert 85/87): das Betreiber-Postfach. Nur
+    // gerendert, wenn offene Wünsche da sind — kein Dauerrauschen auf der Übersicht.
+    async function portalRequestsCard() {
+        if (!canManage()) return null;
+        let reqs = [];
+        try { reqs = await api.get('/portal-requests'); } catch (e) { return null; }
+        const open = (reqs || []).filter((r) => r.status === 'offen');
+        if (!open.length) return null;
+        const card = el('div', { class: 'card' },
+            el('h3', {}, 'Kundenwünsche ', el('span', { class: 'sec-count' }, String(open.length))));
+        const KIND = { contact_update: 'Kontaktdaten', pickup: 'Abholung' };
+        const resolve = async (req, action, node) => {
+            try {
+                await api.post('/portal-requests/' + req.id + '/resolve', { action });
+                toast(action === 'apply' ? 'Übernommen' : action === 'reject' ? 'Abgelehnt' : 'Erledigt', 'success');
+                node.remove();
+                if (!card.querySelector('.pr-row')) render();
+            } catch (e) { toast(e.message, 'error'); }
+        };
+        open.forEach((rq) => {
+            const pl = asObj(rq.payload);
+            const detail = rq.kind === 'pickup'
+                ? ('Wunschtermin ' + (pl.date ? new Date(pl.date).toLocaleDateString('de-DE') : '?') + (pl.note ? ' — ' + pl.note : ''))
+                : Object.entries(pl).map(([k, v]) => (k === 'email' ? 'E-Mail' : k === 'phone' ? 'Telefon' : 'Adresse') + ': ' + v).join(' · ');
+            const row = el('div', { class: 'pr-row' },
+                el('div', { class: 'pay-main' },
+                    el('div', { class: 'pay-method' },
+                        el('a', { href: '#/person/' + rq.person_id }, esc(rq.person_name)), ' · ' + (KIND[rq.kind] || rq.kind)),
+                    el('div', { class: 'pay-date' }, esc(detail) + ' · ' + new Date(rq.created_at).toLocaleDateString('de-DE'))),
+                el('div', { class: 'card-actions' },
+                    rq.kind === 'contact_update'
+                        ? el('button', { class: 'btn btn-primary btn-sm', title: 'Gewünschte Kontaktdaten in die Stammdaten übernehmen', onclick: (e) => resolve(rq, 'apply', e.currentTarget.closest('.pr-row')) }, 'Übernehmen')
+                        : el('button', { class: 'btn btn-primary btn-sm', title: 'Termin vereinbart — Wunsch schließen', onclick: (e) => resolve(rq, 'done', e.currentTarget.closest('.pr-row')) }, 'Erledigt'),
+                    el('button', { class: 'btn btn-ghost btn-sm', onclick: (e) => resolve(rq, 'reject', e.currentTarget.closest('.pr-row')) }, 'Ablehnen')));
+            card.append(row);
+        });
+        return card;
+    }
+
     routes.dashboard = async (page) => {
         const ov = await api.get('/overview' + (dashYear ? '?year=' + dashYear : ''));
         let occ = null;
@@ -1369,6 +1408,10 @@
         // CSV export for accounting — a plain download link carries the session
         // cookie; the server sends it as a ;-separated, BOM-prefixed attachment.
         const expLink = (entity, label) => el('a', { class: 'btn btn-ghost btn-sm', href: '/api/export/' + entity, download: '' }, icon('download', 15), ' ' + label);
+        // Betreiber-Postfach (Hundert 85/87) — nur sichtbar, wenn Wünsche offen sind.
+        const prCard = await portalRequestsCard();
+        if (prCard) page.append(prCard);
+
         page.append(el('div', { class: 'chart-card' },
             el('h3', {}, 'Export (CSV)'),
             el('div', { class: 'muted', style: 'font-size:.82rem;margin:-.35rem 0 .7rem' }, 'Für Buchhaltung/Steuerberater — öffnet direkt in Excel/LibreOffice.'),
@@ -8424,13 +8467,23 @@
     // in the URL), so it stays out of server/reverse-proxy logs and Referer (SEC-01).
     // PDFs and the pay-QR therefore can't be plain <a>/<img> URLs — fetch them as
     // blobs and hand the browser an object URL.
-    async function portalFetch(token, path, as) {
+    async function portalFetch(token, path, as, opts = {}) {
+        const headers = { 'Authorization': 'Bearer ' + token, 'Accept': as === 'json' ? 'application/json' : '*/*' };
+        if (opts.body) headers['Content-Type'] = 'application/json';
         const res = await fetch('/api/portal' + path, {
+            method: opts.method || 'GET',
+            body: opts.body,
             credentials: 'omit',
             referrerPolicy: 'no-referrer',
-            headers: { 'Authorization': 'Bearer ' + token, 'Accept': as === 'json' ? 'application/json' : '*/*' },
+            headers,
         });
-        if (!res.ok) throw new Error('portal ' + res.status);
+        if (!res.ok) {
+            // Der Server antwortet mit deutschem Fehlertext im JSON — den zeigen,
+            // statt eines nackten Statuscodes (z. B. der 429-Deckel des Briefkastens).
+            let msg = 'portal ' + res.status;
+            try { const j = await res.json(); if (j && j.error) msg = j.error; } catch (e) { /* leer */ }
+            throw new Error(msg);
+        }
         return as === 'json' ? res.json() : res.blob();
     }
     async function portalOpenPdf(token, id) {
@@ -8462,6 +8515,11 @@
             handovers: 'Übergabeprotokolle', signed: 'unterschrieben: ', storein: 'Einlagerung', storeout: 'Auslagerung',
             invoices: 'Rechnungen', no_invoices: 'Keine Rechnungen.', invoice: 'Rechnung ', open_part: 'offen ',
             scan_pay: 'Scan zum Bezahlen (SEPA)', qr_alt: 'SEPA-Zahlungs-QR', foot: 'Read-only Ansicht · Parkrr',
+            requests: 'Anliegen', req_contact: 'Kontaktdaten ändern', req_pickup: 'Abholung anmelden',
+            req_email: 'Neue E-Mail', req_phone: 'Neue Telefonnummer', req_address: 'Neue Adresse',
+            req_date: 'Wunschtermin', req_note: 'Anmerkung (optional)', req_send: 'Absenden',
+            req_sent: 'Übermittelt — der Betreiber meldet sich.', req_err: 'Senden fehlgeschlagen.',
+            req_hint: 'Änderungen werden vom Betreiber geprüft und übernommen.',
             status: { reserved: 'reserviert', stored: 'eingestellt', collected: 'abgeholt', cancelled: 'storniert' },
             inv_status: { offen: 'offen', teilbezahlt: 'teilweise bezahlt', bezahlt: 'bezahlt', storniert: 'storniert', storno: 'Storno' },
         },
@@ -8471,6 +8529,11 @@
             handovers: 'Handover protocols', signed: 'signed by ', storein: 'Check-in', storeout: 'Check-out',
             invoices: 'Invoices', no_invoices: 'No invoices.', invoice: 'Invoice ', open_part: 'open ',
             scan_pay: 'Scan to pay (SEPA)', qr_alt: 'SEPA payment QR', foot: 'Read-only view · Parkrr',
+            requests: 'Requests', req_contact: 'Update contact details', req_pickup: 'Request pickup',
+            req_email: 'New e-mail', req_phone: 'New phone number', req_address: 'New address',
+            req_date: 'Preferred date', req_note: 'Note (optional)', req_send: 'Send',
+            req_sent: 'Submitted — the operator will get back to you.', req_err: 'Sending failed.',
+            req_hint: 'Changes are reviewed and applied by the operator.',
             status: { reserved: 'reserved', stored: 'stored', collected: 'collected', cancelled: 'cancelled' },
             inv_status: { offen: 'open', teilbezahlt: 'partly paid', bezahlt: 'paid', storniert: 'cancelled', storno: 'credit note' },
         },
@@ -8556,6 +8619,36 @@
             }
         });
         wrap.append(icard);
+        // Anliegen (Hundert 85/87): der einzige Schreibweg des Portals ist ein
+        // Briefkasten — der Kunde reicht ein, der Betreiber übernimmt.
+        {
+            const rcard = el('div', { class: 'portal-card' }, el('h2', {}, P9.requests),
+                el('p', { class: 'muted', style: 'font-size:.8rem' }, P9.req_hint));
+            const send = async (body, msgEl, btn) => {
+                btn.disabled = true;
+                try {
+                    await portalFetch(token, '/requests', 'json', { method: 'POST', body: JSON.stringify(body) });
+                    msgEl.textContent = P9.req_sent; msgEl.className = 'muted';
+                } catch (e) { msgEl.textContent = (e && e.message) || P9.req_err; msgEl.className = 'portal-err'; }
+                btn.disabled = false;
+            };
+            // Kontaktdaten
+            const cEmail = el('input', { type: 'email', placeholder: P9.req_email, 'aria-label': P9.req_email });
+            const cPhone = el('input', { type: 'tel', placeholder: P9.req_phone, 'aria-label': P9.req_phone });
+            const cAddr = el('input', { type: 'text', placeholder: P9.req_address, 'aria-label': P9.req_address });
+            const cMsg = el('p', { class: 'muted', role: 'status' });
+            const cBtn = el('button', { class: 'btn btn-primary btn-sm' }, P9.req_send);
+            cBtn.addEventListener('click', () => send({ kind: 'contact_update', email: cEmail.value.trim(), phone: cPhone.value.trim(), address: cAddr.value.trim() }, cMsg, cBtn));
+            rcard.append(el('h3', {}, P9.req_contact), el('div', { class: 'portal-form' }, cEmail, cPhone, cAddr, cBtn), cMsg);
+            // Abholung
+            const pDate = el('input', { type: 'date', 'aria-label': P9.req_date });
+            const pNote = el('input', { type: 'text', placeholder: P9.req_note, 'aria-label': P9.req_note });
+            const pMsg = el('p', { class: 'muted', role: 'status' });
+            const pBtn = el('button', { class: 'btn btn-primary btn-sm' }, P9.req_send);
+            pBtn.addEventListener('click', () => send({ kind: 'pickup', date: pDate.value, note: pNote.value.trim() }, pMsg, pBtn));
+            rcard.append(el('h3', {}, P9.req_pickup), el('div', { class: 'portal-form' }, pDate, pNote, pBtn), pMsg);
+            wrap.append(rcard);
+        }
         wrap.append(el('p', { class: 'portal-foot muted' }, P9.foot));
         pv.append(wrap);
     }

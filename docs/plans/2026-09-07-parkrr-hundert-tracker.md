@@ -164,9 +164,9 @@ B11 Destruktives + Betreiber-Punkte.
 
 - [x] **83** [Hoch/S] Portal: Blob-URLs freigeben, Fehler abfangen — `web/static/js/app.js:7986`
 - [x] **84** [Mittel/M] Portal: Übergabeprotokolle einsehen
-- [ ] **85** [Mittel/M] Portal: Stammdaten-Änderungswunsch
+- [x] **85** [Mittel/M] Portal: Stammdaten-Änderungswunsch
 - [x] **86** [Mittel/S] E-Mail-Versandprotokoll
-- [ ] **87** [Idee/M] Portal: Terminwunsch für Abholung
+- [x] **87** [Idee/M] Portal: Terminwunsch für Abholung
 - [!] **88** [Idee/S] Portal-Link als QR auf der Rechnung
       ÜBERSPRUNGEN aus Sicherheitsgründen: der Portal-Link IST das Geheimnis
       (Bearer-Token mit TTL und Widerruf; SEC-01 hält ihn bewusst aus URLs und

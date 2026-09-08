@@ -51,7 +51,13 @@ test('Abgeschnittene Liste sagt, dass sie abgeschnitten ist', async ({ page }) =
   const note = page.locator('.list-trunc');
   await expect(note).toBeVisible();
   const text = (await note.textContent()) || '';
-  expect(text).toContain('1 von ' + head.total);
+  // Nicht gegen den frueher gemessenen Gesamtwert pruefen: auf der GETEILTEN
+  // Test-DB legen parallel laufende Go-Tests laufend Personen an und ab — zwei
+  // Messungen Sekunden auseinander differieren dann legitim. Die Zusicherung ist
+  // die SEMANTIK des Banners: 1 geladen, ein groesserer Gesamtwert, Such-Hinweis.
+  const m = text.match(/Es werden 1 von (\d+) Eintr/);
+  expect(m, 'Banner-Wortlaut: ' + text).toBeTruthy();
+  expect(Number(m[1])).toBeGreaterThan(1);
   expect(text).toContain('Suche');
 });
 
