@@ -193,7 +193,7 @@ B11 Destruktives + Betreiber-Punkte.
       (Session-Memory design-taste-artifacts-only). Ein Token-Rollout in die App
       ist genau der Schritt, der menschliche Freigabe braucht — die
       Vorher/Nachher-Artifacts aus dieser Session sind die Entscheidungsgrundlage.
-- [ ] **97** [Mittel/M] Betreiber-Handbuch
+- [x] **97** [Mittel/M] Betreiber-Handbuch
 - [ ] **98** [Idee/L] Mehrsprachigkeit der App — `web/static/js/app.js:148`
 - [x] **99** [Idee/S] CHANGELOG und Release-Notes
 - [ ] **100** [Idee/L] Mandantenfähigkeit

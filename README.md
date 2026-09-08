@@ -541,6 +541,14 @@ Notes:
 
 ---
 
+## 📘 Betreiber-Handbuch
+
+Für alles außenherum — Backups prüfen und wiederherstellen, Updates einspielen,
+die Verhaltens-Schalter, Portal-Sicherheit, Nachweise, Fehlersuche — gibt es das
+[Betreiber-Handbuch](docs/betreiber-handbuch.md).
+
+---
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md).
