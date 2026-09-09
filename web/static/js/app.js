@@ -892,12 +892,21 @@
         const search = el('input', { class: 'search', type: 'search', placeholder: 'Suche …', value: qRaw, 'aria-label': 'In ' + (opts.title || 'Liste') + ' suchen' });
         const sortSel = el('select', { 'aria-label': 'Sortierung' }, ...opts.sorts.map((s, i) => el('option', { value: i, selected: i === sortIdx }, s.label)));
         const toolbar = el('div', { class: 'toolbar' }, search, sortSel);
-        const controlState = {};
+        // Der Filterzustand der Werkzeugleiste gehoert zum Listenzustand wie Suche,
+        // Sortierung und Seite. Ein frisches {} bei jedem Aufbau warf ihn weg — und
+        // render() baut die Seite nach JEDER Massenaktion, nach "Abbrechen" und nach
+        // jedem Speichern neu auf. Der Betreiber filterte auf drei Gefaehrte und stand
+        // ohne Vorwarnung wieder vor der vollstaendigen Liste, oft kurz vor dem
+        // naechsten Klick. controls() belegt deshalb nur noch vor, was leer ist.
+        const controlState = saved.controlState || {};
         // `c == null` ueberspringen wie el() es tut: controls() liefert je nach Rolle
         // Loecher (die Mehrfachauswahl gibt es nur fuer Verwalter), und append(null)
         // schreibt nach WebIDL das WORT "null" als Textknoten in die Werkzeugleiste.
         if (opts.controls) {
-            for (const c of opts.controls(() => { pageNum = 1; refresh(); }, controlState)) {
+            // keepPage: ein reiner Anzeige-Umschalter (Mehrfachauswahl) darf die Liste
+            // nicht auf Seite 1 zurueckwerfen; ein Filterwechsel dagegen schon, sonst
+            // zeigt eine hohe Seitenzahl in der geschrumpften Liste nichts mehr.
+            for (const c of opts.controls((keepPage) => { if (!keepPage) pageNum = 1; refresh(); }, controlState)) {
                 if (c == null || c === false) continue;
                 toolbar.append(c);
             }
@@ -920,13 +929,23 @@
         function refresh() {
             let items = opts.items.slice();
             if (opts.extraFilter) items = items.filter((it) => opts.extraFilter(it, controlState));
+            // Wer eine Auswahl ÜBER die Liste hinweg hält (Mehrfachauswahl), muss
+            // erfahren, was der aktuelle Filter überhaupt noch zeigt — sonst wirkt eine
+            // Massenaktion auf Zeilen, die niemand mehr vor sich hat.
+            //
+            // VOR der Suche, und das ist der Punkt: der FILTER ist eine Entscheidung
+            // ("nur diese Person"), die Suche ist fluechtig. Lief der Rueckruf danach,
+            // loeschte schon der erste Tastendruck im Suchfeld — etwa um ein weiteres
+            // Gefaehrt zu finden — die ganze bisherige Auswahl unwiderruflich; das
+            // Leeren des Suchfelds holte sie nicht zurueck.
+            if (opts.onFiltered) opts.onFiltered(items);
             if (q) items = items.filter((it) => opts.searchText(it).includes(q));
             const s = opts.sorts[sortIdx];
             if (s && s.cmp) items.sort(s.cmp);
             const total = items.length;
             const pages = Math.max(1, Math.ceil(total / pageSize));
             if (pageNum > pages) pageNum = pages;
-            listState.set(stateKey, { qRaw, sortIdx, pageNum });
+            listState.set(stateKey, { qRaw, sortIdx, pageNum, controlState });
             const start = (pageNum - 1) * pageSize;
             const slice = items.slice(start, start + pageSize);
             listEl.innerHTML = '';
@@ -1464,7 +1483,11 @@
             searchText: (p) => norm(personName(p) + ' ' + p.email + ' ' + p.phone),
             // Filter toggle: only persons with an open balance (Mahn-/Nachfass-Sicht).
             controls: (refresh, cs) => {
-                const btn = el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-pressed': 'false',
+                // Aus cs vorbelegen, nicht hart auf "aus": der Filterzustand ueberlebt
+                // jetzt ein render() (siehe mountList), und ein fest verdrahtetes
+                // aria-pressed="false" zeigte sonst "alle Personen", waehrend die Liste
+                // auf offene Posten gefiltert ist.
+                const btn = el('button', { class: 'btn btn-sm ' + (cs.owedOnly ? 'btn-primary' : 'btn-ghost'), type: 'button', 'aria-pressed': String(!!cs.owedOnly),
                     onclick: () => { cs.owedOnly = !cs.owedOnly; btn.className = 'btn btn-sm ' + (cs.owedOnly ? 'btn-primary' : 'btn-ghost'); btn.setAttribute('aria-pressed', String(!!cs.owedOnly)); refresh(); } },
                     'Nur offen');
                 const out = [btn];
@@ -1476,7 +1499,13 @@
                 }
                 return out;
             },
-            extraFilter: (p, cs) => !cs.owedOnly || (Number(oweMap[p.id]) || 0) > 0.005,
+            // `oweOk` gehoert in die Bedingung, seit cs.owedOnly ein render() ueberlebt:
+            // schlaegt /persons/outstanding fehl, ist oweMap leer, und der Filter haette
+            // JEDE Person ausgeblendet — die Seite meldete "Noch keine Personen." und sah
+            // aus wie eine leere Datenbank. Vorher rettete das frische {} bei jedem Aufbau
+            // den Fall, weil cs.owedOnly dann falsy war. Ohne Salden lieber ungefiltert
+            // zeigen als nichts: der Toast oben sagt bereits, dass sie fehlen.
+            extraFilter: (p, cs) => !cs.owedOnly || !oweOk || (Number(oweMap[p.id]) || 0) > 0.005,
             sorts: [
                 { label: 'Name A–Z', cmp: (a, b) => personName(a).localeCompare(personName(b)) },
                 { label: 'Name Z–A', cmp: (a, b) => personName(b).localeCompare(personName(a)) },
@@ -1722,6 +1751,15 @@
             fileIn.addEventListener('change', async () => {
                 const f = fileIn.files[0];
                 if (!f) return;
+                // Vorher pruefen, wie es der DXF-Import laengst tut: der globale
+                // Body-Deckel der Middleware greift VOR dem Handler, also auch vor
+                // dessen freundlicher Meldung. Ein 12-MB-Scan brach damit als nackte
+                // Absage ab, statt zu sagen, was zu klein zu machen ist.
+                if (f.size > 8 * 1024 * 1024) {
+                    toast('Datei ist zu groß (max. 8 MB)', 'error');
+                    fileIn.value = '';
+                    return;
+                }
                 const bar = prog.querySelector('i');
                 const show = (frac) => { prog.hidden = false; if (bar) bar.style.width = Math.round(frac * 100) + '%'; prog.setAttribute('aria-valuenow', String(Math.round(frac * 100))); };
                 try {
@@ -2163,10 +2201,25 @@
         if (!await confirmDialog(name + ' senden?',
             'Sendet eine E-Mail mit den offenen Rechnungsdaten an den hinterlegten Kontakt der Person.'
             + (iv.reminder_count ? ' Bisher ' + iv.reminder_count + '× gemahnt.' : ''), 'Senden')) return;
+        // Wohin der Benutzer gerade schaut, VOR dem Warten festhalten: der Aufruf kann
+        // die vollen 20 Sekunden der SMTP-Zustellung dauern.
+        const at = location.hash;
         try {
             const r = await api.post('/invoices/' + iv.id + '/remind', {});
             const sent = r && r.level === 1 ? 'Zahlungserinnerung' : r && r.level === 2 ? '1. Mahnung' : '2. Mahnung';
             toast(sent + ' gesendet' + (r && r.to ? ' an ' + r.to : ''), 'success');
+            // Neu laden, sonst zeigt die Seite weiter den Stand von vorhin: `iv` ist die
+            // einmal geholte Kopie, und der Dialog leitet die naechste Stufe aus
+            // iv.reminder_count ab. Ein zweiter Klick fragte darum erneut
+            // "Zahlungserinnerung senden?", waehrend der Server aus der Tabelle die
+            // 1. Mahnung ableitete und sie auch verschickte — genau die Ungleichheit,
+            // gegen die fetchInvoice die Mahnspalten ueberhaupt erst mitliefert.
+            //
+            // Aber nur, wenn die Rechnung noch offen ist: render() baut IMMER die
+            // aktuelle Route neu auf, nicht die, von der der Klick kam. Wer waehrend der
+            // Zustellung in den Hallenplaner wechselte, bekam ihn spaeter grundlos
+            // zerlegt — samt der noch nicht gespeicherten Geometrie im Autosave-Fenster.
+            if (location.hash === at) render();
         } catch (e) { toast(e.message || 'Senden fehlgeschlagen', 'error'); }
     }
     async function createInvoiceFor(personId, btn) {
@@ -2332,12 +2385,28 @@
             const ids = Array.from(bulkSel);
             if (!ids.length) { toast('Nichts ausgewählt', 'error'); return; }
             if (!await confirmDialog(label + '?', ids.length + ' Gefährt(e) werden ' + (status === 'collected' ? 'als abgeholt (heute) markiert' : 'storniert') + '. Jeder Wechsel folgt denselben Regeln wie der Einzelweg.', label)) return;
-            let ok = 0, fail = 0, firstErr = '';
+            // Der Einzelweg schickt IMMER ein Datum. Ohne eines nimmt der Server den
+            // Zweig `end_date = COALESCE(end_date, CURRENT_DATE)` und lässt ein bereits
+            // eingetragenes — womöglich weit künftiges — Abholdatum stehen: das Gefährt
+            // galt als abgeholt, die Miete lief weiter, und der Dialog hatte "(heute)"
+            // zugesagt. Beim Stornieren bleibt es beim Serververhalten: dort verspricht
+            // der Dialog kein Datum, und ein zurückgezogenes Enddatum kann an einer
+            // bereits fakturierten Periode scheitern.
+            const body = { status, note: 'Bulk-Aktion' };
+            if (status === 'collected') body.date = today();
+            let ok = 0, firstErr = '';
+            const failedIds = [];
             for (const id of ids) {
-                try { await api.post('/vehicles/' + id + '/status', { status, note: 'Bulk-Aktion' }); ok++; }
-                catch (e) { fail++; if (!firstErr) firstErr = e.message || ''; }
+                try { await api.post('/vehicles/' + id + '/status', body); ok++; }
+                catch (e) { failedIds.push(id); if (!firstErr) firstErr = e.message || ''; }
             }
-            bulkSel.clear(); bulkMode = false;
+            // Nur das Erledigte aus der Auswahl nehmen. Vorher wurde sie vollständig
+            // geleert, und nach "5 erledigt · 3 fehlgeschlagen" musste der Betreiber die
+            // drei von Hand wiederfinden. Bleibt etwas offen, bleibt auch der Modus an.
+            bulkSel.clear();
+            failedIds.forEach((id) => bulkSel.add(id));
+            bulkMode = failedIds.length > 0;
+            const fail = failedIds.length;
             toast(fail ? ok + ' erledigt · ' + fail + ' fehlgeschlagen' + (firstErr ? ' (' + firstErr + ')' : '') : ok + ' erledigt', fail ? 'warn' : 'success');
             render();
         };
@@ -2366,13 +2435,11 @@
         await refreshLookups();
         const vehicles = await api.get('/vehicles');
         // Die Leiste MUSS vor mountList entstehen: mountList zeichnet die Liste noch im
-        // selben Zug (refresh() laeuft synchron), und der render-Rueckruf reicht
-        // page._bulkBar an jede Checkbox weiter. Wurde sie erst danach gesetzt, fing die
-        // erste Darstellung `undefined` ein — die Haken landeten zwar in bulkSel, aber
-        // der Zaehler der Leiste blieb bei "0 ausgewaehlt", und der Betreiber startete
-        // eine Massenaktion mit einer Zahl, die er auf dem Bildschirm nicht pruefen konnte.
+        // selben Zug (refresh() laeuft synchron), und die Rueckrufe unten greifen auf
+        // bulkBarEl zu. Wurde sie erst danach erzeugt, blieb der Zaehler der Leiste bei
+        // "0 ausgewaehlt", und der Betreiber startete eine Massenaktion mit einer Zahl,
+        // die er auf dem Bildschirm nicht pruefen konnte.
         const bulkBarEl = canManage() ? bulkBar() : null;
-        if (bulkBarEl) page._bulkBar = bulkBarEl;
         mountList(page, {
             title: 'Gefährte', emptyIcon: 'car', emptyText: 'Keine Gefährte in dieser Ansicht.', sourcePath: '/vehicles',
             onAdd: canManage() ? () => vehicleForm() : null,
@@ -2384,17 +2451,45 @@
                 { label: 'Kosten absteigend', cmp: (a, b) => b.accrued_cost - a.accrued_cost },
             ],
             controls: (refresh, cs) => {
-                cs.status = ''; cs.person = ''; cs.showArchived = false;
+                // Nur VORbelegen, nicht zuruecksetzen: der Filterzustand ueberlebt ein
+                // render() (siehe mountList), und ihn hier blind zu leeren machte genau
+                // das wieder zunichte. Die Bedienelemente werden entsprechend aus cs
+                // vorbelegt, sonst zeigte die Leiste "Alle Status", waehrend gefiltert ist.
+                if (cs.status == null) cs.status = '';
+                if (cs.person == null) cs.person = '';
+                if (cs.showArchived == null) cs.showArchived = false;
+                // Einen Personenfilter, zu dem es keine Person mehr gibt, fallen lassen.
+                // Er ueberlebt jetzt die ganze Sitzung, waehrend state.persons bei jedem
+                // Aufbau neu geholt wird: wurde die Person geloescht oder anonymisiert
+                // (oder faellt sie aus der geladenen Seite), traegt KEINE Option mehr
+                // `selected`, der Browser zeigt die erste — "Alle Personen" —, und
+                // extraFilter filtert trotzdem weiter auf die alte id. Die Liste stand
+                // dann leer da unter einer Leiste, die "kein Filter" behauptete, und der
+                // naheliegende Ausweg half nicht: "Alle Personen" erneut zu waehlen loest
+                // kein change-Ereignis aus, weil es bereits ausgewaehlt DARGESTELLT wird.
+                if (cs.person && !state.persons.some((p) => String(p.id) === cs.person)) cs.person = '';
                 const stSel = el('select', { 'aria-label': 'Status filtern' }, el('option', { value: '' }, 'Alle Status'),
-                    ...['stored', 'reserved', 'collected', 'cancelled'].map((s) => el('option', { value: s }, STATUS_LABEL[s])));
+                    ...['stored', 'reserved', 'collected', 'cancelled'].map((s) => el('option', { value: s, selected: s === cs.status }, STATUS_LABEL[s])));
                 stSel.addEventListener('change', () => { cs.status = stSel.value; refresh(); });
                 const peSel = el('select', { 'aria-label': 'Person filtern' }, el('option', { value: '' }, 'Alle Personen'),
-                    ...state.persons.map((p) => el('option', { value: p.id }, personName(p))));
+                    ...state.persons.map((p) => el('option', { value: p.id, selected: String(p.id) === cs.person }, personName(p))));
                 peSel.addEventListener('change', () => { cs.person = peSel.value; refresh(); });
                 // Mehrfachauswahl (Hundert 54): schaltet die Checkbox-Hülle der Karten an.
                 const bulkBtn = canManage() ? el('button', { class: 'btn btn-ghost btn-sm' + (bulkMode ? ' active' : ''), 'aria-pressed': String(bulkMode) }, 'Mehrfachauswahl') : null;
-                if (bulkBtn) bulkBtn.addEventListener('click', () => { bulkMode = !bulkMode; if (!bulkMode) bulkSel.clear(); render(); });
+                // Nur die Liste neu zeichnen, nicht die ganze Seite — und dabei die
+                // Seitenzahl behalten (keepPage): das Umschalten der Mehrfachauswahl
+                // aendert die Darstellung, nicht die Menge, und warf den Betreiber
+                // sonst von Seite 4 zurueck auf Seite 1.
+                if (bulkBtn) bulkBtn.addEventListener('click', () => {
+                    bulkMode = !bulkMode;
+                    if (!bulkMode) bulkSel.clear();
+                    bulkBtn.classList.toggle('active', bulkMode);
+                    bulkBtn.setAttribute('aria-pressed', String(bulkMode));
+                    if (bulkBarEl) bulkBarEl._sync();
+                    refresh(true);
+                });
                 const arChk = el('input', { type: 'checkbox' });
+                arChk.checked = !!cs.showArchived;
                 arChk.addEventListener('change', () => { cs.showArchived = arChk.checked; refresh(); });
                 const arLabel = el('label', { class: 'toggle-inline' }, arChk, el('span', {}, 'Archiv'));
                 return [stSel, peSel, arLabel, bulkBtn];
@@ -2402,7 +2497,18 @@
             // Hide archived (closed) vehicles unless the Archiv toggle is on.
             extraFilter: (v, cs) => (cs.showArchived || !v.archived) &&
                 (!cs.status || v.status === cs.status) && (!cs.person || String(v.person_id) === cs.person),
-            render: (v) => bulkWrap(vehicleCard(v, { linkable: !bulkMode }), v, page._bulkBar),
+            // Was der Filter ausblendet, faellt aus der Auswahl. bulkSel lebte als
+            // Modulzustand neben der Liste und wurde nie abgeglichen: wer auf Seite 1
+            // zwoelf Gefaehrte anhakte, weiterblaetterte und dann nach Person filterte,
+            // stornierte anschliessend elf Zeilen, die er nicht mehr sehen konnte.
+            onFiltered: (items) => {
+                if (!bulkSel.size) return;
+                const visible = new Set(items.map((v) => v.id));
+                let dropped = false;
+                bulkSel.forEach((id) => { if (!visible.has(id)) { bulkSel.delete(id); dropped = true; } });
+                if (dropped && bulkBarEl) bulkBarEl._sync();
+            },
+            render: (v) => bulkWrap(vehicleCard(v, { linkable: !bulkMode }), v, bulkBarEl),
         });
         if (bulkBarEl) {
             page.append(bulkBarEl);
@@ -7495,7 +7601,14 @@
             else if (which === 'load') P.load = Math.max(0.5, Math.min(60, +(P.load + d * 0.5).toFixed(1)));
             hideLen(); pushUndo(); markDirty(); layout();
         }
-        function clampAll() { P.spots.concat(P.excl).forEach((t) => { const cl = clampXY(t, t.x, t.y); t.x = cl.x; t.y = cl.y; if (t._id) t._dirty = true; }); }
+        // clampAll VERSCHIEBT Bloecke (auch Waende und Stuetzen) und ist damit selbst
+        // eine Geometrieaenderung — der Stempel gehoert hierher, nicht an jede der
+        // Aufrufstellen. setDim/setDimTo (Hallenmasse per +/- und per Eingabe) und
+        // refit (Umriss aus Waenden uebernehmen) riefen es, ohne zu stempeln: die
+        // Waende rutschten sichtbar, enclosure() lieferte aber weiter den alten
+        // Raster — Parkflaeche, Raum-m², Frei/Belegt und der SVG/PDF-Export rechneten
+        // gegen einen Grundriss, den es nicht mehr gab.
+        function clampAll() { P.spots.concat(P.excl).forEach((t) => { const cl = clampXY(t, t.x, t.y); t.x = cl.x; t.y = cl.y; if (t._id) t._dirty = true; }); bumpGeom(); }
         function addExcl(k) {
             const s = EXCL[k]; const b = { id: 'e' + (P.uid++), kind: k, x: 1, y: 1, w: s.w, h: s.h, label: s.label, mat: s.mat };
             // Zones (Stellfläche) may sit anywhere; blocking structures seek a free cell.
@@ -7742,7 +7855,10 @@
                 const vehs = blocks.filter((b) => b._id && b.kind !== 'excl'), excls = blocks.filter((b) => !(b._id && b.kind !== 'excl'));
                 if (vehs.length && !(await confirmDialog('Gefährte entfernen', vehs.length + ' Gefährt(e) aus dem Plan entfernen?', 'Entfernen'))) return;
                 selSet = [];
-                if (excls.length) { excls.forEach((b) => { P.excl = P.excl.filter((x) => x !== b); if (P.sel === b.id) P.sel = null; }); pushUndo(); markDirty(); }
+                // bumpGeom wie im Einzelweg (removeExcl -> commitGeom): ohne ihn blieb der
+                // Umschluss-Cache auf dem Stand VOR dem Loeschen, und eine per Rahmen
+                // geloeschte Wand zaehlte in Parkflaeche und Raumgroessen weiter mit.
+                if (excls.length) { excls.forEach((b) => { P.excl = P.excl.filter((x) => x !== b); if (P.sel === b.id) P.sel = null; }); bumpGeom(); pushUndo(); markDirty(); }
                 if (vehs.length) {
                     // Count failures and report the REAL result after the API calls — don't claim
                     // every vehicle was removed when some api.del() rejected.
@@ -8277,6 +8393,13 @@
         bulkMode = false;
         dashYear = null;
         calMonth = null;
+        // Die 2FA-Hinweis-Sperre ist an die SITZUNG gebunden, nicht an die Seite.
+        // Blieb sie gesetzt, bekam der nächste Anmeldende ohne zweiten Faktor am
+        // selben Rechner keinen Hinweis und keine Weiterleitung mehr, sondern auf
+        // jeder Route nur "Fehler: 2fa_enrollment_required" — ohne zu erfahren, was
+        // zu tun ist. Ebenso die Zählerstände fremder Listen.
+        twoFARedirected = false;
+        totalCounts.clear();
         showLogin();
     }
 

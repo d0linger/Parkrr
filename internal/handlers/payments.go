@@ -409,8 +409,14 @@ func (h *Handler) syncTogglePaymentTx(ctx context.Context, tx pgx.Tx, kind strin
 	// Serialize concurrent toggles of the SAME item: a transaction-scoped
 	// advisory lock makes the exists-check below reliable, so racing toggles
 	// (double-tap, retry, two tabs) mint exactly one auto-payment, not N.
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
-		kind+":"+strconv.FormatInt(refID, 10)); err != nil {
+	//
+	// Der Schlüssel kommt über advisoryKey, nicht über `hashtext($1)::bigint`:
+	// hashtext liefert einen vorzeichenbehafteten int4 und schnitte den Schlüsselraum
+	// von 2^64 auf 2^32 zusammen. Alle Sperren dieser Datenbank teilen sich EINEN
+	// Namensraum, also könnte eine solche Kollision auch eine ganz andere Sperre
+	// treffen — ein grundloses Blockieren, das niemand erklären kann.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`,
+		advisoryKey("parkrr.payment."+kind+":"+strconv.FormatInt(refID, 10))); err != nil {
 		return err
 	}
 	// Any allocation (auto OR manual) already settles this item — don't mint a

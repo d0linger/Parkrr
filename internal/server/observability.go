@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
+	promcollectors "github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/preining/parkrr/internal/database"
@@ -53,6 +54,16 @@ func registerMetrics(pool *pgxpool.Pool) *prometheus.Registry {
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(httpRequests, httpDuration)
 	reg.MustRegister(collectors(pool)...)
+	// Prozess- und Laufzeitmetriken des Go-Clients. Bei der eigenen Registry (statt
+	// der globalen Standardregistry) kommen sie NICHT von selbst mit — und
+	// ops/prometheus-alerts.yml wertet genau sie aus: die Neustartschleifen-Regel
+	// fragt process_start_time_seconds ab. Ohne diese Zeilen lief sie über einen
+	// leeren Vektor und konnte nie ausloesen: ein Waechter, der schweigt, weil es
+	// nichts zu sehen gibt, und nicht, weil alles in Ordnung ist.
+	reg.MustRegister(
+		promcollectors.NewProcessCollector(promcollectors.ProcessCollectorOpts{}),
+		promcollectors.NewGoCollector(),
+	)
 	return reg
 }
 

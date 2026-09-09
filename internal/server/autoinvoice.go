@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/preining/parkrr/internal/auth"
 	"github.com/preining/parkrr/internal/backup"
 	"github.com/preining/parkrr/internal/handlers"
 )
@@ -42,7 +43,14 @@ func StartAutoInvoice(pool *pgxpool.Pool, h *handlers.Handler, cron string, stop
 	slog.Info("automatischer Rechnungslauf aktiv", "cron", cron)
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
-	last := time.Now() // nicht sofort beim Start feuern: der erste Lauf gehört dem Cron
+	// Der Merker steht in der Datenbank (Migration 065), nicht nur im Speicher. Mit
+	// `last := time.Now()` verschob jeder Neustart, der über die geplante Minute fiel,
+	// den nächsten Termin um eine volle Periode: der Lauf fiel lautlos aus, ohne
+	// Protokolleintrag, weil runAutoInvoice gar nicht erst betreten wurde.
+	//
+	// Ohne gespeicherten Wert (erste Inbetriebnahme) gilt weiter "jetzt": beim
+	// allerersten Start soll der Lauf nicht sofort feuern, sondern dem Cron gehören.
+	last := loadAutoInvoiceLast(pool)
 	for {
 		select {
 		case <-stop:
@@ -51,20 +59,102 @@ func StartAutoInvoice(pool *pgxpool.Pool, h *handlers.Handler, cron string, stop
 			now := time.Now()
 			if backup.CronDue(cron, last, now) {
 				last = now
-				runAutoInvoice(pool, h)
+				// NACH dem Lauf festhalten. Der Lauf ist durch die Periodensperre
+				// idempotent (siehe Migration 065) — eine bereits abgerechnete Periode
+				// liefert keine Positionen —, eine Wiederholung kostet also nichts.
+				// Andersherum, VOR dem Lauf, verlor ein Neustart mitten im Lauf (Image-
+				// Update, OOM-Kill, Host-Reboot) den GANZEN Rest der Periode: der Merker
+				// stand bereits auf "erledigt", der nächste Termin lag eine volle Periode
+				// später, und niemand erfuhr davon — weder Protokolleintrag noch Alarm,
+				// denn die Zusammenfassung starb mit dem Prozess.
+				//
+				// Das eigene recover verhindert, dass ein Panic AUSSERHALB der
+				// Personenschleife die Goroutine und damit den Prozess mitreisst.
+				//
+				// Und festgehalten wird NUR ein Lauf, der die Personenliste auch
+				// wirklich zu Ende gegangen ist. Unbedingt zu speichern hiess: jeder
+				// Abbruch — die 15-Minuten-Grenze, ein Panic, ein Lesefehler auf der
+				// Personenabfrage, fehlende Pflichtangaben des Ausstellers — schrieb
+				// "erledigt" und verschob den nächsten Termin um eine volle Periode.
+				// Genau der lautlose Ausfall, gegen den Migration 065 angetreten ist,
+				// nur diesmal dauerhaft statt durch den nächsten Neustart geheilt.
+				// Eine Wiederholung kostet nichts: die Periodensperre macht den Lauf
+				// idempotent, eine bereits abgerechnete Periode liefert keine Positionen.
+				//
+				// Kein Dauerfeuer daraus: `last` im Speicher steht bereits auf now, der
+				// nächste Versuch kommt also frühestens zum nächsten Cron-Termin oder
+				// nach einem Neustart — dann aber mit der Chance, den Rest nachzuholen.
+				completed := func() (completed bool) {
+					defer func() {
+						if p := recover(); p != nil {
+							slog.Error("auto-invoice: Panic im Lauf — abgebrochen",
+								"panic", p, "stack", string(debug.Stack()))
+						}
+					}()
+					return runAutoInvoice(pool, h)
+				}()
+				if completed {
+					saveAutoInvoiceLast(pool, now)
+				} else {
+					slog.Warn("auto-invoice: Lauf unvollständig — Merker NICHT fortgeschrieben, " +
+						"der nächste Start holt die Periode nach")
+				}
 			}
 		}
 	}
 }
 
-func runAutoInvoice(pool *pgxpool.Pool, h *handlers.Handler) {
+// loadAutoInvoiceLast liest den gespeicherten Zeitpunkt des letzten Laufs. Fehlt er
+// (oder ist die Abfrage nicht möglich), gilt "jetzt" — dieselbe Vorsicht wie bisher.
+func loadAutoInvoiceLast(pool *pgxpool.Pool) time.Time {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var t *time.Time
+	if err := pool.QueryRow(ctx, `SELECT last_run_at FROM auto_invoice_status WHERE id = 1`).Scan(&t); err != nil {
+		slog.Warn("auto-invoice: Merker nicht lesbar — der erste Lauf gehört dem Cron", "err", err)
+		return time.Now()
+	}
+	if t == nil {
+		return time.Now()
+	}
+	return *t
+}
+
+// saveAutoInvoiceLast hält den Zeitpunkt fest. Best effort: ein Schreibfehler darf
+// den Lauf nicht verhindern, er kostet höchstens eine Wiederholung nach Neustart.
+func saveAutoInvoiceLast(pool *pgxpool.Pool, at time.Time) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// INSERT ... ON CONFLICT statt UPDATE: ein blosses UPDATE auf die eine Zeile
+	// meldet keinen Fehler, wenn es NULL Zeilen trifft. Fehlt die Zeile (Rücksicherung
+	// eines Auszugs von vor Migration 065, ein Aufräumen von Hand), wäre der Merker
+	// damit für immer eine stille Attrappe — und der Lauf verhielte sich wieder wie
+	// vor 065, ohne dass irgendetwas darauf hinweist.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO auto_invoice_status (id, last_run_at) VALUES (1, $1)
+		 ON CONFLICT (id) DO UPDATE SET last_run_at = EXCLUDED.last_run_at`, at); err != nil {
+		slog.Warn("auto-invoice: Merker nicht schreibbar", "err", err)
+	}
+}
+
+// runAutoInvoice meldet, ob der Lauf die Personenliste vollständig abgearbeitet hat.
+// Nur dann darf der Merker fortgeschrieben werden — jeder andere Ausgang (Lesefehler,
+// Zeitgrenze, fehlende Ausstellerangaben) lässt eine Periode ganz oder halb offen und
+// gehört wiederholt, nicht abgehakt.
+func runAutoInvoice(pool *pgxpool.Pool, h *handlers.Handler) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
+	// Herkunft des Laufs: der synthetische Request trägt keinen angemeldeten
+	// Benutzer, also schrieb das Protokoll zu JEDER automatisch erzeugten Rechnung
+	// einen leeren Akteur — während die Zusammenfassung desselben Laufs über
+	// AuditSystem korrekt "system" nannte. Die Markierung stellt beide Hälften
+	// gleich. invoices.created_by bleibt bewusst NULL: der Lauf hat keinen Urheber.
+	ctx = auth.ContextWithSystemActor(ctx)
 
 	rows, err := pool.Query(ctx, `SELECT id FROM persons WHERE NOT anonymized ORDER BY id`)
 	if err != nil {
 		slog.Error("auto-invoice: persons query failed", "err", err)
-		return
+		return false
 	}
 	var pids []int64
 	for rows.Next() {
@@ -72,20 +162,26 @@ func runAutoInvoice(pool *pgxpool.Pool, h *handlers.Handler) {
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
 			slog.Error("auto-invoice: scan failed", "err", err)
-			return
+			return false
 		}
 		pids = append(pids, id)
 	}
 	rows.Close()
 	if rows.Err() != nil {
 		slog.Error("auto-invoice: persons read failed", "err", rows.Err())
-		return
+		return false
 	}
 
-	var created, skipped, failed, incomplete int
-	var complianceStop bool
+	var created, skipped, failed, incomplete, processed int
+	var complianceStop, truncated bool
 	for _, pid := range pids {
 		if ctx.Err() != nil {
+			// Die 15-Minuten-Grenze hat zugeschlagen. Ohne diesen Merker fiel der Lauf
+			// still in dieselbe Zusammenfassung wie ein vollständiger: "300 erstellt,
+			// 0 fehlgeschlagen" — nicht zu unterscheiden von einem Lauf, bei dem die
+			// übrigen 600 Personen schlicht nichts zu fakturieren hatten. Genau das,
+			// wogegen der Absatz weiter unten argumentiert.
+			truncated = true
 			break
 		}
 		req := httptest.NewRequest("POST", "/api/persons/"+strconv.FormatInt(pid, 10)+"/invoices",
@@ -94,21 +190,36 @@ func runAutoInvoice(pool *pgxpool.Pool, h *handlers.Handler) {
 		req = req.WithContext(ctx)
 		req.SetPathValue("id", strconv.FormatInt(pid, 10))
 		rec := httptest.NewRecorder()
+		// Die Schleifenposition EINMAL zaehlen, statt sie unten aus vier Ausgangs-
+		// eimern zurueckzurechnen: der complianceStop-Zweig erhoeht keinen davon, die
+		// Summe log also schon jetzt um eine Person, und ein fuenfter Ausgang wuerde
+		// die Zahl in einem unveraenderlichen Protokolleintrag still verfaelschen.
+		processed++
 		// Der Handler läuft hier OHNE die recoverPanics-Middleware, die ihn bei jedem
 		// echten HTTP-Aufruf umgibt — der synthetische Weg umgeht die ganze Kette. Ohne
 		// eigenes recover risse ein Panic aus den Daten EINER Person die Goroutine und
 		// damit den Prozess mit: der Container liefe jede Nacht in eine Neustartschleife,
 		// während derselbe Datensatz über den Knopf nur ein 500 erzeugt hätte.
-		func() {
+		//
+		// Der Ausgang kommt als Rückgabewert heraus, nicht über einen Merker daneben:
+		// gezählt wird dann an EINER Stelle. Und gezählt werden MUSS getrennt — ohne
+		// das continue liefe die Einordnung darunter weiter, und der unberührte
+		// Recorder trägt Code 200: das trifft keinen Fall, landet im default-Zweig und
+		// zählte dieselbe Person ein zweites Mal als Fehlschlag.
+		ran := func() (ran bool) {
 			defer func() {
 				if p := recover(); p != nil {
-					failed++
 					slog.Error("auto-invoice: Panic bei einer Person — übersprungen",
 						"person_id", pid, "panic", p, "stack", string(debug.Stack()))
 				}
 			}()
 			h.CreateInvoice(rec, req)
+			return true
 		}()
+		if !ran {
+			failed++
+			continue
+		}
 		// Die Einordnung liest den maschinenlesbaren Ausgang des Handlers, nicht den
 		// deutschen Meldungstext: eine Umformulierung in billing.go hätte sonst
 		// stillschweigend die Bedeutung dieses Laufs verändert.
@@ -151,7 +262,7 @@ func runAutoInvoice(pool *pgxpool.Pool, h *handlers.Handler) {
 
 	slog.Info("auto-invoice: Lauf beendet",
 		"created", created, "skipped", skipped, "incomplete", incomplete, "failed", failed,
-		"aborted", complianceStop)
+		"aborted", complianceStop, "truncated", truncated, "persons", len(pids))
 	// Der Lauf selbst ist eine Handlung und gehört ins Protokoll — die einzelnen
 	// Rechnungen auditiert der Handler bereits selbst.
 	//
@@ -167,7 +278,12 @@ func runAutoInvoice(pool *pgxpool.Pool, h *handlers.Handler) {
 	if complianceStop {
 		summary += " — ABGEBROCHEN: Pflichtangaben des Ausstellers fehlen, verbleibende Personen wurden nicht fakturiert"
 	}
-	if created > 0 || failed > 0 || incomplete > 0 || complianceStop {
+	if truncated {
+		summary += " — ABGEBROCHEN an der Zeitgrenze von 15 Minuten: von " + strconv.Itoa(len(pids)) +
+			" Personen wurden " + strconv.Itoa(processed) +
+			" bearbeitet, der Rest NICHT fakturiert"
+	}
+	if created > 0 || failed > 0 || incomplete > 0 || complianceStop || truncated {
 		// WithoutCancel: genau der Lauf, der an der 15-Minuten-Grenze abgeschnitten
 		// wurde, ist der, dessen Protokolleintrag am wichtigsten wäre — und mit dem
 		// abgelaufenen ctx wäre er der einzige, der nicht geschrieben werden kann.
@@ -176,4 +292,7 @@ func runAutoInvoice(pool *pgxpool.Pool, h *handlers.Handler) {
 		defer wcancel()
 		h.AuditSystem(wctx, "create", "system", 0, summary, nil)
 	}
+	// Vollstaendig heisst: jede Person der Liste wurde angefasst. Beide Abbrueche
+	// lassen eine Periode ganz oder halb offen und sollen wiederholt werden.
+	return !truncated && !complianceStop
 }

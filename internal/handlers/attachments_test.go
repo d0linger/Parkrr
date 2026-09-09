@@ -103,4 +103,3 @@ func TestAttachmentLifecycle(t *testing.T) {
 		t.Errorf("zweites Löschen: %d, erwartet 404", drec2.Code)
 	}
 }
-

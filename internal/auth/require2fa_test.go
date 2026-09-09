@@ -75,7 +75,9 @@ func TestRequire2FAAcceptsPasskeyAsSecondFactor(t *testing.T) {
 		 VALUES ($1, $2, $3, '2FA-Test-Key')`, id, []byte("cred-2fa-"+t.Name()), []byte("pk")); err != nil {
 		t.Fatalf("insert passkey: %v", err)
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM webauthn_credentials WHERE user_id=$1`, id) })
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM webauthn_credentials WHERE user_id=$1`, id)
+	})
 	cookies := sessionCookies(t, m, id)
 
 	m.SetRequire2FA(true)

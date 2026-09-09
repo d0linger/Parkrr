@@ -135,4 +135,3 @@ func TestFailedReminderDoesNotEscalate(t *testing.T) {
 		t.Errorf("eine gescheiterte Mail wurde als Mahnung gezählt (%d)", n)
 	}
 }
-

@@ -7,9 +7,9 @@ type reqLogKey struct{}
 // reqLog is a mutable, request-scoped record that middleware fills in as the
 // request is processed (e.g. with the authenticated user, once known).
 type reqLog struct {
-	User      string
-	UserID    int64
-	Err       error
+	User   string
+	UserID int64
+	Err    error
 }
 
 // WithRequestLog attaches an empty request-log record to the context. The
@@ -33,7 +33,6 @@ func setRequestLogUser(ctx context.Context, user string, id int64) {
 		rl.UserID = id
 	}
 }
-
 
 // SetRequestError stashes the underlying cause of a 5xx so the request logger can emit
 // it centrally, instead of every handler dropping err on the floor (finding OPS-01).

@@ -127,10 +127,19 @@ func (h *Handler) CreatePortalLink(w http.ResponseWriter, r *http.Request) {
 	if u, ok := auth.UserFrom(r.Context()); ok {
 		createdBy = &u.ID
 	}
-	// Opportunistic cleanup of finished tokens (same pattern as webauthn_ceremonies),
-	// so the table doesn't grow unbounded across link issuance.
-	_, _ = h.Pool.Exec(r.Context(),
-		`DELETE FROM self_service_tokens WHERE revoked OR expires_at < now() - interval '30 days'`)
+	// Kein Aufräumen mehr an dieser Stelle. Die frühere Anweisung löschte mit
+	// `WHERE revoked OR expires_at < …`: der linke Zweig trug KEINE Frist, traf also
+	// jede widerrufene Zeile sofort, und die Anweisung war auf keine Person
+	// eingeschränkt — das Ausstellen EINES neuen Links für IRGENDWEN entfernte die
+	// widerrufenen Zeilen ALLER Personen, womit der Status "widerrufen" in
+	// ListPortalLinks nicht mehr erreichbar war. Ein Widerruf wirkt ohnehin sofort
+	// (der Anmeldeweg liest `revoked`); die Zeile muss er nicht entfernen.
+	//
+	// Und die verbleibende Hälfte gehört nicht hierher: server.expirySweeps räumt
+	// dieselbe Tabelle beim Start und danach stündlich auf — bewusst NUR über
+	// `expires_at`, denn die Frist soll auch für widerrufene Zeilen gelten. Zweimal
+	// dieselbe Bedingung an zwei Orten ist genau die Konstellation, aus der der obige
+	// Fehler entstand — der Sweep ist der eine Besitzer.
 	var tokenID int64
 	if err := h.Pool.QueryRow(r.Context(),
 		`INSERT INTO self_service_tokens (token_hash, person_id, expires_at, created_by)

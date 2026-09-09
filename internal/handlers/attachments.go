@@ -18,7 +18,17 @@ import (
 // (Content-Disposition: attachment) plus nosniff: ein PDF kann Skripte tragen,
 // und als erzwungener Download läuft keines davon im Kontext der Anwendung.
 const (
-	maxAttachmentBytes     = 10 << 20 // 10 MiB je Datei
+	// 8 MiB je Datei — bewusst UNTER dem globalen Body-Deckel (server.maxRequestBody,
+	// 9 MiB), der als DoS-Schutz VOR jedem Handler greift. Mit 10 MiB war die hier
+	// zugesagte Grenze gar nicht erreichbar: eine 9,5-MiB-Datei wurde von der
+	// Middleware mit einem nackten "413 Request Entity Too Large" in Klartext
+	// abgewiesen, der Handler lief nie, und die Oberfläche zeigte statt "Datei ist zu
+	// groß (max. 8 MB)" die Zeichenfolge "HTTP 413". Denselben Abstand hält der
+	// Foto-Upload (photos.go, maxPhotoBytes) — der Sicherungs-Upload in backup.go
+	// hält KEINEN: dessen maxUpload ist mit 9 MiB genau der Body-Deckel und damit
+	// wegen des Multipart-Rahmens ebenso wenig erreichbar. Deshalb antwortet
+	// server.limitRequestBody inzwischen selbst in JSON und im Klartext.
+	maxAttachmentBytes     = 8 << 20
 	maxAttachmentsPerOwner = 20
 )
 
@@ -94,7 +104,7 @@ func (h *Handler) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxAttachmentBytes+1024)
 	// #nosec G120 -- der Body ist durch MaxBytesReader gedeckelt.
 	if err := r.ParseMultipartForm(maxAttachmentBytes + 1024); err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, "Datei ist zu groß (max. 10 MB)")
+		writeError(w, http.StatusRequestEntityTooLarge, "Datei ist zu groß (max. 8 MB)")
 		return
 	}
 	defer func() { _ = r.MultipartForm.RemoveAll() }()
@@ -106,7 +116,7 @@ func (h *Handler) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 	raw, err := io.ReadAll(io.LimitReader(file, maxAttachmentBytes+1))
 	if err != nil || len(raw) > maxAttachmentBytes {
-		writeError(w, http.StatusRequestEntityTooLarge, "Datei ist zu groß (max. 10 MB)")
+		writeError(w, http.StatusRequestEntityTooLarge, "Datei ist zu groß (max. 8 MB)")
 		return
 	}
 	if len(raw) == 0 {

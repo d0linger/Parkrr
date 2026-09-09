@@ -169,3 +169,87 @@ func TestMigrateDetectsEditedMigration(t *testing.T) {
 		t.Errorf("Migrationen ohne gespeicherte Summe müssen adoptiert werden, nicht scheitern: %v", err)
 	}
 }
+
+// Die Prüfsumme läuft ZEILENENDEN-UNABHÄNGIG. Der Test hält beide Richtungen fest,
+// denn nur eine davon war abgedeckt: eine Installation, die ihre Summe über CRLF-Bytes
+// aufgezeichnet hat und jetzt LF eingebettet bekommt (genau das, was `*.sql -text` in
+// .gitattributes auslöst), lief in den Startabbruch, dessen eigener Rat („add a NEW
+// migration instead") nicht hilft — der aufgezeichnete Wert ließe sich nur noch von
+// Hand in der Datenbank korrigieren.
+func TestMigrationChecksumIgnoriertZeilenenden(t *testing.T) {
+	lf := []byte("CREATE TABLE x (id int);\nSELECT 1;\n")
+	crlf := []byte("CREATE TABLE x (id int);\r\nSELECT 1;\r\n")
+	if migrationChecksum(lf) != migrationChecksum(crlf) {
+		t.Fatal("dieselbe Migration mit anderen Zeilenenden muss dieselbe Summe ergeben")
+	}
+	if migrationChecksum(lf) == migrationChecksum([]byte("SELECT 2;\n")) {
+		t.Fatal("eine inhaltliche Änderung muss weiterhin auffallen")
+	}
+	// Beide Altbestand-Richtungen werden als „dieselbe Datei, nur anders gezählt"
+	// erkannt: roh wie eingebettet, und roh als CRLF ausgecheckt.
+	for name, stored := range map[string]string{
+		"roh wie eingebettet": sha256Hex(lf),
+		"roh als CRLF":        sha256Hex(crlf),
+	} {
+		if !legacyChecksumMatch(lf, stored) {
+			t.Errorf("%s: alte Summe muss als dieselbe Datei erkannt werden", name)
+		}
+	}
+	if legacyChecksumMatch(lf, sha256Hex([]byte("SELECT 2;\n"))) {
+		t.Error("eine fremde Summe darf nicht als Altbestand durchgehen")
+	}
+}
+
+// Ein zweiter Start darf die aufgezeichneten Summen NICHT neu schreiben. Der
+// Aufhebe-Zweig für Altbestand stand ohne den Normalfall davor: für jede Datei ohne CR
+// sind rohe und normalisierte Summe identisch, er traf also bei JEDEM Start auf ALLE
+// diese Migrationen zu und schrieb den Wert zurück, der schon dort stand — Dutzende
+// überflüssige UPDATE je Prozessstart, unter der Migrations-Sperre.
+func TestMigrateSchreibtPruefsummenNichtBeiJedemStartNeu(t *testing.T) {
+	pool := testPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// xmin ist die schreibende Transaktion je Zeile: ändert sie sich, wurde die Zeile
+	// angefasst. Ein reiner Verifikationslauf darf keine einzige anfassen.
+	before := map[string]int64{}
+	rows, err := pool.Query(ctx, `SELECT version, xmin::text::bigint FROM schema_migrations`)
+	if err != nil {
+		t.Fatalf("read xmin: %v", err)
+	}
+	for rows.Next() {
+		var v string
+		var x int64
+		if err := rows.Scan(&v, &x); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		before[v] = x
+	}
+	rows.Close()
+	if rows.Err() != nil {
+		t.Fatalf("read xmin: %v", rows.Err())
+	}
+	if len(before) == 0 {
+		t.Fatal("keine Migrationen aufgezeichnet — der Test prüft nichts")
+	}
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("zweiter Migrate: %v", err)
+	}
+	rows, err = pool.Query(ctx, `SELECT version, xmin::text::bigint FROM schema_migrations`)
+	if err != nil {
+		t.Fatalf("read xmin again: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v string
+		var x int64
+		if err := rows.Scan(&v, &x); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if old, ok := before[v]; ok && old != x {
+			t.Errorf("%s wurde beim zweiten Start ohne Not neu geschrieben", v)
+		}
+	}
+}

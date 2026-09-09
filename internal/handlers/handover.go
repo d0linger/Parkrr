@@ -16,8 +16,19 @@ import (
 )
 
 const (
-	maxSignatureBytes = 1 << 20 // 1 MiB decoded PNG cap for a signature
-	maxHandoverNotes  = 4000
+	maxHandoverNotes = 4000
+
+	// maxSignatureBytes ist die Grenze der DEKODIERTEN PNG-Daten — und sie muss unter
+	// dem liegen, was als Base64 durch den JSON-Rumpf überhaupt hereinpasst.
+	//
+	// Mit glatt 1 MiB zielte sie daneben: die Unterschrift kommt base64-kodiert im
+	// JSON an, und Base64 bläht um 4/3 auf. Ein 1-MiB-PNG braucht also rund 1,37 MiB
+	// im Rumpf, den decodeJSON bei maxJSONBody abschneidet — die Prüfung unten wurde
+	// nie erreicht, der Anwender bekam statt "Signatur zu groß" einen Syntaxfehler des
+	// JSON-Lesers. Tatsächlich durchgingen nur rund 750 KiB. Die Grenze rechnet sich
+	// daher aus dem Rumpf-Budget zurück: abzüglich der Notizen und etwas Luft für
+	// Feldnamen, Anführungszeichen und den "data:"-Vorsatz, mal 3/4 für Base64.
+	maxSignatureBytes = (maxJSONBody - maxHandoverNotes - 2048) / 4 * 3
 )
 
 // handoverMeta is the JSON view of a handover protocol (never the raw signature

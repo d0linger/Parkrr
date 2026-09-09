@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -443,11 +444,36 @@ func (w *panicResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWr
 // the actual read for chunked/undeclared bodies.
 const maxRequestBody = 9 << 20 // 9 MiB
 
+// tooLargeMessage benennt die Grenze, die DIESE Schranke tatsächlich zieht.
+//
+// Hart hingeschriebene "höchstens 8 MB je Upload" waren zweimal falsch: 8 MB ist die
+// Grenze des ANHANG-Handlers, nicht die des Rumpfs (9 MiB), und diese Middleware sitzt
+// vor JEDEM Endpunkt — auch vor dem CSV-Import (2 MiB) und der Rücksicherung (9 MiB,
+// deren eigene Meldung als einzige den Ausweg "parkrr restore" nennt) und vor jedem
+// gewöhnlichen JSON-Rumpf, der gar keine Datei ist. Wer eine 9,5-MiB-Sicherung hochlud,
+// las eine Zahl, die auf seinem Weg nichts bedeutete, und verkleinerte auf 8 MB, obwohl
+// 9 gereicht hätten. Die Zahl kommt daher aus der Konstante, und der Text spricht vom
+// Rumpf; die feineren, freundlicheren Grenzen nennt weiterhin der jeweilige Handler.
+var tooLargeMessage = fmt.Sprintf("Die Anfrage ist zu groß (höchstens %d MB). "+
+	"Große Sicherungen bitte über die Kommandozeile einspielen.", maxRequestBody>>20)
+
 // limitRequestBody rejects over-large request bodies with 413 and caps the read.
 func limitRequestBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ContentLength > maxRequestBody {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			// Als JSON und auf Deutsch, wie jede andere Absage der Anwendung: die
+			// Oberfläche liest `error` aus dem Rumpf und zeigt sonst die nackte
+			// Zeichenfolge "HTTP 413". Diese Schranke greift VOR jedem Handler, also
+			// auch vor dessen eigener, freundlicher Meldung — sie ist für einen
+			// zu großen Upload die EINZIGE Antwort, die der Anwender je zu sehen
+			// bekommt, und muss ihm daher selbst sagen, was los ist.
+			//
+			// Über writeJSONStatus (observability.go), nicht von Hand: das war die
+			// vierte handgeschriebene JSON-Absage in diesem Paket und die einzige mit
+			// nosniff — der Header gehört an die eine Stelle, nicht an eine von vieren.
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			writeJSONStatus(w, http.StatusRequestEntityTooLarge,
+				map[string]string{"error": tooLargeMessage})
 			return
 		}
 		if r.Body != nil {
@@ -625,8 +651,9 @@ var expirySweeps = []struct {
 	// Verwaltung noch als "abgelaufen"/"widerrufen" sichtbar sein, statt spurlos zu
 	// verschwinden.
 	//
-	// Der `revoked`-Zweig stand ungeklammert daneben und wirkte damit ALLEIN: seit
-	// dieser Lauf stündlich statt nur gelegentlich läuft, war ein widerrufener Link
+	// Der `revoked`-Zweig stand ohne jede Frist daneben (`WHERE revoked OR expires_at
+	// < …`): er traf eine widerrufene Zeile SOFORT, unabhängig davon, wie jung sie war.
+	// Seit dieser Lauf stündlich statt nur gelegentlich läuft, war ein widerrufener Link
 	// binnen einer Stunde weg, und der Betreiber konnte nicht mehr sehen, dass je
 	// einer bestand — obwohl der Kommentar darüber genau das zusagt. Auch das
 	// Anonymisieren setzt revoked, dessen Spuren also mit.

@@ -377,12 +377,20 @@ func (h *Handler) BackupRestore(w http.ResponseWriter, r *http.Request) {
 // request. The key is entered per-restore (it must match the file, which may have
 // been made under an older PARKRR_BACKUP_KEY).
 func readBackupUpload(r *http.Request) (enc []byte, key string, err error) {
-	const maxUpload = 9 << 20 // matches server.maxRequestBody (the whole body is capped there)
+	// Unter dem Rumpf-Deckel (server.maxRequestBody = 9 MiB), nicht gleichauf.
+	//
+	// Gleichauf war die hier zugesagte Grenze gar nicht erreichbar: der Rumpf trägt
+	// neben der Datei noch den Schlüssel, die Feldnamen und die Multipart-Trenner, ist
+	// also stets GRÖSSER als sie. Eine 9-MiB-Sicherung scheiterte damit schon an der
+	// Middleware — und der Prüfsatz unten samt seiner einzigen brauchbaren Auskunft
+	// ("dafür die Kommandozeile, parkrr restore") wurde nie erreicht. Derselbe Fehler
+	// wie beim Anhang-Handler, nur an der anderen Grenze.
+	const maxUpload = 8 << 20 // 8 MiB Datei + Umschlag bleibt unter den 9 MiB des Rumpfs
 	// #nosec G120 -- the request body is already bounded by limitRequestBody
 	// (MaxBytesReader at maxRequestBody), so this in-memory parse limit cannot be
 	// exceeded; it just sizes the buffer.
 	if err := r.ParseMultipartForm(maxUpload); err != nil {
-		return nil, "", errors.New("upload too large or malformed (max ~9 MiB via the browser; use the CLI for larger)")
+		return nil, "", errors.New("upload too large or malformed (max 8 MiB via the browser; use the CLI for larger)")
 	}
 	key = strings.TrimSpace(r.FormValue("key"))
 	if key == "" {
@@ -403,7 +411,7 @@ func readBackupUpload(r *http.Request) (enc []byte, key string, err error) {
 		return nil, "", errors.New("could not read the uploaded file")
 	}
 	if len(enc) > maxUpload {
-		return nil, "", errors.New("backup file exceeds the ~9 MiB browser limit; use the CLI (parkrr restore) for larger files")
+		return nil, "", errors.New("backup file exceeds the 8 MiB browser limit; use the CLI (parkrr restore) for larger files")
 	}
 	return enc, key, nil
 }

@@ -16,6 +16,30 @@ bestätigten Befunde sind behoben und durch Regressionstests belegt, die auf dem
 Stand VOR dem Fix nachweislich fehlschlagen. Details im CHANGELOG unter
 "Behoben (Mehr-Augen-Durchsicht des Programms)".
 
+NACHTRAG 2026-09-08 (Durchsicht R2): Eine zweite Durchsicht — diesmal über die
+Korrekturen aus R1, aus zehn Blickwinkeln mit anschließender Einzelprüfung — hat
+15 weitere Befunde bestätigt. Die schwerwiegendsten: der Mahnvorgang belegte eine
+Datenbankverbindung über die gesamte E-Mail-Zustellung und forderte für das
+Protokoll eine zweite an (bei besetztem Pool steht damit die ganze Anwendung); der
+automatische Rechnungslauf setzte seinen Merker VOR dem Lauf und verlor bei einem
+Neustart mittendrin lautlos den Rest der Periode; die Prüfsummen-Ausnahme für
+Zeilenenden schrieb bei jedem Start 48 Migrationen ohne Not neu und half der
+einen Installation nicht, für die sie gedacht war; und der neu eingeführte
+Auswahl-Abgleich der Gefährteliste löschte die Mehrfachauswahl bei jedem
+Tastendruck im Suchfeld sowie unmittelbar nach jeder Massenaktion. Behoben, mit
+Regressionstests, die auf dem Stand VOR dem Fix nachweislich fehlschlagen
+(`TestMigrateSchreibtPruefsummenNichtBeiJedemStartNeu`,
+`TestMailLogAnonymisierungTrifftGenauDieEigeneAdresse`). Details im CHANGELOG
+unter "Behoben (zweite Durchsicht)".
+
+Bewusst NICHT geändert (R2): das Bulk-"Abholen" schickt IMMER das heutige Datum,
+der Einzelweg dagegen ein bereits eingetragenes Enddatum als Vorschlag. Ein
+Gefährt, das über eine künftige Periode hinaus fakturiert ist, geht deshalb im
+Bulk mit 409 zurück und einzeln durch. Der Bulk-Dialog sagt "(heute)" ausdrücklich
+zu; die Absage ist die richtige (ein Enddatum darf nicht unter eine fakturierte
+Periode zurück) und wird je Gefährt gemeldet. Eine Angleichung wäre eine
+Verhaltensänderung, keine Fehlerbehebung.
+
 Bewusst NICHT geändert: (a) die strengere E-Mail-Prüfung könnte theoretisch das
 Bearbeiten von Altdatensätzen mit ungültig gespeicherter Adresse blockieren —
 gemessen: null solche Zeilen in Test- und lokaler Datenbank, deshalb als bekanntes

@@ -173,10 +173,15 @@ func decodeJSON(r *http.Request, dst any) error {
 			return errNotJSON
 		}
 	}
-	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	dec := json.NewDecoder(io.LimitReader(r.Body, maxJSONBody))
 	dec.DisallowUnknownFields()
 	return dec.Decode(dst)
 }
+
+// maxJSONBody deckelt jeden JSON-Rumpf. Als blosse Zahl in decodeJSON konnte keine
+// Grenze, die INNERHALB eines JSON-Rumpfs gilt, sich auf sie beziehen — siehe
+// maxSignatureBytes (handover.go), das genau daran vorbeizielte.
+const maxJSONBody = 1 << 20 // 1 MiB
 
 // pathID extracts the positive int64 "id" path value.
 func pathID(r *http.Request) (int64, bool) {
@@ -229,9 +234,17 @@ type execer interface {
 
 // actorFrom derives the acting user (id, name) from the request context, or
 // (0, "") when none is present (e.g. before login).
+//
+// Ein Kontext, den ContextWithSystemActor markiert hat, liefert (0, "system") —
+// damit ein Hintergrundlauf, der einen echten Handler über einen synthetischen
+// Request antreibt, im Protokoll dieselbe Herkunft trägt wie seine eigene
+// Zusammenfassung über AuditSystem, statt als namenloser Akteur zu erscheinen.
 func actorFrom(r *http.Request) (int64, string) {
 	if u, ok := auth.UserFrom(r.Context()); ok {
 		return u.ID, u.Username
+	}
+	if auth.IsSystemActor(r.Context()) {
+		return 0, "system"
 	}
 	return 0, ""
 }

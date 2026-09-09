@@ -111,8 +111,13 @@ func (h *Handler) PortalCreateRequest(w http.ResponseWriter, r *http.Request) {
 	var reqID int64
 	var capped bool
 	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
-		if _, e := tx.Exec(r.Context(), `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
-			"portal_request:"+strconv.FormatInt(pid, 10)); e != nil {
+		// Über advisoryKey, nicht über `hashtext($1)::bigint`: hashtext liefert einen
+		// vorzeichenbehafteten int4 und schnitte den Schlüsselraum von 2^64 auf 2^32
+		// zusammen. Da sich alle Sperren dieser Datenbank EINEN Namensraum teilen,
+		// könnte eine Kollision auch eine fremde Sperre treffen — die Einreichung eines
+		// Kunden bliebe grundlos hängen, hinter etwas, das nichts mit ihr zu tun hat.
+		if _, e := tx.Exec(r.Context(), `SELECT pg_advisory_xact_lock($1)`,
+			advisoryKey("parkrr.portal_request."+strconv.FormatInt(pid, 10))); e != nil {
 			return e
 		}
 		var open int

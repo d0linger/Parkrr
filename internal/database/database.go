@@ -2,6 +2,7 @@
 package database
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"embed"
@@ -22,6 +23,53 @@ func shortSum(s string) string {
 		return s[:12]
 	}
 	return s
+}
+
+// migrationChecksum hasht eine Migration ZEILENENDEN-UNABHÄNGIG.
+//
+// Die Prüfsumme lief zuerst über die rohen Bytes. Damit hing der Start der
+// Anwendung daran, mit welchen Zeilenenden die .sql-Dateien gerade im
+// Arbeitsverzeichnis lagen — und die lagen gemischt vor (057 mit CRLF zwischen
+// lauter LF-Nachbarn, viele alte ebenfalls CRLF), während .gitattributes für
+// *.sql keine Regel hatte. Ein Checkout mit core.autocrlf=true, ein Editor, der
+// eine Datei anders speichert, oder ein späteres `git add --renormalize` hätten
+// bei JEDER bereits eingespielten Installation einen Startabbruch erzeugt, dessen
+// eigener Rat ("add a NEW migration instead") nicht hilft: die aufgezeichnete
+// Prüfsumme lässt sich nur noch von Hand in der Datenbank korrigieren.
+//
+// Normalisiert wird nur, was kein Inhalt ist: CRLF und ein einzelnes CR werden zu
+// LF. Eine echte inhaltliche Änderung fällt weiter auf — genau dafür gibt es die
+// Prüfsumme. Zusätzlich pinnt .gitattributes *.sql jetzt mit `-text`.
+func migrationChecksum(b []byte) string {
+	return sha256Hex(normalizeEOL(b))
+}
+
+func sha256Hex(b []byte) string { return fmt.Sprintf("%x", sha256.Sum256(b)) }
+
+func normalizeEOL(b []byte) []byte {
+	const cr, lf = "\r", "\n"
+	norm := bytes.ReplaceAll(b, []byte(cr+lf), []byte(lf))
+	return bytes.ReplaceAll(norm, []byte(cr), []byte(lf))
+}
+
+// legacyChecksumMatch meldet, ob stored eine VOR der Normalisierung aufgezeichnete
+// Prüfsumme derselben Datei ist — dieselbe Migration, nur anders gezählt.
+//
+// Geprüft werden beide Richtungen, denn die alte Prüfsumme lief über die Bytes, wie
+// sie beim DAMALIGEN Auschecken auf der Platte lagen: entweder wie jetzt eingebettet
+// (LF-Arbeitskopie) oder mit CRLF (Auschecken mit core.autocrlf=true). Nur die erste
+// zu kennen half genau der Installation nicht, um derentwillen es die Ausnahme gibt:
+// eine, die CRLF aufgezeichnet hat und jetzt LF eingebettet bekommt — sie lief in den
+// Startabbruch, dessen eigener Rat („add a NEW migration instead") nicht hilft, weil
+// sich der aufgezeichnete Wert nur noch von Hand in der Datenbank korrigieren lässt.
+func legacyChecksumMatch(b []byte, stored string) bool {
+	if stored == sha256Hex(b) {
+		return true
+	}
+	// Erst hier normalisieren: der Zweig darüber trifft die häufigere Herkunft
+	// (Prüfsumme über die Bytes, wie sie eingebettet sind) und braucht die Kopie nicht.
+	crlf := bytes.ReplaceAll(normalizeEOL(b), []byte("\n"), []byte("\r\n"))
+	return stored == sha256Hex(crlf)
 }
 
 //go:embed migrations/*.sql
@@ -174,7 +222,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", name, err)
 		}
-		sum := fmt.Sprintf("%x", sha256.Sum256(sqlBytes))
+		sum := migrationChecksum(sqlBytes)
 
 		// Versions were keyed by FILENAME only, so editing an already-applied migration
 		// silently never re-ran and two installations could drift apart unnoticed
@@ -195,7 +243,24 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 					name, sum); err != nil {
 					return fmt.Errorf("backfill checksum for %s: %w", name, err)
 				}
-			case *stored != sum:
+			case *stored == sum:
+				// Der Normalfall: bereits normalisiert aufgezeichnet, nichts zu tun.
+				// Dieser Zweig MUSS vor dem folgenden stehen. Für jede Datei ohne CR
+				// sind rohe und normalisierte Summe identisch — der Aufhebe-Zweig traf
+				// dann bei JEDEM Start auf ALLE diese Migrationen zu und schrieb den
+				// Wert zurück, der ohnehin schon dort stand: Dutzende überflüssige
+				// UPDATE je Prozessstart, unter der Migrations-Sperre, und ein Start
+				// gegen eine nur lesbare Kopie schlug daran fehl.
+			case legacyChecksumMatch(sqlBytes, *stored):
+				// Vor der Normalisierung gespeicherte Prüfsumme über die ROHEN Bytes:
+				// inhaltlich dieselbe Datei, nur anders gezählt. Auf den normalisierten
+				// Wert heben, damit ein späterer Zeilenenden-Wechsel sie nicht bricht.
+				if _, err := conn.Exec(ctx,
+					`UPDATE schema_migrations SET checksum = $2 WHERE version = $1`,
+					name, sum); err != nil {
+					return fmt.Errorf("upgrade checksum for %s: %w", name, err)
+				}
+			default:
 				return fmt.Errorf("migration %s was modified after it was applied "+
 					"(recorded %s, now %s): an applied migration must never be edited — "+
 					"add a NEW migration instead", name, shortSum(*stored), shortSum(sum))

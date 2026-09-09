@@ -563,3 +563,32 @@ func isStateChanging(method string) bool {
 func ContextWithUser(ctx context.Context, u *models.User) context.Context {
 	return context.WithValue(ctx, userCtxKey, u)
 }
+
+// systemActorCtxKey markiert einen Kontext als "von der Maschine ausgelöst".
+type systemActorCtxKeyT struct{}
+
+var systemActorCtxKey systemActorCtxKeyT
+
+// ContextWithSystemActor markiert einen Kontext als maschinell ausgelöst, damit
+// das Protokoll ihn als "system" ausweist statt als NIEMAND.
+//
+// Hintergrund: Hintergrundläufe, die einen echten Handler über einen
+// synthetischen Request antreiben (server.StartAutoInvoice), tragen keinen
+// angemeldeten Benutzer. actorFrom fand daher keinen und schrieb einen leeren
+// Benutzernamen — nicht unterscheidbar von einer Handlung unbekannter Herkunft,
+// während die Zusammenfassung desselben Laufs über AuditSystem korrekt
+// "system" nannte. Zwei Hälften eines Laufs, verschieden zugeordnet, im
+// unveränderlichen Protokoll (BAO §131).
+//
+// Bewusst KEIN Pseudo-Benutzer über ContextWithUser: dessen ID 0 landete sonst
+// in Spalten wie invoices.created_by und verletzte deren Fremdschlüssel. Der
+// maschinelle Lauf hat keinen Urheber — er hat eine Herkunft.
+func ContextWithSystemActor(ctx context.Context) context.Context {
+	return context.WithValue(ctx, systemActorCtxKey, true)
+}
+
+// IsSystemActor meldet, ob der Kontext mit ContextWithSystemActor markiert wurde.
+func IsSystemActor(ctx context.Context) bool {
+	v, _ := ctx.Value(systemActorCtxKey).(bool)
+	return v
+}

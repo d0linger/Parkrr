@@ -65,6 +65,15 @@ type handlerFunc struct {
 	File string
 	Name string
 	Body string
+	// Reach ist Body PLUS die Rümpfe aller Hilfsfunktionen desselben Pakets, die
+	// von hier aus (auch mittelbar) aufgerufen werden.
+	//
+	// Ohne das entkommt jede Anweisung dem Wächter, sobald sie in eine Hilfsfunktion
+	// wandert: anonymizeUnlinkedTraces trägt die UPDATEs auf spot_occupancy_history
+	// und mail_log, die früher in AnonymizePerson standen — der Wächter sah dort
+	// keine UPDATE-Anweisung mehr und lief LEER durch, statt zu prüfen. Eine
+	// Auslagerung darf kein Weg an der Prüfung vorbei sein.
+	Reach string
 }
 
 func handlerFuncs(t *testing.T) []handlerFunc {
@@ -103,11 +112,50 @@ func handlerFuncs(t *testing.T) []handlerFunc {
 	if len(out) == 0 {
 		t.Fatal("no handler functions found")
 	}
+	bodies := make(map[string]string, len(out))
+	for _, hf := range out {
+		// Gleichnamige Methoden auf verschiedenen Empfängern gibt es in diesem Paket
+		// nicht; käme eine dazu, hinge hier die zuletzt gelesene — das erweitert die
+		// Prüfung höchstens zu weit, nie zu eng.
+		bodies[hf.Name] = hf.Body
+	}
+	for i := range out {
+		out[i].Reach = reachOf(out[i].Name, bodies)
+	}
 	return out
+}
+
+// reachOf sammelt den Rumpf von name und die Rümpfe aller Paketfunktionen, die von
+// dort aus erreichbar sind. Die Tiefe ist unbegrenzt, aber jeder Name wird nur einmal
+// aufgenommen — Rekursion und Zyklen laufen damit nicht ins Leere.
+func reachOf(name string, bodies map[string]string) string {
+	var b strings.Builder
+	seen := map[string]bool{}
+	var walk func(string)
+	walk = func(n string) {
+		if seen[n] {
+			return
+		}
+		seen[n] = true
+		body, ok := bodies[n]
+		if !ok {
+			return
+		}
+		b.WriteString(body)
+		b.WriteString("\n")
+		for _, m := range reCallName.FindAllStringSubmatch(body, -1) {
+			walk(m[1])
+		}
+	}
+	walk(name)
+	return b.String()
 }
 
 var (
 	reUpdateSet = regexp.MustCompile(`(?s)UPDATE \w+ SET (.*?)(?:WHERE|RETURNING)`)
+	// Aufrufe im Rumpf: `name(` bzw. `x.name(`. Grob absichtlich — was kein Name
+	// einer Paketfunktion ist, findet reachOf schlicht nicht in der Tabelle wieder.
+	reCallName  = regexp.MustCompile(`(?:^|[^\w.])(\w+)\(`)
 	reQuotedKey = regexp.MustCompile(`"([a-z_]+)":`)
 	// A struct-based diff: diffFields(old|prev|existing, …) — or one built from a
 	// local audit-view struct literal, e.g. diffFields(hallAudit{…}, hallAudit{…}).
@@ -145,6 +193,17 @@ var auditIgnoredPerFunc = map[string]map[string]bool{
 	// the user's change (the agreement flag) and must stay audited, which is why this
 	// is scoped to the handler instead of living in auditIgnoredColumns.
 	"DeletePayment": {"paid": true},
+	// ApplyCredit ist dieselbe Sache in die andere Richtung: das Verrechnen eines
+	// vorhandenen Guthabens stempelt über settleItemTx `paid=true` auf die gedeckten
+	// Gefährte und Zusatzkosten. Auch das ist der mechanische Nachvollzug einer
+	// Zahlungszuordnung, nicht die Bearbeitung dieser Datensätze — die Zeile der
+	// Zahlung ist der Nachweis, und der Handler protokolliert zusätzlich, WAS er
+	// gedeckt hat.
+	//
+	// Sichtbar wurde das erst, als der Wächter den Hilfsfunktionen zu folgen begann
+	// (siehe handlerFunc.Reach): settleItemTx trägt selbst keinen auditChange und
+	// wurde darum bis dahin gar nicht geprüft. Die Lücke war also immer da.
+	"ApplyCredit": {"paid": true},
 	// ResolvePortalRequest stempelt beim Erledigen resolved_at/resolved_by — das
 	// "wer/wann", das die Audit-Zeile selbst trägt (Nutzer + Zeitpunkt stehen in
 	// ihr), plus der status, den der Eintrag als Text nennt. Kein eigener Diff
@@ -188,7 +247,7 @@ func TestAuditDiffsCoverEveryWrittenColumn(t *testing.T) {
 			// EVERY UPDATE in the body, not just the first: a handler that writes two
 			// tables had only its first statement checked, so the second one's columns
 			// were unguarded (saveAgreement writes vehicles AND flat_rate_periods).
-			sets := reUpdateSet.FindAllStringSubmatch(body, -1)
+			sets := reUpdateSet.FindAllStringSubmatch(hf.Reach, -1)
 			if len(sets) == 0 {
 				continue
 			}

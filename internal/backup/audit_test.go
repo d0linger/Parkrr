@@ -102,7 +102,7 @@ func TestPruneDirIsSilentWhenNothingIsDeleted(t *testing.T) {
 	dir := seedArchives(t, 2)
 
 	pruneDir(context.Background(), dir, Retention{Keep: 5}) // keep more than exist
-	pruneDir(context.Background(), dir, Retention{}) // 0 = keep all, must not even scan
+	pruneDir(context.Background(), dir, Retention{})        // 0 = keep all, must not even scan
 
 	if len(*got) != 0 {
 		t.Fatalf("a sweep that deletes nothing must write no entry, got %d", len(*got))

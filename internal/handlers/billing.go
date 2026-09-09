@@ -256,8 +256,11 @@ type invoice struct {
 	Canceled         bool           `json:"canceled"`             // storniert (immutable original, superseded)
 	CancelsID        *int64         `json:"cancels_id,omitempty"` // set on a Storno document -> the original
 	PaidAmount       float64        `json:"paid_amount"`          // sum of payments allocated to this invoice
-	// Mahn-Gedächtnis (Hundert 15): wie oft und wann zuletzt gemahnt wurde. Nur in
-	// der Listenansicht befüllt — dort fällt die Entscheidung, ob (wieder) gemahnt wird.
+	// Mahn-Gedächtnis (Hundert 15): wie oft und wann zuletzt gemahnt wurde. In der
+	// Liste UND in der Einzelabfrage befüllt: der Mahn-Knopf sitzt auf der DETAILseite,
+	// die über fetchInvoice kommt. Solange nur die Liste die Spalten lud, rechnete der
+	// Dialog dort immer mit Stufe 1 und fragte "Zahlungserinnerung senden?", während
+	// der Server aus der Tabelle Stufe 3 ableitete und die letzte Mahnung verschickte.
 	ReminderCount  int           `json:"reminder_count,omitempty"`
 	LastRemindedAt *time.Time    `json:"last_reminded_at,omitempty"`
 	OpenAmount     float64       `json:"open_amount"` // total - paid_amount (the open item)
@@ -1156,27 +1159,36 @@ func (h *Handler) OverdueInvoices(w http.ResponseWriter, r *http.Request) {
 	// bekommen — im nächsten Monat blieb die Ebene garantiert leer, egal wie viel
 	// dort fällig wird, und der Betreiber schloss daraus, es sei nichts einzutreiben.
 	cutoff := trim(r.URL.Query().Get("due_until"))
-	dueClause := "i.due_on < CURRENT_DATE"
-	args := []any{limit, offset}
+	var cutoffArg *string
 	if cutoff != "" {
 		if _, perr := time.Parse(dateLayout, cutoff); perr != nil {
 			writeError(w, http.StatusBadRequest, "due_until must be YYYY-MM-DD")
 			return
 		}
-		dueClause = "i.due_on <= $3::date"
-		args = append(args, cutoff)
+		cutoffArg = &cutoff
 	}
+	// EINE Klausel und EIN Argument für Liste UND Zählung, der Grenztag immer an $1.
+	//
+	// Getrennt formuliert mussten beide auch getrennt numeriert werden, und genau
+	// daran ging es schief: die Zählabfrage übernahm die für die LISTE auf $3
+	// numerierte Klausel und bekam einen einzigen Parameter. PostgreSQL wies sie ab,
+	// totalCount verschluckt einen Fehler von Haus aus, und ausgerechnet auf dem
+	// Kalenderpfad (?due_until=) fehlte der X-Total-Count-Header stillschweigend —
+	// der Header, an dem die Oberfläche eine abgeschnittene Liste erkennt. Ohne
+	// Angabe ist $1 NULL, und COALESCE fällt auf "vor heute" zurück; due_on ist eine
+	// DATE-Spalte, `<= CURRENT_DATE - 1` ist dort dasselbe wie `< CURRENT_DATE`.
+	const dueClause = "i.due_on <= COALESCE($1::date, CURRENT_DATE - 1)"
 	h.totalCount(w, r.Context(),
 		`SELECT count(*) FROM invoices i
 		  WHERE NOT i.canceled AND i.cancels_id IS NULL AND i.due_on IS NOT NULL
-		    AND `+dueClause+` AND (i.total - i.paid_amount) > 0.005`, args[2:]...)
+		    AND `+dueClause+` AND (i.total - i.paid_amount) > 0.005`, cutoffArg)
 	rows, err := h.Pool.Query(r.Context(),
 		`SELECT i.id, i.number, i.person_id, trim(p.first_name || ' ' || p.last_name),
 		        i.due_on, i.total, i.paid_amount, (CURRENT_DATE - i.due_on) AS days
 		   FROM invoices i JOIN persons p ON p.id = i.person_id
 		  WHERE NOT i.canceled AND i.cancels_id IS NULL AND i.due_on IS NOT NULL
 		    AND `+dueClause+` AND (i.total - i.paid_amount) > 0.005
-		  ORDER BY i.due_on LIMIT $1 OFFSET $2`, args...)
+		  ORDER BY i.due_on LIMIT $2 OFFSET $3`, cutoffArg, limit, offset)
 	if err != nil {
 		serverError(w, r, "query failed", err)
 		return
@@ -1274,12 +1286,15 @@ func (h *Handler) fetchInvoice(ctx context.Context, id int64) (invoice, bool, er
 	if err := h.Pool.QueryRow(ctx,
 		`SELECT i.id, i.number, i.person_id, i.issued_on, i.due_on, i.subtotal, i.ust_rate, i.tax_amount, i.total,
 		        i.kleinunternehmer, i.seller_snapshot, i.buyer_snapshot, i.note, i.canceled, i.cancels_id, i.paid_amount,
-		        i.leistung_from, i.leistung_to, COALESCE(c.number, '')
+		        i.leistung_from, i.leistung_to, COALESCE(c.number, ''),
+		        (SELECT count(*) FROM invoice_reminders ir WHERE ir.invoice_id = i.id),
+		        (SELECT max(ir.sent_at) FROM invoice_reminders ir WHERE ir.invoice_id = i.id)
 		   FROM invoices i LEFT JOIN invoices c ON c.id = i.cancels_id
 		  WHERE i.id=$1`, id,
 	).Scan(&iv.ID, &iv.Number, &iv.PersonID, &iv.IssuedOn, &iv.DueOn, &iv.Subtotal, &iv.UStRate,
 		&iv.TaxAmount, &iv.Total, &iv.Kleinunternehmer, &sellerJSON, &buyerJSON, &iv.Note,
-		&iv.Canceled, &iv.CancelsID, &iv.PaidAmount, &iv.LeistungFrom, &iv.LeistungTo, &iv.CancelsNumber); err != nil {
+		&iv.Canceled, &iv.CancelsID, &iv.PaidAmount, &iv.LeistungFrom, &iv.LeistungTo, &iv.CancelsNumber,
+		&iv.ReminderCount, &iv.LastRemindedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return invoice{}, false, nil
 		}

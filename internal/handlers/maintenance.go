@@ -5,12 +5,27 @@ import (
 	"errors"
 	"hash/fnv"
 	"log/slog"
+	"time"
 )
 
 // ErrTaskBusy meldet, dass eine andere Instanz dieselbe Einmal-Aufgabe gerade
 // ausführt. Kein Fehler im eigentlichen Sinn — der Aufrufer soll ihn nicht als
 // Störung protokollieren.
 var ErrTaskBusy = errors.New("maintenance task already running elsewhere")
+
+// advisoryKey macht aus einem sprechenden Namen einen stabilen 64-Bit-Schlüssel
+// für pg_advisory_lock: die Sperre kennt nur Zahlen, und zwei verschiedene
+// Anliegen dürfen sich nicht gegenseitig sperren.
+//
+// Bewusst hier und nicht als `hashtext($1)::bigint` in der Abfrage: hashtext
+// liefert einen VORZEICHENBEHAFTETEN int4 und schnitte den Schlüsselraum von 2^64
+// auf 2^32 zusammen. Bei zwei Aufrufern mit verschiedenen Namen wäre eine
+// Kollision dann ein grundloses „läuft bereits", das niemand erklären kann.
+func advisoryKey(name string) int64 {
+	hsh := fnv.New64a()
+	_, _ = hsh.Write([]byte(name))
+	return int64(hsh.Sum64())
+}
 
 // runOnce führt fn höchstens einmal über die Lebensdauer der Datenbank aus und
 // hält das Ergebnis in maintenance_tasks fest (Hundert 08).
@@ -38,11 +53,7 @@ func (h *Handler) runOnce(ctx context.Context, task string, fn func(context.Cont
 	}
 	defer conn.Release()
 
-	// Ein stabiler 64-Bit-Schlüssel aus dem Aufgabennamen — pg_advisory_lock kennt
-	// nur Zahlen, und zwei verschiedene Aufgaben dürfen sich nicht gegenseitig sperren.
-	hsh := fnv.New64a()
-	_, _ = hsh.Write([]byte("parkrr.maintenance." + task))
-	key := int64(hsh.Sum64())
+	key := advisoryKey("parkrr.maintenance." + task)
 
 	var got bool
 	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&got); err != nil {
@@ -52,7 +63,13 @@ func (h *Handler) runOnce(ctx context.Context, task string, fn func(context.Cont
 		return ErrTaskBusy
 	}
 	defer func() {
-		if _, err := conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, key); err != nil {
+		// Eigene Frist wie in reminders.go: context.WithoutCancel allein hat GAR keine,
+		// und eine hängende Verbindung hielte sonst Aufrufer und Poolplatz fest, bis TCP
+		// aufgibt. Der Fehler wurde dort diagnostiziert — hier stand er unverändert
+		// weiter, obwohl dieses Stück die Vorlage war.
+		ulCtx, ulCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer ulCancel()
+		if _, err := conn.Exec(ulCtx, `SELECT pg_advisory_unlock($1)`, key); err != nil {
 			slog.Warn("maintenance advisory unlock failed", "task", task, "err", err)
 		}
 	}()

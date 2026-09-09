@@ -143,6 +143,69 @@ angefasst wurde.
   statt „leer → leer", PDF-Schriften werden einmal statt je Dokument geladen, und
   der Portal-Kennzahlenpfad lädt nicht mehr die Abgleichsdaten aller Kunden.
 
+### Behoben (zweite Durchsicht)
+
+- **Der automatische Rechnungslauf überlebt einen Neustart mittendrin:** Der Lauf
+  merkte sich „erledigt", bevor er begann. Ein Update, ein Reboot oder ein
+  Speicherengpass in genau dieser Minute ließ den Rest des Laufs ersatzlos
+  ausfallen — bis zum nächsten Termin, also je nach Zeitplan einen Monat lang,
+  ohne Eintrag und ohne Alarm. Der Merker wird jetzt erst nach dem Lauf gesetzt;
+  eine Wiederholung kostet nichts, weil abgerechnete Perioden gesperrt bleiben.
+- **Ein Lauf, der an der Zeitgrenze abbricht, sagt das jetzt auch:** Bisher las
+  sich die Zusammenfassung wie ein geglückter Lauf, während Hunderte Personen
+  unfakturiert blieben.
+- **Mahnen blockiert die Anwendung nicht mehr:** Der Mahnvorgang belegte während
+  der E-Mail-Zustellung eine Datenbankverbindung und forderte für den
+  Protokolleintrag noch eine zweite an. Bei mehreren gleichzeitigen Mahnungen und
+  einem trägen Mailserver stand die ganze Anwendung. Außerdem geht eine versandte
+  Mahnung nicht mehr verloren, wenn der Browser währenddessen geschlossen wird —
+  sonst bekam der Kunde dieselbe Stufe ein zweites Mal.
+- **Die Mahnstufe auf der Rechnungsseite stimmt nach dem Senden:** Ein zweiter
+  Klick fragte weiter nach der „Zahlungserinnerung", während tatsächlich die
+  1. Mahnung hinausging.
+- **Filter überleben eine Massenaktion:** Status-, Personen- und Archivfilter der
+  Gefährteliste wurden bei jedem Neuaufbau der Seite zurückgesetzt — auch direkt
+  nach einer Massenaktion, was die fehlgeschlagenen Zeilen wieder aus der Auswahl
+  warf. Und ein Tastendruck im Suchfeld löscht die Mehrfachauswahl nicht mehr.
+- **Zu große Dateien sagen jetzt, dass sie zu groß sind,** statt „HTTP 413": die
+  Größenschranke antwortet im Klartext, und die Anhang-Auswahl prüft schon vor
+  dem Hochladen. **Achtung, echte Einschränkung:** die Obergrenze für einen
+  Anhang liegt damit bei **8 MB statt bisher 10** — die 10 waren ohnehin nie
+  erreichbar, weil der allgemeine Deckel für eine Anfrage darunter lag und ein
+  größerer Anhang schon vorher unverständlich abgewiesen wurde. Ein Scan
+  zwischen 8 und 10 MB muss künftig verkleinert werden.
+- **Widerrufene Portal-Links bleiben als „widerrufen" sichtbar** — das Ausstellen
+  eines neuen Links für irgendwen löschte zuvor die widerrufenen Zeilen aller
+  Personen.
+- **Der Start bricht nicht mehr an Zeilenenden ab:** Die Prüfsumme der
+  Migrationen rechnet zeilenenden-unabhängig und hebt eine alt aufgezeichnete
+  Summe einmalig an, statt sie bei jedem Start neu zu schreiben.
+- **Die Löschung einer Person trifft im Mail-Protokoll genau ihre Adresse.**
+  Zuvor wurde als Textmuster gesucht: eine Person mit der Adresse „%@%" — im
+  Portal selbst wünschbar — hätte beim Löschen die Empfängerspalte des GANZEN
+  Protokolls geleert, und fremde Zeilen mit ähnlicher Adresse wurden mit
+  anonymisiert. Umgekehrt bleibt eine Adresse mit Leerraum jetzt nicht mehr
+  stehen, während die Person als gelöscht gemeldet wurde.
+- **Eine versandte Mahnung, die nicht festgehalten werden kann, wird gemeldet.**
+  Bisher meldete die Oberfläche Erfolg, während die Stufe ungezählt blieb — der
+  nächste Klick schickte dieselbe Stufe ein zweites Mal. Jetzt sagt die Meldung,
+  dass die Mail draußen ist, und warnt ausdrücklich vor dem zweiten Klick.
+- **Parkfläche, Raum-m² und Frei/Belegt stimmen nach jeder Planänderung.** Nach
+  dem Verschieben an eine Wand oder dem Löschen von Wänden mit dem Auswahlrahmen
+  zeigten die Kennzahlen und der SVG-/PDF-Export weiter den vorherigen Stand.
+- **Die Neustart-Warnung der Betriebsüberwachung kann erstmals auslösen:** die
+  Prozess-Kennzahlen, auf die die mitgelieferte Alarmregel sich stützt, wurden
+  bisher gar nicht ausgeliefert — eine stille Lücke, die wie „alles ruhig" aussah.
+- **Rücksicherung und Unterschrift nennen jetzt erreichbare Grenzen.** Beide
+  versprachen eine Größe, die nie durchging: bei der Rücksicherung lag die eigene
+  Grenze exakt auf dem allgemeinen Deckel für eine Anfrage, sodass der Umschlag
+  der Übertragung immer darüber lag — die hilfreiche Meldung („dafür bitte die
+  Kommandozeile, `parkrr restore`") wurde nie erreicht. Bei der Unterschrift
+  scheiterte ein großes Bild am JSON-Leser mit einem Syntaxfehler, statt
+  „Signatur zu groß" zu melden. **Achtung, echte Einschränkung:** die
+  Rücksicherung über den Browser liegt jetzt bei **8 MB statt nominell 9** —
+  größere Sicherungen gehen weiterhin über die Kommandozeile.
+
 ### Entfernt
 - Die seit Migration 012 tote Alt-Tabelle `flatrate_paid_years`; noch vorhandene
   historische Zeilen werden beim Update automatisch ins Änderungsprotokoll
