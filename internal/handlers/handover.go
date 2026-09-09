@@ -16,8 +16,19 @@ import (
 )
 
 const (
-	maxSignatureBytes = 1 << 20 // 1 MiB decoded PNG cap for a signature
-	maxHandoverNotes  = 4000
+	maxHandoverNotes = 4000
+
+	// maxSignatureBytes ist die Grenze der DEKODIERTEN PNG-Daten — und sie muss unter
+	// dem liegen, was als Base64 durch den JSON-Rumpf überhaupt hereinpasst.
+	//
+	// Mit glatt 1 MiB zielte sie daneben: die Unterschrift kommt base64-kodiert im
+	// JSON an, und Base64 bläht um 4/3 auf. Ein 1-MiB-PNG braucht also rund 1,37 MiB
+	// im Rumpf, den decodeJSON bei maxJSONBody abschneidet — die Prüfung unten wurde
+	// nie erreicht, der Anwender bekam statt "Signatur zu groß" einen Syntaxfehler des
+	// JSON-Lesers. Tatsächlich durchgingen nur rund 750 KiB. Die Grenze rechnet sich
+	// daher aus dem Rumpf-Budget zurück: abzüglich der Notizen und etwas Luft für
+	// Feldnamen, Anführungszeichen und den "data:"-Vorsatz, mal 3/4 für Base64.
+	maxSignatureBytes = (maxJSONBody - maxHandoverNotes - 2048) / 4 * 3
 )
 
 // handoverMeta is the JSON view of a handover protocol (never the raw signature
@@ -268,13 +279,12 @@ func (h *Handler) HandoverPDF(w http.ResponseWriter, r *http.Request) {
 		left    = 20.0
 		usableW = 170.0
 	)
-	pdf := fpdf.New("P", "mm", "A4", "")
-	tr := pdf.UnicodeTranslatorFromDescriptor("")
+	pdf, tr := newPDF() // eingebettete Unicode-Schrift; tr ist damit die Identität (Hundert 14)
 	pdf.SetMargins(left, 18, left)
 	pdf.SetAutoPageBreak(true, 18)
 	pdf.AddPage()
 
-	pdf.SetFont("Helvetica", "B", 17)
+	pdf.SetFont(pdfFontName, "B", 17)
 	pdf.SetTextColor(20, 20, 20)
 	pdf.CellFormat(0, 10, tr("Übergabeprotokoll"), "", 1, "L", false, 0, "")
 	pdf.Ln(2)
@@ -291,18 +301,18 @@ func (h *Handler) HandoverPDF(w http.ResponseWriter, r *http.Request) {
 		meta = append(meta, [2]string{"Halter/in", person})
 	}
 	for _, m := range meta {
-		pdf.SetFont("Helvetica", "", 10)
+		pdf.SetFont(pdfFontName, "", 10)
 		pdf.SetTextColor(90, 90, 90)
 		pdf.CellFormat(40, 6, tr(m[0]), "", 0, "L", false, 0, "")
-		pdf.SetFont("Helvetica", "B", 10)
+		pdf.SetFont(pdfFontName, "B", 10)
 		pdf.SetTextColor(20, 20, 20)
 		pdf.CellFormat(0, 6, tr(m[1]), "", 1, "L", false, 0, "")
 	}
 	pdf.Ln(4)
 
-	pdf.SetFont("Helvetica", "B", 11)
+	pdf.SetFont(pdfFontName, "B", 11)
 	pdf.CellFormat(0, 6, tr("Zustand / Anmerkungen"), "", 1, "L", false, 0, "")
-	pdf.SetFont("Helvetica", "", 10)
+	pdf.SetFont(pdfFontName, "", 10)
 	pdf.SetTextColor(30, 30, 30)
 	body := notes
 	if strings.TrimSpace(body) == "" {
@@ -312,7 +322,7 @@ func (h *Handler) HandoverPDF(w http.ResponseWriter, r *http.Request) {
 	pdf.Ln(8)
 
 	// Signature.
-	pdf.SetFont("Helvetica", "B", 11)
+	pdf.SetFont(pdfFontName, "B", 11)
 	pdf.SetTextColor(20, 20, 20)
 	pdf.CellFormat(0, 6, tr("Unterschrift"), "", 1, "L", false, 0, "")
 	if len(sig) > 0 {
@@ -327,7 +337,7 @@ func (h *Handler) HandoverPDF(w http.ResponseWriter, r *http.Request) {
 	pdf.SetDrawColor(120, 120, 120)
 	pdf.Line(left, pdf.GetY(), left+80, pdf.GetY())
 	pdf.Ln(1)
-	pdf.SetFont("Helvetica", "", 9)
+	pdf.SetFont(pdfFontName, "", 9)
 	pdf.SetTextColor(90, 90, 90)
 	sn := signer
 	if sn == "" {

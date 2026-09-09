@@ -61,10 +61,14 @@ func (h *Handler) ListPayments(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+	// Paged with a generous default: unbounded loading was the exception among the
+	// list endpoints (finding API-28); X-Total-Count lets a client see truncation.
+	limit, offset := pageParams(r, 1000, 5000)
+	h.totalCount(w, r.Context(), `SELECT count(*) FROM payments WHERE person_id=$1`, id)
 	rows, err := h.Pool.Query(r.Context(),
-		`SELECT `+paymentColumns+` FROM payments WHERE person_id=$1 ORDER BY paid_on DESC, id DESC`, id)
+		`SELECT `+paymentColumns+` FROM payments WHERE person_id=$1 ORDER BY paid_on DESC, id DESC LIMIT $2 OFFSET $3`, id, limit, offset)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -72,19 +76,19 @@ func (h *Handler) ListPayments(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		p, serr := scanPayment(rows)
 		if serr != nil {
-			writeError(w, http.StatusInternalServerError, "query failed")
+			serverError(w, r, "query failed", serr)
 			return
 		}
 		out = append(out, p)
 	}
-	if rows.Err() != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+	if rerr := rows.Err(); rerr != nil {
+		serverError(w, r, "query failed", rerr)
 		return
 	}
 	// Attach the resolved positions (Gefährt/Pauschale/Zeitraum) each payment settles.
 	items, ierr := h.resolvePaymentItems(r.Context(), id)
 	if ierr != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", ierr)
 		return
 	}
 	for i := range out {
@@ -216,7 +220,7 @@ func deletePeriodPaymentTx(ctx context.Context, tx pgx.Tx, kind string, refID in
 // their own settlement.
 func (h *Handler) openOwedItems(r *http.Request, personID int64) ([]owedItem, error) {
 	ctx := r.Context()
-	now := time.Now()
+	now := h.now()
 
 	ags, err := h.loadAgreements(ctx, personID, now)
 	if err != nil {
@@ -405,8 +409,14 @@ func (h *Handler) syncTogglePaymentTx(ctx context.Context, tx pgx.Tx, kind strin
 	// Serialize concurrent toggles of the SAME item: a transaction-scoped
 	// advisory lock makes the exists-check below reliable, so racing toggles
 	// (double-tap, retry, two tabs) mint exactly one auto-payment, not N.
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
-		kind+":"+strconv.FormatInt(refID, 10)); err != nil {
+	//
+	// Der Schlüssel kommt über advisoryKey, nicht über `hashtext($1)::bigint`:
+	// hashtext liefert einen vorzeichenbehafteten int4 und schnitte den Schlüsselraum
+	// von 2^64 auf 2^32 zusammen. Alle Sperren dieser Datenbank teilen sich EINEN
+	// Namensraum, also könnte eine solche Kollision auch eine ganz andere Sperre
+	// treffen — ein grundloses Blockieren, das niemand erklären kann.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`,
+		advisoryKey("parkrr.payment."+kind+":"+strconv.FormatInt(refID, 10))); err != nil {
 		return err
 	}
 	// Any allocation (auto OR manual) already settles this item — don't mint a
@@ -585,7 +595,7 @@ func (h *Handler) validatePayment(req *paymentRequest) (time.Time, string) {
 	if !validNameLength(req.Note) {
 		return time.Time{}, "note is too long"
 	}
-	paidOn := time.Now()
+	paidOn := h.now()
 	if trim(req.PaidOn) != "" {
 		if !validDateLength(trim(req.PaidOn)) {
 			return time.Time{}, "paid_on is too long"

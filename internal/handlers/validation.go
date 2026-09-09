@@ -1,5 +1,7 @@
 package handlers
 
+import netmail "net/mail"
+
 // Input length policy — the single source of truth for how much user-supplied
 // text each endpoint accepts. Caps are enforced up front to protect against
 // resource exhaustion (DoS) and database bloat, and to keep passwords within
@@ -64,9 +66,28 @@ func validNameLength(s string) bool {
 	return len(s) <= maxNameLen
 }
 
-// validEmailLength reports whether s is within the email length cap.
+// validEmailLength reports whether s is within the email length cap. Pure length
+// predicate — syntax is validEmail's job.
 func validEmailLength(s string) bool {
 	return len(s) <= maxEmailLen
+}
+
+// validEmail reports whether s is an acceptable address for a person or user:
+// within the length cap and, when non-empty, parseable as a bare RFC 5322 address.
+// Only the length was checked before, so a typo'd value survived to mail.cleanAddrs,
+// was silently dropped there, and surfaced as a confusing 502 at send time
+// (finding SEC-81). Empty stays valid: the address is optional on both entities.
+// The display-name form ("Max <a@b.c>") is rejected on purpose — these fields hold a
+// bare address, and storing the long form would differ from what cleanAddrs sends.
+func validEmail(s string) bool {
+	if !validEmailLength(s) {
+		return false
+	}
+	if s == "" {
+		return true
+	}
+	addr, err := netmail.ParseAddress(s)
+	return err == nil && addr.Address == s
 }
 
 // validNoteLength reports whether s is within the note length cap.

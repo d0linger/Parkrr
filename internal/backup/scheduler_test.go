@@ -90,3 +90,22 @@ func TestFrischeResteFruehererLaeufeVerschwindenTrotzdem(t *testing.T) {
 			"genau so füllte sich das Volume", err)
 	}
 }
+
+// TestEffectiveLastIgnoriertEinenAelterenFremdenMerker haelt fest, warum der RECHNUNGSLAUF (server.StartAutoInvoice) den
+// SPAETEREN von Speicher und Datenbank nimmt: wird die Datenbank unter dem laufenden
+// Prozess zurueckgesichert (reconcileSchemaAfterRestore laesst ihn bewusst
+// weiterlaufen), traegt der eingespielte Auszug einen FREMDEN, aelteren Zeitpunkt.
+// Ohne den Waechter im Speicher wuerde der Cron daraufhin sofort feuern und eine
+// echte Fakturierung gegen die eingespielten Daten starten.
+func TestEffectiveLastIgnoriertEinenAelterenFremdenMerker(t *testing.T) {
+	mem := time.Now().Add(-1 * time.Minute)
+	fremd := time.Now().Add(-30 * 24 * time.Hour)
+	got := EffectiveLast(&fremd, mem)
+	if got == nil || !got.Equal(mem) {
+		t.Fatalf("der spaetere Zeitpunkt muss gewinnen: got=%v mem=%v", got, mem)
+	}
+	// Und ohne beides bleibt es bei "noch nie gelaufen".
+	if EffectiveLast(nil, time.Time{}) != nil {
+		t.Fatal("weder Merker noch Waechter muss nil ergeben")
+	}
+}

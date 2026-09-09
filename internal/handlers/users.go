@@ -16,7 +16,7 @@ import (
 // ListUsers returns all users (admin only).
 func (h *Handler) ListUsers(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.Pool.Query(r.Context(),
-		`SELECT id, username, email, is_admin, role, totp_enabled, created_at, updated_at
+		`SELECT id, username, email, is_admin, role, totp_enabled, disabled, created_at, updated_at
 		 FROM users ORDER BY username`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -28,7 +28,7 @@ func (h *Handler) ListUsers(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var u models.User
 		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.IsAdmin, &u.Role,
-			&u.TOTPEnabled, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			&u.TOTPEnabled, &u.Disabled, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan failed")
 			return
 		}
@@ -46,6 +46,9 @@ type userRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 	Role     string `json:"role"`
+	// Zeiger, nicht bool: ein Client, der das Feld weglässt (jeder ältere), würde
+	// sonst bei jedem Speichern ein deaktiviertes Konto wieder freischalten.
+	Disabled *bool `json:"disabled"`
 }
 
 func normalizeRole(role string) (string, bool) {
@@ -76,8 +79,8 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Das Passwort muss zwischen 8 und 72 Zeichen lang sein (Umlaute und Sonderzeichen zählen doppelt)")
 		return
 	}
-	if !validEmailLength(req.Email) {
-		writeError(w, http.StatusBadRequest, "E-Mail ist zu lang")
+	if !validEmail(req.Email) {
+		writeError(w, http.StatusBadRequest, "E-Mail ist ungültig oder zu lang")
 		return
 	}
 	if h.rejectBreachedPassword(w, r, req.Password) {
@@ -97,9 +100,9 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	err = h.Pool.QueryRow(r.Context(),
 		`INSERT INTO users (username, email, password_hash, role, is_admin)
 		 VALUES ($1, $2, $3, $4, $5)
-		 RETURNING id, username, email, is_admin, role, totp_enabled, created_at, updated_at`,
+		 RETURNING id, username, email, is_admin, role, totp_enabled, disabled, created_at, updated_at`,
 		req.Username, req.Email, hash, role, role == models.RoleAdmin,
-	).Scan(&u.ID, &u.Username, &u.Email, &u.IsAdmin, &u.Role, &u.TOTPEnabled,
+	).Scan(&u.ID, &u.Username, &u.Email, &u.IsAdmin, &u.Role, &u.TOTPEnabled, &u.Disabled,
 		&u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -132,14 +135,23 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Benutzername ist erforderlich (höchstens 100 Zeichen)")
 		return
 	}
-	if !validEmailLength(req.Email) {
-		writeError(w, http.StatusBadRequest, "E-Mail ist zu lang")
+	if !validEmail(req.Email) {
+		writeError(w, http.StatusBadRequest, "E-Mail ist ungültig oder zu lang")
 		return
 	}
 	role, ok := normalizeRole(req.Role)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid role")
 		return
+	}
+
+	// Sich selbst auszusperren ist irreversibel, sobald man der letzte Admin ist —
+	// dieselbe Logik wie beim Löschen des eigenen Kontos (API-31).
+	if req.Disabled != nil && *req.Disabled {
+		if cur, ok := auth.UserFrom(r.Context()); ok && cur.ID == id {
+			writeError(w, http.StatusConflict, "you cannot disable your own account")
+			return
+		}
 	}
 
 	// Validate an optional password change up front, before any database
@@ -167,22 +179,32 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 	// Prevent demoting the last admin. adminsRemaining locks the admin rows, so a
 	// concurrent demotion/deletion blocks until we commit (fail-closed: abort on
 	// any query error rather than assuming "not last").
-	if role != models.RoleAdmin {
+	// Deaktivieren sperrt den Zugang genauso vollständig wie eine Degradierung ihn
+	// entzieht — der Schutz vor "null Admins" muss deshalb BEIDE Wege abdecken.
+	// (Sperren ist die reversible Alternative zum Löschen: DeleteUser nullt über
+	// ON DELETE SET NULL die Urheberschaft auf Rechnungen, Zahlungen, Stornos und
+	// Übergabeprotokollen, siehe Migration 052.)
+	disabling := req.Disabled != nil && *req.Disabled
+	if role != models.RoleAdmin || disabling {
 		count, targetIsAdmin, aerr := adminsRemaining(r.Context(), tx, id)
 		if aerr != nil {
 			writeError(w, http.StatusInternalServerError, "could not update user")
 			return
 		}
 		if targetIsAdmin && count <= 1 {
-			writeError(w, http.StatusConflict, "cannot demote the last remaining admin")
+			msg := "cannot demote the last remaining admin"
+			if role == models.RoleAdmin {
+				msg = "cannot disable the last remaining admin"
+			}
+			writeError(w, http.StatusConflict, msg)
 			return
 		}
 	}
 
 	var old models.User
 	if err := tx.QueryRow(r.Context(),
-		`SELECT id, username, email, role, is_admin FROM users WHERE id=$1`, id).
-		Scan(&old.ID, &old.Username, &old.Email, &old.Role, &old.IsAdmin); err != nil {
+		`SELECT id, username, email, role, is_admin, disabled FROM users WHERE id=$1`, id).
+		Scan(&old.ID, &old.Username, &old.Email, &old.Role, &old.IsAdmin, &old.Disabled); err != nil {
 		// A missing user must 404, not silently "succeed": the UPDATE below would
 		// affect 0 rows yet still return 200 with a fabricated audit entry.
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -194,6 +216,10 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isAdmin := role == models.RoleAdmin
+	disabled := old.Disabled
+	if req.Disabled != nil {
+		disabled = *req.Disabled
+	}
 	if req.Password != "" {
 		hash, err := auth.HashPassword(req.Password)
 		if err != nil {
@@ -201,8 +227,8 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, err := tx.Exec(r.Context(),
-			`UPDATE users SET username=$1, email=$2, role=$3, is_admin=$4, password_hash=$5, updated_at=now()
-			 WHERE id=$6`, req.Username, req.Email, role, isAdmin, hash, id); err != nil {
+			`UPDATE users SET username=$1, email=$2, role=$3, is_admin=$4, password_hash=$5, disabled=$6, updated_at=now()
+			 WHERE id=$7`, req.Username, req.Email, role, isAdmin, hash, disabled, id); err != nil {
 			handleUserUpdateErr(w, err)
 			return
 		}
@@ -214,9 +240,19 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		if _, err := tx.Exec(r.Context(),
-			`UPDATE users SET username=$1, email=$2, role=$3, is_admin=$4, updated_at=now()
-			 WHERE id=$5`, req.Username, req.Email, role, isAdmin, id); err != nil {
+			`UPDATE users SET username=$1, email=$2, role=$3, is_admin=$4, disabled=$5, updated_at=now()
+			 WHERE id=$6`, req.Username, req.Email, role, isAdmin, disabled, id); err != nil {
 			handleUserUpdateErr(w, err)
+			return
+		}
+	}
+	// Die Sitzungsauflösung prüft disabled bereits pro Request; die Zeilen trotzdem
+	// zu löschen hält die sessions-Tabelle ehrlich (kein "aktiver" Eintrag für ein
+	// gesperrtes Konto) und ist die zweite Verteidigungslinie, falls diese Prüfung
+	// je verloren geht.
+	if disabled && !old.Disabled {
+		if _, err := tx.Exec(r.Context(), `DELETE FROM sessions WHERE user_id=$1`, id); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not update user")
 			return
 		}
 	}
@@ -226,6 +262,7 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	newU := old
 	newU.Username, newU.Email, newU.Role, newU.IsAdmin = req.Username, req.Email, role, isAdmin
+	newU.Disabled = disabled
 	changes := diffFields(old, newU, "created_at", "updated_at", "id", "totp_enabled", "is_admin")
 	if req.Password != "" {
 		if changes == nil {
@@ -349,21 +386,35 @@ func (h *Handler) ResetUserTOTP(w http.ResponseWriter, r *http.Request) {
 
 // adminsRemaining locks every admin row (FOR UPDATE, ordered by id so concurrent
 // callers acquire the locks in the same order and serialize instead of
-// deadlocking), then returns the current admin count and whether id is one of
-// them. Run inside the caller's transaction, this makes the last-admin check and
-// the following demotion/deletion atomic: a racing operation blocks on the locked
-// rows until we commit, then sees the updated state (finding SH-04). The caller
-// must treat a returned error as fail-closed and abort the mutation.
+// deadlocking), then returns the count of admins who can actually still sign in
+// and whether id is one of them. Run inside the caller's transaction, this makes
+// the last-admin check and the following demotion/deletion atomic: a racing
+// operation blocks on the locked rows until we commit, then sees the updated
+// state (finding SH-04). The caller must treat a returned error as fail-closed
+// and abort the mutation.
+//
+// Gezählt werden nur NICHT gesperrte Admins. Ein gesperrtes Konto ist als Admin
+// wertlos — Authenticate und die Sitzungsauflösung weisen es ab —, und wer es
+// mitzählt, lässt zu, dass nacheinander JEDER Admin gesperrt wird: jeder Schritt
+// sieht die bereits gesperrten Vorgänger als Rückfallebene und erlaubt sich
+// deshalb selbst. Am Ende steht eine Installation ohne erreichbares Admin-Konto,
+// und der einzige Weg zurück (PUT /api/users/{id}) liegt hinter admin().
+// Aus demselben Grund zählt ein bereits gesperrter Zielbenutzer nicht als
+// "letzter Admin": ihn zu löschen oder zu degradieren nimmt niemandem den Zugang.
 func adminsRemaining(ctx context.Context, tx pgx.Tx, id int64) (count int, targetIsAdmin bool, err error) {
-	rows, err := tx.Query(ctx, `SELECT id FROM users WHERE is_admin ORDER BY id FOR UPDATE`)
+	rows, err := tx.Query(ctx, `SELECT id, disabled FROM users WHERE is_admin ORDER BY id FOR UPDATE`)
 	if err != nil {
 		return 0, false, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var aid int64
-		if err := rows.Scan(&aid); err != nil {
+		var disabled bool
+		if err := rows.Scan(&aid, &disabled); err != nil {
 			return 0, false, err
+		}
+		if disabled {
+			continue
 		}
 		count++
 		if aid == id {

@@ -180,6 +180,14 @@ func (h *AuthHandler) requireStepUp(w http.ResponseWriter, r *http.Request, user
 
 // Login authenticates a user (with optional TOTP) and starts a session.
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
+	// Passkey-only-Modus (Hundert 42): der Passwort-Weg ist abgeschaltet, es gibt
+	// nur noch die Passkey-Anmeldung. Der Grund ist maschinenlesbar; die
+	// Anmeldemaske blendet den Passwortteil über /api/auth/capabilities ohnehin
+	// aus — dieser Riegel gilt für jeden, der den Endpunkt direkt anspricht.
+	if h.PasskeyOnly {
+		writeError(w, http.StatusForbidden, "password_login_disabled")
+		return
+	}
 	var req loginRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")

@@ -1,8 +1,10 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -46,7 +48,10 @@ func requestLogger(mgr *auth.Manager, next http.Handler) http.Handler {
 		start := time.Now()
 		id := requestID()
 		w.Header().Set("X-Request-ID", id)
-		// Install a request-log record so auth middleware can add the user.
+		// Install a request-log record so auth middleware can add the user and any
+		// handler can stash the 5xx cause. Die Anfrage-Kennung selbst wandert NICHT
+		// hinein: sie steht im Antwortkopf (X-Request-ID) und wird unten aus der
+		// lokalen Variablen geloggt — der Ablageplatz im Kontext hatte nie einen Leser.
 		ctx := auth.WithRequestLog(r.Context())
 		r = r.WithContext(ctx)
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
@@ -66,7 +71,28 @@ func requestLogger(mgr *auth.Manager, next http.Handler) http.Handler {
 		if user, uid := auth.RequestLogUser(ctx); user != "" {
 			attrs = append(attrs, "user", user, "user_id", uid)
 		}
-		slog.Info("request", attrs...)
+		// Surface the underlying cause of a 5xx that a handler stashed (OPS-01), so a
+		// DB fault is never invisible even where the handler wrote only a generic body.
+		if err := auth.RequestError(ctx); err != nil {
+			attrs = append(attrs, "err", err.Error())
+		}
+		// Escalate the level by status so a 500 doesn't read like a 200 (OPS-03).
+		switch {
+		// Der Client hat die Anfrage ABGEBROCHEN (weggeblättert, Tab zu, Reload
+		// mittendrin). Der Handler sieht dann "context canceled" und quittiert 500,
+		// aber es ist niemand mehr da, dem geantwortet würde — das als Serverfehler zu
+		// protokollieren erzeugt genau das Rauschen, in dem ein echter 500 untergeht.
+		// NUR Canceled: ein DeadlineExceeded ist unsere eigene Zeitgrenze und bleibt
+		// ein Fehler (Hundert 01, gefunden beim Messen des a11y-Laufs).
+		case errors.Is(ctx.Err(), context.Canceled):
+			slog.Info("request aborted by client", attrs...)
+		case rec.status >= 500:
+			slog.Error("request", attrs...)
+		case rec.status >= 400:
+			slog.Warn("request", attrs...)
+		default:
+			slog.Info("request", attrs...)
+		}
 	})
 }
 

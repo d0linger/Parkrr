@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 
@@ -355,9 +356,16 @@ func (h *Handler) spotsOfHall(r *http.Request, hallID int64) ([]models.Spot, err
 		        COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), cat.name, 'Gefährt'),
 		        COALESCE(cat.name, ''),
 		        v.person_id, trim(p.first_name || ' ' || p.last_name),
-		        v.length_m, v.width_m, v.height_m, v.weight_t, COALESCE(v.needs_power, false),
+		        -- Tarif-Standardmaße auch HIER einsetzen, nicht nur in der Ablageleiste
+		        -- (ListUnassignedVehicles). Sonst trägt dasselbe Gefährt in der Leiste
+		        -- Höhe und Gewicht, verliert sie aber in dem Moment, in dem es auf einem
+		        -- Platz liegt — und der Planer schaltet damit still seine Torhöhen- und
+		        -- Traglastwarnung ab (heightOK/weightOK behandeln null als "passt").
+		        COALESCE(v.length_m, cat.default_length_m), COALESCE(v.width_m, cat.default_width_m),
+		        COALESCE(v.height_m, cat.default_height_m), COALESCE(v.weight_t, cat.default_weight_t),
+		        COALESCE(v.needs_power, false),
 		        v.planner_symbol,
-		        (SELECT vp.id FROM vehicle_photos vp WHERE vp.vehicle_id = v.id ORDER BY vp.created_at, vp.id LIMIT 1)
+		        (SELECT vp.id FROM vehicle_photos vp WHERE vp.vehicle_id = v.id ORDER BY vp.sort_order, vp.created_at DESC, vp.id LIMIT 1)
 		   FROM spots s
 		   LEFT JOIN vehicles   v   ON v.spot_id = s.id
 		   LEFT JOIN categories cat ON cat.id = v.category_id
@@ -668,7 +676,8 @@ func (h *Handler) ListUnassignedVehicles(w http.ResponseWriter, r *http.Request)
 		        COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), cat.name, 'Gefährt'),
 		        COALESCE(cat.name, ''),
 		        v.person_id, trim(p.first_name || ' ' || p.last_name),
-		        v.length_m, v.width_m, v.height_m, v.weight_t
+		        COALESCE(v.length_m, cat.default_length_m), COALESCE(v.width_m, cat.default_width_m),
+		        COALESCE(v.height_m, cat.default_height_m), COALESCE(v.weight_t, cat.default_weight_t)
 		   FROM vehicles v
 		   LEFT JOIN categories cat ON cat.id = v.category_id
 		   LEFT JOIN persons    p   ON p.id = v.person_id
@@ -758,3 +767,107 @@ func (h *Handler) SetVehicleDimensions(w http.ResponseWriter, r *http.Request) {
 			"height_m": req.HeightM, "weight_t": req.WeightT}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
+
+// BatchUpdateSpotGeometry schreibt die Geometrie VIELER Stellplätze einer Halle in
+// EINER Transaktion (Hundert 74). Das Auto-Anordnen schickte bisher je Stellplatz
+// einen eigenen PUT: fünfzig Gefährte = fünfzig Requests, fünfzig Audit-Zeilen,
+// und ein Abbruch in der Mitte hinterließ eine halb angeordnete Halle. Hier gilt
+// alles-oder-nichts — genau das, was eine berechnete Anordnung braucht.
+//
+// Bewusst NUR Geometrie, keine Labels: das Anordnen benennt nichts um, und ohne
+// Label-Schreiben kann der Batch nicht in die Hallen-Eindeutigkeit
+// (uq_spots_hall_label) laufen. Einzel-Umbenennungen bleiben bei UpdateSpot.
+func (h *Handler) BatchUpdateSpotGeometry(w http.ResponseWriter, r *http.Request) {
+	hallID, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req struct {
+		Spots []struct {
+			ID       int64           `json:"id"`
+			Geometry json.RawMessage `json:"geometry"`
+		} `json:"spots"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(req.Spots) == 0 {
+		writeError(w, http.StatusBadRequest, "spots is empty")
+		return
+	}
+	// Dieselbe Obergrenze wie maxWallTemplates-artige Deckel anderswo: der Batch
+	// ist für EINE Halle gedacht, nicht als Massen-Schreib-API.
+	const maxBatchSpots = 500
+	if len(req.Spots) > maxBatchSpots {
+		writeError(w, http.StatusBadRequest, "too many spots in one batch")
+		return
+	}
+	type upd struct {
+		id   int64
+		geom json.RawMessage
+	}
+	updates := make([]upd, 0, len(req.Spots))
+	seen := make(map[int64]bool, len(req.Spots))
+	for _, s := range req.Spots {
+		if s.ID <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid spot id")
+			return
+		}
+		if seen[s.ID] {
+			writeError(w, http.StatusBadRequest, "duplicate spot id in batch")
+			return
+		}
+		seen[s.ID] = true
+		geom, gok := normalizeGeometry(s.Geometry)
+		if !gok {
+			writeError(w, http.StatusBadRequest, "geometry is invalid or too large")
+			return
+		}
+		updates = append(updates, upd{id: s.ID, geom: geom})
+	}
+
+	var missing []int64
+	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		for _, u := range updates {
+			// hall_id in der WHERE-Klausel: der Batch darf nur Plätze SEINER Halle
+			// bewegen — eine fremde id ist "nicht gefunden", nicht "auch erledigt".
+			ct, err := tx.Exec(r.Context(),
+				`UPDATE spots SET geometry=$1, updated_at=now() WHERE id=$2 AND hall_id=$3`,
+				u.geom, u.id, hallID)
+			if err != nil {
+				return err
+			}
+			if ct.RowsAffected() == 0 {
+				missing = append(missing, u.id)
+			}
+		}
+		if len(missing) > 0 {
+			// Alles-oder-nichts: ein Rollback statt einer halb angewandten Anordnung.
+			return errBatchSpotMissing
+		}
+		// EIN Audit-Eintrag für den ganzen Batch statt fünfzig einzelner: die
+		// Anordnung ist EINE Handlung des Benutzers.
+		ids := make([]any, 0, len(updates))
+		for _, u := range updates {
+			ids = append(ids, u.id)
+		}
+		return h.auditChangeTx(r.Context(), tx, r, "update", "hall", hallID,
+			fmt.Sprintf("%d Stellplätze angeordnet (Batch)", len(updates)),
+			auditSnapshot(map[string]any{"spot_ids": ids, "count": len(updates)}))
+	})
+	switch {
+	case errors.Is(txErr, errBatchSpotMissing):
+		writeError(w, http.StatusNotFound, "spot not found in this hall")
+		return
+	case txErr != nil:
+		serverError(w, r, "could not update spots", txErr)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"updated": len(updates)})
+}
+
+// errBatchSpotMissing bricht die Batch-Transaktion ab, wenn eine id nicht zur
+// Halle gehört — als Sentinel, damit der Handler 404 von echten Fehlern trennt.
+var errBatchSpotMissing = errors.New("spot not in hall")

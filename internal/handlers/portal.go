@@ -127,10 +127,19 @@ func (h *Handler) CreatePortalLink(w http.ResponseWriter, r *http.Request) {
 	if u, ok := auth.UserFrom(r.Context()); ok {
 		createdBy = &u.ID
 	}
-	// Opportunistic cleanup of finished tokens (same pattern as webauthn_ceremonies),
-	// so the table doesn't grow unbounded across link issuance.
-	_, _ = h.Pool.Exec(r.Context(),
-		`DELETE FROM self_service_tokens WHERE revoked OR expires_at < now() - interval '30 days'`)
+	// Kein Aufräumen mehr an dieser Stelle. Die frühere Anweisung löschte mit
+	// `WHERE revoked OR expires_at < …`: der linke Zweig trug KEINE Frist, traf also
+	// jede widerrufene Zeile sofort, und die Anweisung war auf keine Person
+	// eingeschränkt — das Ausstellen EINES neuen Links für IRGENDWEN entfernte die
+	// widerrufenen Zeilen ALLER Personen, womit der Status "widerrufen" in
+	// ListPortalLinks nicht mehr erreichbar war. Ein Widerruf wirkt ohnehin sofort
+	// (der Anmeldeweg liest `revoked`); die Zeile muss er nicht entfernen.
+	//
+	// Und die verbleibende Hälfte gehört nicht hierher: server.expirySweeps räumt
+	// dieselbe Tabelle beim Start und danach stündlich auf — bewusst NUR über
+	// `expires_at`, denn die Frist soll auch für widerrufene Zeilen gelten. Zweimal
+	// dieselbe Bedingung an zwei Orten ist genau die Konstellation, aus der der obige
+	// Fehler entstand — der Sweep ist der eine Besitzer.
 	var tokenID int64
 	if err := h.Pool.QueryRow(r.Context(),
 		`INSERT INTO self_service_tokens (token_hash, person_id, expires_at, created_by)
@@ -301,6 +310,20 @@ type portalSummary struct {
 	OpenTotal  float64         `json:"open_total"`
 	Vehicles   []portalVehicle `json:"vehicles"`
 	Invoices   []portalInvoice `json:"invoices"`
+	// Übergabeprotokolle (Hundert 84): der Kunde sieht, was er unterschrieben hat —
+	// Richtung, Datum, Zustandsnotizen. BEWUSST ohne das Unterschriftsbild: das
+	// Portal ist ein Bearer-Link, und die gezeichnete Unterschrift ist der
+	// personenbezogenste Datenpunkt der Anwendung — wer den Link mitliest, bekommt
+	// sie nicht dazu.
+	Handovers []portalHandover `json:"handovers"`
+}
+
+type portalHandover struct {
+	VehicleLabel string    `json:"vehicle_label"`
+	Direction    string    `json:"direction"` // einlagerung | auslagerung
+	Notes        string    `json:"notes"`
+	SignerName   string    `json:"signer_name"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // PortalSummary is the PUBLIC read-only view behind a valid magic-link token.
@@ -373,6 +396,35 @@ func (h *Handler) PortalSummary(w http.ResponseWriter, r *http.Request) {
 		out.Invoices = append(out.Invoices, pi)
 	}
 	if irows.Err() != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+
+	// Übergabeprotokolle der eigenen Gefährte (Hundert 84) — Metadaten und
+	// Zustandsnotizen, ohne Unterschriftsbild (Begründung am Struct).
+	out.Handovers = []portalHandover{}
+	hrows, err := h.Pool.Query(r.Context(),
+		`SELECT COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), 'Gefährt'),
+		        ho.direction, ho.notes, ho.signer_name, ho.created_at
+		   FROM handover_protocols ho
+		   JOIN vehicles v ON v.id = ho.vehicle_id
+		  WHERE v.person_id = $1
+		  ORDER BY ho.created_at DESC LIMIT 50`, pid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	for hrows.Next() {
+		var ph portalHandover
+		if err := hrows.Scan(&ph.VehicleLabel, &ph.Direction, &ph.Notes, &ph.SignerName, &ph.CreatedAt); err != nil {
+			hrows.Close()
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
+		}
+		out.Handovers = append(out.Handovers, ph)
+	}
+	hrows.Close()
+	if hrows.Err() != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}

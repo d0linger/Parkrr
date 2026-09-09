@@ -27,11 +27,22 @@ import (
 type Handler struct {
 	Pool *pgxpool.Pool
 
+	// Now returns the wall clock for all billing/period math; tests pin it to make
+	// date-boundary cases (month end, leap day, year roll) deterministic (finding
+	// FIN-12: the 2026-08-31 bug was latent because the suite could only ever run
+	// against the real date). Nil means time.Now.
+	Now func() time.Time
+
 	// CheckBreachedPasswords enables the HIBP k-anonymity check on new passwords.
 	CheckBreachedPasswords bool
 	// FailClosedOnBreach rejects a new password when the HIBP check can't run
 	// (default false = fail open, allowing the change).
 	FailClosedOnBreach bool
+	// PasskeyOnly schaltet den Passwort-Login ab (Hundert 42): Anmeldung nur noch
+	// per Passkey. Opt-in über PARKRR_PASSKEY_ONLY; die Konfiguration verweigert
+	// den Start, wenn dabei kein WebAuthn eingerichtet ist — sonst käme niemand
+	// mehr hinein.
+	PasskeyOnly bool
 	// BackupKey (if set) enables the encrypted-backup endpoint; DatabaseURL is
 	// the connection string handed to pg_dump; BackupDir holds scheduled backups.
 	BackupKey   string
@@ -128,8 +139,37 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	}
 }
 
+// now returns the handler clock (see Handler.Now); production uses the real time.
+func (h *Handler) now() time.Time {
+	if h.Now != nil {
+		return h.Now()
+	}
+	return time.Now()
+}
+
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// writeMultipartError beantwortet einen ParseMultipartForm-Fehler: 413 nur, wenn
+// wirklich der MaxBytesReader gedeckelt hat (die Datei war zu groß). Alles andere
+// — fehlende Boundary, kaputter Multipart-Rahmen, abgebrochener Upload — ist ein
+// fehlerhafter Request und bekommt 400, nicht die irreführende Zu-groß-Meldung.
+func writeMultipartError(w http.ResponseWriter, err error, tooLargeMsg string) {
+	if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+		writeError(w, http.StatusRequestEntityTooLarge, tooLargeMsg)
+		return
+	}
+	writeError(w, http.StatusBadRequest, "Ungültiger Upload (fehlerhaftes Multipart-Formular)")
+}
+
+// serverError writes a 500 with a safe public message and stashes the underlying cause
+// on the request record, so the central request logger emits it at Error level with the
+// request id (finding OPS-01) instead of the handler dropping err silently. Prefer this
+// over a bare writeError(w, 500, ...) at any DB/internal failure.
+func serverError(w http.ResponseWriter, r *http.Request, publicMsg string, err error) {
+	auth.SetRequestError(r.Context(), err)
+	writeError(w, http.StatusInternalServerError, publicMsg)
 }
 
 var errNotJSON = errors.New("content type must be application/json")
@@ -145,10 +185,15 @@ func decodeJSON(r *http.Request, dst any) error {
 			return errNotJSON
 		}
 	}
-	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	dec := json.NewDecoder(io.LimitReader(r.Body, maxJSONBody))
 	dec.DisallowUnknownFields()
 	return dec.Decode(dst)
 }
+
+// maxJSONBody deckelt jeden JSON-Rumpf. Als blosse Zahl in decodeJSON konnte keine
+// Grenze, die INNERHALB eines JSON-Rumpfs gilt, sich auf sie beziehen — siehe
+// maxSignatureBytes (handover.go), das genau daran vorbeizielte.
+const maxJSONBody = 1 << 20 // 1 MiB
 
 // pathID extracts the positive int64 "id" path value.
 func pathID(r *http.Request) (int64, bool) {
@@ -160,6 +205,16 @@ func pathID(r *http.Request) (int64, bool) {
 }
 
 func trim(s string) string { return strings.TrimSpace(s) }
+
+// totalCount sets X-Total-Count from the given COUNT query so a client can detect a
+// truncated (paged) listing instead of silently missing rows past the limit (finding
+// API-29). Best-effort: a count failure only omits the header, never fails the list.
+func (h *Handler) totalCount(w http.ResponseWriter, ctx context.Context, query string, args ...any) {
+	var n int64
+	if err := h.Pool.QueryRow(ctx, query, args...).Scan(&n); err == nil {
+		w.Header().Set("X-Total-Count", strconv.FormatInt(n, 10))
+	}
+}
 
 // pageParams parses ?limit and ?offset for list endpoints, applying a default
 // page size and a hard maximum so a single request can never pull an unbounded
@@ -191,9 +246,17 @@ type execer interface {
 
 // actorFrom derives the acting user (id, name) from the request context, or
 // (0, "") when none is present (e.g. before login).
+//
+// Ein Kontext, den ContextWithSystemActor markiert hat, liefert (0, "system") —
+// damit ein Hintergrundlauf, der einen echten Handler über einen synthetischen
+// Request antreibt, im Protokoll dieselbe Herkunft trägt wie seine eigene
+// Zusammenfassung über AuditSystem, statt als namenloser Akteur zu erscheinen.
 func actorFrom(r *http.Request) (int64, string) {
 	if u, ok := auth.UserFrom(r.Context()); ok {
 		return u.ID, u.Username
+	}
+	if auth.IsSystemActor(r.Context()) {
+		return 0, "system"
 	}
 	return 0, ""
 }

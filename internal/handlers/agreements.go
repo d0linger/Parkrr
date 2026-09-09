@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -168,7 +169,7 @@ func (h *Handler) ListAgreements(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	list, err := h.loadAgreements(r.Context(), id, time.Now())
+	list, err := h.loadAgreements(r.Context(), id, h.now())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -460,7 +461,7 @@ func (h *Handler) validateAgreement(ctx context.Context, personID, excludeID int
 	// person-wide agreement (empty VehicleIDs) covers the new vehicles too, so a
 	// time overlap with one of those is still a conflict (double billing).
 	if len(cand.VehicleIDs) == 0 && hasNew {
-		existing, err := h.loadAgreements(ctx, personID, time.Now())
+		existing, err := h.loadAgreements(ctx, personID, h.now())
 		if err != nil {
 			return "query failed", http.StatusInternalServerError
 		}
@@ -474,7 +475,7 @@ func (h *Handler) validateAgreement(ctx context.Context, personID, excludeID int
 		}
 		return "", 0
 	}
-	msg, err := h.checkOverlap(ctx, personID, excludeID, cand, time.Now())
+	msg, err := h.checkOverlap(ctx, personID, excludeID, cand, h.now())
 	if err != nil {
 		return "query failed", http.StatusInternalServerError
 	}
@@ -550,7 +551,7 @@ func (h *Handler) persistAgreement(w http.ResponseWriter, r *http.Request, id, p
 	// and the only place that knows the final vehicle set and the pre-state).
 	// Archive bound vehicles right away if the agreement is now finished and
 	// settled, rather than waiting for the periodic sweep.
-	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), pid)
+	h.archiveSettled(r.Context(), pid)
 	h.writeAgreements(w, r, pid)
 }
 
@@ -825,7 +826,7 @@ func (h *Handler) DeleteAgreement(w http.ResponseWriter, r *http.Request) {
 	// Coverage changed: kept vehicles may now be archive-eligible (or, no longer
 	// covered by a finished agreement, due to wake) — reconcile immediately like
 	// every other agreement mutation.
-	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), pid)
+	h.archiveSettled(r.Context(), pid)
 	h.writeAgreements(w, r, pid)
 }
 
@@ -919,7 +920,7 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 	if req.Paid {
 		// (a) Rent: one real Zahlungseingang per COMPLETED elapsed period. A still-
 		// running period keeps the off-book credit (its cost is not final yet).
-		for _, per := range ag.ElapsedPeriodsDetailed(time.Now()) {
+		for _, per := range ag.ElapsedPeriodsDetailed(h.now()) {
 			if !per.Complete {
 				continue
 			}
@@ -958,7 +959,7 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Settling the last open period may finish the agreement -> archive vehicles.
-	_, _ = h.ArchiveSettledExpiredVehicles(ctx, pid)
+	h.archiveSettled(ctx, pid)
 	h.writeAgreements(w, r, pid)
 }
 
@@ -1127,7 +1128,7 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 	// unmark, a bad key on a master-paid agreement would still materialize the
 	// elapsed rows and clear the master flag — state changed by garbage input.
 	valid := false
-	for _, k := range a.ElapsedPeriodKeys(time.Now()) {
+	for _, k := range a.ElapsedPeriodKeys(h.now()) {
 		if k == key {
 			valid = true
 			break
@@ -1137,7 +1138,7 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 	// would otherwise become a real overpayment and inflate the Guthaben. A genuine
 	// prepayment is entered as a regular Zahlung (which correctly becomes credit).
 	if valid && req.Amount != nil {
-		if cost, ok := periodCostForKey(a, key, time.Now()); ok && *req.Amount > cost+0.005 {
+		if cost, ok := periodCostForKey(a, key, h.now()); ok && *req.Amount > cost+0.005 {
 			writeError(w, http.StatusBadRequest, "Teilbetrag übersteigt die Periodenkosten – für eine Vorauszahlung eine reguläre Zahlung erfassen")
 			return
 		}
@@ -1177,7 +1178,7 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 		// Book the real Zahlungseingang mirroring this off-book settlement (Fix 1): a
 		// completed whole period or an explicit partial. A still-running whole period
 		// stays off-book (its cost isn't final); its payment is booked once complete.
-		if amt, ok := periodPaymentAmount(a, key, req.Amount, time.Now()); ok {
+		if amt, ok := periodPaymentAmount(a, key, req.Amount, h.now()); ok {
 			if err := recordPeriodPaymentTx(r.Context(), tx, a.PersonID, "agreement", id, key, amt, createdByFrom(r.Context())); err != nil {
 				writeError(w, http.StatusInternalServerError, "could not update payment")
 				return
@@ -1191,7 +1192,7 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 			if _, err := tx.Exec(r.Context(),
 				`INSERT INTO flat_rate_period_payments (period_id, period_key)
 				 SELECT $1, unnest($2::text[]) ON CONFLICT DO NOTHING`,
-				id, a.ElapsedPeriodKeys(time.Now())); err != nil {
+				id, a.ElapsedPeriodKeys(h.now())); err != nil {
 				writeError(w, http.StatusInternalServerError, "could not update payment")
 				return
 			}
@@ -1227,12 +1228,12 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	// Settling the last open period may finish the agreement -> archive vehicles.
-	_, _ = h.ArchiveSettledExpiredVehicles(r.Context(), a.PersonID)
+	h.archiveSettled(r.Context(), a.PersonID)
 	h.writeAgreements(w, r, a.PersonID)
 }
 
 func (h *Handler) writeAgreements(w http.ResponseWriter, r *http.Request, personID int64) {
-	list, err := h.loadAgreements(r.Context(), personID, time.Now())
+	list, err := h.loadAgreements(r.Context(), personID, h.now())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -1325,6 +1326,20 @@ func coveringAgreements(agreements []models.FlatRatePeriod, vehicleID int64, veh
 	return out
 }
 
+// archiveSettled räumt abgelaufene, beglichene Pauschalen-Gefährte sofort weg,
+// statt auf den periodischen Lauf zu warten. Ein Fehlschlag ist kein Grund, die
+// gerade erfolgreiche Änderung scheitern zu lassen — der periodische Lauf holt es
+// nach —, er gehört aber ins Protokoll.
+//
+// EIN Helfer statt vier gleicher Blöcke: die vier Aufrufstellen mussten bisher im
+// Gleichschritt gepflegt werden, und eine davon reichte eine andere Variable
+// herein als die übrigen.
+func (h *Handler) archiveSettled(ctx context.Context, personID int64) {
+	if _, err := h.ArchiveSettledExpiredVehicles(ctx, personID); err != nil {
+		slog.Warn("archive settled/expired vehicles failed", "err", err, "person_id", personID)
+	}
+}
+
 // ArchiveSettledExpiredVehicles reconciles bound vehicles with their Pauschalen:
 // a vehicle whose every covering agreement has ended AND is fully paid is
 // archived (a finished-and-settled agreement tidies its vehicles away), and —
@@ -1336,7 +1351,7 @@ func coveringAgreements(agreements []models.FlatRatePeriod, vehicleID int64, veh
 // case after an agreement mutation); 0 sweeps everyone (background job).
 // Returns the number of vehicles archived.
 func (h *Handler) ArchiveSettledExpiredVehicles(ctx context.Context, personID int64) (int64, error) {
-	now := time.Now()
+	now := h.now()
 	agByPerson, err := h.loadAllAgreements(ctx, personID)
 	if err != nil {
 		return 0, err

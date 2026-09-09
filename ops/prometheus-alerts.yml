@@ -1,0 +1,69 @@
+# Beispiel-Alarmregeln für Parkrr (Hundert 10) — zugeschnitten auf die Metriken,
+# die /metrics tatsächlich exportiert (parkrr_http_*, parkrr_db_pool_*), plus die
+# Standard-Prozessmetriken des Go-Clients. In eine bestehende Prometheus-Config
+# einbinden:
+#
+#   rule_files:
+#     - /etc/prometheus/parkrr-alerts.yml
+#
+# Die Schwellwerte sind Startwerte für einen Ein-Instanz-Betrieb — bewusst eher
+# unempfindlich, damit die erste Woche nicht aus Fehlalarmen besteht. Nachschärfen
+# gehört zum Betrieb.
+groups:
+  - name: parkrr
+    rules:
+      # Erreichbarkeit: die wichtigste Regel zuerst. `up` kommt vom Scrape selbst.
+      - alert: ParkrrDown
+        expr: up{job="parkrr"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "Parkrr antwortet nicht"
+          description: "Der /metrics-Scrape schlägt seit 2 Minuten fehl — Instanz oder Netzwerk prüfen."
+
+      # Fehlerrate: 5xx-Anteil über 5 Minuten. Client-Abbrüche werden seit
+      # Hundert 01/Z3 nicht mehr als Fehler geführt, die Quote ist also ehrlich.
+      - alert: ParkrrHighErrorRate
+        expr: |
+          sum(rate(parkrr_http_requests_total{status=~"5.."}[5m]))
+            / clamp_min(sum(rate(parkrr_http_requests_total[5m])), 0.001) > 0.05
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "Über 5 % der Anfragen enden in 5xx"
+          description: "Access-Log nach `level=ERROR` filtern — die Ursache steht seit OPS-01 als err= daneben."
+
+      # Latenz: p95 über der Sekunde ist für diese Anwendung (lokale DB, kleine
+      # Antworten) bereits auffällig.
+      - alert: ParkrrSlowRequests
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(parkrr_http_request_duration_seconds_bucket[5m]))) > 1
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "p95-Antwortzeit über 1 s"
+          description: "Meist die Datenbank: parkrr_db_pool_* daneben prüfen (empty_acquire steigt?)."
+
+      # Pool-Sättigung: Anfragen warten auf eine freie DB-Verbindung.
+      - alert: ParkrrDbPoolStarved
+        expr: rate(parkrr_db_pool_empty_acquire_total[5m]) > 1
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "DB-Pool ausgeschöpft (Anfragen warten auf Verbindungen)"
+          description: "acquired_conns nahe max_conns? Langläufer im pg_stat_activity suchen, bevor der Pool vergrößert wird."
+
+      # Neustart-Schleife: mehr als 2 Starts in 30 Minuten deutet auf Crash-Loop.
+      - alert: ParkrrRestartLoop
+        expr: changes(process_start_time_seconds{job="parkrr"}[30m]) > 2
+        for: 0m
+        labels: {severity: critical}
+        annotations:
+          summary: "Parkrr startet wiederholt neu"
+          description: "Container-Logs der letzten Starts prüfen (slog 'fatal')."
+
+  # Backup-Wachhund OHNE eigene Backup-Metrik: die Anwendung meldet Fehlschläge
+  # per Log/Audit/Mail (PARKRR_ALERT_EMAIL, Hundert 04). Wer es zusätzlich in
+  # Prometheus will, scrapt die Kachel über den blackbox_exporter auf
+  # GET /healthz (Erreichbarkeit) — oder verlässt sich auf die Mail. Eine eigene
+  # parkrr_backup_age-Metrik wäre der nächste Ausbauschritt.

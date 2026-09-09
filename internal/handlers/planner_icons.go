@@ -60,7 +60,7 @@ func (h *Handler) UploadPlannerIcon(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxPhotoBytes+1024)
 	// #nosec G120 -- the request body is capped by MaxBytesReader above.
 	if err := r.ParseMultipartForm(maxPhotoBytes + 1024); err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, "file too large")
+		writeMultipartError(w, err, "file too large")
 		return
 	}
 	defer func() { _ = r.MultipartForm.RemoveAll() }() // drop any spilled temp files
@@ -152,7 +152,7 @@ func (h *Handler) UpdatePlannerIcon(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxPhotoBytes+1024)
 	// #nosec G120 -- the request body is capped by MaxBytesReader above.
 	if err := r.ParseMultipartForm(maxPhotoBytes + 1024); err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, "file too large")
+		writeMultipartError(w, err, "file too large")
 		return
 	}
 	defer func() { _ = r.MultipartForm.RemoveAll() }() // drop any spilled temp files

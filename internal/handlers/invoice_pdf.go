@@ -70,13 +70,20 @@ func fitText(pdf *fpdf.Fpdf, s string, w float64) string {
 	if pdf.GetStringWidth(s) <= w-2 {
 		return s
 	}
-	for len(s) > 1 {
-		s = s[:len(s)-1]
-		if pdf.GetStringWidth(s+"...") <= w-2 {
-			return s + "..."
+	// Zeichenweise kuerzen, NICHT byteweise. Seit der Umstellung auf die eingebettete
+	// Unicode-Schrift ist der Uebersetzer die Identitaet, die Zeichenkette bleibt also
+	// UTF-8. Mit s[:len(s)-1] fiel ein Schnitt mitten in ein mehrbyte-Zeichen: eine
+	// Beschreibung, die auf ss, ue oder das Euro-Zeichen endet, wurde als kaputtes
+	// Zeichen gesetzt. Vorher, mit cp1252, war jedes Zeichen ein Byte und der Schnitt
+	// zufaellig sicher.
+	rs := []rune(s)
+	for len(rs) > 1 {
+		rs = rs[:len(rs)-1]
+		if cut := string(rs) + "..."; pdf.GetStringWidth(cut) <= w-2 {
+			return cut
 		}
 	}
-	return s
+	return string(rs)
 }
 
 // InvoicePDF renders a single invoice as an A4 PDF laid out per §11 UStG
@@ -109,8 +116,7 @@ func writeInvoicePDF(w http.ResponseWriter, iv invoice) {
 		usableW = 210.0 - left - right // 170
 		dateFmt = "02.01.2006"
 	)
-	pdf := fpdf.New("P", "mm", "A4", "")
-	tr := pdf.UnicodeTranslatorFromDescriptor("") // cp1252: umlauts, §, €, – …
+	pdf, tr := newPDF() // eingebettete Unicode-Schrift; tr ist damit die Identität (Hundert 14) // cp1252: umlauts, §, €, – …
 	pdf.SetMargins(left, 18, right)
 	pdf.SetAutoPageBreak(true, 18)
 	pdf.AddPage()
@@ -122,16 +128,16 @@ func writeInvoicePDF(w http.ResponseWriter, iv invoice) {
 	if a := strings.Join(addrLines(snapStr(seller, "address")), ", "); a != "" {
 		sender = strings.TrimPrefix(sender+" · "+a, " · ")
 	}
-	pdf.SetFont("Helvetica", "", 8)
+	pdf.SetFont(pdfFontName, "", 8)
 	pdf.SetTextColor(120, 120, 120)
 	pdf.CellFormat(0, 4, tr(sender), "", 1, "L", false, 0, "")
 	pdf.Ln(7)
 
 	// Recipient.
 	pdf.SetTextColor(25, 25, 25)
-	pdf.SetFont("Helvetica", "B", 11)
+	pdf.SetFont(pdfFontName, "B", 11)
 	pdf.CellFormat(0, 5, tr(snapStr(buyer, "name")), "", 1, "L", false, 0, "")
-	pdf.SetFont("Helvetica", "", 10)
+	pdf.SetFont(pdfFontName, "", 10)
 	for _, line := range addrLines(snapStr(buyer, "address")) {
 		pdf.CellFormat(0, 5, tr(line), "", 1, "L", false, 0, "")
 	}
@@ -145,7 +151,7 @@ func writeInvoicePDF(w http.ResponseWriter, iv invoice) {
 	if iv.Canceled {
 		title += " (storniert)"
 	}
-	pdf.SetFont("Helvetica", "B", 17)
+	pdf.SetFont(pdfFontName, "B", 17)
 	pdf.SetTextColor(20, 20, 20)
 	pdf.CellFormat(0, 10, tr(title), "", 1, "L", false, 0, "")
 	pdf.Ln(1)
@@ -155,6 +161,11 @@ func writeInvoicePDF(w http.ResponseWriter, iv invoice) {
 		{"Rechnungsnummer", iv.Number},
 		{"Rechnungsdatum", iv.IssuedOn.Format(dateFmt)},
 	}
+	// Ein Storno MUSS seinen Ursprung nennen: ohne die Nummer der stornierten
+	// Rechnung ist der Beleg nicht rückführbar und die Buchhaltung rät (Hundert 18).
+	if iv.CancelsID != nil && iv.CancelsNumber != "" {
+		meta = append(meta, [2]string{"Storniert Rechnung", iv.CancelsNumber})
+	}
 	if iv.DueOn != nil {
 		meta = append(meta, [2]string{"Fällig am", iv.DueOn.Format(dateFmt)})
 	}
@@ -163,10 +174,10 @@ func writeInvoicePDF(w http.ResponseWriter, iv invoice) {
 			iv.LeistungFrom.Format(dateFmt) + " – " + iv.LeistungTo.Format(dateFmt)})
 	}
 	for _, m := range meta {
-		pdf.SetFont("Helvetica", "", 10)
+		pdf.SetFont(pdfFontName, "", 10)
 		pdf.SetTextColor(90, 90, 90)
 		pdf.CellFormat(45, 5, tr(m[0]), "", 0, "L", false, 0, "")
-		pdf.SetFont("Helvetica", "B", 10)
+		pdf.SetFont(pdfFontName, "B", 10)
 		pdf.SetTextColor(20, 20, 20)
 		pdf.CellFormat(0, 5, tr(m[1]), "", 1, "L", false, 0, "")
 	}
@@ -174,7 +185,7 @@ func writeInvoicePDF(w http.ResponseWriter, iv invoice) {
 
 	// Items table. Columns sum to usableW (170).
 	const cPos, cDesc, cQty, cUnit, cLine = 12.0, 88.0, 18.0, 26.0, 26.0
-	pdf.SetFont("Helvetica", "B", 9)
+	pdf.SetFont(pdfFontName, "B", 9)
 	pdf.SetFillColor(235, 238, 242)
 	pdf.SetTextColor(40, 40, 40)
 	pdf.CellFormat(cPos, 7, "Pos", "", 0, "L", true, 0, "")
@@ -183,7 +194,7 @@ func writeInvoicePDF(w http.ResponseWriter, iv invoice) {
 	pdf.CellFormat(cUnit, 7, tr("Einzel"), "", 0, "R", true, 0, "")
 	pdf.CellFormat(cLine, 7, tr("Betrag"), "", 1, "R", true, 0, "")
 
-	pdf.SetFont("Helvetica", "", 9)
+	pdf.SetFont(pdfFontName, "", 9)
 	pdf.SetTextColor(25, 25, 25)
 	pdf.SetDrawColor(220, 224, 228)
 	fill := false
@@ -207,7 +218,7 @@ func writeInvoicePDF(w http.ResponseWriter, iv invoice) {
 			style = "B"
 		}
 		pdf.SetX(totalsX)
-		pdf.SetFont("Helvetica", style, 10)
+		pdf.SetFont(pdfFontName, style, 10)
 		pdf.CellFormat(labelW, 6, tr(label), "", 0, "R", false, 0, "")
 		pdf.CellFormat(valW, 6, tr(val), "", 1, "R", false, 0, "")
 	}
@@ -221,7 +232,7 @@ func writeInvoicePDF(w http.ResponseWriter, iv invoice) {
 	totalRow("Gesamtbetrag", pdfMoney(iv.Total), true)
 	pdf.Ln(6)
 
-	pdf.SetFont("Helvetica", "", 9)
+	pdf.SetFont(pdfFontName, "", 9)
 	pdf.SetTextColor(70, 70, 70)
 	if iv.Kleinunternehmer {
 		pdf.MultiCell(usableW, 4.6,
@@ -257,7 +268,7 @@ func writeInvoicePDF(w http.ResponseWriter, iv invoice) {
 				y := pdf.GetY() + 2
 				pdf.ImageOptions("payqr", left, y, 26, 26, false, fpdf.ImageOptions{ImageType: "PNG"}, 0, "")
 				pdf.SetXY(left+30, y+3)
-				pdf.SetFont("Helvetica", "", 8)
+				pdf.SetFont(pdfFontName, "", 8)
 				pdf.SetTextColor(90, 90, 90)
 				pdf.MultiCell(usableW-30, 4, tr("Scan zum Bezahlen (SEPA-Überweisung / Girocode)"), "", "L", false)
 				pdf.SetY(y + 28)
@@ -277,7 +288,7 @@ func writeInvoicePDF(w http.ResponseWriter, iv invoice) {
 	// Footer note from billing settings (bottom of page, small grey).
 	if footer := strings.TrimSpace(snapStr(seller, "footer")); footer != "" {
 		pdf.SetY(-24)
-		pdf.SetFont("Helvetica", "", 7.5)
+		pdf.SetFont(pdfFontName, "", 7.5)
 		pdf.SetTextColor(140, 140, 140)
 		pdf.MultiCell(usableW, 3.6, tr(footer), "", "C", false)
 	}

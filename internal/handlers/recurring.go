@@ -116,11 +116,21 @@ func (h *Handler) loadRecurringCharges(ctx context.Context, personID int64, now 
 	return out, rows.Err()
 }
 
-// loadAllRecurringCharges groups every recurring charge by person (dashboard),
-// settling bound charges via each person's agreements and the global vehicle
-// paid map.
-func (h *Handler) loadAllRecurringCharges(ctx context.Context, now time.Time) (map[int64][]models.RecurringCharge, error) {
-	rows, err := h.Pool.Query(ctx, recurringSelect)
+// loadAllRecurringCharges groups recurring charges by person (dashboard), settling
+// bound charges via each person's agreements and the global vehicle paid map.
+//
+// personID = 0 laedt alle; sonst nur die dieser Person. Der Filter ist nicht bloss
+// Kosmetik: outstandingByPerson ist der Pfad, den auch das oeffentliche Kundenportal
+// nimmt, und der lud bisher fuer die Auskunft ueber EINE Person saemtliche
+// wiederkehrenden Posten des Betriebs (Hundert 36).
+func (h *Handler) loadAllRecurringCharges(ctx context.Context, now time.Time, personID int64) (map[int64][]models.RecurringCharge, error) {
+	q := recurringSelect
+	var args []any
+	if personID != 0 {
+		q += ` WHERE rc.person_id = $1`
+		args = append(args, personID)
+	}
+	rows, err := h.Pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +195,7 @@ func (h *Handler) ListRecurringCharges(w http.ResponseWriter, r *http.Request) {
 	}
 	// Settlement is derived from each charge's own per-period flags (Option A), so
 	// no agreements/vehicles load is needed here.
-	list, err := h.loadRecurringCharges(r.Context(), id, time.Now())
+	list, err := h.loadRecurringCharges(r.Context(), id, h.now())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -522,7 +532,7 @@ func (h *Handler) SetRecurringChargePaid(w http.ResponseWriter, r *http.Request)
 		}
 		if req.Paid {
 			p := rc.AsPeriod()
-			for _, per := range p.ElapsedPeriodsDetailed(time.Now()) {
+			for _, per := range p.ElapsedPeriodsDetailed(h.now()) {
 				if !per.Complete || locked[lockKey("recurring", id, per.Key)] {
 					continue // running, or settled through an invoice → skip
 				}
@@ -588,7 +598,7 @@ func (h *Handler) SetRecurringChargePeriodPaid(w http.ResponseWriter, r *http.Re
 	// Only periods that have begun can be paid (guards against bogus keys).
 	valid := false
 	p := rc.AsPeriod()
-	for _, k := range p.ElapsedPeriodKeys(time.Now()) {
+	for _, k := range p.ElapsedPeriodKeys(h.now()) {
 		if k == req.PeriodKey {
 			valid = true
 			break
@@ -602,7 +612,7 @@ func (h *Handler) SetRecurringChargePeriodPaid(w http.ResponseWriter, r *http.Re
 	// Teilbetrag must not become a silent overpayment; a real prepayment is a regular
 	// Zahlung.
 	if req.Paid && req.Amount != nil {
-		if cost, ok := periodCostForKey(p, req.PeriodKey, time.Now()); ok && *req.Amount > cost+0.005 {
+		if cost, ok := periodCostForKey(p, req.PeriodKey, h.now()); ok && *req.Amount > cost+0.005 {
 			writeError(w, http.StatusBadRequest, "Teilbetrag übersteigt die Periodenkosten – für eine Vorauszahlung eine reguläre Zahlung erfassen")
 			return
 		}
@@ -661,7 +671,7 @@ func (h *Handler) SetRecurringChargePeriodPaid(w http.ResponseWriter, r *http.Re
 		// toggle-off deletes it. The off-book credit skips periods with such a payment,
 		// so the balance never double-counts.
 		if req.Paid {
-			if amt, ok := periodPaymentAmount(rc.AsPeriod(), req.PeriodKey, req.Amount, time.Now()); ok {
+			if amt, ok := periodPaymentAmount(rc.AsPeriod(), req.PeriodKey, req.Amount, h.now()); ok {
 				if err := recordPeriodPaymentTx(r.Context(), tx, rc.PersonID, "recurring", id, req.PeriodKey, amt, createdByFrom(r.Context())); err != nil {
 					return err
 				}

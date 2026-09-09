@@ -20,9 +20,27 @@ import (
 // issuing a duplicate counter-document.
 var errAlreadyCanceled = errors.New("invoice already canceled")
 
+// InvoiceOutcomeHeader benennt maschinenlesbar, WARUM eine Rechnung nicht
+// entstanden ist. Der automatische Rechnungslauf (internal/server/autoinvoice.go)
+// ruft denselben Handler über einen synthetischen Request auf und muss die Fälle
+// unterscheiden können, ohne deutschen Fließtext zu vergleichen — eine Umformu-
+// lierung der Meldung hat sonst stillschweigend die Bedeutung des Laufs geändert.
+// Die Antwort für die Oberfläche bleibt unverändert; das hier ist ein Nebenkanal.
+const InvoiceOutcomeHeader = "X-Parkrr-Invoice-Outcome"
+
+const (
+	OutcomeNoOpenItems      = "no-open-items"     // nichts abzurechnen — normaler Übersprung
+	OutcomeComplianceSeller = "compliance-seller" // Verkäuferdaten fehlen — betrifft JEDE Rechnung
+	OutcomeComplianceBuyer  = "compliance-buyer"  // Empfängerdaten fehlen — betrifft NUR diese Person
+	OutcomeRaced            = "already-billed"    // gleichzeitiger Lauf war schneller — kein Fehler
+)
+
 // complianceError carries a §11-gate message from inside the CreateInvoice tx so
 // the handler can roll back (restoring the number) and answer 422 with the reason.
-type complianceError struct{ msg string }
+type complianceError struct {
+	msg        string
+	sellerSide bool
+}
 
 func (e *complianceError) Error() string { return e.msg }
 
@@ -216,8 +234,12 @@ type invoiceItem struct {
 }
 
 type invoice struct {
-	ID               int64          `json:"id"`
-	Number           string         `json:"number"`
+	ID     int64  `json:"id"`
+	Number string `json:"number"`
+	// CancelsNumber ist die Nummer der stornierten Rechnung — auf dem Storno-Dokument
+	// Pflichtangabe, sonst ist der Beleg nicht auf seinen Ursprung rückführbar (§11
+	// UStG: eindeutiger Bezug). Nur auf Storno-Dokumenten gesetzt (Hundert 18).
+	CancelsNumber    string         `json:"cancels_number,omitempty"`
 	PersonID         int64          `json:"person_id"`
 	IssuedOn         time.Time      `json:"issued_on"`
 	DueOn            *time.Time     `json:"due_on"`
@@ -234,9 +256,16 @@ type invoice struct {
 	Canceled         bool           `json:"canceled"`             // storniert (immutable original, superseded)
 	CancelsID        *int64         `json:"cancels_id,omitempty"` // set on a Storno document -> the original
 	PaidAmount       float64        `json:"paid_amount"`          // sum of payments allocated to this invoice
-	OpenAmount       float64        `json:"open_amount"`          // total - paid_amount (the open item)
-	Status           string         `json:"status"`               // offen | teilbezahlt | bezahlt | storniert | storno
-	Items            []invoiceItem  `json:"items,omitempty"`
+	// Mahn-Gedächtnis (Hundert 15): wie oft und wann zuletzt gemahnt wurde. In der
+	// Liste UND in der Einzelabfrage befüllt: der Mahn-Knopf sitzt auf der DETAILseite,
+	// die über fetchInvoice kommt. Solange nur die Liste die Spalten lud, rechnete der
+	// Dialog dort immer mit Stufe 1 und fragte "Zahlungserinnerung senden?", während
+	// der Server aus der Tabelle Stufe 3 ableitete und die letzte Mahnung verschickte.
+	ReminderCount  int           `json:"reminder_count,omitempty"`
+	LastRemindedAt *time.Time    `json:"last_reminded_at,omitempty"`
+	OpenAmount     float64       `json:"open_amount"` // total - paid_amount (the open item)
+	Status         string        `json:"status"`      // offen | teilbezahlt | bezahlt | storniert | storno
+	Items          []invoiceItem `json:"items,omitempty"`
 	// Positions is the structured summary of what the invoice bills (Gefährt/Pauschale
 	// + Periode), for the one-line attribution in the person overview. Distinct from
 	// Items (the detail line snapshot shown on the invoice page).
@@ -270,7 +299,7 @@ type createInvoiceRequest struct {
 // open balance.
 func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, error) {
 	ctx := r.Context()
-	now := time.Now()
+	now := h.now()
 
 	vehicles, _, err := h.loadVehiclesWithCategories(r, personID)
 	if err != nil {
@@ -557,16 +586,31 @@ func (h *Handler) refInvoiced(ctx context.Context, q rowQuerier, kind string, re
 	return yes, err
 }
 
-// invoiceComplianceError checks the §11 UStG (AT) mandatory invoice fields and
-// returns a non-empty message naming what's missing, so an incomplete/non-compliant
-// invoice is never issued (GoBD/BAO: Richtigkeit & Vollständigkeit).
-func invoiceComplianceError(s billingSettings, buyerName, buyerAddress string, grossTotal float64) string {
+// complianceOutcome benennt, auf welcher Seite der Mangel liegt — die Zeichenkette
+// landet so im Protokoll des automatischen Laufs.
+func complianceOutcome(sellerSide bool) string {
+	if sellerSide {
+		return OutcomeComplianceSeller
+	}
+	return OutcomeComplianceBuyer
+}
+
+// invoiceComplianceDetail liefert zusätzlich, OB der Mangel beim Aussteller liegt.
+// Der Unterschied ist betrieblich wesentlich: fehlende Verkäuferdaten betreffen
+// JEDE Rechnung gleich (einmal in den Einstellungen ergänzen), ein fehlender
+// Empfängername oder eine fehlende Empfängeranschrift betrifft GENAU EINE Person.
+// Der automatische Lauf darf nur im ersten Fall abbrechen — sonst hält ein
+// einzelner unvollständiger Datensatz die Fakturierung aller übrigen Personen an,
+// Nacht für Nacht und ohne dass die Zusammenfassung es erwähnt.
+func invoiceComplianceDetail(s billingSettings, buyerName, buyerAddress string, grossTotal float64) (msg string, sellerSide bool) {
 	var missing []string
 	if strings.TrimSpace(s.SellerName) == "" {
 		missing = append(missing, "Name des Ausstellers")
+		sellerSide = true
 	}
 	if strings.TrimSpace(s.SellerAddress) == "" {
 		missing = append(missing, "Anschrift des Ausstellers")
+		sellerSide = true
 	}
 	if strings.TrimSpace(buyerName) == "" {
 		missing = append(missing, "Name des Leistungsempfängers")
@@ -579,16 +623,18 @@ func invoiceComplianceError(s billingSettings, buyerName, buyerAddress string, g
 	if !s.Kleinunternehmer {
 		if strings.TrimSpace(s.SellerUID) == "" {
 			missing = append(missing, "UID-Nummer (bei USt-Ausweis Pflicht)")
+			sellerSide = true
 		}
 		if !austrianRates[s.UStRate] {
 			missing = append(missing, "gültiger USt-Satz (20/13/10)")
+			sellerSide = true
 		}
 	}
 	if len(missing) == 0 {
-		return ""
+		return "", false
 	}
 	return "Rechnung nicht ausstellbar – Pflichtangaben fehlen (§ 11 UStG): " + strings.Join(missing, ", ") +
-		". Bitte unter Rechnungen → Einstellungen ergänzen."
+		". Bitte unter Rechnungen → Einstellungen ergänzen.", sellerSide
 }
 
 // CreateInvoice issues an invoice for a person's open positions. It allocates the
@@ -618,6 +664,7 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(items) == 0 {
+		w.Header().Set(InvoiceOutcomeHeader, OutcomeNoOpenItems)
 		writeError(w, http.StatusBadRequest, "keine offenen Positionen zum Abrechnen")
 		return
 	}
@@ -641,7 +688,8 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	buyerName := trim(person.First + " " + person.Last)
-	if msg := invoiceComplianceError(settings, buyerName, person.Address, 0); msg != "" {
+	if msg, sellerSide := invoiceComplianceDetail(settings, buyerName, person.Address, 0); msg != "" {
+		w.Header().Set(InvoiceOutcomeHeader, complianceOutcome(sellerSide))
 		writeError(w, http.StatusUnprocessableEntity, msg)
 		return
 	}
@@ -680,8 +728,8 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 		// can't change under us) and now with the real gross total (the > 400 €
 		// recipient-address rule). A failure rolls the whole tx back, so the number
 		// bumped above is restored — no burned number, no non-compliant document.
-		if msg := invoiceComplianceError(s, buyerName, person.Address, total); msg != "" {
-			return &complianceError{msg: msg}
+		if msg, sellerSide := invoiceComplianceDetail(s, buyerName, person.Address, total); msg != "" {
+			return &complianceError{msg: msg, sellerSide: sellerSide}
 		}
 
 		seller := map[string]any{"name": s.SellerName, "address": s.SellerAddress, "uid": s.SellerUID,
@@ -690,7 +738,7 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 		sellerJSON, _ := json.Marshal(seller)
 		buyerJSON, _ := json.Marshal(buyer)
 
-		issued := time.Now()
+		issued := h.now()
 		// Terms of 0 mean "sofort fällig" — due on the issue date (overdue the next
 		// day). A nil due_on would instead hide it from Mahnwesen forever, so always
 		// setting it is the fix.
@@ -753,6 +801,7 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 	if txErr != nil {
 		var ce *complianceError
 		if errors.As(txErr, &ce) {
+			w.Header().Set(InvoiceOutcomeHeader, complianceOutcome(ce.sellerSide))
 			writeError(w, http.StatusUnprocessableEntity, ce.msg)
 			return
 		}
@@ -760,6 +809,7 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 		// one of these positions (uq_invoice_source_ref_period). The tx rolled back —
 		// no double-bill, no burned number — so ask the caller to reload and retry.
 		if isUniqueViolation(txErr) {
+			w.Header().Set(InvoiceOutcomeHeader, OutcomeRaced)
 			writeError(w, http.StatusConflict, "Positionen wurden soeben abgerechnet – bitte neu laden")
 			return
 		}
@@ -853,7 +903,7 @@ func (h *Handler) CancelInvoice(w http.ResponseWriter, r *http.Request) {
 		if _, err := tx.Exec(r.Context(), `UPDATE billing_settings SET next_invoice_no = next_invoice_no + 1 WHERE id=1`); err != nil {
 			return err
 		}
-		issued := time.Now()
+		issued := h.now()
 		var stornoID int64
 		if err := tx.QueryRow(r.Context(),
 			`INSERT INTO invoices (number, person_id, issued_on, subtotal, ust_rate, tax_amount, total,
@@ -1093,15 +1143,48 @@ type overdueInvoice struct {
 // OverdueInvoices lists non-canceled, unpaid/partly-paid invoices whose due date
 // has passed — the "who do I need to chase" list (Mahnwesen light).
 func (h *Handler) OverdueInvoices(w http.ResponseWriter, r *http.Request) {
+	// Global list, so paged (finding API-28); X-Total-Count signals truncation.
+	limit, offset := pageParams(r, 1000, 5000)
+	// Standardfenster: ECHT überfällig (Stichtag vor heute) — das ist die Mahnliste.
+	//
+	// Optional ?due_until=YYYY-MM-DD erweitert das Fenster bis zu diesem Tag
+	// EINSCHLIESSLICH. Der Kalender braucht das: er zeigt eine Ebene "Fällige
+	// Rechnung", konnte aus dieser Liste aber grundsätzlich nur Vergangenes
+	// bekommen — im nächsten Monat blieb die Ebene garantiert leer, egal wie viel
+	// dort fällig wird, und der Betreiber schloss daraus, es sei nichts einzutreiben.
+	cutoff := trim(r.URL.Query().Get("due_until"))
+	var cutoffArg *string
+	if cutoff != "" {
+		if _, perr := time.Parse(dateLayout, cutoff); perr != nil {
+			writeError(w, http.StatusBadRequest, "due_until must be YYYY-MM-DD")
+			return
+		}
+		cutoffArg = &cutoff
+	}
+	// EINE Klausel und EIN Argument für Liste UND Zählung, der Grenztag immer an $1.
+	//
+	// Getrennt formuliert mussten beide auch getrennt numeriert werden, und genau
+	// daran ging es schief: die Zählabfrage übernahm die für die LISTE auf $3
+	// numerierte Klausel und bekam einen einzigen Parameter. PostgreSQL wies sie ab,
+	// totalCount verschluckt einen Fehler von Haus aus, und ausgerechnet auf dem
+	// Kalenderpfad (?due_until=) fehlte der X-Total-Count-Header stillschweigend —
+	// der Header, an dem die Oberfläche eine abgeschnittene Liste erkennt. Ohne
+	// Angabe ist $1 NULL, und COALESCE fällt auf "vor heute" zurück; due_on ist eine
+	// DATE-Spalte, `<= CURRENT_DATE - 1` ist dort dasselbe wie `< CURRENT_DATE`.
+	const dueClause = "i.due_on <= COALESCE($1::date, CURRENT_DATE - 1)"
+	h.totalCount(w, r.Context(),
+		`SELECT count(*) FROM invoices i
+		  WHERE NOT i.canceled AND i.cancels_id IS NULL AND i.due_on IS NOT NULL
+		    AND `+dueClause+` AND (i.total - i.paid_amount) > 0.005`, cutoffArg)
 	rows, err := h.Pool.Query(r.Context(),
 		`SELECT i.id, i.number, i.person_id, trim(p.first_name || ' ' || p.last_name),
 		        i.due_on, i.total, i.paid_amount, (CURRENT_DATE - i.due_on) AS days
 		   FROM invoices i JOIN persons p ON p.id = i.person_id
 		  WHERE NOT i.canceled AND i.cancels_id IS NULL AND i.due_on IS NOT NULL
-		    AND i.due_on < CURRENT_DATE AND (i.total - i.paid_amount) > 0.005
-		  ORDER BY i.due_on`)
+		    AND `+dueClause+` AND (i.total - i.paid_amount) > 0.005
+		  ORDER BY i.due_on LIMIT $2 OFFSET $3`, cutoffArg, limit, offset)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -1110,15 +1193,15 @@ func (h *Handler) OverdueInvoices(w http.ResponseWriter, r *http.Request) {
 		var o overdueInvoice
 		var paid float64
 		if err := rows.Scan(&o.ID, &o.Number, &o.PersonID, &o.PersonName, &o.DueOn, &o.Total, &paid, &o.DaysOverdue); err != nil {
-			writeError(w, http.StatusInternalServerError, "query failed")
+			serverError(w, r, "query failed", err)
 			return
 		}
 		o.OpenAmount = round2(o.Total - paid)
 		o.Status = invoiceStatus(o.Total, paid, false, nil)
 		out = append(out, o)
 	}
-	if rows.Err() != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+	if rerr := rows.Err(); rerr != nil {
+		serverError(w, r, "query failed", rerr)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -1142,9 +1225,15 @@ func (h *Handler) ListInvoices(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+	// Paged with a generous default (finding API-28); X-Total-Count signals truncation.
+	limit, offset := pageParams(r, 1000, 5000)
+	h.totalCount(w, r.Context(), `SELECT count(*) FROM invoices WHERE person_id=$1`, pid)
 	rows, err := h.Pool.Query(r.Context(),
-		`SELECT id, number, issued_on, due_on, subtotal, ust_rate, tax_amount, total, kleinunternehmer, canceled, cancels_id, paid_amount
-		   FROM invoices WHERE person_id=$1 ORDER BY issued_on DESC, id DESC`, pid)
+		`SELECT i.id, i.number, i.issued_on, i.due_on, i.subtotal, i.ust_rate, i.tax_amount, i.total,
+		        i.kleinunternehmer, i.canceled, i.cancels_id, i.paid_amount,
+		        (SELECT count(*) FROM invoice_reminders ir WHERE ir.invoice_id = i.id),
+		        (SELECT max(ir.sent_at) FROM invoice_reminders ir WHERE ir.invoice_id = i.id)
+		   FROM invoices i WHERE i.person_id=$1 ORDER BY i.issued_on DESC, i.id DESC LIMIT $2 OFFSET $3`, pid, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -1155,7 +1244,8 @@ func (h *Handler) ListInvoices(w http.ResponseWriter, r *http.Request) {
 		var iv invoice
 		iv.PersonID = pid
 		if err := rows.Scan(&iv.ID, &iv.Number, &iv.IssuedOn, &iv.DueOn, &iv.Subtotal,
-			&iv.UStRate, &iv.TaxAmount, &iv.Total, &iv.Kleinunternehmer, &iv.Canceled, &iv.CancelsID, &iv.PaidAmount); err != nil {
+			&iv.UStRate, &iv.TaxAmount, &iv.Total, &iv.Kleinunternehmer, &iv.Canceled, &iv.CancelsID, &iv.PaidAmount,
+			&iv.ReminderCount, &iv.LastRemindedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "query failed")
 			return
 		}
@@ -1188,13 +1278,17 @@ func (h *Handler) fetchInvoice(ctx context.Context, id int64) (invoice, bool, er
 	var iv invoice
 	var sellerJSON, buyerJSON []byte
 	if err := h.Pool.QueryRow(ctx,
-		`SELECT id, number, person_id, issued_on, due_on, subtotal, ust_rate, tax_amount, total,
-		        kleinunternehmer, seller_snapshot, buyer_snapshot, note, canceled, cancels_id, paid_amount,
-		        leistung_from, leistung_to
-		   FROM invoices WHERE id=$1`, id,
+		`SELECT i.id, i.number, i.person_id, i.issued_on, i.due_on, i.subtotal, i.ust_rate, i.tax_amount, i.total,
+		        i.kleinunternehmer, i.seller_snapshot, i.buyer_snapshot, i.note, i.canceled, i.cancels_id, i.paid_amount,
+		        i.leistung_from, i.leistung_to, COALESCE(c.number, ''),
+		        (SELECT count(*) FROM invoice_reminders ir WHERE ir.invoice_id = i.id),
+		        (SELECT max(ir.sent_at) FROM invoice_reminders ir WHERE ir.invoice_id = i.id)
+		   FROM invoices i LEFT JOIN invoices c ON c.id = i.cancels_id
+		  WHERE i.id=$1`, id,
 	).Scan(&iv.ID, &iv.Number, &iv.PersonID, &iv.IssuedOn, &iv.DueOn, &iv.Subtotal, &iv.UStRate,
 		&iv.TaxAmount, &iv.Total, &iv.Kleinunternehmer, &sellerJSON, &buyerJSON, &iv.Note,
-		&iv.Canceled, &iv.CancelsID, &iv.PaidAmount, &iv.LeistungFrom, &iv.LeistungTo); err != nil {
+		&iv.Canceled, &iv.CancelsID, &iv.PaidAmount, &iv.LeistungFrom, &iv.LeistungTo, &iv.CancelsNumber,
+		&iv.ReminderCount, &iv.LastRemindedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return invoice{}, false, nil
 		}

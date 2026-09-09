@@ -67,7 +67,7 @@ func TestPruneDirAuditsTheDeletedArchives(t *testing.T) {
 	got := withRecorder(t)
 	dir := seedArchives(t, 5)
 
-	pruneDir(context.Background(), dir, 2)
+	pruneDir(context.Background(), dir, Retention{Keep: 2})
 
 	left, _ := filepath.Glob(filepath.Join(dir, "parkrr-*.dump.enc"))
 	if len(left) != 2 {
@@ -101,8 +101,8 @@ func TestPruneDirIsSilentWhenNothingIsDeleted(t *testing.T) {
 	got := withRecorder(t)
 	dir := seedArchives(t, 2)
 
-	pruneDir(context.Background(), dir, 5) // keep more than exist
-	pruneDir(context.Background(), dir, 0) // 0 = keep all, must not even scan
+	pruneDir(context.Background(), dir, Retention{Keep: 5}) // keep more than exist
+	pruneDir(context.Background(), dir, Retention{})        // 0 = keep all, must not even scan
 
 	if len(*got) != 0 {
 		t.Fatalf("a sweep that deletes nothing must write no entry, got %d", len(*got))
@@ -117,7 +117,7 @@ func TestAuditIsANoOpWithoutASink(t *testing.T) {
 	t.Cleanup(func() { auditSink.Store(prev) })
 
 	dir := seedArchives(t, 3)
-	pruneDir(context.Background(), dir, 1) // must not panic
+	pruneDir(context.Background(), dir, Retention{Keep: 1}) // must not panic
 	if left, _ := filepath.Glob(filepath.Join(dir, "parkrr-*.dump.enc")); len(left) != 1 {
 		t.Fatalf("pruning must still work without an auditor, %d archives left", len(left))
 	}

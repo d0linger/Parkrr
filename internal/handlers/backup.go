@@ -153,6 +153,19 @@ func (h *Handler) SaveBackupSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "retention count must not be negative")
 		return
 	}
+	// Eine negative Tagesgrenze wäre eine Grenze in der ZUKUNFT: dann wäre nie etwas
+	// alt genug und das Aufräumen stünde still, ohne dass jemand es merkt. Die
+	// Obergrenze ist keine Willkür, sondern hält die Zahl in einem Bereich, in dem
+	// "mindestens so lange aufbewahren" noch eine Aussage ist (Hundert 09).
+	const maxKeepDays = 3650 // 10 Jahre
+	if in.VolumeKeepDays < 0 || in.S3KeepDays < 0 {
+		writeError(w, http.StatusBadRequest, "Mindestalter darf nicht negativ sein")
+		return
+	}
+	if in.VolumeKeepDays > maxKeepDays || in.S3KeepDays > maxKeepDays {
+		writeError(w, http.StatusBadRequest, "Mindestalter darf höchstens 3650 Tage betragen")
+		return
+	}
 	// Read the previous schedule first so the trail carries the before/after values —
 	// retention counts in particular decide how long backups survive.
 	prev, prevErr := backup.LoadSettings(r.Context(), h.Pool)
@@ -213,7 +226,7 @@ func (h *Handler) RunScheduledBackup(w http.ResponseWriter, r *http.Request) {
 		// treating nil-error as success would report "Volume gesichert" for a backup
 		// that cannot be restored — and backup_status simultaneously records it as
 		// failed. Same distinction the scheduler makes.
-		switch _, verified, err := backup.RunVolume(ctx, h.Pool, h.DatabaseURL, h.BackupKey, h.BackupDir, settings.VolumeKeep); {
+		switch _, verified, err := backup.RunVolume(ctx, h.Pool, h.DatabaseURL, h.BackupKey, h.BackupDir, settings.VolumeRetention()); {
 		case err != nil:
 			slog.Error("run-now volume backup failed", "err", err)
 			firstErr = err
@@ -225,7 +238,7 @@ func (h *Handler) RunScheduledBackup(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if h.S3.Enabled() {
-		if _, err := backup.RunS3(ctx, h.Pool, h.DatabaseURL, h.BackupKey, h.S3, settings.S3Keep); err != nil {
+		if _, err := backup.RunS3(ctx, h.Pool, h.DatabaseURL, h.BackupKey, h.S3, settings.S3Retention()); err != nil {
 			slog.Error("run-now S3 backup failed", "err", err)
 			if firstErr == nil {
 				firstErr = err
@@ -364,12 +377,20 @@ func (h *Handler) BackupRestore(w http.ResponseWriter, r *http.Request) {
 // request. The key is entered per-restore (it must match the file, which may have
 // been made under an older PARKRR_BACKUP_KEY).
 func readBackupUpload(r *http.Request) (enc []byte, key string, err error) {
-	const maxUpload = 9 << 20 // matches server.maxRequestBody (the whole body is capped there)
+	// Unter dem Rumpf-Deckel (server.maxRequestBody = 9 MiB), nicht gleichauf.
+	//
+	// Gleichauf war die hier zugesagte Grenze gar nicht erreichbar: der Rumpf trägt
+	// neben der Datei noch den Schlüssel, die Feldnamen und die Multipart-Trenner, ist
+	// also stets GRÖSSER als sie. Eine 9-MiB-Sicherung scheiterte damit schon an der
+	// Middleware — und der Prüfsatz unten samt seiner einzigen brauchbaren Auskunft
+	// ("dafür die Kommandozeile, parkrr restore") wurde nie erreicht. Derselbe Fehler
+	// wie beim Anhang-Handler, nur an der anderen Grenze.
+	const maxUpload = 8 << 20 // 8 MiB Datei + Umschlag bleibt unter den 9 MiB des Rumpfs
 	// #nosec G120 -- the request body is already bounded by limitRequestBody
 	// (MaxBytesReader at maxRequestBody), so this in-memory parse limit cannot be
 	// exceeded; it just sizes the buffer.
 	if err := r.ParseMultipartForm(maxUpload); err != nil {
-		return nil, "", errors.New("upload too large or malformed (max ~9 MiB via the browser; use the CLI for larger)")
+		return nil, "", errors.New("upload too large or malformed (max 8 MiB via the browser; use the CLI for larger)")
 	}
 	key = strings.TrimSpace(r.FormValue("key"))
 	if key == "" {
@@ -390,7 +411,7 @@ func readBackupUpload(r *http.Request) (enc []byte, key string, err error) {
 		return nil, "", errors.New("could not read the uploaded file")
 	}
 	if len(enc) > maxUpload {
-		return nil, "", errors.New("backup file exceeds the ~9 MiB browser limit; use the CLI (parkrr restore) for larger files")
+		return nil, "", errors.New("backup file exceeds the 8 MiB browser limit; use the CLI (parkrr restore) for larger files")
 	}
 	return enc, key, nil
 }
@@ -424,8 +445,8 @@ func (h *Handler) CreateBackupS3(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
 	defer cancel()
-	// keep=0: a manual upload never prunes. RunS3 records the status row.
-	name, err := backup.RunS3(ctx, h.Pool, h.DatabaseURL, h.BackupKey, h.S3, 0)
+	// Leere Retention: ein manueller Upload räumt nie auf. RunS3 schreibt die Statuszeile.
+	name, err := backup.RunS3(ctx, h.Pool, h.DatabaseURL, h.BackupKey, h.S3, backup.Retention{})
 	if err != nil {
 		slog.Error("backup: S3 upload failed", "err", err)
 		writeError(w, http.StatusBadGateway, "S3 upload failed")

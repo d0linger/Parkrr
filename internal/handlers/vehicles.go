@@ -100,32 +100,37 @@ func (h *Handler) ListVehicles(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		personID = n
+		// X-Total-Count wie bei /persons: die Liste ist bei 1000 gedeckelt, und ohne die
+		// Gesamtzahl kann das Frontend eine abgeschnittene nicht von einer vollständigen
+		// unterscheiden (Hundert UX-53).
+		h.totalCount(w, r.Context(), `SELECT count(*) FROM vehicles WHERE person_id=$1`, personID)
 		rows, err = h.Pool.Query(r.Context(),
 			vehicleSelect+` WHERE v.person_id = $1 ORDER BY v.start_date DESC, v.id DESC LIMIT $2 OFFSET $3`,
 			personID, limit, offset)
 	} else {
+		h.totalCount(w, r.Context(), `SELECT count(*) FROM vehicles`)
 		rows, err = h.Pool.Query(r.Context(),
 			vehicleSelect+` ORDER BY v.start_date DESC, v.id DESC LIMIT $1 OFFSET $2`, limit, offset)
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	defer rows.Close()
 
-	now := time.Now()
+	now := h.now()
 	vehicles := []models.Vehicle{}
 	for rows.Next() {
 		v, cat, err := scanVehicleRow(rows)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "scan failed")
+			serverError(w, r, "scan failed", err)
 			return
 		}
 		enrich(&v, cat, now)
 		vehicles = append(vehicles, v)
 	}
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "scan failed")
+		serverError(w, r, "scan failed", err)
 		return
 	}
 	rows.Close()
@@ -135,12 +140,12 @@ func (h *Handler) ListVehicles(w http.ResponseWriter, r *http.Request) {
 	// Scoped to the person when the request is filtered.
 	agByPerson, err := h.loadAllAgreements(r.Context(), personID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	setFlatRateCoverage(vehicles, agByPerson, now)
 	if err := h.setVehicleInvoiceStatus(r.Context(), vehicles); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, vehicles)
@@ -939,7 +944,7 @@ func (h *Handler) writeVehicle(w http.ResponseWriter, ctx context.Context, id in
 		writeError(w, http.StatusInternalServerError, "could not load vehicle")
 		return
 	}
-	now := time.Now()
+	now := h.now()
 	enrich(&v, cat, now)
 	// Coverage must be accurate — a silent fallback would report a bound vehicle
 	// as uncovered (wrong paid-slider/amounts), so fail loudly instead.

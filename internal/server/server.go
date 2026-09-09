@@ -7,6 +7,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -51,9 +53,15 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 
 	// Idempotent one-shot: book real Zahlungseingänge for Pauschale/Nebenkosten
 	// period settlements made before migration 036 (they only flipped an off-book
-	// flag). Runs in the background so a large dataset never delays serving.
+	// flag). Runs in the background so a large dataset never delays serving — und
+	// hinter einem Done-Marker, damit der Vollscan über sämtliche Vereinbarungen
+	// nicht bei JEDEM Start erneut anfällt (Hundert 08).
 	go func() {
-		if err := h.BackfillPeriodPayments(context.Background()); err != nil {
+		switch err := h.RunPeriodPaymentBackfillOnce(context.Background()); {
+		case err == nil:
+		case errors.Is(err, handlers.ErrTaskBusy):
+			slog.Info("period-payment backfill runs on another instance")
+		default:
 			slog.Error("period-payment backfill failed", "err", err)
 		}
 	}()
@@ -80,6 +88,9 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.HandleFunc("GET /api/portal/summary", h.PortalSummary)
 	mux.HandleFunc("GET /api/portal/invoices/{id}/pdf", h.PortalInvoicePDF)
 	mux.HandleFunc("GET /api/portal/invoices/{id}/pay-qr", h.PortalPayQR)
+	// Der einzige öffentliche SCHREIBWEG: ein Briefkasten, kein Stift. Wünsche
+	// (Kontaktdaten, Abholtermin) landen als Anfrage beim Betreiber (Hundert 85/87).
+	mux.HandleFunc("POST /api/portal/requests", h.PortalCreateRequest)
 
 	// --- Auth (protected) ---
 	mux.Handle("POST /api/auth/logout", authed(hf(ah.Logout)))
@@ -116,12 +127,24 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/persons/{id}/portal-links", editor(hf(h.ListPortalLinks)))
 	mux.Handle("POST /api/persons/{id}/portal-link/revoke", editor(hf(h.RevokePortalLinks)))
 	mux.Handle("POST /api/portal-links/{id}/revoke", editor(hf(h.RevokePortalLink)))
+	mux.Handle("GET /api/portal-requests", editor(hf(h.ListPortalRequests)))
+	mux.Handle("POST /api/portal-requests/{id}/resolve", editor(hf(h.ResolvePortalRequest)))
 	mux.Handle("PUT /api/persons/{id}", editor(hf(h.UpdatePerson)))
 	mux.Handle("DELETE /api/persons/{id}", editor(hf(h.DeletePerson)))
 	// Anonymisieren ist der Ausweg, wenn DeletePerson wegen bestehender Rechnungen
 	// ablehnt — dieselbe Rolle wie das Löschen, weil es dieselbe Entscheidung ist.
 	mux.Handle("POST /api/persons/{id}/anonymize", editor(hf(h.AnonymizePerson)))
 	mux.Handle("GET /api/persons/{id}/stats", authed(hf(h.PersonStats)))
+	// Aktivitäts-Verlauf: Zahlungen, Rechnungen, Posten, Statuswechsel, Übergaben,
+	// Pauschalen in EINEM Strom (Hundert 56).
+	mux.Handle("GET /api/persons/{id}/timeline", authed(hf(h.PersonTimeline)))
+	// Datei-Anhänge (PDF/JPEG/PNG) je Person und Gefährt (Hundert 57).
+	mux.Handle("GET /api/persons/{id}/attachments", authed(hf(h.ListAttachments)))
+	mux.Handle("POST /api/persons/{id}/attachments", editor(hf(h.UploadAttachment)))
+	mux.Handle("GET /api/vehicles/{id}/attachments", authed(hf(h.ListAttachments)))
+	mux.Handle("POST /api/vehicles/{id}/attachments", editor(hf(h.UploadAttachment)))
+	mux.Handle("GET /api/attachments/{id}", authed(hf(h.GetAttachment)))
+	mux.Handle("DELETE /api/attachments/{id}", editor(hf(h.DeleteAttachment)))
 
 	// --- Payments (recorded money-in / Kontoauszug) ---
 	mux.Handle("GET /api/persons/{id}/payments", authed(hf(h.ListPayments)))
@@ -142,6 +165,8 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/invoices/{id}/cancel", editor(hf(h.CancelInvoice)))
 	mux.Handle("POST /api/persons/{id}/pay-invoices", editor(hf(h.PayInvoices)))
 	mux.Handle("GET /api/invoices/overdue", authed(hf(h.OverdueInvoices)))
+	// Offene-Posten-Liste als druckfertiges Dokument mit Stichtag (Hundert 17).
+	mux.Handle("GET /api/reports/outstanding.pdf", authed(hf(h.OutstandingReportPDF)))
 
 	// --- Flat-rate agreements (Pauschale-Einträge) ---
 	mux.Handle("GET /api/persons/{id}/agreements", authed(hf(h.ListAgreements)))
@@ -176,6 +201,8 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	// --- Vehicle photos ---
 	mux.Handle("GET /api/vehicles/{id}/photos", authed(hf(h.ListPhotos)))
 	mux.Handle("POST /api/vehicles/{id}/photos", editor(hf(h.UploadPhoto)))
+	// Fotoreihenfolge in einem Zug; Position 0 = Titelbild (Hundert 58).
+	mux.Handle("PUT /api/vehicles/{id}/photos/order", editor(hf(h.ReorderPhotos)))
 	mux.Handle("GET /api/photos/{id}", authed(hf(h.GetPhoto)))
 	mux.Handle("DELETE /api/photos/{id}", editor(hf(h.DeletePhoto)))
 
@@ -184,7 +211,10 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/vehicles/{id}/handovers", editor(hf(h.CreateHandover)))
 	mux.Handle("GET /api/handovers/{id}/signature", authed(hf(h.GetHandoverSignature)))
 	mux.Handle("GET /api/handovers/{id}/pdf", authed(hf(h.HandoverPDF)))
-	mux.Handle("DELETE /api/handovers/{id}", editor(hf(h.DeleteHandover)))
+	// Ein unterschriebenes Übergabeprotokoll ist ein Beleg: nur Admins dürfen es
+	// entfernen, nicht jeder Bearbeiter (Hundert SEC-79). Gegen nachträgliche
+	// Änderungen schützt zusätzlich der Trigger aus Migration 051.
+	mux.Handle("DELETE /api/handovers/{id}", admin(hf(h.DeleteHandover)))
 
 	// --- Categories (tariffs) ---
 	mux.Handle("GET /api/categories", authed(hf(h.ListCategories)))
@@ -205,9 +235,15 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/halls/{id}/plan", authed(hf(h.GetHallPlan)))
 	mux.Handle("POST /api/halls/{id}/spots", editor(hf(h.CreateSpot)))
 	mux.Handle("PUT /api/spots/{id}", editor(hf(h.UpdateSpot)))
+	// Batch: die Geometrie vieler Plätze EINER Halle in einer Transaktion — der
+	// Weg fürs Auto-Anordnen, damit ein Abbruch keine halbe Anordnung hinterlässt.
+	mux.Handle("PUT /api/halls/{id}/spots/geometry", editor(hf(h.BatchUpdateSpotGeometry)))
 	mux.Handle("DELETE /api/spots/{id}", editor(hf(h.DeleteSpot)))
 	mux.Handle("PUT /api/spots/{id}/vehicle", editor(hf(h.AssignSpotVehicle)))
 	mux.Handle("DELETE /api/spots/{id}/vehicle", editor(hf(h.UnassignSpotVehicle)))
+	// Belegungshistorie: wer stand wann auf dem Platz / wo stand das Gefährt (Hundert 79).
+	mux.Handle("GET /api/spots/{id}/history", authed(hf(h.SpotHistory)))
+	mux.Handle("GET /api/vehicles/{id}/spot-history", authed(hf(h.VehicleSpotHistory)))
 	mux.Handle("PUT /api/vehicles/{id}/dimensions", editor(hf(h.SetVehicleDimensions)))
 	mux.Handle("PUT /api/vehicles/{id}/planner", editor(hf(h.UpdateVehiclePlanner)))
 
@@ -250,6 +286,10 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("DELETE /api/users/{id}", admin(hf(h.DeleteUser)))
 	mux.Handle("POST /api/users/{id}/reset-2fa", admin(hf(h.ResetUserTOTP)))
 	mux.Handle("GET /api/audit", admin(hf(h.ListAudit)))
+	// Revisionssicherer Export: JSONL mit SHA-256-Hashkette, prüfbar ohne Parkrr.
+	mux.Handle("GET /api/audit/export", admin(hf(h.ExportAudit)))
+	// E-Mail-Versandprotokoll: jeder Versuch mit Empfänger, Betreff, Ausgang (Hundert 86).
+	mux.Handle("GET /api/mail-log", admin(hf(h.ListMailLog)))
 	mux.Handle("POST /api/backup", admin(hf(h.CreateBackup)))
 	// Nur die Ampel, bewusst editor+ statt admin: Bearbeiter arbeiten den ganzen Tag
 	// in der App und sollen ein totes Backup sehen, ohne Admin zu sein. Liefert weder
@@ -295,6 +335,10 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	indexHTML = fingerprintAsset(indexHTML, staticFS, "/css/style.css", "css/style.css")
 	// Expose the build version to the SPA (client-error telemetry reads this meta).
 	indexHTML = bytes.ReplaceAll(indexHTML, []byte("__APP_VERSION__"), []byte(Version))
+	// Same substitution in the service worker, so its cache name changes with every
+	// build. Previously the name was hand-maintained ("parkrr-v288") and a forgotten
+	// bump left the OFFLINE shell pinned to stale precached assets (finding PWA-65).
+	swJS = bytes.ReplaceAll(swJS, []byte("__APP_VERSION__"), []byte(Version))
 
 	mux.Handle("GET /", gzipStatic(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/")
@@ -400,11 +444,36 @@ func (w *panicResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWr
 // the actual read for chunked/undeclared bodies.
 const maxRequestBody = 9 << 20 // 9 MiB
 
+// tooLargeMessage benennt die Grenze, die DIESE Schranke tatsächlich zieht.
+//
+// Hart hingeschriebene "höchstens 8 MB je Upload" waren zweimal falsch: 8 MB ist die
+// Grenze des ANHANG-Handlers, nicht die des Rumpfs (9 MiB), und diese Middleware sitzt
+// vor JEDEM Endpunkt — auch vor dem CSV-Import (2 MiB) und der Rücksicherung (9 MiB,
+// deren eigene Meldung als einzige den Ausweg "parkrr restore" nennt) und vor jedem
+// gewöhnlichen JSON-Rumpf, der gar keine Datei ist. Wer eine 9,5-MiB-Sicherung hochlud,
+// las eine Zahl, die auf seinem Weg nichts bedeutete, und verkleinerte auf 8 MB, obwohl
+// 9 gereicht hätten. Die Zahl kommt daher aus der Konstante, und der Text spricht vom
+// Rumpf; die feineren, freundlicheren Grenzen nennt weiterhin der jeweilige Handler.
+var tooLargeMessage = fmt.Sprintf("Die Anfrage ist zu groß (höchstens %d MB). "+
+	"Große Sicherungen bitte über die Kommandozeile einspielen.", maxRequestBody>>20)
+
 // limitRequestBody rejects over-large request bodies with 413 and caps the read.
 func limitRequestBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ContentLength > maxRequestBody {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			// Als JSON und auf Deutsch, wie jede andere Absage der Anwendung: die
+			// Oberfläche liest `error` aus dem Rumpf und zeigt sonst die nackte
+			// Zeichenfolge "HTTP 413". Diese Schranke greift VOR jedem Handler, also
+			// auch vor dessen eigener, freundlicher Meldung — sie ist für einen
+			// zu großen Upload die EINZIGE Antwort, die der Anwender je zu sehen
+			// bekommt, und muss ihm daher selbst sagen, was los ist.
+			//
+			// Über writeJSONStatus (observability.go), nicht von Hand: das war die
+			// vierte handgeschriebene JSON-Absage in diesem Paket und die einzige mit
+			// nosniff — der Header gehört an die eine Stelle, nicht an eine von vieren.
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			writeJSONStatus(w, http.StatusRequestEntityTooLarge,
+				map[string]string{"error": tooLargeMessage})
 			return
 		}
 		if r.Body != nil {
@@ -562,16 +631,72 @@ func fingerprintAsset(html []byte, fsys fs.FS, ref, fsPath string) []byte {
 	return bytes.ReplaceAll(html, []byte(ref+`"`), []byte(ref+`?v=`+v+`"`))
 }
 
-// StartSessionCleanup runs a background loop pruning expired sessions.
-func StartSessionCleanup(authMgr *auth.Manager, stop <-chan struct{}) {
+// expirySweeps sind die Nebentabellen, deren Zeilen von sich aus ablaufen. Alle drei
+// wurden bisher NUR beiläufig aufgeräumt — beim Anlegen des nächsten Portal-Links,
+// beim Start der nächsten Passkey-Zeremonie. Passiert das nicht mehr (der letzte
+// Portal-Link wurde vor einem Jahr verschickt, niemand nutzt Passkeys), bleiben die
+// abgelaufenen Zeilen für immer liegen: aufräumen tut nur, wer die Tabelle ohnehin
+// benutzt (Hundert 32).
+//
+// Die Bedingungen sind absichtlich dieselben wie an den beiläufigen Stellen, damit
+// der Sweep nichts entfernt, was jene stehen lassen würden.
+var expirySweeps = []struct {
+	table string
+	sql   string
+}{
+	// Abgelaufene Sitzungen; identisch zu auth.CleanupExpired, hier nur der Vollständigkeit
+	// halber NICHT aufgeführt — die läuft weiter über den Manager (eigener Pool-Zugriff).
+	{"webauthn_ceremonies", `DELETE FROM webauthn_ceremonies WHERE expires_at < now()`},
+	// 30 Tage Nachlauf: ein gerade abgelaufener ODER widerrufener Link soll in der
+	// Verwaltung noch als "abgelaufen"/"widerrufen" sichtbar sein, statt spurlos zu
+	// verschwinden.
+	//
+	// Der `revoked`-Zweig stand ohne jede Frist daneben (`WHERE revoked OR expires_at
+	// < …`): er traf eine widerrufene Zeile SOFORT, unabhängig davon, wie jung sie war.
+	// Seit dieser Lauf stündlich statt nur gelegentlich läuft, war ein widerrufener Link
+	// binnen einer Stunde weg, und der Betreiber konnte nicht mehr sehen, dass je
+	// einer bestand — obwohl der Kommentar darüber genau das zusagt. Auch das
+	// Anonymisieren setzt revoked, dessen Spuren also mit.
+	//
+	// Die Frist hängt jetzt allein am Ablaufdatum, das auch ein widerrufener Link
+	// trägt. Ein Widerruf wirkt sofort (die Prüfung im Anmeldeweg liest `revoked`),
+	// er muss die Zeile also nicht vorzeitig entfernen — er soll sie nur nicht
+	// länger als nötig aufheben. Eine eigene `revoked_at`-Spalte wäre die genauere,
+	// aber teurere Antwort; das Ablaufdatum ist die vorhandene und ausreichende.
+	{"self_service_tokens", `DELETE FROM self_service_tokens WHERE expires_at < now() - interval '30 days'`},
+}
+
+// StartExpiryCleanup runs a background loop pruning expired sessions and the
+// other self-expiring side tables.
+func StartExpiryCleanup(pool *pgxpool.Pool, authMgr *auth.Manager, stop <-chan struct{}) {
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
+	sweep := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		// Nicht mehr `_ =`: ein dauerhaft scheiternder Lauf sah bisher exakt aus wie ein
+		// funktionierender, und genau so wächst eine Tabelle unbemerkt (Hundert 32).
+		if err := authMgr.CleanupExpired(ctx); err != nil {
+			slog.Warn("expiry cleanup: sessions failed", "err", err)
+		}
+		for _, s := range expirySweeps {
+			tag, err := pool.Exec(ctx, s.sql)
+			if err != nil {
+				slog.Warn("expiry cleanup failed", "table", s.table, "err", err)
+				continue
+			}
+			if n := tag.RowsAffected(); n > 0 {
+				slog.Info("expiry cleanup: removed expired rows", "table", s.table, "rows", n)
+			}
+		}
+	}
+	sweep() // einmal beim Start, damit ein lange nicht gelaufener Bestand nicht erst in einer Stunde schrumpft
 	for {
 		select {
 		case <-stop:
 			return
 		case <-ticker.C:
-			_ = authMgr.CleanupExpired(context.Background())
+			sweep()
 		}
 	}
 }

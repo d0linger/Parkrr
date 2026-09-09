@@ -99,6 +99,20 @@ func days(a, b time.Time) float64 { return b.Sub(a).Hours() / 24.0 }
 // bound to a whole day makes day counts integral, so the accrued value counts
 // today as a full day, does not drift within the day, and never bills into
 // tomorrow. It is the single source of truth for "up to and including today".
+//
+// ZU DEN ZWEI ZONEN IN DIESER DATEI (Hundert 13) — sie sind kein Versehen:
+//
+//   - WELCHER Kalendertag gemeint ist, entscheidet die GESCHÄFTSZONE. Sie steckt in
+//     t: t.Date() liefert Jahr/Monat/Tag in t's eigener Location, und t kommt aus
+//     time.Now(), also aus time.Local (in main aus PARKRR_TIMEZONE gesetzt).
+//   - WIE dieser Kalendertag dargestellt wird, ist UTC-Mitternacht. Das ist die
+//     Trägerform für DATE-Spalten (paid_on, start_date, issued_on …): pgx liest eine
+//     DATE als UTC-Mitternacht zurück, und ein Vergleich gegen eine lokal verankerte
+//     Zeit wäre um den Zonenversatz daneben.
+//
+// Beides mit time.Local zu bauen wäre also NICHT die gesuchte "eine Wahrheit",
+// sondern ein Fehler. Wer hier etwas ändert: TestDayAfterUsesBusinessCalendarDay
+// hält beide Hälften fest.
 func DayAfter(t time.Time) time.Time {
 	y, m, d := t.Date()
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
@@ -119,16 +133,25 @@ func fractionCents(cents int64, num, den float64) int64 {
 
 // User is an application login account. Admins manage other users.
 type User struct {
-	ID           int64     `json:"id"`
-	Username     string    `json:"username"`
-	Email        string    `json:"email"`
-	PasswordHash string    `json:"-"`
-	IsAdmin      bool      `json:"is_admin"`
-	Role         string    `json:"role"`
-	TOTPSecret   string    `json:"-"`
-	TOTPEnabled  bool      `json:"totp_enabled"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           int64  `json:"id"`
+	Username     string `json:"username"`
+	Email        string `json:"email"`
+	PasswordHash string `json:"-"`
+	IsAdmin      bool   `json:"is_admin"`
+	Role         string `json:"role"`
+	TOTPSecret   string `json:"-"`
+	TOTPEnabled  bool   `json:"totp_enabled"`
+	// Disabled sperrt den Zugang, ohne das Konto zu löschen. Löschen würde über
+	// ON DELETE SET NULL die Urheberschaft auf Rechnungen, Zahlungen, Stornos und
+	// Übergabeprotokollen nullen — Aufzeichnungen, die unverändert bleiben sollen
+	// (API-31).
+	Disabled bool `json:"disabled"`
+	// HasPasskey wird bei der Sitzungsaufloesung mitgeladen (EXISTS auf
+	// webauthn_credentials) und traegt die 2FA-Pflicht (Hundert 41): TOTP ODER
+	// Passkey erfuellt sie. Nicht persistiert.
+	HasPasskey bool      `json:"has_passkey"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // Person is a customer who stores one or more vehicles. Flat-rate billing lives
@@ -447,6 +470,13 @@ type Category struct {
 	DefaultMonthlyCost float64 `json:"default_monthly_cost"`
 	DefaultYearlyCost  float64 `json:"default_yearly_cost"`
 	RatesSynced        bool    `json:"rates_synced"`
+	// Standardmaße für den Garagenplaner: erste Näherung für Gefährte dieser
+	// Kategorie OHNE eigene Messung; eigene Maße am Gefährt gewinnen immer
+	// (Hundert 80). Nil = keine Vorgabe.
+	DefaultLengthM *float64 `json:"default_length_m,omitempty"`
+	DefaultWidthM  *float64 `json:"default_width_m,omitempty"`
+	DefaultHeightM *float64 `json:"default_height_m,omitempty"`
+	DefaultWeightT *float64 `json:"default_weight_t,omitempty"`
 	// Archived hides a tariff from the pickers (new vehicle / agreement) while
 	// keeping it valid for existing vehicles, whose rate is locked anyway.
 	Archived  bool      `json:"archived"`

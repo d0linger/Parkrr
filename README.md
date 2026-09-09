@@ -186,6 +186,11 @@ compose network). Schema migrations run automatically at startup.
 | `PARKRR_SMTP_USERNAME` / `PARKRR_SMTP_PASSWORD` | SMTP credentials | – |
 | `PARKRR_SMTP_FROM` / `PARKRR_SMTP_FROM_NAME` | envelope/display sender | – |
 | `PARKRR_SMTP_TLS` | `starttls` \| `tls` \| `none` | `starttls` |
+| `PARKRR_ALERT_EMAIL` | recipients for operational alerts (failed scheduled backup); comma/space separated, empty = off | – |
+| `PARKRR_TIMEZONE` | business time zone (IANA name, e.g. `Europe/Vienna`) deciding what "today" and "this month" mean; empty = container zone | – |
+| `PARKRR_REQUIRE_2FA` | require a second factor (TOTP or passkey); unenrolled accounts can only reach the 2FA/passkey setup | `false` |
+| `PARKRR_PASSKEY_ONLY` | disable password login entirely (passkey sign-in only); requires `PARKRR_WEBAUTHN_RP_ID` | `false` |
+| `PARKRR_AUTO_INVOICE_CRON` | 5-field cron for the automatic invoice run (e.g. `0 6 1 * *`); empty = off; uses the same path as the manual button, billed periods are never invoiced twice | – |
 
 ---
 
@@ -234,6 +239,16 @@ trigger blocks UPDATE/DELETE); only the retention job
 old entries. The two windows are independent: setting the long one to `0` keeps
 the change trail forever but does **not** stop the short tier from ageing out
 login/logout noise — set both to `0` to disable retention completely.
+
+---
+
+### Beispiel-Alerts & Dashboard
+
+`ops/prometheus-alerts.yml` bringt Startregeln für Prometheus mit (Erreichbarkeit,
+5xx-Quote, p95-Latenz, DB-Pool-Sättigung, Neustart-Schleife), `ops/grafana-dashboard.json`
+ein importierbares Grafana-Dashboard über dieselben Metriken. Beide sind auf die
+tatsächlich exportierten `parkrr_*`-Metriken zugeschnitten — Schwellwerte sind
+Startwerte, Nachschärfen gehört zum Betrieb.
 
 ---
 
@@ -451,6 +466,10 @@ export PARKRR_SESSION_SECRET="dev-session-secret-please-change"
 
 go mod tidy
 go run ./cmd/parkrr        # http://localhost:8080
+
+# Optional: eine FRISCHE Datenbank mit erkennbaren Demo-Daten befüllen
+# (Präfix "Demo:", idempotent; weigert sich, sobald echte Personen existieren).
+go run ./cmd/parkrr seed-demo
 ```
 
 Quality gates:
@@ -519,6 +538,14 @@ Notes:
 - Portainer's single-file editor can't apply the `-f` hardening overlay; to
   harden a Portainer stack, paste the `app`/`db` keys from
   `docker-compose.hardened.yml` into the corresponding services in the editor.
+
+---
+
+## 📘 Betreiber-Handbuch
+
+Für alles außenherum — Backups prüfen und wiederherstellen, Updates einspielen,
+die Verhaltens-Schalter, Portal-Sicherheit, Nachweise, Fehlersuche — gibt es das
+[Betreiber-Handbuch](docs/betreiber-handbuch.md).
 
 ---
 

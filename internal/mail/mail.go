@@ -207,3 +207,34 @@ func cleanAddrs(in []string) []string {
 	}
 	return out
 }
+
+// Log ist die Schnittstelle, über die ein Sender seine Versuche festhält —
+// abstrahiert, damit dieses Paket keine Datenbank kennt.
+type Log func(recipients []string, subject string, ok bool, sendErr error)
+
+type loggingSender struct {
+	inner Sender
+	log   Log
+}
+
+// WithLog umwickelt einen Sender so, dass JEDER Versuch (Erfolg wie Fehlschlag)
+// protokolliert wird (Hundert 86). Der Fehler des inneren Senders wird
+// unverändert durchgereicht — das Protokoll beobachtet, es verändert nichts.
+func WithLog(s Sender, log Log) Sender {
+	if log == nil {
+		return s
+	}
+	return &loggingSender{inner: s, log: log}
+}
+
+func (l *loggingSender) Enabled() bool { return l.inner.Enabled() }
+func (l *loggingSender) Send(ctx context.Context, to []string, subject, body string) error {
+	err := l.inner.Send(ctx, to, subject, body)
+	// Protokolliert werden die Adressen, die der Versender TATSÄCHLICH auf den
+	// Umschlag schreibt — cleanAddrs verwirft unparsbare stillschweigend. Mit der
+	// Rohliste behauptete das Protokoll eine Zustellung an eine Adresse, die nie
+	// angesprochen wurde, und der Betreiber las in der Versandübersicht ein "ja"
+	// auf die Frage, ob der Kunde die Mahnung bekommen hat.
+	l.log(cleanAddrs(to), subject, err == nil, err)
+	return err
+}

@@ -13,10 +13,11 @@ import (
 func (h *Handler) ListCategories(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.Pool.Query(r.Context(),
 		`SELECT id, name, default_monthly_cost, default_yearly_cost, rates_synced,
-		        archived, created_at, updated_at
+		        archived, default_length_m, default_width_m, default_height_m, default_weight_t,
+		        created_at, updated_at
 		 FROM categories ORDER BY archived, name`)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -25,14 +26,16 @@ func (h *Handler) ListCategories(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var c models.Category
 		if err := rows.Scan(&c.ID, &c.Name, &c.DefaultMonthlyCost,
-			&c.DefaultYearlyCost, &c.RatesSynced, &c.Archived, &c.CreatedAt, &c.UpdatedAt); err != nil {
-			writeError(w, http.StatusInternalServerError, "scan failed")
+			&c.DefaultYearlyCost, &c.RatesSynced, &c.Archived,
+			&c.DefaultLengthM, &c.DefaultWidthM, &c.DefaultHeightM, &c.DefaultWeightT,
+			&c.CreatedAt, &c.UpdatedAt); err != nil {
+			serverError(w, r, "scan failed", err)
 			return
 		}
 		cats = append(cats, c)
 	}
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, cats)
@@ -43,6 +46,20 @@ type categoryRequest struct {
 	DefaultMonthlyCost float64 `json:"default_monthly_cost"`
 	DefaultYearlyCost  float64 `json:"default_yearly_cost"`
 	RatesSynced        bool    `json:"rates_synced"`
+	// Standardmaße (Hundert 80): nil = keine Vorgabe. Zeiger, damit "weggelassen"
+	// und "gelöscht" unterscheidbar bleiben — beide bedeuten hier: keine Vorgabe.
+	DefaultLengthM *float64 `json:"default_length_m"`
+	DefaultWidthM  *float64 `json:"default_width_m"`
+	DefaultHeightM *float64 `json:"default_height_m"`
+	DefaultWeightT *float64 `json:"default_weight_t"`
+}
+
+// validCategoryDims prüft die Standardmaße mit denselben Grenzen wie der
+// Maße-Endpunkt der Gefährte (dimPos/dimInRange) — eine Vorgabe, die kein
+// Gefährt tragen dürfte, wäre sinnlos.
+func validCategoryDims(req *categoryRequest) bool {
+	return dimPos(req.DefaultLengthM, 60) && dimPos(req.DefaultWidthM, 15) &&
+		dimPos(req.DefaultHeightM, 15) && dimInRange(req.DefaultWeightT, 200)
 }
 
 // CreateCategory adds a new vehicle category (admin only).
@@ -65,14 +82,22 @@ func (h *Handler) CreateCategory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "costs must not be negative")
 		return
 	}
+	if !validCategoryDims(&req) {
+		writeError(w, http.StatusBadRequest, "dimension out of range")
+		return
+	}
 	var c models.Category
 	err := h.Pool.QueryRow(r.Context(),
-		`INSERT INTO categories (name, default_monthly_cost, default_yearly_cost, rates_synced)
-		 VALUES ($1,$2,$3,$4)
+		`INSERT INTO categories (name, default_monthly_cost, default_yearly_cost, rates_synced,
+		                         default_length_m, default_width_m, default_height_m, default_weight_t)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 		 RETURNING id, name, default_monthly_cost, default_yearly_cost, rates_synced,
+		           default_length_m, default_width_m, default_height_m, default_weight_t,
 		           created_at, updated_at`,
 		req.Name, req.DefaultMonthlyCost, req.DefaultYearlyCost, req.RatesSynced,
+		req.DefaultLengthM, req.DefaultWidthM, req.DefaultHeightM, req.DefaultWeightT,
 	).Scan(&c.ID, &c.Name, &c.DefaultMonthlyCost, &c.DefaultYearlyCost, &c.RatesSynced,
+		&c.DefaultLengthM, &c.DefaultWidthM, &c.DefaultHeightM, &c.DefaultWeightT,
 		&c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -114,16 +139,25 @@ func (h *Handler) UpdateCategory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "costs must not be negative")
 		return
 	}
+	if !validCategoryDims(&req) {
+		writeError(w, http.StatusBadRequest, "dimension out of range")
+		return
+	}
 	var old models.Category
 	_ = h.Pool.QueryRow(r.Context(),
-		`SELECT id, name, default_monthly_cost, default_yearly_cost, rates_synced
+		`SELECT id, name, default_monthly_cost, default_yearly_cost, rates_synced,
+		        default_length_m, default_width_m, default_height_m, default_weight_t
 		 FROM categories WHERE id=$1`, id).
-		Scan(&old.ID, &old.Name, &old.DefaultMonthlyCost, &old.DefaultYearlyCost, &old.RatesSynced)
+		Scan(&old.ID, &old.Name, &old.DefaultMonthlyCost, &old.DefaultYearlyCost, &old.RatesSynced,
+			&old.DefaultLengthM, &old.DefaultWidthM, &old.DefaultHeightM, &old.DefaultWeightT)
 	ct, err := h.Pool.Exec(r.Context(),
 		`UPDATE categories SET name=$1, default_monthly_cost=$2,
-		        default_yearly_cost=$3, rates_synced=$4, updated_at=now()
-		 WHERE id=$5`,
-		req.Name, req.DefaultMonthlyCost, req.DefaultYearlyCost, req.RatesSynced, id)
+		        default_yearly_cost=$3, rates_synced=$4,
+		        default_length_m=$5, default_width_m=$6, default_height_m=$7, default_weight_t=$8,
+		        updated_at=now()
+		 WHERE id=$9`,
+		req.Name, req.DefaultMonthlyCost, req.DefaultYearlyCost, req.RatesSynced,
+		req.DefaultLengthM, req.DefaultWidthM, req.DefaultHeightM, req.DefaultWeightT, id)
 	if err != nil {
 		if isUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "a category with that name already exists")
@@ -139,6 +173,8 @@ func (h *Handler) UpdateCategory(w http.ResponseWriter, r *http.Request) {
 	newC := old
 	newC.Name, newC.DefaultMonthlyCost = req.Name, req.DefaultMonthlyCost
 	newC.DefaultYearlyCost, newC.RatesSynced = req.DefaultYearlyCost, req.RatesSynced
+	newC.DefaultLengthM, newC.DefaultWidthM = req.DefaultLengthM, req.DefaultWidthM
+	newC.DefaultHeightM, newC.DefaultWeightT = req.DefaultHeightM, req.DefaultWeightT
 	changes := diffFields(old, newC, "created_at", "updated_at", "id")
 	h.auditChange(r, "update", "category", id, "updated tariff "+req.Name, changes)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

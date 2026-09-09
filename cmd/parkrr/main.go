@@ -32,6 +32,10 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "restore" {
 		os.Exit(runRestore(os.Args[2:]))
 	}
+	// "parkrr seed-demo" befüllt eine FRISCHE Datenbank mit Demo-Daten (Hundert 95).
+	if len(os.Args) > 1 && os.Args[1] == "seed-demo" {
+		os.Exit(runSeedDemo(os.Args[2:]))
+	}
 	setupLogging()
 	if err := run(); err != nil {
 		slog.Error("fatal", "err", err)
@@ -91,6 +95,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// Die Geschäftszeitzone einmal als Prozesszone setzen, VOR jedem time.Now() und
+	// vor dem Verbindungsaufbau (database.Connect bindet die Sitzungszeitzone daran).
+	// Danach meinen Anwendung und Datenbank denselben Kalendertag (Hundert 13).
+	time.Local = cfg.Location
+	slog.Info("business time zone", "zone", time.Local.String())
 
 	ctx, stop := signal.NotifyContext(context.Background(),
 		os.Interrupt, syscall.SIGTERM)
@@ -121,6 +130,10 @@ func run() error {
 	}
 	if err := authMgr.SetTrustedProxyCIDRs(cfg.TrustedProxyCIDRs); err != nil {
 		return err
+	}
+	if cfg.Require2FA {
+		authMgr.SetRequire2FA(true)
+		slog.Info("2FA-Pflicht aktiv: Konten ohne TOTP/Passkey können nur die Einrichtung erreichen")
 	}
 	if cfg.TrustedProxies && len(cfg.TrustedProxyCIDRs) == 0 {
 		// Fail closed at startup: trusting forwarded headers from ANY direct peer lets a
@@ -166,6 +179,23 @@ func run() error {
 		Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
 		From: cfg.SMTPFrom, FromName: cfg.SMTPFromName, TLS: cfg.SMTPTLS,
 	})
+	// Versandprotokoll (Hundert 86): JEDER Versuch — Erfolg wie Fehlschlag — landet
+	// in mail_log. Eigener kurzer Context: das Protokoll darf nicht am (womöglich
+	// abgelaufenen) Context des Auslösers hängen; und ein Protokollfehler bleibt
+	// eine Warnung, er macht den Versand nicht ungeschehen.
+	mailer = mail.WithLog(mailer, func(to []string, subject string, ok bool, sendErr error) {
+		lctx, lcancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer lcancel()
+		errText := ""
+		if sendErr != nil {
+			errText = sendErr.Error()
+		}
+		if _, err := pool.Exec(lctx,
+			`INSERT INTO mail_log (recipients, subject, ok, error) VALUES ($1,$2,$3,$4)`,
+			strings.Join(to, ", "), subject, ok, errText); err != nil {
+			slog.Warn("mail_log write failed", "err", err)
+		}
+	})
 	if mailer.Enabled() {
 		slog.Info("SMTP e-mail enabled", "host", cfg.SMTPHost, "port", cfg.SMTPPort, "tls", cfg.SMTPTLS)
 	}
@@ -185,15 +215,40 @@ func run() error {
 	// the process lifetime, and the two could drift as configuration is added.
 	// Injected rather than imported — internal/backup cannot import internal/handlers,
 	// which already imports it.
+	if cfg.PasskeyOnly {
+		apiHandler.PasskeyOnly = true
+		slog.Info("Passkey-only-Modus aktiv: Passwort-Login abgeschaltet")
+	}
 	sysAudit := apiHandler.AuditSystem
 	backup.SetAuditor(sysAudit)
 
+	// Alarm bei fehlgeschlagenem Backup (Hundert 04). Nur wenn BEIDES eingerichtet
+	// ist: ein SMTP-Relay und mindestens eine Empfängeradresse. Fehlt eines, bleibt
+	// es beim bisherigen Verhalten — Log, Änderungsprotokoll und die Backup-Kachel.
+	var backupAlert backup.Alerter
+	if mailer.Enabled() && len(cfg.AlertEmail) > 0 {
+		to := cfg.AlertEmail
+		backupAlert = func(ctx context.Context, subject, body string) {
+			// Eigener, kurzer Context: der Alarm hängt am 30-Minuten-Context des
+			// Backup-Laufs, und wenn DER gerade abgelaufen ist, käme die Warnung nie
+			// heraus — also genau dann nicht, wenn ein Timeout die Ursache war.
+			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			if err := mailer.Send(sctx, to, subject, body); err != nil {
+				slog.Error("backup alert e-mail failed", "err", err)
+			}
+		}
+		slog.Info("backup failure alerts enabled", "recipients", len(cfg.AlertEmail))
+	}
+
 	if cfg.BackupKey != "" && (cfg.BackupDir != "" || s3.Enabled()) {
-		go backup.StartScheduler(cleanupStop, pool, cfg.DatabaseURL, cfg.BackupKey, cfg.BackupDir, s3)
+		go backup.StartScheduler(cleanupStop, pool, cfg.DatabaseURL, cfg.BackupKey, cfg.BackupDir, s3, backupAlert)
 		slog.Info("scheduled backups enabled", "dir", cfg.BackupDir, "s3", s3.Enabled())
 	}
 
-	go server.StartSessionCleanup(authMgr, cleanupStop)
+	go server.StartExpiryCleanup(pool, authMgr, cleanupStop)
+	// Automatischer Rechnungslauf — nur mit ausdrücklich gesetztem Cron (Hundert 16).
+	go server.StartAutoInvoice(pool, apiHandler, cfg.AutoInvoiceCron, cleanupStop)
 	go server.StartAuditRetention(pool,
 		time.Duration(cfg.AuditRetentionDays)*24*time.Hour,
 		time.Duration(cfg.AuditRetentionShortDays)*24*time.Hour, cleanupStop, sysAudit)

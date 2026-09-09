@@ -651,3 +651,35 @@ func TestOverdueInvoices(t *testing.T) {
 		t.Error("a paid invoice must drop off the overdue list")
 	}
 }
+
+// Die Kalenderansicht ruft /api/invoices/overdue MIT ?due_until= auf. Dieser Pfad
+// baute die Zählabfrage aus der Klausel der LISTE zusammen ($3) und übergab ihr
+// einen einzigen Parameter: PostgreSQL wies sie ab, totalCount verschluckt einen
+// Fehler von Haus aus, und der X-Total-Count-Header fehlte lautlos — genau der
+// Header, an dem die Oberfläche eine abgeschnittene Liste erkennt. Der Test hält
+// beide Wege fest, weil nur der gefilterte betroffen war.
+func TestOverdueInvoicesZaehltAuchMitDueUntil(t *testing.T) {
+	h := testHandler(t)
+	compliantSeller(t, h)
+	pid := createIntegrationPerson(t, h)
+	chargeFor(t, h, pid, 100)
+	iv := createInvoice(t, h, pid)
+	if err := purgeExec(t.Context(), h.Pool, `UPDATE invoices SET due_on = CURRENT_DATE + 30 WHERE id=$1`, iv.ID); err != nil {
+		t.Fatalf("set due: %v", err)
+	}
+	for _, tc := range []struct{ name, q string }{
+		{"ohne Filter", ""},
+		{"mit due_until", "?due_until=" + time.Now().AddDate(0, 0, 60).Format(dateLayout)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			h.OverdueInvoices(rec, httptest.NewRequest(http.MethodGet, "/api/invoices/overdue"+tc.q, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("overdue: %d", rec.Code)
+			}
+			if rec.Header().Get("X-Total-Count") == "" {
+				t.Fatal("X-Total-Count fehlt — die Zählabfrage ist fehlgeschlagen")
+			}
+		})
+	}
+}

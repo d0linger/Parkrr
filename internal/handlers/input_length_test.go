@@ -52,7 +52,7 @@ func TestInputLengthValidation(t *testing.T) {
 			method:     "POST",
 			body:       personRequest{FirstName: "John", Email: longEmail},
 			wantStatus: http.StatusBadRequest,
-			errMsg:     "E-Mail ist zu lang",
+			errMsg:     "E-Mail ist ungültig oder zu lang",
 		},
 		{
 			name:       "CreatePerson: Phone too long",
@@ -108,7 +108,7 @@ func TestInputLengthValidation(t *testing.T) {
 			method:     "POST",
 			body:       userRequest{Username: "testuser", Password: "testpassword123", Email: longEmail},
 			wantStatus: http.StatusBadRequest,
-			errMsg:     "E-Mail ist zu lang",
+			errMsg:     "E-Mail ist ungültig oder zu lang",
 		},
 		{
 			name:       "UpdateUser: Email too long",
@@ -116,7 +116,7 @@ func TestInputLengthValidation(t *testing.T) {
 			method:     "PUT",
 			body:       userRequest{Username: "testuser", Email: longEmail},
 			wantStatus: http.StatusBadRequest,
-			errMsg:     "E-Mail ist zu lang",
+			errMsg:     "E-Mail ist ungültig oder zu lang",
 		},
 		{
 			name:       "CreateAgreement: NewVehicles Label too long",

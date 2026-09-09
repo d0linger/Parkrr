@@ -65,6 +65,15 @@ type handlerFunc struct {
 	File string
 	Name string
 	Body string
+	// Reach ist Body PLUS die Rümpfe aller Hilfsfunktionen desselben Pakets, die
+	// von hier aus (auch mittelbar) aufgerufen werden.
+	//
+	// Ohne das entkommt jede Anweisung dem Wächter, sobald sie in eine Hilfsfunktion
+	// wandert: anonymizeUnlinkedTraces trägt die UPDATEs auf spot_occupancy_history
+	// und mail_log, die früher in AnonymizePerson standen — der Wächter sah dort
+	// keine UPDATE-Anweisung mehr und lief LEER durch, statt zu prüfen. Eine
+	// Auslagerung darf kein Weg an der Prüfung vorbei sein.
+	Reach string
 }
 
 func handlerFuncs(t *testing.T) []handlerFunc {
@@ -103,11 +112,54 @@ func handlerFuncs(t *testing.T) []handlerFunc {
 	if len(out) == 0 {
 		t.Fatal("no handler functions found")
 	}
+	bodies := make(map[string]string, len(out))
+	for _, hf := range out {
+		// Gleichnamige Funktionen GIBT es in diesem Paket (parse, Error, Send, Enabled
+		// auf verschiedenen Empfängern). Ein blosses Überschreiben verlöre alle Rümpfe
+		// bis auf den zuletzt gelesenen — die Prüfung würde also stillschweigend ENGER,
+		// nicht weiter. Deshalb anhängen: Reach kann dadurch höchstens zu weit greifen
+		// (ein fremder gleichnamiger Rumpf wird mitgeprüft), nie zu eng.
+		bodies[hf.Name] += hf.Body + "\n"
+	}
+	for i := range out {
+		out[i].Reach = reachOf(out[i].Name, bodies)
+	}
 	return out
+}
+
+// reachOf sammelt den Rumpf von name und die Rümpfe aller Paketfunktionen, die von
+// dort aus erreichbar sind. Die Tiefe ist unbegrenzt, aber jeder Name wird nur einmal
+// aufgenommen — Rekursion und Zyklen laufen damit nicht ins Leere.
+func reachOf(name string, bodies map[string]string) string {
+	var b strings.Builder
+	seen := map[string]bool{}
+	var walk func(string)
+	walk = func(n string) {
+		if seen[n] {
+			return
+		}
+		seen[n] = true
+		body, ok := bodies[n]
+		if !ok {
+			return
+		}
+		b.WriteString(body)
+		b.WriteString("\n")
+		for _, m := range reCallName.FindAllStringSubmatch(body, -1) {
+			walk(m[1])
+		}
+	}
+	walk(name)
+	return b.String()
 }
 
 var (
 	reUpdateSet = regexp.MustCompile(`(?s)UPDATE \w+ SET (.*?)(?:WHERE|RETURNING)`)
+	// Aufrufe im Rumpf: `name(` UND `x.name(`. Der Selektor-Vorsatz ist optional und
+	// wird verworfen — sonst blieb die haeufigste Form draussen: eine Hilfsfunktion,
+	// die als Methode auf *Handler gerufen wird (h.settleItemTx(...)), fiel aus Reach
+	// heraus und damit wieder aus der Pruefung — genau der Fluchtweg, den Reach schliesst.
+	reCallName  = regexp.MustCompile(`(?:^|[^\w])(?:\w+\.)?(\w+)\(`)
 	reQuotedKey = regexp.MustCompile(`"([a-z_]+)":`)
 	// A struct-based diff: diffFields(old|prev|existing, …) — or one built from a
 	// local audit-view struct literal, e.g. diffFields(hallAudit{…}, hallAudit{…}).
@@ -145,6 +197,43 @@ var auditIgnoredPerFunc = map[string]map[string]bool{
 	// the user's change (the agreement flag) and must stay audited, which is why this
 	// is scoped to the handler instead of living in auditIgnoredColumns.
 	"DeletePayment": {"paid": true},
+	// ApplyCredit ist dieselbe Sache in die andere Richtung: das Verrechnen eines
+	// vorhandenen Guthabens stempelt über settleItemTx `paid=true` auf die gedeckten
+	// Gefährte und Zusatzkosten. Auch das ist der mechanische Nachvollzug einer
+	// Zahlungszuordnung, nicht die Bearbeitung dieser Datensätze — die Zeile der
+	// Zahlung ist der Nachweis, und der Handler protokolliert zusätzlich, WAS er
+	// gedeckt hat.
+	//
+	// Sichtbar wurde das erst, als der Wächter den Hilfsfunktionen zu folgen begann
+	// (siehe handlerFunc.Reach): settleItemTx trägt selbst keinen auditChange und
+	// wurde darum bis dahin gar nicht geprüft. Die Lücke war also immer da.
+	"ApplyCredit": {"paid": true, "archived": true},
+	// archived (vehicles) ist ueberall dort ein mechanischer Nachvollzug, wo ein
+	// Gefaehrt durch Bezahlen/Abschliessen zu liegt: autoArchiveIfClosed (vehicles.go)
+	// und ArchiveSettledExpiredVehicles (agreements.go) setzen es, nicht der Bediener.
+	// Der Eintrag des ausloesenden Vorgangs IST die Spur.
+	//
+	// Bewusst je Handler und NICHT in auditIgnoredColumns: fuer Kategorien und
+	// Leistungen ist archived die eigene Entscheidung des Bedieners, mit eigenem
+	// Endpunkt (SetCategoryArchived, SetServiceArchived) — dort muss es protokolliert
+	// bleiben. Genau der Fall, vor dem der Kommentar oben warnt.
+	//
+	// Sichtbar wurde die Gruppe erst, als reCallName auch Methodenaufrufe (h.name(...))
+	// erfasste; vorher fiel jeder ueber *Handler gerufene Helfer aus der Pruefung.
+	"SetAgreementPaid":       {"archived": true},
+	"SetAgreementPeriodPaid": {"archived": true},
+	"ChangeVehicleStatus":    {"archived": true},
+	"MarkPaid":               {"archived": true},
+	"UpdateVehicle":          {"archived": true},
+	// CreatePayment deckt ueber settleItemTx Posten ab und stempelt dabei paid; dazu
+	// archiviert es geschlossene Gefaehrte. Dieselbe Begruendung wie DeletePayment.
+	"CreatePayment": {"paid": true, "archived": true},
+	// ResolvePortalRequest stempelt beim Erledigen resolved_at/resolved_by — das
+	// "wer/wann", das die Audit-Zeile selbst trägt (Nutzer + Zeitpunkt stehen in
+	// ihr), plus der status, den der Eintrag als Text nennt. Kein eigener Diff
+	// nötig; die inhaltliche Übernahme (Kontaktdaten) diffst der Handler separat
+	// mit Vorher/Nachher auf der PERSON.
+	"ResolvePortalRequest": {"resolved_at": true, "resolved_by": true},
 	// TOTPSetup DOES record this column — as `two_factor_active`, because
 	// isSecretField substring-matches "totp" and would rewrite a `totp_enabled` key to
 	// ***REDACTED***, turning a harmless boolean into a payload that carries nothing
@@ -157,7 +246,19 @@ var auditIgnoredPerFunc = map[string]map[string]bool{
 	// That is the consequence of the anonymize action, whose own audit entry is the
 	// trail, not a user edit of the token rows. Scoped here; RevokePortalLink still
 	// audits `revoked` directly (finding H-05).
-	"AnonymizePerson": {"revoked": true},
+	//
+	// payload (portal_requests) und recipients (mail_log) gehören zur selben Klasse:
+	// die Löschung greift bis in jede Nebentabelle mit Personenbezug durch, und der
+	// Sinn der Sache ist, dass die alten Werte VERSCHWINDEN. Ein Vorher/Nachher-Diff
+	// würde genau die gelöschten Daten ins Änderungsprotokoll schreiben und die
+	// Löschung damit aufheben — dieselbe Begründung, aus der der Anonymisierungs-
+	// Eintrag schon bisher keine Personendaten trägt (siehe Test
+	// TestAuditEintragEnthaeltDieGeloeschtenDatenNicht).
+	// sent_to (invoice_reminders) gehoert in dieselbe Klasse wie recipients und payload:
+	// die Loeschung greift bis in jede Nebentabelle mit Personenbezug durch, und der Sinn
+	// der Sache ist, dass die alten Werte VERSCHWINDEN. Ein Vorher/Nachher-Diff schriebe
+	// die geloeschte Adresse ins Aenderungsprotokoll und hoebe die Loeschung damit auf.
+	"AnonymizePerson": {"revoked": true, "payload": true, "recipients": true, "sent_to": true},
 }
 
 // TestAuditDiffsCoverEveryWrittenColumn fails when a handler records field changes
@@ -174,7 +275,7 @@ func TestAuditDiffsCoverEveryWrittenColumn(t *testing.T) {
 			// EVERY UPDATE in the body, not just the first: a handler that writes two
 			// tables had only its first statement checked, so the second one's columns
 			// were unguarded (saveAgreement writes vehicles AND flat_rate_periods).
-			sets := reUpdateSet.FindAllStringSubmatch(body, -1)
+			sets := reUpdateSet.FindAllStringSubmatch(hf.Reach, -1)
 			if len(sets) == 0 {
 				continue
 			}
@@ -352,6 +453,7 @@ var auditExemptHandlers = map[string]string{
 	"BackupValidate":       "read-only (decrypt + pg_restore --list), changes nothing",
 	"BackupS3Test":         "read-only connection test, changes nothing",
 	"ClientError":          "forwards a browser error to slog, touches no domain data",
+	"ReorderPhotos":        "reine Darstellungsreihenfolge derselben Fotos — kein Inhalt entsteht, ändert sich oder verschwindet; Upload und Löschen der Fotos selbst sind auditiert",
 }
 
 // TestEveryMutatingRouteIsAudited walks the route table and fails when a

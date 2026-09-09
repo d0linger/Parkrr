@@ -13,3 +13,8 @@ graphify-out/graph.json merge=graphify
 *.html -text
 *.css  -text
 *.js   -text
+
+# SQL-Migrationen: Bytes unangetastet lassen. Die Startprüfung hasht jede
+# Migration; ein Zeilenenden-Wechsel durch Checkout oder Editor darf diese Summe
+# nicht verändern. (Die Prüfsumme normalisiert zusätzlich — Gürtel und Hosenträger.)
+*.sql  -text

@@ -35,8 +35,18 @@ jobs:
       # collectively exhaust the DB's connections (honored by database.Connect).
       PARKRR_TEST_DATABASE_URL: postgres://parkrr:parkrr@localhost:5432/parkrr_test?sslmode=disable&pool_max_conns=4
       # Coverage ratchet floor. Raise this as coverage grows; the gate fails the
-      # build if total statement coverage drops below it. (Actual ~48.7%.)
-      COVERAGE_MIN: "45"
+      # build if total statement coverage drops below it. Der Boden liegt bewusst
+      # UNTER dem Istwert, damit normale Arbeit nicht sofort anschlaegt (Hundert 94).
+      #
+      # WICHTIG: gemessen wird unter Linux (wie hier). Die frueher notierten 69,5 %
+      # stammten aus einer WINDOWS-Messung, die server.go faelschlich mit 6384 statt
+      # 342 Statements zaehlt (ein Zaehl-Artefakt der Cover-Werkzeuge bei CRLF) und
+      # den Wert dadurch stark aufblaeht. Der ehrliche Istwert dieses Zweigs liegt
+      # bei rund 59,8 % (Linux, mit -race); die grosse Feature-Arbeit (Backup ueber
+      # pg_dump/S3, tiefe Transaktionspfade) ist absichtlich nicht als Unit-Test
+      # gedeckt. Neue Integrationstests (coverage_endpoints_test.go) haben den Wert
+      # von 56,8 % dorthin gehoben.
+      COVERAGE_MIN: "57"
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -60,8 +70,30 @@ jobs:
       - name: Test
         run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
 
+      # Diagnose zur Abdeckungsluecke: der CI-Wert (56,8 %) liegt weit unter dem lokal
+      # gemessenen (72,9 %, vor UND nach den letzten Commits identisch). Da der
+      # Test-Schritt hier BESTEHT, muss ein Teil der Tests still uebersprungen werden.
+      # Diese Tabelle rechnet die Abdeckung je Paket direkt aus coverage.out (kein
+      # zweiter Testlauf) — ein Paket weit unter seinem lokalen Wert ist das, dessen
+      # Datenbanktests in CI nicht laufen. Laeuft auch bei rotem Gate (if: always()).
+      - name: Coverage per package (diagnostic)
+        if: always()
+        run: |
+          echo "Abdeckung je Paket (aufsteigend):"
+          awk 'NR>1 { colon=index($0,":"); file=substr($0,1,colon-1);
+                      n=split(file,parts,"/"); pkg=""; for(i=1;i<n;i++) pkg=pkg parts[i] "/";
+                      split(substr($0,colon+1),a," "); stmts=a[2]; cnt=a[3];
+                      tot[pkg]+=stmts; if (cnt>0) cov[pkg]+=stmts }
+               END { for (k in tot) printf "%6.1f%%  %s\n", 100*cov[k]/tot[k], k }' coverage.out | sort -n
+
       - name: Coverage gate
         run: |
+          # Bei rotem Boden SOFORT zeigen, welches Paket eingebrochen ist — dieselbe
+          # Tabelle wie der Diagnoseschritt, aber HIER, direkt ueber dem Fehler, damit
+          # sie im geposteten Log nicht uebersehen wird. internal/server schwankt je
+          # nach DB-Verfuegbarkeit zwischen 97 % und 3 %; ein Paket weit unter seinem
+          # lokalen Wert ist das, dessen DB-Tests hier nicht laufen.
+          go tool cover -func=coverage.out | awk 'NR>1 { c=index($0,":"); f=substr($0,1,c-1); n=split(f,a,"/"); pkg=""; for(i=1;i<n;i++) pkg=pkg a[i] "/"; split(substr($0,c+1),x," "); tot[pkg]+=x[2]; if(x[3]>0) cov[pkg]+=x[2] } END { print "Abdeckung je Paket:"; for (k in tot) if (tot[k]>0) printf "  %6.1f%%  %s\n", 100*cov[k]/tot[k], k }' | sort -t% -k1 -n
           total=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/,"",$3); print $3}')
           echo "Total statement coverage: ${total}% (minimum ${COVERAGE_MIN}%)"
           awk -v t="$total" -v m="$COVERAGE_MIN" 'BEGIN { exit (t+0 < m+0) ? 1 : 0 }' \
@@ -88,6 +120,22 @@ jobs:
           node --check web/static/sw.js
       - name: Build image
         run: docker build -t parkrr:ci .
+      # Trivy als GEPRÜFTES Binary statt als Action (Hundert 45): die trivy-action
+      # fiel unserer SHA-Pin-Policy und einem Supply-Chain-Advisory zum Opfer und
+      # wurde entfernt — seither lief gar kein Image-Scan mehr. Ein per SHA-256
+      # verifizierter Release-Download hat dieselbe Wirkung ohne fremden
+      # Action-Code: Version UND Prüfsumme sind hier festgeschrieben, ein
+      # ausgetauschtes Release-Asset fällt am Hash auf.
+      - name: Scan image (Trivy, pinned + checksummed binary)
+        run: |
+          TRIVY_VERSION=0.74.0
+          TRIVY_SHA256=2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+          curl -sSfL -o trivy.tgz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  trivy.tgz" | sha256sum -c -
+          tar -xzf trivy.tgz trivy
+          # Gate auf HIGH/CRITICAL mit Fix; unfixierte Findings werden gemeldet,
+          # brechen aber nicht — dagegen kann ein Rebuild nichts tun.
+          ./trivy image --exit-code 1 --ignore-unfixed --severity HIGH,CRITICAL parkrr:ci
 
   actions-pinned:
     name: Actions pinned to SHA

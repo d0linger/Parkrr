@@ -1,0 +1,56 @@
+{
+  "__comment": "Beispiel-Dashboard für Parkrr (Hundert 10). Grafana → Dashboards → Import → diese Datei. Erwartet eine Prometheus-Datasource mit job=parkrr.",
+  "title": "Parkrr",
+  "uid": "parkrr-ops",
+  "schemaVersion": 39,
+  "editable": true,
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "type": "stat", "title": "Instanz", "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "targets": [{ "expr": "up{job=\"parkrr\"}", "legendFormat": "up" }],
+      "fieldConfig": { "defaults": { "thresholds": { "steps": [ {"color": "red", "value": null}, {"color": "green", "value": 1} ] } } }
+    },
+    {
+      "type": "stat", "title": "Anfragen / s", "gridPos": {"h": 4, "w": 5, "x": 4, "y": 0},
+      "targets": [{ "expr": "sum(rate(parkrr_http_requests_total[5m]))" }]
+    },
+    {
+      "type": "stat", "title": "5xx-Quote (5 m)", "gridPos": {"h": 4, "w": 5, "x": 9, "y": 0},
+      "targets": [{ "expr": "sum(rate(parkrr_http_requests_total{status=~\"5..\"}[5m])) / clamp_min(sum(rate(parkrr_http_requests_total[5m])), 0.001)" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "thresholds": { "steps": [ {"color": "green", "value": null}, {"color": "orange", "value": 0.01}, {"color": "red", "value": 0.05} ] } } }
+    },
+    {
+      "type": "stat", "title": "p95-Latenz", "gridPos": {"h": 4, "w": 5, "x": 14, "y": 0},
+      "targets": [{ "expr": "histogram_quantile(0.95, sum by (le) (rate(parkrr_http_request_duration_seconds_bucket[5m])))" }],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "type": "timeseries", "title": "Anfragen nach Status", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "targets": [{ "expr": "sum by (status) (rate(parkrr_http_requests_total[5m]))", "legendFormat": "{{status}}" }]
+    },
+    {
+      "type": "timeseries", "title": "Antwortzeit p50 / p95 / p99", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le) (rate(parkrr_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum by (le) (rate(parkrr_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum by (le) (rate(parkrr_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p99" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "type": "timeseries", "title": "Langsamste Routen (p95)", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "targets": [{ "expr": "topk(5, histogram_quantile(0.95, sum by (route, le) (rate(parkrr_http_request_duration_seconds_bucket[5m]))))", "legendFormat": "{{route}}" }],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "type": "timeseries", "title": "DB-Pool", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "targets": [
+        { "expr": "parkrr_db_pool_acquired_conns", "legendFormat": "belegt" },
+        { "expr": "parkrr_db_pool_idle_conns", "legendFormat": "frei" },
+        { "expr": "parkrr_db_pool_max_conns", "legendFormat": "max" },
+        { "expr": "rate(parkrr_db_pool_empty_acquire_total[5m])", "legendFormat": "wartend/s" }
+      ]
+    }
+  ]
+}

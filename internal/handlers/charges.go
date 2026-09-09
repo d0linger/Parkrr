@@ -208,14 +208,18 @@ func (h *Handler) ListCharges(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid person_id")
 			return
 		}
+		// X-Total-Count: siehe ListVehicles/ListPersons — ohne ihn sieht eine bei 1000
+		// abgeschnittene Liste aus wie eine vollständige (Hundert UX-53).
+		h.totalCount(w, r.Context(), `SELECT count(*) FROM charges WHERE person_id=$1`, pid)
 		rows, err = h.Pool.Query(r.Context(),
 			base+` WHERE c.person_id=$1 ORDER BY c.charged_on DESC, c.id DESC LIMIT $2 OFFSET $3`, pid, limit, offset)
 	} else {
+		h.totalCount(w, r.Context(), `SELECT count(*) FROM charges`)
 		rows, err = h.Pool.Query(r.Context(),
 			base+` ORDER BY c.charged_on DESC, c.id DESC LIMIT $1 OFFSET $2`, limit, offset)
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	defer rows.Close()
@@ -225,14 +229,14 @@ func (h *Handler) ListCharges(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&c.ID, &c.PersonID, &c.VehicleID, &c.Description, &c.Amount,
 			&c.Quantity, &c.ChargedOn, &c.CreatedAt, &c.PersonName,
 			&c.Paid, &c.VehiclePaid, &c.VehicleLabel); err != nil {
-			writeError(w, http.StatusInternalServerError, "scan failed")
+			serverError(w, r, "scan failed", err)
 			return
 		}
 		c.Total = round2(c.Amount * c.Quantity)
 		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	rows.Close()
@@ -242,7 +246,7 @@ func (h *Handler) ListCharges(w http.ResponseWriter, r *http.Request) {
 	// charge's displayed paid state. VehiclePaid stays the vehicle's own paid flag
 	// (as scanned) — the explicit settlement path — matching invoiceLines.
 	if err := h.setChargeInvoiceStatus(r.Context(), out); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -360,7 +364,7 @@ func (h *Handler) validateCharge(ctx context.Context, req *chargeRequest) (time.
 			return time.Time{}, "", err
 		}
 	}
-	chargedOn := time.Now()
+	chargedOn := h.now()
 	if trim(req.ChargedOn) != "" {
 		if !validDateLength(trim(req.ChargedOn)) {
 			return time.Time{}, "charged_on is too long", nil

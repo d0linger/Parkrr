@@ -9,6 +9,7 @@ type reqLogKey struct{}
 type reqLog struct {
 	User   string
 	UserID int64
+	Err    error
 }
 
 // WithRequestLog attaches an empty request-log record to the context. The
@@ -31,4 +32,20 @@ func setRequestLogUser(ctx context.Context, user string, id int64) {
 		rl.User = user
 		rl.UserID = id
 	}
+}
+
+// SetRequestError stashes the underlying cause of a 5xx so the request logger can emit
+// it centrally, instead of every handler dropping err on the floor (finding OPS-01).
+func SetRequestError(ctx context.Context, err error) {
+	if rl, ok := ctx.Value(reqLogKey{}).(*reqLog); ok {
+		rl.Err = err
+	}
+}
+
+// RequestError returns the stashed 5xx cause (nil if none).
+func RequestError(ctx context.Context) error {
+	if rl, ok := ctx.Value(reqLogKey{}).(*reqLog); ok {
+		return rl.Err
+	}
+	return nil
 }

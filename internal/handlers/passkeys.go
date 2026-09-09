@@ -46,6 +46,9 @@ func (h *AuthHandler) Capabilities(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{
 		"passkeys": h.WebAuthn != nil && h.WebAuthn.Enabled(),
 		"mail":     h.Mail != nil && h.Mail.Enabled(),
+		// Passkey-only (Hundert 42): die Anmeldemaske soll den Passwortteil gar
+		// nicht erst zeigen, statt ihn beim Absenden scheitern zu lassen.
+		"passkey_only": h.PasskeyOnly,
 	})
 }
 
@@ -328,6 +331,17 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusUnauthorized, "passkey login failed")
 		return
 	}
+	// Eine gültige Assertion beweist den BESITZ des Schlüssels, nicht die Berechtigung.
+	// Ein gesperrtes Konto darf hier nicht weiterkommen: sonst entstünde eine frische
+	// Sitzungszeile für ein Konto, dessen Sitzungen beim Sperren gerade gelöscht
+	// wurden, und das Protokoll behauptete eine Anmeldung, die nie gelten durfte.
+	// Dieselbe unspezifische Meldung wie oben — der Sperrzustand ist nichts, was ein
+	// Anmeldeversuch ausplaudern soll.
+	if u.Disabled {
+		slog.Warn("passkey login rejected: account disabled", "user_id", uid)
+		writeError(w, http.StatusUnauthorized, "passkey login failed")
+		return
+	}
 	h.Limiter.Reset(key)
 	// A verified passkey login is proof of identity for this account, so clear the
 	// per-account failure counter too — matching password Login, which resets both
@@ -351,13 +365,14 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, u)
 }
 
-// userByID loads the fields needed for a session/response.
+// userByID loads the fields needed for a session/response — inklusive disabled,
+// damit der Aufrufer ein gesperrtes Konto erkennt.
 func (h *AuthHandler) userByID(ctx context.Context, id int64) (*models.User, error) {
 	var u models.User
 	err := h.Pool.QueryRow(ctx,
-		`SELECT id, username, email, is_admin, role, totp_enabled, created_at, updated_at
+		`SELECT id, username, email, is_admin, role, totp_enabled, disabled, created_at, updated_at
 		 FROM users WHERE id=$1`, id).Scan(&u.ID, &u.Username, &u.Email, &u.IsAdmin, &u.Role,
-		&u.TOTPEnabled, &u.CreatedAt, &u.UpdatedAt)
+		&u.TOTPEnabled, &u.Disabled, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}

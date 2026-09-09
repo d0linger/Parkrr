@@ -1046,6 +1046,64 @@ div.empty .big svg { width: 30px; height: 30px; }
         scroll-behavior: auto !important;
     }
 }
+/* Foto-Upload-Fortschritt (Hundert 50): schmale Leiste neben den Knoepfen, nur
+   waehrend eines Uploads sichtbar; die Breite des <i> traegt den Fortschritt. */
+/* Bulk-Aktionen Gefaehrte (Hundert 54) */
+.bulk-wrap{display:flex;align-items:flex-start;gap:.5rem}
+.bulk-wrap>.bulk-cb{margin-top:1.1rem;width:18px;height:18px;flex:none;accent-color:var(--primary)}
+.bulk-wrap>*:last-child{flex:1;min-width:0}
+.bulk-bar{position:sticky;bottom:.6rem;z-index:20;display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;
+    margin-top:.8rem;padding:.55rem .8rem;border-radius:var(--radius-sm);
+    background:var(--bg-elev-2);border:1px solid var(--primary);box-shadow:0 8px 22px -10px rgba(0,0,0,.4)}
+/* Kalenderansicht (Hundert 55) */
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-top:.6rem}
+.cal-head{font-size:.72rem;font-weight:700;color:var(--text-muted);text-align:center;padding:.2rem 0;text-transform:uppercase;letter-spacing:.04em}
+.cal-cell{min-height:74px;border:1px solid var(--border);border-radius:8px;padding:.25rem;background:var(--card-bg,var(--bg-elev-1));display:flex;flex-direction:column;gap:2px;overflow:hidden}
+.cal-cell.empty{border:0;background:transparent}
+.cal-cell.today{border-color:var(--primary);box-shadow:inset 0 0 0 1px var(--primary)}
+.cal-day{font-size:.72rem;color:var(--text-muted);font-variant-numeric:tabular-nums}
+.cal-ev{display:block;font-size:.68rem;line-height:1.25;padding:1px 5px;border-radius:6px;color:#fff;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-decoration:none}
+.cal-pickup{background:#0F7A73}.cal-reserve{background:#5B6DC8}.cal-due{background:#B4552F}.cal-wish{background:#8a6d1f}
+.cal-legend{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.6rem;font-size:.75rem;align-items:center}
+.cal-legend .cal-ev{display:inline-block}
+@media (max-width:640px){.cal-cell{min-height:56px}.cal-ev{font-size:.6rem}}
+/* Datei-Anhaenge (Hundert 57) */
+.att-row{display:flex;align-items:center;gap:.55rem;padding:.4rem 0;border-bottom:1px solid var(--border)}
+.att-row:last-of-type{border-bottom:0}
+.att-ic{flex:none;color:var(--text-muted)}
+.att-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.att-meta{flex:none;font-size:.78rem;color:var(--text-muted);font-variant-numeric:tabular-nums}
+/* Portal-Anliegen-Formulare (Hundert 85/87) */
+.portal-form{display:flex;flex-wrap:wrap;gap:.45rem;margin:.35rem 0 .2rem}
+.portal-form input{flex:1 1 160px;min-width:0;padding:.5rem .6rem;border:1px solid var(--border);
+    border-radius:var(--radius-sm);background:var(--bg-elev-1,var(--bg));color:var(--text);font:inherit}
+.portal-err{color:var(--danger);font-size:.85rem}
+/* Betreiber-Postfach */
+.pr-row{display:flex;align-items:center;gap:.6rem;padding:.45rem 0;border-bottom:1px solid var(--border)}
+.pr-row:last-of-type{border-bottom:0}
+/* Portal-Sprachumschalter (Hundert 89): rechts im Kopf, klein und unaufdringlich */
+.portal-head .portal-lang{margin-left:auto;align-self:flex-start;min-height:32px;padding:.3rem .6rem;font-size:.8rem}
+/* Aktivitäts-Verlauf je Person (Hundert 56) */
+.tl-row{display:flex;align-items:baseline;gap:.55rem;padding:.35rem 0;border-bottom:1px solid var(--border)}
+.tl-row:last-of-type{border-bottom:0}
+.tl-ic{flex:none;color:var(--text-muted);transform:translateY(2px)}
+.tl-text{flex:1;font-size:.9rem}
+.tl-date{flex:none;font-size:.78rem;color:var(--text-muted);font-variant-numeric:tabular-nums}
+/* Fotoreihenfolge + Titelbild (Hundert 58) */
+.photo-thumb{position:relative}
+.photo-thumb .title-badge{position:absolute;top:4px;left:4px;background:var(--primary);color:var(--on-primary);
+    border-radius:99px;font-size:.7rem;line-height:1;padding:3px 6px;pointer-events:none}
+.photo-order{position:absolute;bottom:4px;left:4px;right:4px;display:flex;gap:4px;justify-content:center;
+    opacity:0;transition:opacity .12s}
+.photo-thumb:hover .photo-order,.photo-thumb:focus-within .photo-order{opacity:1}
+.photo-order .ord{border:0;border-radius:7px;background:rgba(10,14,13,.72);color:#fff;cursor:pointer;
+    font-size:.85rem;line-height:1;padding:4px 8px}
+.photo-order .ord:hover{background:var(--primary)}
+.upl-progress{display:inline-block;width:90px;height:8px;border-radius:99px;overflow:hidden;
+    background:var(--bg-elev-2);border:1px solid var(--border);vertical-align:middle}
+.upl-progress>i{display:block;height:100%;width:0;border-radius:99px;
+    background:var(--primary);transition:width .15s linear}
 .sr-only {
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
     overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
@@ -1566,7 +1624,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-bufg{pointer-events:none}
 .gp-bufband{fill:rgba(240,180,90,.14);stroke:#f0b45a;stroke-width:1;stroke-dasharray:4 3}
 /* door swing / hinge flip buttons in the opening popover */
-.gp-wallpop-btn{background:rgba(255,255,255,.06);border:1px solid var(--gpline,#2a3b4d);color:var(--gpink,#eaf1f8);border-radius:6px;cursor:pointer;font-size:.9rem;line-height:1;padding:2px 6px}
+.gp-wallpop-btn{background:rgba(255,255,255,.06);border:1px solid var(--gpline,#2a3b4d);color:var(--gpink,#eaf1f8);border-radius:6px;cursor:pointer;font-size:.9rem;line-height:1;padding:2px 6px;display:inline-flex;align-items:center;justify-content:center}
 .gp-wallpop-btn:hover{border-color:var(--gpteal2);color:var(--gpteal2)}
 /* click-to-show room area badge (sits above vehicles/zones) */
 .gp-roombadge{position:absolute;z-index:9;transform:translate(-50%,-50%);background:rgba(4,20,16,.9);border:1px solid var(--gpteal2);color:#8ff0e0;font-size:.78rem;font-weight:700;padding:3px 9px;border-radius:9px;pointer-events:none;white-space:nowrap;box-shadow:0 4px 14px -4px rgba(0,0,0,.6)}
@@ -1576,7 +1634,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-wallpop{position:absolute;z-index:9;display:flex;align-items:center;gap:.3rem;background:var(--gpbg2,#0f1c26);border:1px solid var(--gpline,#2a3b4d);border-radius:9px;padding:.25rem .4rem;box-shadow:0 8px 22px -8px rgba(0,0,0,.65);transform:translate(-50%,-100%)}
 .gp-wallpop .gp-lenin{width:66px}
 .gp-wallpop .muted{font-size:.72rem}
-.gp-wallpop-del{background:none;border:0;color:var(--gpbusy,#e5484d);cursor:pointer;font-size:.95rem;line-height:1;padding:2px 3px;border-radius:6px}
+.gp-wallpop-del{background:none;border:0;color:var(--gpbusy,#e5484d);cursor:pointer;font-size:.95rem;line-height:1;padding:2px 3px;border-radius:6px;display:inline-flex;align-items:center;justify-content:center}
 .gp-wallpop-del:hover{background:rgba(229,72,77,.15)}
 /* transparent overlay that captures pointer input while a wall/opening tool or edit mode is active */
 .gp-drawoverlay{position:absolute;inset:0;z-index:8;touch-action:none;cursor:crosshair}
@@ -1943,8 +2001,15 @@ a.portal-row.link:hover { color: var(--primary-ink); }
 .gp-help-card{background:var(--bg-elev);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow);max-width:520px;width:100%;max-height:86vh;overflow:auto;color:var(--text)}
 .gp-help-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--card-border);position:sticky;top:0;background:var(--bg-elev)}
 .gp-help-head h3{margin:0;font-size:1.05rem}
-.gp-help-x{background:none;border:0;color:var(--text-muted);font-size:1.1rem;cursor:pointer;line-height:1;padding:.2rem .4rem;border-radius:8px}
+/* Die Symbol-Knöpfe tragen seit Hundert 78 ein SVG statt eines Emojis: inline-flex
+   zentriert es, sonst säße es auf der Textgrundlinie und säße sichtbar zu tief. */
+.gp-help-x{background:none;border:0;color:var(--text-muted);font-size:1.1rem;cursor:pointer;line-height:1;padding:.2rem .4rem;border-radius:8px;display:inline-flex;align-items:center;justify-content:center}
 .gp-help-x:hover{color:var(--text);background:var(--bg-elev-2)}
+/* Hinweis, dass die Liste am Serverlimit abgeschnitten ist (Hundert UX-53). Warnend,
+   nicht alarmierend: der Zustand ist selten und nicht kaputt, nur unvollständig. */
+.list-trunc{margin:.1rem 0 .6rem;padding:.5rem .7rem;border-radius:var(--radius-sm);
+    background:color-mix(in srgb, var(--warning) 14%, transparent);color:var(--warning-text);
+    border:1px solid color-mix(in srgb, var(--warning) 34%, transparent);font-size:.85rem}
 .gp-help-list{display:grid;grid-template-columns:auto 1fr;gap:.55rem .9rem;padding:16px 18px;align-items:baseline}
 .gp-help-k{justify-self:start;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.75rem;background:var(--bg-elev-2);border:1px solid var(--border);border-bottom-width:2px;border-radius:7px;padding:.2rem .45rem;color:var(--text);white-space:nowrap}
 .gp-help-d{font-size:.9rem;color:var(--text-muted)}

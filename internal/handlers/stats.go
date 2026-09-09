@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math"
 	"net/http"
 	"sort"
@@ -276,11 +277,22 @@ func (h *Handler) periodSettledByPayment(ctx context.Context, personID int64) (m
 
 // periodSettledByPaymentByPerson is the bulk equivalent for the dashboard/outstanding
 // paths — one query, person_id → settled-key set.
-func (h *Handler) periodSettledByPaymentByPerson(ctx context.Context) (map[int64]map[string]bool, error) {
+//
+// personID != 0 schraenkt auf EINE Person ein, wie beim Geschwister
+// lockedPeriodsByPerson. Der Portalpfad (outstandingByPerson) filtert alles andere
+// auf die Person, holte hier aber weiterhin die Abgleichsdaten des GESAMTEN
+// Betriebs in den Speicher, nur um einen Schluessel daraus zu lesen — auf einer
+// Anlage mit tausenden Kunden bei jedem anonymen Portalaufruf.
+func (h *Handler) periodSettledByPaymentByPerson(ctx context.Context, personID int64) (map[int64]map[string]bool, error) {
 	out := map[int64]map[string]bool{}
-	rows, err := h.Pool.Query(ctx,
-		`SELECT person_id, settles_kind, settles_ref, settles_period FROM payments
-		   WHERE settles_kind IS NOT NULL AND NOT reversed`)
+	q := `SELECT person_id, settles_kind, settles_ref, settles_period FROM payments
+	        WHERE settles_kind IS NOT NULL AND NOT reversed`
+	var args []any
+	if personID != 0 {
+		q += ` AND person_id = $1`
+		args = append(args, personID)
+	}
+	rows, err := h.Pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -326,11 +338,19 @@ func sumByPerson(ctx context.Context, q interface {
 	return out, rows.Err()
 }
 
-func (h *Handler) lockedPeriodsByPerson(ctx context.Context) (map[int64]map[string]bool, error) {
+// personID = 0 laedt alle; sonst nur die dieser Person — derselbe Grund wie bei
+// loadAllRecurringCharges: die Auskunft ueber eine Person darf nicht den ganzen
+// Rechnungsbestand des Betriebs verbinden (Hundert 36).
+func (h *Handler) lockedPeriodsByPerson(ctx context.Context, personID int64) (map[int64]map[string]bool, error) {
 	out := map[int64]map[string]bool{}
-	rows, err := h.Pool.Query(ctx,
-		`SELECT i.person_id, s.kind, s.ref_id, s.period_key FROM invoice_source s
-		    JOIN invoices i ON i.id = s.invoice_id WHERE NOT i.canceled`)
+	q := `SELECT i.person_id, s.kind, s.ref_id, s.period_key FROM invoice_source s
+	         JOIN invoices i ON i.id = s.invoice_id WHERE NOT i.canceled`
+	var args []any
+	if personID != 0 {
+		q += ` AND i.person_id = $1`
+		args = append(args, personID)
+	}
+	rows, err := h.Pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -385,7 +405,7 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now()
+	now := h.now()
 	year := parseYearParam(r, now.Year())
 
 	resp := personStatsResponse{
@@ -559,7 +579,7 @@ func (h *Handler) PersonStats(w http.ResponseWriter, r *http.Request) {
 // only the total is needed (Guthaben / apply-credit).
 func (h *Handler) personAccruedTotal(r *http.Request, id int64) (float64, error) {
 	ctx := r.Context()
-	now := time.Now()
+	now := h.now()
 	vehicles, cats, err := h.loadVehiclesWithCategories(r, id)
 	if err != nil {
 		return 0, err
@@ -608,7 +628,7 @@ func (h *Handler) outstandingByPerson(r *http.Request, personID int64) (map[int6
 	if personID != 0 {
 		scopeArgs = append(scopeArgs, personID)
 	}
-	now := time.Now()
+	now := h.now()
 	until := models.DayAfter(now)
 	vehPaid := vehiclePaidMap(vehicles)
 
@@ -648,7 +668,7 @@ func (h *Handler) outstandingByPerson(r *http.Request, personID int64) (map[int6
 	}
 
 	// Recurring extra costs accrue into the same charge totals.
-	recurByPerson, err := h.loadAllRecurringCharges(ctx, now)
+	recurByPerson, err := h.loadAllRecurringCharges(ctx, now, personID)
 	if err != nil {
 		return nil, err
 	}
@@ -696,11 +716,11 @@ func (h *Handler) outstandingByPerson(r *http.Request, personID int64) (map[int6
 	for pid := range invoicedTaxByPerson {
 		personIDs[pid] = struct{}{}
 	}
-	lockedByPerson, lerr := h.lockedPeriodsByPerson(ctx)
+	lockedByPerson, lerr := h.lockedPeriodsByPerson(ctx, personID)
 	if lerr != nil {
 		return nil, lerr
 	}
-	settledByPerson, serr := h.periodSettledByPaymentByPerson(ctx)
+	settledByPerson, serr := h.periodSettledByPaymentByPerson(ctx, personID)
 	if serr != nil {
 		return nil, serr
 	}
@@ -775,21 +795,21 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM persons`).Scan(&resp.TotalPersons); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM categories`).Scan(&resp.TotalCategories); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 
 	vehicles, cats, err := h.loadVehiclesWithCategories(r, 0)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 
-	now := time.Now()
+	now := h.now()
 	resp.Year = parseYearParam(r, now.Year())
 	resp.TopOutstanding = []personOutstanding{}
 	yearStart := time.Date(resp.Year, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -830,7 +850,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	// time. Aggregate across every person that has vehicles or agreements.
 	agByPerson, err := h.loadAllAgreements(ctx, 0)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 
@@ -839,7 +859,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	// standalone charge via its own flag. Reused for the totals and open balances.
 	crows, err := h.Pool.Query(ctx, `SELECT person_id, vehicle_id, amount, quantity, charged_on, paid FROM charges`)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	vehPaid := vehiclePaidMap(vehicles)
@@ -856,7 +876,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		var ownPaid bool
 		if serr := crows.Scan(&pid, &vid, &amount, &qty, &chargedOn, &ownPaid); serr != nil {
 			crows.Close()
-			writeError(w, http.StatusInternalServerError, "query failed")
+			serverError(w, r, "query failed", serr)
 			return
 		}
 		t, _ := chargeAmounts(agByPerson[pid], vehPaid, vid, amount, qty, chargedOn, ownPaid)
@@ -874,14 +894,14 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 	crows.Close()
 	if cerr := crows.Err(); cerr != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", cerr)
 		return
 	}
 
 	// Recurring extra costs accrue per period into the same charge totals.
-	recurByPerson, err := h.loadAllRecurringCharges(ctx, now)
+	recurByPerson, err := h.loadAllRecurringCharges(ctx, now, 0)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	for pid, list := range recurByPerson {
@@ -914,7 +934,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	paymentsByPerson, perr := sumByPerson(ctx, h.Pool,
 		`SELECT person_id, COALESCE(SUM(amount),0) FROM payments WHERE NOT reversed GROUP BY person_id`)
 	if perr != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", perr)
 		return
 	}
 	var paymentsTotal float64
@@ -926,7 +946,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	invoicedTaxByPerson, terr := sumByPerson(ctx, h.Pool,
 		`SELECT person_id, COALESCE(SUM(tax_amount),0) FROM invoices WHERE NOT canceled AND cancels_id IS NULL GROUP BY person_id`)
 	if terr != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", terr)
 		return
 	}
 
@@ -935,14 +955,14 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	for pid := range invoicedTaxByPerson {
 		personIDs[pid] = struct{}{}
 	}
-	lockedByPerson, lerr := h.lockedPeriodsByPerson(ctx)
+	lockedByPerson, lerr := h.lockedPeriodsByPerson(ctx, 0)
 	if lerr != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", lerr)
 		return
 	}
-	settledByPerson, serr := h.periodSettledByPaymentByPerson(ctx)
+	settledByPerson, serr := h.periodSettledByPaymentByPerson(ctx, 0)
 	if serr != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", serr)
 		return
 	}
 
@@ -1018,7 +1038,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	resp.PaymentsByMonth = make([]float64, 12)
 	prows, perr := h.Pool.Query(ctx, `SELECT amount, paid_on FROM payments WHERE NOT reversed`)
 	if perr != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", perr)
 		return
 	}
 	for prows.Next() {
@@ -1026,7 +1046,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		var on time.Time
 		if err := prows.Scan(&amt, &on); err != nil {
 			prows.Close()
-			writeError(w, http.StatusInternalServerError, "query failed")
+			serverError(w, r, "query failed", err)
 			return
 		}
 		resp.PaymentsTotal += amt
@@ -1037,7 +1057,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 	prows.Close()
 	if err := prows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		serverError(w, r, "query failed", err)
 		return
 	}
 	resp.PaymentsTotal = round2(resp.PaymentsTotal)
@@ -1123,10 +1143,19 @@ func (h *Handler) Occupancy(w http.ResponseWriter, r *http.Request) {
 		defer trows.Close()
 		for trows.Next() {
 			var d occDay
-			if trows.Scan(&d.Day, &d.Placed, &d.Active) == nil {
-				resp.Trend = append(resp.Trend, d)
+			if err := trows.Scan(&d.Day, &d.Placed, &d.Active); err != nil {
+				slog.Warn("occupancy trend scan failed", "err", err)
+				continue
 			}
+			resp.Trend = append(resp.Trend, d)
 		}
+		// Don't let a read error silently shorten the sparkline (finding OPS-06/11):
+		// the dashboard still renders, but the truncation is now visible in the log.
+		if err := trows.Err(); err != nil {
+			slog.Warn("occupancy trend read failed", "err", err)
+		}
+	} else {
+		slog.Warn("occupancy trend query failed", "err", terr)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -1221,7 +1250,7 @@ func (h *Handler) loadVehiclesWithCategories(r *http.Request, personID int64) ([
 	}
 	defer rows.Close()
 
-	now := time.Now()
+	now := h.now()
 	vehicles := []models.Vehicle{}
 	cats := map[int64]models.Category{}
 	for rows.Next() {

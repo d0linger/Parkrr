@@ -20,6 +20,14 @@
         };
         window.addEventListener('error', (e) => report(e.message, e.error && e.error.stack));
         window.addEventListener('unhandledrejection', (e) => { const r = e.reason; report((r && r.message) || 'unhandledrejection', r && r.stack); });
+        // CSP-Verstöße mitmelden (Hundert 44): die strikte style-src-'self'-Policy
+        // ist die Wache gegen Inline-Styles — aber ein Verstoß war bisher nur in der
+        // Browser-Konsole des betroffenen Nutzers sichtbar, also nirgends. Über
+        // dasselbe gedeckelte Telemetrie-Ventil landet er jetzt im Server-Log.
+        document.addEventListener('securitypolicyviolation', (e) => {
+            report('CSP: ' + (e.violatedDirective || '?') + ' blockierte ' + (e.blockedURI || 'inline'),
+                (e.sourceFile || '') + ':' + (e.lineNumber || 0) + ' — ' + String(e.originalPolicy || '').slice(0, 200));
+        });
     })();
 
     // ---------- utilities ----------
@@ -178,26 +186,48 @@
                 opts.body = JSON.stringify(body);
             }
             if (method !== 'GET') opts.headers['X-CSRF-Token'] = getCookie('parkrr_csrf');
-            return handle(await fetch('/api' + path, opts));
+            return handle(await fetch('/api' + path, opts), path);
         },
         async upload(path, formData, method = 'POST') {
             const res = await fetch('/api' + path, {
                 method, body: formData, credentials: 'same-origin',
                 headers: { 'X-CSRF-Token': getCookie('parkrr_csrf') },
             });
-            return handle(res);
+            return handle(res, path);
         },
         get: (p) => api.request('GET', p),
         post: (p, b) => api.request('POST', p, b),
         put: (p, b) => api.request('PUT', p, b),
         del: (p) => api.request('DELETE', p),
     };
-    async function handle(res) {
+    // Letzte gemeldete Gesamtzahl je Pfad. Der Server schickt X-Total-Count auf allen
+    // Listen-Endpunkten, das Frontend hat ihn nie gelesen: eine am Serverlimit
+    // abgeschnittene Liste war von einer vollständigen nicht zu unterscheiden — man
+    // sah 1000 Personen und glaubte, das seien alle (Hundert UX-53).
+    const totalCounts = new Map();
+    const totalFor = (path) => totalCounts.get(path);
+
+    // 2FA-Pflicht (Hundert 41): der Server sperrt Konten ohne zweiten Faktor mit
+    // diesem maschinenlesbaren Grund. EINMAL hinführen statt bei jedem Aufruf einen
+    // nackten Fehler zu zeigen.
+    let twoFARedirected = false;
+
+    async function handle(res, path) {
         if (res.status === 204) return null;
         let data = null;
         const ct = res.headers.get('content-type') || '';
+        const total = res.headers.get('X-Total-Count');
+        if (path && total != null && total !== '') {
+            const n = Number(total);
+            if (Number.isFinite(n)) totalCounts.set(path, n);
+        }
         if (ct.includes('application/json')) data = await res.json();
         if (!res.ok) {
+            if (res.status === 403 && data && data.error === '2fa_enrollment_required' && !twoFARedirected) {
+                twoFARedirected = true;
+                toast('Dieser Betrieb verlangt einen zweiten Faktor — bitte jetzt einrichten.', 'warn');
+                navigate('settings');
+            }
             const err = new Error((data && data.error) || 'HTTP ' + res.status);
             err.status = res.status;
             err.data = data;
@@ -220,6 +250,10 @@
     function initTheme() {
         const saved = localStorage.getItem('parkrr-theme');
         if (saved) document.documentElement.dataset.theme = saved;
+        syncThemeColor();
+        // Ohne explizite Wahl folgt die App dem System, also muss die Titelleiste
+        // mitwandern, wenn das System umschaltet.
+        try { matchMedia('(prefers-color-scheme: dark)').addEventListener('change', syncThemeColor); } catch { /* alte Browser */ }
     }
     function toggleTheme() {
         const cur = document.documentElement.dataset.theme;
@@ -228,6 +262,18 @@
         else next = matchMedia('(prefers-color-scheme: dark)').matches ? 'light' : 'dark';
         document.documentElement.dataset.theme = next;
         localStorage.setItem('parkrr-theme', next);
+        syncThemeColor();
+    }
+    // theme-color steuert die Titelleiste der installierten App. Der Meta-Tag war ein
+    // statisches Petrol, sodass eine helle Installation eine dunkle Leiste bekam
+    // (Hundert PWA-69). Wert aus dem tatsächlich gerenderten Hintergrund lesen.
+    function syncThemeColor() {
+        const meta = document.querySelector('meta[name="theme-color"]');
+        if (!meta) return;
+        // Aus dem --bg-Token lesen: body ist bewusst transparent (style.css), der Grund
+        // kommt aus der Token-Ebene, die hell/dunkel und data-theme bereits auflöst.
+        const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+        if (bg) meta.setAttribute('content', bg);
     }
 
     // ---------- toast ----------
@@ -302,6 +348,9 @@
     // cancelled prompt throws an error flagged { cancelled: true } so callers can
     // bail silently.
     async function promptStepUpPassword() {
+        // BEWUSST OHNE save (Hundert UX-51): dieser Dialog SAMMELT nur das Passwort,
+        // die eigentliche Aktion wiederholt withStepUp danach. Ein save hier kennte
+        // die Aktion gar nicht, die es absenden soll.
         const data = await formModal({
             title: 'Bestätigung erforderlich',
             submitLabel: 'Bestätigen',
@@ -549,9 +598,60 @@
     const tipNames = (labels) => (labels && labels.length === 12 ? MONTH_NAMES : (labels || []));
     const gid = () => 'c' + Math.random().toString(36).slice(2, 7);
 
+    // Tastatur + Screenreader für Charts (Hundert 62). Die Diagramme waren reine
+    // Hover-Flächen: ohne Maus gab es weder die Werte noch eine Navigation, und der
+    // Screenreader hörte nur "Verlauf". Drei Teile, für Linie und Balken gleich:
+    //  - ein beschreibendes aria-label mit den Kernzahlen (statt eines Gattungsworts),
+    //  - Pfeiltasten-Navigation über die Monate (tabindex=0, Home/Ende), die den
+    //    vorhandenen Tooltip mitführt und den Wert über aria-live ansagt,
+    //  - eine sr-only-Datentabelle als vollwertige Alternative zum Bild.
+    function chartA11y(box, values, names, title, moveTo) {
+        const hi = lastPositive(values);
+        const sum = values.reduce((a, v) => a + v, 0);
+        let peak = 0; for (let i = 1; i < values.length; i++) if (values[i] > values[peak]) peak = i;
+        const svg = box.querySelector('svg');
+        const label = title + ': '
+            + (hi < 0 ? 'keine Werte.' : 'Summe ' + eur(sum) + ', höchster Wert ' + (names[peak] || '') + ' ' + eur(values[peak])
+                + ', letzter Wert ' + (names[hi] || '') + ' ' + eur(values[hi]) + '.')
+            + ' Mit den Pfeiltasten durch die Monate.';
+        svg.setAttribute('aria-label', label);
+        svg.setAttribute('role', 'img');
+        box.tabIndex = 0;
+        // Die Huelle ist eine GRUPPE, kein Bild. Mit role="img" auf dem Container waeren
+        // alle Nachfahren aus dem Accessibility-Baum gefallen — der aria-live-Ansager und
+        // die sr-only-Tabelle darunter kamen dann bei genau dem Publikum nicht an, fuer
+        // das sie geschrieben wurden. Das Bild selbst traegt role="img" samt Beschriftung.
+        box.setAttribute('role', 'group');
+        box.setAttribute('aria-label', label);
+        const live = el('span', { class: 'sr-only', 'aria-live': 'polite' });
+        box.append(live);
+        let idx = -1;
+        box.addEventListener('keydown', (e) => {
+            if (hi < 0) return;
+            let next = idx;
+            if (e.key === 'ArrowRight') next = Math.min(hi, idx < 0 ? 0 : idx + 1);
+            else if (e.key === 'ArrowLeft') next = Math.max(0, idx < 0 ? hi : idx - 1);
+            else if (e.key === 'Home') next = 0;
+            else if (e.key === 'End') next = hi;
+            else return;
+            e.preventDefault();
+            idx = next;
+            moveTo(idx);
+            live.textContent = (names[idx] || '') + ': ' + eur(values[idx]);
+        });
+        // sr-only-Tabelle: dieselben Zahlen als Text, für Screenreader-Tabellennavigation.
+        const tbl = el('table', { class: 'sr-only' },
+            el('caption', {}, title),
+            el('tbody', {}, ...values.map((v, i) => el('tr', {}, el('th', { scope: 'row' }, names[i] || String(i + 1)), el('td', {}, eur(v))))));
+        box.append(tbl);
+    }
+
     // Shared hover tooltip positioned over the chart (viewBox coords -> pixels).
     function chartTip(box, svg, W, H) {
-        const tip = el('div', { class: 'c-tip' });
+        // Rein visuell: derselbe Wert geht fuer Screenreader ueber den aria-live-Ansager
+        // in chartA11y hinaus. Ohne aria-hidden wuerde er jetzt doppelt angesagt, seit
+        // die Huelle eine Gruppe statt eines Bildes ist.
+        const tip = el('div', { class: 'c-tip', 'aria-hidden': 'true' });
         box.append(tip);
         return {
             show: (vx, vy, html) => {
@@ -568,7 +668,7 @@
     // Area/line chart with gradient fill, faint grid, hover crosshair + tooltip
     // and an emphasized latest point. Values are money; future (0) months aren't
     // drawn so the line stops at the latest activity.
-    function chartLine(values, labels) {
+    function chartLine(values, labels, title = 'Verlauf') {
         const W = 340, H = 160, pl = 8, pr = 8, pt = 16, pb = 22, n = values.length;
         const max = Math.max(1, ...values) * 1.12, iw = W - pl - pr, ih = H - pt - pb;
         const x = (i) => pl + (n <= 1 ? iw / 2 : i * iw / (n - 1));
@@ -629,12 +729,19 @@
         overlay.addEventListener('pointerdown', at);
         overlay.addEventListener('pointerleave', off);
         overlay.addEventListener('pointerup', off);
+        chartA11y(box, values, names, title, (i) => {
+            const cx = x(i), cy = y(values[i]);
+            cross.setAttribute('x1', cx); cross.setAttribute('x2', cx); cross.style.opacity = 1;
+            focus.setAttribute('cx', cx); focus.setAttribute('cy', cy); focus.style.opacity = 1;
+            tip.show(cx, cy, `<span class="k">${names[i] || ''}</span><b>${eur(values[i])}</b>`);
+        });
+        box.addEventListener('blur', off);
         return box;
     }
 
     // Vertical bars with rounded ends, gradient fill, a highlighted latest bar and
     // per-bar hover tooltip.
-    function chartBars(values, labels) {
+    function chartBars(values, labels, title = 'Balken') {
         const W = 340, H = 160, pl = 8, pr = 8, pt = 16, pb = 22, n = values.length;
         const max = Math.max(1, ...values) * 1.15, iw = W - pl - pr, ih = H - pt - pb;
         const gap = iw / n, bw = Math.min(24, gap * 0.62), hi = lastPositive(values), id = gid(), names = tipNames(labels);
@@ -665,6 +772,14 @@
             b.addEventListener('pointerdown', focus);
         });
         svg.addEventListener('pointerleave', () => { tip.hide(); marks.forEach((o) => o.classList.remove('dim')); });
+        chartA11y(box, values, names, title, (i) => {
+            const b = marks[i];
+            if (!b) return;
+            marks.forEach((o) => o.classList.toggle('dim', o !== b));
+            tip.show(+b.getAttribute('x') + +b.getAttribute('width') / 2, +b.getAttribute('y'),
+                `<span class="k">${names[i] || ''}</span><b>${eur(values[i])}</b>`);
+        });
+        box.addEventListener('blur', () => { tip.hide(); marks.forEach((o) => o.classList.remove('dim')); });
         return box;
     }
 
@@ -756,10 +871,24 @@
         state.persons = persons; state.categories = categories; state.services = services;
     }
 
+    // Per-list UI state (search text, sort, page), kept across render() rebuilds and
+    // keyed by list, so a save no longer resets it (finding UX-54).
+    const listState = new Map();
     // ---------- generic list with search / sort / pagination ----------
     function mountList(page, opts) {
         const pageSize = opts.pageSize || 10;
-        let q = '', sortIdx = opts.defaultSort || 0, pageNum = 1;
+        // Der Schluessel ist BEWUSST kein Anzeigetext mehr. Faellt er auf opts.title
+        // zurueck, teilen sich zwei gleich betitelte Listen Suche, Sortierung, Seite
+        // UND controlState — und der controlState ist der gefaehrliche Teil: liest der
+        // extraFilter der einen Liste einen Schluessel, den die andere mit anderer
+        // Bedeutung setzt, steht die Liste leer da unter einer Leiste, die "kein
+        // Filter" behauptet. Suche, Sortierung und Seite erklaeren sich dagegen selbst.
+        // Ein Titel ist Text fuer Menschen und darf sich jederzeit aendern; ein
+        // Zustandsschluessel darf das nicht.
+        const stateKey = opts.stateKey || 'list';
+        const saved = listState.get(stateKey) || {};
+        let qRaw = saved.qRaw || '', sortIdx = (saved.sortIdx != null ? saved.sortIdx : (opts.defaultSort || 0)), pageNum = saved.pageNum || 1;
+        let q = norm(qRaw);
 
         page.innerHTML = '';
         const head = el('div', { class: 'page-head' }, el('h2', {}, opts.title));
@@ -768,32 +897,89 @@
         }
         page.append(head);
 
-        const search = el('input', { class: 'search', type: 'search', placeholder: 'Suche …', value: q });
+        const search = el('input', { class: 'search', type: 'search', placeholder: 'Suche …', value: qRaw, 'aria-label': 'In ' + (opts.title || 'Liste') + ' suchen' });
         const sortSel = el('select', { 'aria-label': 'Sortierung' }, ...opts.sorts.map((s, i) => el('option', { value: i, selected: i === sortIdx }, s.label)));
         const toolbar = el('div', { class: 'toolbar' }, search, sortSel);
-        const controlState = {};
-        if (opts.controls) for (const c of opts.controls(() => { pageNum = 1; refresh(); }, controlState)) toolbar.append(c);
+        // Der Filterzustand der Werkzeugleiste gehoert zum Listenzustand wie Suche,
+        // Sortierung und Seite. Ein frisches {} bei jedem Aufbau warf ihn weg — und
+        // render() baut die Seite nach JEDER Massenaktion, nach "Abbrechen" und nach
+        // jedem Speichern neu auf. Der Betreiber filterte auf drei Gefaehrte und stand
+        // ohne Vorwarnung wieder vor der vollstaendigen Liste, oft kurz vor dem
+        // naechsten Klick. controls() belegt deshalb nur noch vor, was leer ist.
+        const controlState = saved.controlState || {};
+        // `c == null` ueberspringen wie el() es tut: controls() liefert je nach Rolle
+        // Loecher (die Mehrfachauswahl gibt es nur fuer Verwalter), und append(null)
+        // schreibt nach WebIDL das WORT "null" als Textknoten in die Werkzeugleiste.
+        if (opts.controls) {
+            // keepPage: ein reiner Anzeige-Umschalter (Mehrfachauswahl) darf die Liste
+            // nicht auf Seite 1 zurueckwerfen; ein Filterwechsel dagegen schon, sonst
+            // zeigt eine hohe Seitenzahl in der geschrumpften Liste nichts mehr.
+            for (const c of opts.controls((keepPage) => { if (!keepPage) pageNum = 1; refresh(); }, controlState)) {
+                if (c == null || c === false) continue;
+                toolbar.append(c);
+            }
+        }
         page.append(toolbar);
 
         const listEl = el('div', {});
         const pagerEl = el('div', {});
-        page.append(listEl, pagerEl);
+        const countEl = el('p', { class: 'sr-only', role: 'status', 'aria-live': 'polite' });
+        // Warnt, wenn der Server MEHR Datensätze hat, als er geliefert hat. Ohne das
+        // blättert man durch eine abgeschnittene Liste und hält sie für vollständig
+        // (Hundert UX-53). opts.sourcePath ist der Listen-Endpunkt, aus dem
+        // opts.items stammen; fehlt er, ist der Hinweis schlicht aus.
+        const truncEl = el('div', { class: 'list-trunc', role: 'status', hidden: true });
+        page.append(countEl, truncEl, listEl, pagerEl);
 
-        search.addEventListener('input', () => { q = norm(search.value); pageNum = 1; refresh(); });
+        search.addEventListener('input', () => { qRaw = search.value; q = norm(qRaw); pageNum = 1; refresh(); });
         sortSel.addEventListener('change', () => { sortIdx = Number(sortSel.value); refresh(); });
 
         function refresh() {
             let items = opts.items.slice();
             if (opts.extraFilter) items = items.filter((it) => opts.extraFilter(it, controlState));
+            // Wer eine Auswahl ÜBER die Liste hinweg hält (Mehrfachauswahl), muss
+            // erfahren, was der aktuelle Filter überhaupt noch zeigt — sonst wirkt eine
+            // Massenaktion auf Zeilen, die niemand mehr vor sich hat.
+            //
+            // VOR der Suche, und das ist der Punkt: der FILTER ist eine Entscheidung
+            // ("nur diese Person"), die Suche ist fluechtig. Lief der Rueckruf danach,
+            // loeschte schon der erste Tastendruck im Suchfeld — etwa um ein weiteres
+            // Gefaehrt zu finden — die ganze bisherige Auswahl unwiderruflich; das
+            // Leeren des Suchfelds holte sie nicht zurueck.
+            if (opts.onFiltered) opts.onFiltered(items);
             if (q) items = items.filter((it) => opts.searchText(it).includes(q));
+            // Einen gespeicherten Sortier-Index einfangen, der ins Leere zeigt: die
+            // sorts-Liste einer Ansicht kann sich aendern, waehrend der Index die
+            // Sitzung ueberlebt. Ohne die Klemme wurde GAR NICHT sortiert (das
+            // `s && s.cmp` schluckt es), die Auswahl zeigte trotzdem den ersten
+            // Eintrag, und der untaugliche Index wurde unten gleich wieder
+            // weggeschrieben — die Liste blieb also dauerhaft unsortiert, ohne dass
+            // etwas darauf hinwies.
+            if (!(sortIdx >= 0 && sortIdx < opts.sorts.length)) sortIdx = opts.defaultSort || 0;
             const s = opts.sorts[sortIdx];
             if (s && s.cmp) items.sort(s.cmp);
             const total = items.length;
             const pages = Math.max(1, Math.ceil(total / pageSize));
             if (pageNum > pages) pageNum = pages;
+            listState.set(stateKey, { qRaw, sortIdx, pageNum, controlState });
             const start = (pageNum - 1) * pageSize;
             const slice = items.slice(start, start + pageSize);
             listEl.innerHTML = '';
+            // Trefferzahl fuer Screenreader ansagen (A11Y-77): die gefilterte Menge war
+            // bisher nur visuell im Pager ablesbar.
+            countEl.textContent = q ? `${total} Treffer` : '';
+            // Abgeschnitten? Dann sagen, WIE viele fehlen, statt so zu tun, als sei das
+            // alles. Die Suche geht über die geladene Menge — deshalb der Hinweis, dass
+            // sie hier nicht weiterhilft.
+            const serverTotal = opts.sourcePath ? totalFor(opts.sourcePath) : undefined;
+            const loaded = opts.items.length;
+            if (serverTotal != null && serverTotal > loaded) {
+                truncEl.textContent = `Es werden ${loaded} von ${serverTotal} Einträgen angezeigt. `
+                    + 'Die restlichen sind nicht geladen — auch die Suche findet sie nicht.';
+                truncEl.hidden = false;
+            } else {
+                truncEl.hidden = true;
+            }
             if (!slice.length) listEl.append(emptyState(opts.emptyIcon || 'box', opts.emptyText || 'Keine Einträge.'));
             else slice.forEach((it) => listEl.append(opts.render(it)));
             pagerEl.innerHTML = '';
@@ -871,7 +1057,16 @@
         });
         return det;
     }
+    // Laufende Nummer je Seitenaufbau. Ohne sie kann ein Routenwechsel WÄHREND eines
+    // laufenden Aufbaus die neue Seite wieder zerstören: die alte Route wacht später
+    // aus ihrem await auf und schreibt in dasselbe #page — oder, häufiger, ihr
+    // abgebrochener fetch landet im catch und ersetzt die inzwischen fertige Seite
+    // durch "Fehler: …". Genau das passierte beim schnellen Wechsel zwischen zwei
+    // Reitern, und es war die Ursache der wechselnd fehlschlagenden Oberflächentests.
+    // Die Befehlspalette löst dasselbe Problem seit jeher mit einer Sequenznummer.
+    let renderSeq = 0;
     async function render() {
+        const mySeq = ++renderSeq;
         const { name, id } = parseHash();
         const routeName = id != null && (name === 'persons' || name === 'vehicles') ? name.slice(0, -1) : name;
         $$('.tab').forEach((t) => {
@@ -880,16 +1075,31 @@
             if (on) t.setAttribute('aria-current', 'page');
             else t.removeAttribute('aria-current');
         });
-        const page = $('#page');
-        page.innerHTML = '';
+        const host = $('#page');
+        // EIGENER Container je Aufbau, und die Route bekommt IHN statt #page. Der
+        // Sequenzvergleich unten allein genügt nicht: die Routen schreiben INNERHALB
+        // ihrer async-Funktion, also lange bevor sie zurückkehrt. Räumt ein neuerer
+        // Aufbau #page leer, ist der Container des älteren damit aus dem Dokument
+        // gelöst — seine späten Schreibzugriffe landen im Nichts statt auf der Seite,
+        // die der Benutzer inzwischen sieht.
+        host.innerHTML = '';
+        const page = el('div', { class: 'route-view' });
+        host.append(page);
         page.append(skeleton());
         const fn = routes[routeName] || routes.dashboard;
-        try { await fn(page, id); window.scrollTo(0, 0); syncPageTitle(page); }
-        catch (err) {
+        try {
+            await fn(page, id);
+            if (mySeq !== renderSeq) return; // überholt: eine neuere Route hat die Seite schon
+            window.scrollTo(0, 0);
+            syncPageTitle(host);
+        } catch (err) {
+            // 401 IMMER behandeln, auch wenn überholt: die Sitzung ist weg, unabhängig
+            // davon, welche Route gerade gewinnt.
+            if (err.status === 401) { logout(); return; }
+            if (mySeq !== renderSeq) return; // der Abbruch gehört zur alten Route — nicht anzeigen
             page.innerHTML = '';
             page.append(el('div', { class: 'empty' }, 'Fehler: ' + err.message));
-            syncPageTitle(page);
-            if (err.status === 401) logout();
+            syncPageTitle(host);
         }
     }
     // Mirror each route's leading heading into the visually-hidden page-level h1
@@ -897,8 +1107,19 @@
     function syncPageTitle(page) {
         const h1 = $('#page-title');
         if (!h1) return;
-        const lead = page.querySelector('.page-head h2, .page-head h3, .detail-head h2');
-        h1.textContent = lead ? lead.textContent.trim() : 'Parkrr';
+        // Der Garagenplaner (routes.hall) hat keinen page-head — sein Titel steht als
+        // <b> in der gp-appbar. Ohne den Zusatz bliebe der Routenwechsel dort unangesagt.
+        const lead = page.querySelector('.page-head h2, .page-head h3, .detail-head h2, .gp-appbar .gp-brand b');
+        const name = lead ? lead.textContent.trim() : '';
+        h1.textContent = name || 'Parkrr';
+        // Tab, History-Eintrag und Task-Switcher der installierten App hiessen bisher
+        // immer nur "Parkrr" (Hundert A11Y-73).
+        document.title = name ? name + ' · Parkrr' : 'Parkrr';
+        // Routenwechsel gezielt ansagen. Vorher war das ganze <main> aria-live, was
+        // bei jedem render() die KOMPLETTE Seite vorlesen liess (A11Y-72).
+        const st = $('#route-status');
+        // Fallback: auch ohne gefundene Überschrift ansagen, damit KEINE Route stumm bleibt.
+        if (st) st.textContent = name || 'Parkrr';
     }
 
     // ================= DASHBOARD =================
@@ -962,6 +1183,45 @@
             : pct >= 0 ? '▲ +' + pct + ' %' : '▼ ' + Math.abs(pct) + ' %';
         return { txt, cls, title: 'ggü. gleichem Zeitraum ' + (ov.year - 1), label: lbl('ggü. ' + (ov.year - 1)) };
     }
+    // Kundenwünsche aus dem Portal (Hundert 85/87): das Betreiber-Postfach. Nur
+    // gerendert, wenn offene Wünsche da sind — kein Dauerrauschen auf der Übersicht.
+    async function portalRequestsCard() {
+        if (!canManage()) return null;
+        let reqs = [];
+        try { reqs = await api.get('/portal-requests'); } catch (e) { return null; }
+        const open = (reqs || []).filter((r) => r.status === 'offen');
+        if (!open.length) return null;
+        const card = el('div', { class: 'card' },
+            el('h3', {}, 'Kundenwünsche ', el('span', { class: 'sec-count' }, String(open.length))));
+        const KIND = { contact_update: 'Kontaktdaten', pickup: 'Abholung' };
+        const resolve = async (req, action, node) => {
+            try {
+                await api.post('/portal-requests/' + req.id + '/resolve', { action });
+                toast(action === 'apply' ? 'Übernommen' : action === 'reject' ? 'Abgelehnt' : 'Erledigt', 'success');
+                node.remove();
+                if (!card.querySelector('.pr-row')) render();
+            } catch (e) { toast(e.message, 'error'); }
+        };
+        open.forEach((rq) => {
+            const pl = asObj(rq.payload);
+            const detail = rq.kind === 'pickup'
+                ? ('Wunschtermin ' + (pl.date ? new Date(pl.date).toLocaleDateString('de-DE') : '?') + (pl.note ? ' — ' + pl.note : ''))
+                : Object.entries(pl).map(([k, v]) => (k === 'email' ? 'E-Mail' : k === 'phone' ? 'Telefon' : 'Adresse') + ': ' + v).join(' · ');
+            const row = el('div', { class: 'pr-row' },
+                el('div', { class: 'pay-main' },
+                    el('div', { class: 'pay-method' },
+                        el('a', { href: '#/person/' + rq.person_id }, esc(rq.person_name)), ' · ' + (KIND[rq.kind] || rq.kind)),
+                    el('div', { class: 'pay-date' }, esc(detail) + ' · ' + new Date(rq.created_at).toLocaleDateString('de-DE'))),
+                el('div', { class: 'card-actions' },
+                    rq.kind === 'contact_update'
+                        ? el('button', { class: 'btn btn-primary btn-sm', title: 'Gewünschte Kontaktdaten in die Stammdaten übernehmen', onclick: (e) => resolve(rq, 'apply', e.currentTarget.closest('.pr-row')) }, 'Übernehmen')
+                        : el('button', { class: 'btn btn-primary btn-sm', title: 'Termin vereinbart — Wunsch schließen', onclick: (e) => resolve(rq, 'done', e.currentTarget.closest('.pr-row')) }, 'Erledigt'),
+                    el('button', { class: 'btn btn-ghost btn-sm', onclick: (e) => resolve(rq, 'reject', e.currentTarget.closest('.pr-row')) }, 'Ablehnen')));
+            card.append(row);
+        });
+        return card;
+    }
+
     routes.dashboard = async (page) => {
         const ov = await api.get('/overview' + (dashYear ? '?year=' + dashYear : ''));
         let occ = null;
@@ -977,7 +1237,9 @@
             el('span', { class: 'info' }, String(ov.year)),
             el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Nächstes Jahr', disabled: ov.year >= nowYear,
                 onclick: () => { dashYear = ov.year + 1; render(); } }, '›'));
-        page.append(el('div', { class: 'page-head' }, el('h2', {}, 'Übersicht'), yearSel));
+        page.append(el('div', { class: 'page-head' }, el('h2', {}, 'Übersicht'),
+            el('a', { class: 'btn btn-ghost btn-sm', href: '#/calendar', title: 'Abholungen, Reservierungen, fällige Rechnungen und Abholwünsche im Monat' }, 'Kalender'),
+            yearSel));
 
         // Empty state for a fresh install: no persons yet -> onboard instead of
         // showing a wall of zeros and empty charts.
@@ -1172,13 +1434,13 @@
 
         // Revenue chart
         const revCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Umsatz pro Monat · ' + ov.year));
-        revCard.append(chartLine(ov.revenue_by_month, MONTHS));
+        revCard.append(chartLine(ov.revenue_by_month, MONTHS, 'Umsatz pro Monat'));
         revCard.append(el('div', { class: 'legend' }, el('span', {}, el('span', { class: 'dotc', style: 'background:var(--primary)' }), 'Miete + Zusatzkosten')));
         page.append(revCard);
 
         // Extra charges per month
         const pcCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Zusatzkosten pro Monat · ' + ov.year));
-        pcCard.append(chartBars(ov.charges_by_month, MONTHS));
+        pcCard.append(chartBars(ov.charges_by_month, MONTHS, 'Zusatzkosten pro Monat'));
         pcCard.append(el('div', { class: 'legend' }, el('span', {}, el('span', { class: 'dotc', style: 'background:var(--primary)' }), 'Zusatzkosten')));
         page.append(pcCard);
 
@@ -1201,13 +1463,20 @@
 
         // CSV export for accounting — a plain download link carries the session
         // cookie; the server sends it as a ;-separated, BOM-prefixed attachment.
-        const expLink = (entity, label) => el('a', { class: 'btn btn-ghost btn-sm', href: '/api/export/' + entity, download: '' }, '⭳ ' + label);
+        const expLink = (entity, label) => el('a', { class: 'btn btn-ghost btn-sm', href: '/api/export/' + entity, download: '' }, icon('download', 15), ' ' + label);
+        // Betreiber-Postfach (Hundert 85/87) — nur sichtbar, wenn Wünsche offen sind.
+        const prCard = await portalRequestsCard();
+        if (prCard) page.append(prCard);
+
         page.append(el('div', { class: 'chart-card' },
             el('h3', {}, 'Export (CSV)'),
             el('div', { class: 'muted', style: 'font-size:.82rem;margin:-.35rem 0 .7rem' }, 'Für Buchhaltung/Steuerberater — öffnet direkt in Excel/LibreOffice.'),
             el('div', { class: 'btn-row', style: 'flex-wrap:wrap;gap:.5rem' },
                 expLink('outstanding', 'Offene Posten'),
+                el('a', { class: 'btn btn-ghost btn-sm', href: '/api/reports/outstanding.pdf', download: '' }, icon('receipt', 15), ' Offene Posten (PDF)'),
+                expLink('invoices', 'Rechnungen'),
                 expLink('payments', 'Zahlungen'),
+                expLink('charges', 'Zusatzkosten'),
                 expLink('persons', 'Personen'),
                 expLink('vehicles', 'Gefährte'),
                 expLink('occupancy', 'Belegung'))));
@@ -1227,13 +1496,18 @@
         try { ((await api.get('/invoices/overdue')) || []).forEach((o) => { overdueByPerson[o.person_id] = Math.max(overdueByPerson[o.person_id] || 0, o.days_overdue); }); }
         catch (e) { /* dashboard already surfaces overdue; ignore here */ }
         mountList(page, {
-            title: 'Personen', emptyIcon: 'users', emptyText: 'Noch keine Personen.',
+            stateKey: 'persons', // fester Schluessel, unabhaengig vom Anzeigetitel
+            title: 'Personen', emptyIcon: 'users', emptyText: 'Noch keine Personen.', sourcePath: '/persons',
             onAdd: canManage() ? () => personForm() : null,
             items: state.persons,
             searchText: (p) => norm(personName(p) + ' ' + p.email + ' ' + p.phone),
             // Filter toggle: only persons with an open balance (Mahn-/Nachfass-Sicht).
             controls: (refresh, cs) => {
-                const btn = el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-pressed': 'false',
+                // Aus cs vorbelegen, nicht hart auf "aus": der Filterzustand ueberlebt
+                // jetzt ein render() (siehe mountList), und ein fest verdrahtetes
+                // aria-pressed="false" zeigte sonst "alle Personen", waehrend die Liste
+                // auf offene Posten gefiltert ist.
+                const btn = el('button', { class: 'btn btn-sm ' + (cs.owedOnly ? 'btn-primary' : 'btn-ghost'), type: 'button', 'aria-pressed': String(!!cs.owedOnly),
                     onclick: () => { cs.owedOnly = !cs.owedOnly; btn.className = 'btn btn-sm ' + (cs.owedOnly ? 'btn-primary' : 'btn-ghost'); btn.setAttribute('aria-pressed', String(!!cs.owedOnly)); refresh(); } },
                     'Nur offen');
                 const out = [btn];
@@ -1245,7 +1519,13 @@
                 }
                 return out;
             },
-            extraFilter: (p, cs) => !cs.owedOnly || (Number(oweMap[p.id]) || 0) > 0.005,
+            // `oweOk` gehoert in die Bedingung, seit cs.owedOnly ein render() ueberlebt:
+            // schlaegt /persons/outstanding fehl, ist oweMap leer, und der Filter haette
+            // JEDE Person ausgeblendet — die Seite meldete "Noch keine Personen." und sah
+            // aus wie eine leere Datenbank. Vorher rettete das frische {} bei jedem Aufbau
+            // den Fall, weil cs.owedOnly dann falsy war. Ohne Salden lieber ungefiltert
+            // zeigen als nichts: der Toast oben sagt bereits, dass sie fehlen.
+            extraFilter: (p, cs) => !cs.owedOnly || !oweOk || (Number(oweMap[p.id]) || 0) > 0.005,
             sorts: [
                 { label: 'Name A–Z', cmp: (a, b) => personName(a).localeCompare(personName(b)) },
                 { label: 'Name Z–A', cmp: (a, b) => personName(b).localeCompare(personName(a)) },
@@ -1463,6 +1743,61 @@
     }
 
     // ---------- PERSON DETAIL ----------
+    // Datei-Anhänge (Hundert 57): eine Karte für Person UND Gefährt. ownerPath ist
+    // '/persons/<id>' bzw. '/vehicles/<id>'. Nachgeladen; Upload mit demselben
+    // Fortschritts-XHR wie die Fotos.
+    function attachmentsCard(ownerPath) {
+        const card = el('div', { class: 'card' });
+        const head = el('div', { class: 'page-head' }, el('h3', {}, 'Anhänge'));
+        const listEl = el('div', {});
+        const prog = el('span', { class: 'upl-progress', role: 'progressbar', 'aria-label': 'Anhang-Upload', 'aria-valuemin': '0', 'aria-valuemax': '100', hidden: true }, el('i', {}));
+        const reload = async () => {
+            listEl.innerHTML = '';
+            let items = [];
+            try { items = await api.get(ownerPath + '/attachments'); } catch (e) { listEl.append(el('p', { class: 'muted' }, 'Anhänge konnten nicht geladen werden.')); return; }
+            if (!items.length) { listEl.append(el('p', { class: 'muted' }, 'Keine Anhänge.')); return; }
+            items.forEach((a) => {
+                const row = el('div', { class: 'att-row' },
+                    el('span', { class: 'att-ic' }, icon(a.content_type === 'application/pdf' ? 'receipt' : 'camera', 15)),
+                    el('a', { class: 'att-name', href: '/api/attachments/' + a.id, download: '' }, esc(a.filename || ('Anhang #' + a.id))),
+                    el('span', { class: 'att-meta' }, Math.max(1, Math.round(a.byte_size / 1024)) + ' KB · ' + new Date(a.created_at).toLocaleDateString('de-DE')));
+                if (canManage()) row.append(el('button', { class: 'btn btn-ghost btn-sm', title: (a.filename || 'Anhang') + ' löschen', 'aria-label': (a.filename || 'Anhang') + ' löschen',
+                    onclick: (e) => deleteWithUndo('Anhang löschen?', `„${a.filename || 'Anhang'}" wird dauerhaft entfernt.`, () => api.del('/attachments/' + a.id), () => reload(), e.currentTarget.closest('.att-row')) }, icon('trash', 14)));
+                listEl.append(row);
+            });
+        };
+        if (canManage()) {
+            const fileIn = el('input', { type: 'file', accept: 'application/pdf,image/jpeg,image/png', style: 'display:none' });
+            fileIn.addEventListener('change', async () => {
+                const f = fileIn.files[0];
+                if (!f) return;
+                // Vorher pruefen, wie es der DXF-Import laengst tut: der globale
+                // Body-Deckel der Middleware greift VOR dem Handler, also auch vor
+                // dessen freundlicher Meldung. Ein 12-MB-Scan brach damit als nackte
+                // Absage ab, statt zu sagen, was zu klein zu machen ist.
+                if (f.size > 8 * 1024 * 1024) {
+                    toast('Datei ist zu groß (max. 8 MB)', 'error');
+                    fileIn.value = '';
+                    return;
+                }
+                const bar = prog.querySelector('i');
+                const show = (frac) => { prog.hidden = false; if (bar) bar.style.width = Math.round(frac * 100) + '%'; prog.setAttribute('aria-valuenow', String(Math.round(frac * 100))); };
+                try {
+                    show(0);
+                    const fd = new FormData(); fd.append('file', f, f.name);
+                    await uploadWithProgress(ownerPath + '/attachments', fd, show);
+                    toast('Anhang hochgeladen', 'success');
+                    prog.hidden = true; fileIn.value = '';
+                    reload();
+                } catch (e) { toast(e.message, 'error'); prog.hidden = true; }
+            });
+            head.append(el('button', { class: 'btn-sect', onclick: () => fileIn.click() }, '+ Anhang'), prog, fileIn);
+        }
+        card.append(head, listEl);
+        reload();
+        return card;
+    }
+
     routes.person = async (page, id) => {
         await refreshLookups();
         const stats = await api.get('/persons/' + id + '/stats');
@@ -1611,9 +1946,38 @@
         if (!invoices.length) page.append(el('p', { class: 'muted' }, 'Noch keine Rechnungen. „+ Rechnung" erstellt eine aus den offenen Einzelposten.'));
         else page.append(collapsibleRows(invoices, (iv) => invoiceRow(iv)));
 
+        // Anhänge (Hundert 57): Vertrag, Typenschein, Gutachten — beim Datensatz.
+        page.append(attachmentsCard('/persons/' + id));
+
+        // Verlauf (Hundert 56): alles, was bei dieser Person passiert ist, in EINEM
+        // Strom — statt fünfmal blättern (Zahlungen, Rechnungen, Posten, Status,
+        // Übergaben). Nachgeladen, damit die Seite nicht auf die Historie wartet.
+        {
+            const tlCard = el('div', { class: 'card' });
+            const tlHead = el('div', { class: 'page-head section-head' },
+                el('div', { class: 'sec-group' }, el('h3', { class: 'sec-eyebrow' }, 'Verlauf')));
+            page.append(tlHead, tlCard);
+            const KIND_ICON = { payment: 'receipt', invoice: 'receipt', charge: 'tag', status: 'car', handover: 'key', agreement: 'check' };
+            api.get('/persons/' + id + '/timeline').then((events) => {
+                if (!events || !events.length) { tlCard.append(el('p', { class: 'muted' }, 'Noch keine Ereignisse.')); return; }
+                const rows = events.map((ev) => el('div', { class: 'tl-row' },
+                    el('span', { class: 'tl-ic' }, icon(KIND_ICON[ev.kind] || 'log', 14)),
+                    el('span', { class: 'tl-text' }, esc(ev.text)),
+                    el('span', { class: 'tl-date' }, new Date(ev.at).toLocaleDateString('de-DE'))));
+                // collapsibleRows erwartet Items+Renderer — hier sind die Zeilen schon gebaut.
+                const first = rows.slice(0, 8), rest = rows.slice(8);
+                first.forEach((r) => tlCard.append(r));
+                if (rest.length) {
+                    const more = el('button', { class: 'btn btn-ghost btn-sm' }, rest.length + ' weitere anzeigen');
+                    more.addEventListener('click', () => { rest.forEach((r) => tlCard.append(r)); more.remove(); });
+                    tlCard.append(more);
+                }
+            }).catch(() => { tlCard.append(el('p', { class: 'muted' }, 'Verlauf konnte nicht geladen werden.')); });
+        }
+
         // statistics at the bottom, below the actionable sections
         const chartCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Kosten pro Monat · ' + stats.year));
-        chartCard.append(chartBars(stats.monthly_accrued, MONTHS));
+        chartCard.append(chartBars(stats.monthly_accrued, MONTHS, 'Aufgelaufene Kosten pro Monat'));
         page.append(chartCard);
         if (stats.years.length) {
             const yc = el('div', { class: 'chart-card' }, el('h3', {}, 'Kosten pro Jahr'));
@@ -1808,7 +2172,10 @@
             el('div', { class: 'pay-method' }, 'Rechnung ' + esc(iv.number), ' ', invStatusBadge(iv)),
             el('div', { class: 'pay-date' }, new Date(iv.issued_on).toLocaleDateString('de-DE')
                 + (iv.kleinunternehmer ? '' : ' · inkl. USt')
-                + (iv.status === 'teilbezahlt' ? ' · offen ' + eur(iv.open_amount) : '')));
+                + (iv.status === 'teilbezahlt' ? ' · offen ' + eur(iv.open_amount) : '')
+                // Mahn-Gedächtnis (Hundert 15): sichtbar, wie oft und wann zuletzt —
+                // sonst mahnt jeder Kollege noch einmal von vorn.
+                + (iv.reminder_count ? ' · ' + iv.reminder_count + '× gemahnt' + (iv.last_reminded_at ? ' (zuletzt ' + new Date(iv.last_reminded_at).toLocaleDateString('de-DE') + ')' : '') : '')));
         // What the invoice bills (Gefährt/Pauschale · Periode) — one muted line; the
         // card links to the invoice page for the full positions.
         if ((iv.positions || []).length) {
@@ -1846,11 +2213,33 @@
         } catch (e) { toast(e.message, 'error'); }
     }
     async function remindInvoice(iv) {
-        if (!await confirmDialog('Zahlungserinnerung senden?',
-            'Sendet eine E-Mail mit den offenen Rechnungsdaten an den hinterlegten Kontakt der Person.', 'Senden')) return;
+        // Die nächste Stufe VOR dem Senden benennen (Hundert 15): wer auf "Senden"
+        // klickt, soll wissen, ob eine freundliche Erinnerung oder die letzte
+        // Mahnung hinausgeht.
+        const lvl = Math.min((iv.reminder_count || 0) + 1, 3);
+        const name = lvl === 1 ? 'Zahlungserinnerung' : lvl === 2 ? '1. Mahnung' : '2. Mahnung (letzte Mahnung)';
+        if (!await confirmDialog(name + ' senden?',
+            'Sendet eine E-Mail mit den offenen Rechnungsdaten an den hinterlegten Kontakt der Person.'
+            + (iv.reminder_count ? ' Bisher ' + iv.reminder_count + '× gemahnt.' : ''), 'Senden')) return;
+        // Wohin der Benutzer gerade schaut, VOR dem Warten festhalten: der Aufruf kann
+        // die vollen 20 Sekunden der SMTP-Zustellung dauern.
+        const at = location.hash;
         try {
             const r = await api.post('/invoices/' + iv.id + '/remind', {});
-            toast('Erinnerung gesendet' + (r && r.to ? ' an ' + r.to : ''), 'success');
+            const sent = r && r.level === 1 ? 'Zahlungserinnerung' : r && r.level === 2 ? '1. Mahnung' : '2. Mahnung';
+            toast(sent + ' gesendet' + (r && r.to ? ' an ' + r.to : ''), 'success');
+            // Neu laden, sonst zeigt die Seite weiter den Stand von vorhin: `iv` ist die
+            // einmal geholte Kopie, und der Dialog leitet die naechste Stufe aus
+            // iv.reminder_count ab. Ein zweiter Klick fragte darum erneut
+            // "Zahlungserinnerung senden?", waehrend der Server aus der Tabelle die
+            // 1. Mahnung ableitete und sie auch verschickte — genau die Ungleichheit,
+            // gegen die fetchInvoice die Mahnspalten ueberhaupt erst mitliefert.
+            //
+            // Aber nur, wenn die Rechnung noch offen ist: render() baut IMMER die
+            // aktuelle Route neu auf, nicht die, von der der Klick kam. Wer waehrend der
+            // Zustellung in den Hallenplaner wechselte, bekam ihn spaeter grundlos
+            // zerlegt — samt der noch nicht gespeicherten Geometrie im Autosave-Fenster.
+            if (location.hash === at) render();
         } catch (e) { toast(e.message || 'Senden fehlgeschlagen', 'error'); }
     }
     async function createInvoiceFor(personId, btn) {
@@ -2002,11 +2391,78 @@
     };
 
     // ================= VEHICLES =================
+    // Bulk-Aktionen für Gefährte (Hundert 54): mehrere auf einmal abholen oder
+    // stornieren — Saisonende heißt sonst dreißigmal derselbe Klickpfad. Der Bulk
+    // ruft je Gefährt DENSELBEN Status-Endpunkt wie der Einzelweg (gleiche Regeln:
+    // Enddatum, Archivierung, Historie) und meldet das ECHTE Ergebnis (ok/fehl).
+    const bulkSel = new Set();
+    let bulkMode = false;
+
+    function bulkBar() {
+        const bar = el('div', { class: 'bulk-bar', hidden: !bulkMode });
+        const count = el('b', {}, '0');
+        const run = async (status, label) => {
+            const ids = Array.from(bulkSel);
+            if (!ids.length) { toast('Nichts ausgewählt', 'error'); return; }
+            if (!await confirmDialog(label + '?', ids.length + ' Gefährt(e) werden ' + (status === 'collected' ? 'als abgeholt (heute) markiert' : 'storniert') + '. Jeder Wechsel folgt denselben Regeln wie der Einzelweg.', label)) return;
+            // Der Einzelweg schickt IMMER ein Datum. Ohne eines nimmt der Server den
+            // Zweig `end_date = COALESCE(end_date, CURRENT_DATE)` und lässt ein bereits
+            // eingetragenes — womöglich weit künftiges — Abholdatum stehen: das Gefährt
+            // galt als abgeholt, die Miete lief weiter, und der Dialog hatte "(heute)"
+            // zugesagt. Beim Stornieren bleibt es beim Serververhalten: dort verspricht
+            // der Dialog kein Datum, und ein zurückgezogenes Enddatum kann an einer
+            // bereits fakturierten Periode scheitern.
+            const body = { status, note: 'Bulk-Aktion' };
+            if (status === 'collected') body.date = today();
+            let ok = 0, firstErr = '';
+            const failedIds = [];
+            for (const id of ids) {
+                try { await api.post('/vehicles/' + id + '/status', body); ok++; }
+                catch (e) { failedIds.push(id); if (!firstErr) firstErr = e.message || ''; }
+            }
+            // Nur das Erledigte aus der Auswahl nehmen. Vorher wurde sie vollständig
+            // geleert, und nach "5 erledigt · 3 fehlgeschlagen" musste der Betreiber die
+            // drei von Hand wiederfinden. Bleibt etwas offen, bleibt auch der Modus an.
+            bulkSel.clear();
+            failedIds.forEach((id) => bulkSel.add(id));
+            bulkMode = failedIds.length > 0;
+            const fail = failedIds.length;
+            toast(fail ? ok + ' erledigt · ' + fail + ' fehlgeschlagen' + (firstErr ? ' (' + firstErr + ')' : '') : ok + ' erledigt', fail ? 'warn' : 'success');
+            render();
+        };
+        bar.append(
+            el('span', {}, count, ' ausgewählt'),
+            el('button', { class: 'btn btn-primary btn-sm', onclick: () => run('collected', 'Abholen') }, 'Als abgeholt markieren'),
+            el('button', { class: 'btn btn-ghost btn-sm', onclick: () => run('cancelled', 'Stornieren') }, 'Stornieren'),
+            el('button', { class: 'btn btn-ghost btn-sm', onclick: () => { bulkSel.clear(); bulkMode = false; render(); } }, 'Abbrechen'));
+        bar._sync = () => { count.textContent = String(bulkSel.size); bar.hidden = !bulkMode; };
+        return bar;
+    }
+
+    // Umhüllt eine Gefährt-Karte mit einer Auswahl-Checkbox, wenn der Bulk aktiv ist.
+    function bulkWrap(card, v, bar) {
+        if (!bulkMode) return card;
+        const cb = el('input', { type: 'checkbox', class: 'bulk-cb', 'aria-label': (v.label || v.category_name || 'Gefährt') + ' auswählen' });
+        cb.checked = bulkSel.has(v.id);
+        cb.addEventListener('change', () => { if (cb.checked) bulkSel.add(v.id); else bulkSel.delete(v.id); if (bar && bar._sync) bar._sync(); });
+        // Klicks auf die Checkbox dürfen nicht zur Detailseite springen.
+        cb.addEventListener('click', (e) => e.stopPropagation());
+        const wrap = el('div', { class: 'bulk-wrap' }, cb, card);
+        return wrap;
+    }
+
     routes.vehicles = async (page) => {
         await refreshLookups();
         const vehicles = await api.get('/vehicles');
+        // Die Leiste MUSS vor mountList entstehen: mountList zeichnet die Liste noch im
+        // selben Zug (refresh() laeuft synchron), und die Rueckrufe unten greifen auf
+        // bulkBarEl zu. Wurde sie erst danach erzeugt, blieb der Zaehler der Leiste bei
+        // "0 ausgewaehlt", und der Betreiber startete eine Massenaktion mit einer Zahl,
+        // die er auf dem Bildschirm nicht pruefen konnte.
+        const bulkBarEl = canManage() ? bulkBar() : null;
         mountList(page, {
-            title: 'Gefährte', emptyIcon: 'car', emptyText: 'Keine Gefährte in dieser Ansicht.',
+            stateKey: 'vehicles', // fester Schluessel, unabhaengig vom Anzeigetitel
+            title: 'Gefährte', emptyIcon: 'car', emptyText: 'Keine Gefährte in dieser Ansicht.', sourcePath: '/vehicles',
             onAdd: canManage() ? () => vehicleForm() : null,
             items: vehicles,
             searchText: (v) => norm([v.label, v.license_plate, v.category_name, v.person_name].join(' ')),
@@ -2016,23 +2472,69 @@
                 { label: 'Kosten absteigend', cmp: (a, b) => b.accrued_cost - a.accrued_cost },
             ],
             controls: (refresh, cs) => {
-                cs.status = ''; cs.person = ''; cs.showArchived = false;
+                // Nur VORbelegen, nicht zuruecksetzen: der Filterzustand ueberlebt ein
+                // render() (siehe mountList), und ihn hier blind zu leeren machte genau
+                // das wieder zunichte. Die Bedienelemente werden entsprechend aus cs
+                // vorbelegt, sonst zeigte die Leiste "Alle Status", waehrend gefiltert ist.
+                if (cs.status == null) cs.status = '';
+                if (cs.person == null) cs.person = '';
+                if (cs.showArchived == null) cs.showArchived = false;
+                // Einen Personenfilter, zu dem es keine Person mehr gibt, fallen lassen.
+                // Er ueberlebt jetzt die ganze Sitzung, waehrend state.persons bei jedem
+                // Aufbau neu geholt wird: wurde die Person geloescht oder anonymisiert
+                // (oder faellt sie aus der geladenen Seite), traegt KEINE Option mehr
+                // `selected`, der Browser zeigt die erste — "Alle Personen" —, und
+                // extraFilter filtert trotzdem weiter auf die alte id. Die Liste stand
+                // dann leer da unter einer Leiste, die "kein Filter" behauptete, und der
+                // naheliegende Ausweg half nicht: "Alle Personen" erneut zu waehlen loest
+                // kein change-Ereignis aus, weil es bereits ausgewaehlt DARGESTELLT wird.
+                if (cs.person && !state.persons.some((p) => String(p.id) === cs.person)) cs.person = '';
                 const stSel = el('select', { 'aria-label': 'Status filtern' }, el('option', { value: '' }, 'Alle Status'),
-                    ...['stored', 'reserved', 'collected', 'cancelled'].map((s) => el('option', { value: s }, STATUS_LABEL[s])));
+                    ...['stored', 'reserved', 'collected', 'cancelled'].map((s) => el('option', { value: s, selected: s === cs.status }, STATUS_LABEL[s])));
                 stSel.addEventListener('change', () => { cs.status = stSel.value; refresh(); });
                 const peSel = el('select', { 'aria-label': 'Person filtern' }, el('option', { value: '' }, 'Alle Personen'),
-                    ...state.persons.map((p) => el('option', { value: p.id }, personName(p))));
+                    ...state.persons.map((p) => el('option', { value: p.id, selected: String(p.id) === cs.person }, personName(p))));
                 peSel.addEventListener('change', () => { cs.person = peSel.value; refresh(); });
+                // Mehrfachauswahl (Hundert 54): schaltet die Checkbox-Hülle der Karten an.
+                const bulkBtn = canManage() ? el('button', { class: 'btn btn-ghost btn-sm' + (bulkMode ? ' active' : ''), 'aria-pressed': String(bulkMode) }, 'Mehrfachauswahl') : null;
+                // Nur die Liste neu zeichnen, nicht die ganze Seite — und dabei die
+                // Seitenzahl behalten (keepPage): das Umschalten der Mehrfachauswahl
+                // aendert die Darstellung, nicht die Menge, und warf den Betreiber
+                // sonst von Seite 4 zurueck auf Seite 1.
+                if (bulkBtn) bulkBtn.addEventListener('click', () => {
+                    bulkMode = !bulkMode;
+                    if (!bulkMode) bulkSel.clear();
+                    bulkBtn.classList.toggle('active', bulkMode);
+                    bulkBtn.setAttribute('aria-pressed', String(bulkMode));
+                    if (bulkBarEl) bulkBarEl._sync();
+                    refresh(true);
+                });
                 const arChk = el('input', { type: 'checkbox' });
+                arChk.checked = !!cs.showArchived;
                 arChk.addEventListener('change', () => { cs.showArchived = arChk.checked; refresh(); });
                 const arLabel = el('label', { class: 'toggle-inline' }, arChk, el('span', {}, 'Archiv'));
-                return [stSel, peSel, arLabel];
+                return [stSel, peSel, arLabel, bulkBtn];
             },
             // Hide archived (closed) vehicles unless the Archiv toggle is on.
             extraFilter: (v, cs) => (cs.showArchived || !v.archived) &&
                 (!cs.status || v.status === cs.status) && (!cs.person || String(v.person_id) === cs.person),
-            render: (v) => vehicleCard(v, { linkable: true }),
+            // Was der Filter ausblendet, faellt aus der Auswahl. bulkSel lebte als
+            // Modulzustand neben der Liste und wurde nie abgeglichen: wer auf Seite 1
+            // zwoelf Gefaehrte anhakte, weiterblaetterte und dann nach Person filterte,
+            // stornierte anschliessend elf Zeilen, die er nicht mehr sehen konnte.
+            onFiltered: (items) => {
+                if (!bulkSel.size) return;
+                const visible = new Set(items.map((v) => v.id));
+                let dropped = false;
+                bulkSel.forEach((id) => { if (!visible.has(id)) { bulkSel.delete(id); dropped = true; } });
+                if (dropped && bulkBarEl) bulkBarEl._sync();
+            },
+            render: (v) => bulkWrap(vehicleCard(v, { linkable: !bulkMode }), v, bulkBarEl),
         });
+        if (bulkBarEl) {
+            page.append(bulkBarEl);
+            bulkBarEl._sync();
+        }
     };
 
     // coverage summarises a vehicle's flat-rate state for display:
@@ -2086,7 +2588,7 @@
                 el('img', { src: '/api/planner-icons/' + ic.id + '?t=' + (ic.byte_size || 0), alt: ic.name }),
                 el('span', { title: ic.name }, ic.name),
                 el('button', { class: 'btn btn-ghost btn-sm iconedit', title: 'Umbenennen / Bild ersetzen', onclick: () => { editId = ic.id; editName = ic.name; render(); } }, '✎'),
-                el('button', { class: 'btn btn-ghost btn-sm icondel', title: 'Löschen', onclick: async () => { if (!await confirmDialog('Icon löschen?', `„${ic.name}" wird entfernt. Fahrzeuge, die es nutzen, fallen aufs Kategorie-Symbol zurück.`, 'Löschen')) return; try { await api.del('/planner-icons/' + ic.id); if (editId === ic.id) editId = null; await render(); } catch (e) { toast('Löschen fehlgeschlagen', 'error'); } } }, '✕'))));
+                el('button', { class: 'btn btn-ghost btn-sm icondel', title: 'Löschen', onclick: (e) => deleteWithUndo('Icon löschen?', `„${ic.name}" wird entfernt. Fahrzeuge, die es nutzen, fallen aufs Kategorie-Symbol zurück.`, () => api.del('/planner-icons/' + ic.id), () => { if (editId === ic.id) editId = null; render(); }, e.currentTarget.closest('.iconcell')) }, icon('close', 14)))));
             body.append(grid);
             // Built-in category icons (read-only): always available per vehicle under
             // „Planer-Symbol", not stored in the DB and therefore not editable/deletable.
@@ -2389,6 +2891,9 @@
     async function periodPayDialog(label, defAmt, current) {
         const mode = current ? current.mode : 'full';
         const amtVal = current && current.mode === 'partial' ? current.amount : (defAmt != null ? defAmt : '');
+        // BEWUSST OHNE save (Hundert UX-51): der Dialog ermittelt nur, WAS gebucht
+        // werden soll; gebucht wird beim Aufrufer. Es gibt hier nichts, das scheitern
+        // und den Dialog offen halten könnte.
         const data = await formModal({
             title: 'Zahlung ' + label,
             submitLabel: 'Speichern',
@@ -2835,18 +3340,20 @@
         catch (e) { toast(e.message, 'error'); render(); }
     }
     async function duplicateVehicle(v) {
-        const d = await formModal({
+        // save statt "sammeln, schliessen, absenden": scheitert der Aufruf, bleibt der
+        // Dialog samt eingegebenem Datum offen und zeigt den Grund an der Stelle an,
+        // an der man ihn beheben kann (Hundert UX-51).
+        let created = null;
+        await formModal({
             title: 'Erneut einstellen',
             submitLabel: 'Einstellen',
             fields: [{ name: 'start_date', label: 'Neues Einstelldatum', type: 'date', required: true, value: today(),
                 help: 'Typ, Kennzeichen, Preis und Fotos werden übernommen.' }],
+            save: async (d) => { created = await api.post('/vehicles/' + v.id + '/duplicate', { start_date: d.start_date }); },
         });
-        if (!d) return;
-        try {
-            const nv = await api.post('/vehicles/' + v.id + '/duplicate', { start_date: d.start_date });
-            toast('Erneut eingestellt', 'success');
-            navigate('vehicles/' + nv.id);
-        } catch (e) { toast(e.message, 'error'); }
+        if (!created) return;
+        toast('Erneut eingestellt', 'success');
+        navigate('vehicles/' + created.id);
     }
 
     async function vehicleForm(existing, presetPerson) {
@@ -2991,28 +3498,50 @@
         const photoCard = el('div', { class: 'card' });
         const ph = el('div', { class: 'page-head' }, el('h3', {}, 'Fotos'));
         if (canManage()) {
+            // Fortschrittsbalken (role=progressbar) neben den Knöpfen; sichtbar nur
+            // während eines Uploads.
+            const prog = el('span', { class: 'upl-progress', role: 'progressbar', 'aria-label': 'Foto-Upload', 'aria-valuemin': '0', 'aria-valuemax': '100', hidden: true }, el('i', {}));
             const fileInput = el('input', { type: 'file', accept: 'image/jpeg,image/png', style: 'display:none' });
-            fileInput.addEventListener('change', () => uploadPhoto(id, fileInput.files[0]));
+            fileInput.addEventListener('change', () => uploadPhoto(id, fileInput.files[0], prog));
             // Camera capture: on mobile the `capture` hint opens the rear camera
             // directly; on desktop it falls back to the normal file picker. Keep the
             // JPEG/PNG restriction the backend enforces (avoids HEIC/WEBP rejects).
             const camInput = el('input', { type: 'file', accept: 'image/jpeg,image/png', capture: 'environment', style: 'display:none' });
-            camInput.addEventListener('change', () => uploadPhoto(id, camInput.files[0]));
+            camInput.addEventListener('change', () => uploadPhoto(id, camInput.files[0], prog));
             ph.append(
                 el('button', { class: 'btn-sect', onclick: () => fileInput.click() }, '+ Foto'),
                 el('button', { class: 'btn-sect', title: 'Mit Kamera aufnehmen', onclick: () => camInput.click() }, icon('camera'), ' Kamera'),
-                fileInput, camInput);
+                prog, fileInput, camInput);
         }
         photoCard.append(ph);
         if (!photos.length) photoCard.append(el('p', { class: 'muted' }, 'Keine Fotos.'));
         else {
             const grid = el('div', { class: 'photo-grid' });
-            for (const p of photos) {
+            // Reihenfolge + Titelbild (Hundert 58): ‹/› tauschen mit dem Nachbarn,
+            // ★ macht zum Titelbild (Position 0 — der Planer zeigt genau dieses).
+            // Der Client schickt immer die VOLLSTÄNDIGE id-Liste; der Server wendet
+            // sie in einer Transaktion an.
+            const reorder = async (from, to) => {
+                const ids = photos.map((x) => x.id);
+                const [moved] = ids.splice(from, 1);
+                ids.splice(to, 0, moved);
+                try { await api.put('/vehicles/' + id + '/photos/order', { ids }); render(); }
+                catch (e) { toast(e.message, 'error'); }
+            };
+            photos.forEach((p, i) => {
                 const img = el('img', { src: '/api/photos/' + p.id, alt: esc(p.filename), loading: 'lazy', onclick: () => lightbox(p.id) });
-                const thumb = el('div', { class: 'photo-thumb' }, img);
-                if (canManage()) thumb.append(el('button', { class: 'del', title: (p.filename || 'Foto') + ' löschen', 'aria-label': (p.filename || 'Foto') + ' löschen', onclick: () => delPhoto(p, thumb) }, icon('close', 12)));
+                const thumb = el('div', { class: 'photo-thumb' + (i === 0 ? ' is-title' : '') }, img);
+                if (i === 0) thumb.append(el('span', { class: 'title-badge', title: 'Titelbild — erscheint im Garagenplaner' }, '★'));
+                if (canManage()) {
+                    thumb.append(el('button', { class: 'del', title: (p.filename || 'Foto') + ' löschen', 'aria-label': (p.filename || 'Foto') + ' löschen', onclick: () => delPhoto(p, thumb) }, icon('close', 12)));
+                    const ord = el('div', { class: 'photo-order' });
+                    if (i > 0) ord.append(el('button', { class: 'ord', title: 'Nach vorn', 'aria-label': 'Foto nach vorn schieben', onclick: () => reorder(i, i - 1) }, '‹'));
+                    if (i > 0) ord.append(el('button', { class: 'ord', title: 'Als Titelbild', 'aria-label': 'Als Titelbild festlegen', onclick: () => reorder(i, 0) }, '★'));
+                    if (i < photos.length - 1) ord.append(el('button', { class: 'ord', title: 'Nach hinten', 'aria-label': 'Foto nach hinten schieben', onclick: () => reorder(i, i + 1) }, '›'));
+                    thumb.append(ord);
+                }
                 grid.append(thumb);
-            }
+            });
             photoCard.append(grid);
         }
         page.append(photoCard);
@@ -3036,7 +3565,12 @@
                             + (ho.created_by ? ' · ' + esc(ho.created_by) : ''))),
                     el('div', { class: 'card-actions' },
                         el('a', { class: 'btn btn-ghost btn-sm', href: '/api/handovers/' + ho.id + '/pdf', target: '_blank', rel: 'noopener' }, icon('receipt', 14), ' PDF'),
-                        canManage() ? el('button', { class: 'btn btn-ghost btn-sm', title: 'Protokoll löschen', 'aria-label': 'Protokoll löschen', onclick: (e) => delHandover(ho, e.currentTarget.closest('.pay-row')) }, icon('trash', 14)) : null));
+                        // Nur Admins: das Löschen eines Übergabeprotokolls ist seit der
+                        // Unveränderlichkeit (Migration 051) admin-only. Mit canManage()
+                        // bekam ein Bearbeiter den Knopf angeboten, das Löschen wurde
+                        // optimistisch angezeigt — und schlug 4,5 Sekunden später mit 403
+                        // fehl, wonach die Zeile wieder auftauchte.
+                        isAdmin() ? el('button', { class: 'btn btn-ghost btn-sm', title: 'Protokoll löschen', 'aria-label': 'Protokoll löschen', onclick: (e) => delHandover(ho, e.currentTarget.closest('.pay-row')) }, icon('trash', 14)) : null));
                 if (ho.notes) row.querySelector('.pay-main').append(el('div', { class: 'inv-bills' }, esc(ho.notes)));
                 hoCard.append(row);
             });
@@ -3053,6 +3587,26 @@
                     el('div', { class: 't-time' }, fmtDateTime(h.created_at) + (h.changed_by ? ' · ' + esc(h.changed_by) : ''))));
             }
             hc.append(ul); page.append(hc);
+        }
+
+        // Anhänge (Hundert 57) — z. B. der Typenschein-Scan direkt beim Gefährt.
+        page.append(attachmentsCard('/vehicles/' + id));
+
+        // Stellplatz-Verlauf (Hundert 79): wo dieses Gefährt stand, mit Zeiträumen —
+        // gespeist vom Belegungs-Trigger, der jeden Umplatzierungsweg sieht.
+        // Nachgeladen, damit die Seite nicht auf die Historie wartet.
+        {
+            const shCard = el('div', { class: 'card' }, el('h3', {}, 'Stellplatz-Verlauf'));
+            page.append(shCard);
+            api.get('/vehicles/' + id + '/spot-history').then((entries) => {
+                if (!entries || !entries.length) { shCard.append(el('p', { class: 'muted' }, 'Noch nie platziert.')); return; }
+                const ul = el('ul', { class: 'timeline' });
+                entries.forEach((e2) => ul.append(el('li', {},
+                    el('div', {}, esc(e2.spot_label || ('Platz #' + e2.spot_id))),
+                    el('div', { class: 't-time' }, new Date(e2.started_at).toLocaleDateString('de-DE')
+                        + ' – ' + (e2.ended_at ? new Date(e2.ended_at).toLocaleDateString('de-DE') : 'heute')))));
+                shCard.append(ul);
+            }).catch(() => shCard.append(el('p', { class: 'muted' }, 'Verlauf konnte nicht geladen werden.')));
         }
     };
 
@@ -3079,19 +3633,75 @@
             render();
         } catch (e) { toast(e.message, 'error'); render(); } // roll back the optimistic slider on a rejected write
     }
-    async function uploadPhoto(vehicleId, file) {
+    // Client-seitiges Verkleinern vor dem Hochladen (Hundert 50): ein 12-MP-Handyfoto
+    // misst 4–8 MB und läuft am Land gegen den 8-MB-Deckel und die Geduld. 2000 px
+    // längste Kante reichen für Zustandsfotos vollauf; der Server kodiert ohnehin neu
+    // (Metadaten weg), Qualität entscheidet also die kleinere der beiden Stufen.
+    // PNG wird dabei zu JPEG: Fahrzeugfotos sind Fotos, keine Screenshots.
+    // Schlägt das Dekodieren fehl (exotische Datei), geht das ORIGINAL hoch — der
+    // Server bleibt der Wächter, das Verkleinern ist nur Beschleunigung.
+    async function downscalePhoto(file, maxDim = 2000, quality = 0.85) {
+        if (!/^image\/(jpeg|png)$/.test(file.type)) return file;
+        try {
+            const bmp = await createImageBitmap(file);
+            const scale = Math.min(1, maxDim / Math.max(bmp.width, bmp.height));
+            if (scale >= 1 && file.size <= 1_500_000) { bmp.close(); return file; }
+            const w = Math.max(1, Math.round(bmp.width * scale)), h = Math.max(1, Math.round(bmp.height * scale));
+            const canvas = document.createElement('canvas');
+            canvas.width = w; canvas.height = h;
+            canvas.getContext('2d').drawImage(bmp, 0, 0, w, h);
+            bmp.close();
+            const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', quality));
+            if (!blob || blob.size >= file.size) return file; // kleiner ist der einzige Zweck
+            return new File([blob], (file.name || 'foto').replace(/\.png$/i, '.jpg'), { type: 'image/jpeg' });
+        } catch (e) { return file; }
+    }
+
+    // XHR statt fetch: nur XMLHttpRequest liefert Upload-FORTSCHRITT (Hundert 50) —
+    // auf einer Hof-Verbindung ist der Unterschied zwischen "lädt seit 20 Sekunden"
+    // und "78 %" der Unterschied zwischen Abbruch und Geduld.
+    function uploadWithProgress(path, fd, onProgress) {
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api' + path);
+            xhr.setRequestHeader('X-CSRF-Token', getCookie('parkrr_csrf'));
+            xhr.upload.addEventListener('progress', (e) => { if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total); });
+            xhr.addEventListener('load', () => {
+                let data = null; try { data = JSON.parse(xhr.responseText); } catch (e) { /* leer */ }
+                if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+                else reject(new Error((data && data.error) || 'HTTP ' + xhr.status));
+            });
+            xhr.addEventListener('error', () => reject(new Error('Netzwerkfehler beim Hochladen')));
+            xhr.send(fd);
+        });
+    }
+
+    async function uploadPhoto(vehicleId, file, progressEl) {
         if (!file) return;
-        const fd = new FormData(); fd.append('photo', file);
-        try { await api.upload('/vehicles/' + vehicleId + '/photos', fd); toast('Foto hochgeladen', 'success'); render(); }
-        catch (e) { toast(e.message, 'error'); }
+        const bar = progressEl && progressEl.querySelector('i');
+        const show = (frac, label) => {
+            if (!progressEl) return;
+            progressEl.hidden = false;
+            if (bar) bar.style.width = Math.round(frac * 100) + '%';
+            progressEl.setAttribute('aria-valuenow', String(Math.round(frac * 100)));
+            if (label) progressEl.title = label;
+        };
+        try {
+            show(0, 'Verkleinere …');
+            const slim = await downscalePhoto(file);
+            const fd = new FormData(); fd.append('photo', slim, slim.name || file.name);
+            await uploadWithProgress('/vehicles/' + vehicleId + '/photos', fd, (f) => show(f));
+            toast('Foto hochgeladen', 'success'); render();
+        } catch (e) { toast(e.message, 'error'); if (progressEl) progressEl.hidden = true; }
     }
     function delPhoto(p, node) {
         deleteWithUndo('Foto löschen?', 'Das Foto wird dauerhaft entfernt — das Original lässt sich nicht wiederherstellen.', () => api.del('/photos/' + p.id), () => render(), node);
     }
-    async function delHandover(ho, node) {
-        if (!await confirmDialog('Protokoll löschen?', 'Das Übergabeprotokoll wird dauerhaft entfernt.', 'Löschen')) return;
-        try { await api.del('/handovers/' + ho.id); if (node) node.remove(); toast('Protokoll gelöscht', 'success'); }
-        catch (e) { toast(e.message || 'Löschen fehlgeschlagen', 'error'); }
+    function delHandover(ho, node) {
+        // deleteWithUndo (Hundert UX-52): ein unterschriebener Beleg ist das Letzte,
+        // das ein Fehlklick unwiederbringlich entfernen sollte.
+        deleteWithUndo('Protokoll löschen?', 'Das Übergabeprotokoll wird dauerhaft entfernt.',
+            () => api.del('/handovers/' + ho.id), () => render(), node);
     }
     // Übergabeprotokoll form: direction + condition notes + signer + a drawn signature.
     async function handoverForm(vehicleId) {
@@ -3148,7 +3758,8 @@
         await refreshLookups();
         const charges = await api.get('/charges');
         mountList(page, {
-            title: 'Zusatzkosten', emptyIcon: '€', emptyText: 'Keine Zusatzkosten erfasst.',
+            stateKey: 'charges', // fester Schluessel, unabhaengig vom Anzeigetitel
+            title: 'Zusatzkosten', emptyIcon: 'receipt', emptyText: 'Keine Zusatzkosten erfasst.', sourcePath: '/charges',
             onAdd: canBill() ? () => chargeForm() : null,
             items: charges,
             searchText: (c) => norm([c.person_name, c.description].join(' ')),
@@ -3493,12 +4104,22 @@
         const syncId = 'cat-sync-' + (c ? c.id : 'new');
         syncI.id = syncId;
 
+        // Standardmaße (Hundert 80): erste Näherung für ungemessene Gefährte dieser
+        // Kategorie im Garagenplaner. Leer = keine Vorgabe.
+        const dimI = (val, label, max) => el('input', { type: 'number', step: '0.01', min: 0, max: String(max), value: val != null ? val : '', 'aria-label': label, placeholder: '–' });
+        const dLenI = dimI(c && c.default_length_m, 'Standardlänge in Metern', 60);
+        const dWidI = dimI(c && c.default_width_m, 'Standardbreite in Metern', 15);
+        const dHgtI = dimI(c && c.default_height_m, 'Standardhöhe in Metern', 15);
+        const dWgtI = dimI(c && c.default_weight_t, 'Standardgewicht in Tonnen', 200);
+        const optNum = (i) => { const v = i.value.trim(); if (v === '') return null; const n = Number(v.replace(',', '.')); return Number.isFinite(n) && n > 0 ? n : null; };
+
         const saveBtn = el('button', { class: 'btn btn-primary' }, icon('check', 15), ' Speichern');
         saveBtn.addEventListener('click', async () => {
             const name = nameI.value.trim();
             if (!name) { toast('Name ist erforderlich', 'error'); nameI.focus(); return; }
             saveBtn.disabled = true;
-            const payload = { name, default_monthly_cost: Number(monI.value) || 0, default_yearly_cost: Number(yearI.value) || 0, rates_synced: syncI.checked };
+            const payload = { name, default_monthly_cost: Number(monI.value) || 0, default_yearly_cost: Number(yearI.value) || 0, rates_synced: syncI.checked,
+                default_length_m: optNum(dLenI), default_width_m: optNum(dWidI), default_height_m: optNum(dHgtI), default_weight_t: optNum(dWgtI) };
             try {
                 if (c) await api.put('/categories/' + c.id, payload); else await api.post('/categories', payload);
                 toast('Tarif gespeichert', 'success'); render();
@@ -3512,6 +4133,14 @@
             el('div', { class: 'field-row', style: 'margin-top:.5rem' },
                 el('div', {}, el('label', {}, 'Preis / Monat (€)'), monI),
                 el('div', {}, el('label', {}, 'Preis / Jahr (€)'), yearI)),
+            el('div', { class: 'card-meta', style: 'margin-top:.6rem' },
+                'Standardmaße für den Garagenplaner — gelten für Gefährte dieses Tarifs ohne eigene Messung. Leer = keine Vorgabe.'),
+            el('div', { class: 'field-row' },
+                el('div', {}, el('label', {}, 'Länge (m)'), dLenI),
+                el('div', {}, el('label', {}, 'Breite (m)'), dWidI)),
+            el('div', { class: 'field-row' },
+                el('div', {}, el('label', {}, 'Höhe (m)'), dHgtI),
+                el('div', {}, el('label', {}, 'Gewicht (t)'), dWgtI)),
             saveRow);
         if (c) {
             inner.append(el('div', { class: 'cfg-actions2' }, c.archived
@@ -3587,6 +4216,7 @@
         if (!isAdmin()) { page.innerHTML = ''; page.append(emptyState('settings', 'Nur für Administratoren.')); return; }
         const users = await api.get('/users');
         mountList(page, {
+            stateKey: 'users', // fester Schluessel, unabhaengig vom Anzeigetitel
             title: 'Benutzer', emptyIcon: 'users', emptyText: 'Keine Benutzer.',
             onAdd: () => userForm(), items: users,
             searchText: (u) => norm([u.username, u.email, ROLE_LABEL[u.role]].join(' ')),
@@ -3720,9 +4350,14 @@
     const CRON_MODES = [['daily', 'Täglich'], ['hours', 'Alle N Std.'], ['weekly', 'Wöchentlich'], ['cron', 'Cron']];
     // A per-target schedule editor (Volume or S3): mode tabs + fields, a live cron
     // string, a plain-language description, the next runs, and a retention count.
-    function scheduleColumn(label, iconKey, expr, keep, configured, note) {
+    function scheduleColumn(label, iconKey, expr, keep, keepDays, configured, note) {
         const f = cronToForm(expr);
         const keepIn = el('input', { type: 'number', min: '0', step: '1', value: String(keep ?? 0), 'aria-label': 'Behalten' });
+        // Die Anzahl allein sagt nichts über den abgedeckten ZEITRAUM: wer "die
+        // neuesten 7" behält und an einem Nachmittag sieben Läufe anstößt, hat danach
+        // sieben Sicherungen von heute und keine von gestern. Diese Grenze wirkt nur
+        // in eine Richtung — sie kann Aufbewahrung verlängern, nie verkürzen.
+        const daysIn = el('input', { type: 'number', min: '0', max: '3650', step: '1', value: String(keepDays ?? 0), 'aria-label': 'Mindestalter in Tagen' });
         const controls = el('div', { class: 'sched-controls' });
         const cronOut = el('code', { class: 'sched-cron' });
         const descOut = el('div', { class: 'card-meta' });
@@ -3786,7 +4421,8 @@
 
         bodyWrap.append(tabsWrap, controls,
             el('div', { class: 'sched-preview' }, cronOut, descOut, runsOut),
-            el('div', { class: 'sched-keep' }, el('label', { class: 'sched-lbl' }, 'Behalten (Anzahl · 0 = alle)'), keepIn));
+            el('div', { class: 'sched-keep' }, el('label', { class: 'sched-lbl' }, 'Behalten (Anzahl · 0 = alle)'), keepIn),
+            el('div', { class: 'sched-keep' }, el('label', { class: 'sched-lbl' }, 'Mindestens aufbewahren (Tage · 0 = ohne)'), daysIn));
         renderTabs(); renderControls(); refresh(); applyOn();
 
         const col = el('div', { class: 'sched-col' + (configured ? '' : ' is-off') },
@@ -3795,13 +4431,20 @@
                 el('label', { class: 'sched-switch' }, toggle, el('span', {}, 'Automatisch'))));
         if (!configured && note) col.append(el('div', { class: 'card-meta', style: 'margin:.2rem 0 .4rem' }, note));
         col.append(bodyWrap);
-        return { node: col, read: () => ({ cron: formToCron(f), keep: Math.max(0, parseInt(keepIn.value, 10) || 0) }) };
+        return {
+            node: col,
+            read: () => ({
+                cron: formToCron(f),
+                keep: Math.max(0, parseInt(keepIn.value, 10) || 0),
+                keepDays: Math.min(3650, Math.max(0, parseInt(daysIn.value, 10) || 0)),
+            }),
+        };
     }
     function scheduleCard(st) {
         const s = st.settings || {};
-        const volCol = scheduleColumn('Volume', 'archive', s.volume_cron || '', s.volume_keep ?? 14, !!st.scheduled,
+        const volCol = scheduleColumn('Volume', 'archive', s.volume_cron || '', s.volume_keep ?? 14, s.volume_keep_days ?? 0, !!st.scheduled,
             'Kein Volume gemountet — setze PARKRR_BACKUP_DIR. Der Zeitplan lässt sich trotzdem speichern.');
-        const s3Col = scheduleColumn('S3', 'box', s.s3_cron || '', s.s3_keep ?? 0, !!st.s3,
+        const s3Col = scheduleColumn('S3', 'box', s.s3_cron || '', s.s3_keep ?? 0, s.s3_keep_days ?? 0, !!st.s3,
             'Kein S3 konfiguriert — setze PARKRR_S3_* (Env). Der Zeitplan lässt sich trotzdem speichern.');
         const saveBtn = el('button', { class: 'btn btn-primary' }, 'Zeitplan speichern');
         const runBtn = el('button', { class: 'btn btn-ghost' }, 'Jetzt sichern');
@@ -3817,7 +4460,10 @@
     async function saveSchedule(vol, s3, btn) {
         const o = btn.textContent; btn.disabled = true; btn.textContent = 'Speichere …';
         try {
-            await api.post('/backup/schedule', { volume_cron: vol.cron, volume_keep: vol.keep, s3_cron: s3.cron, s3_keep: s3.keep });
+            await api.post('/backup/schedule', {
+                volume_cron: vol.cron, volume_keep: vol.keep, volume_keep_days: vol.keepDays,
+                s3_cron: s3.cron, s3_keep: s3.keep, s3_keep_days: s3.keepDays,
+            });
             toast('Zeitplan gespeichert', 'success');
         } catch (e) { toast(e.message, 'error'); }
         btn.disabled = false; btn.textContent = o;
@@ -3930,7 +4576,7 @@
             chipWrap.append(el('span', { class: 'bk-filechip' },
                 esc(f.name) + ' · ' + fmtBytes(f.size),
                 el('button', { type: 'button', 'aria-label': 'Auswahl entfernen',
-                    onclick: () => { fileIn.value = ''; fileIn.dispatchEvent(new Event('change')); } }, '✕')));
+                    onclick: () => { fileIn.value = ''; fileIn.dispatchEvent(new Event('change')); } }, icon('close', 14))));
         };
         drop.addEventListener('click', () => fileIn.click());
         drop.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileIn.click(); } });
@@ -4015,27 +4661,32 @@
         } catch (e) { toast(e.message, 'error'); btn.disabled = false; btn.textContent = o; }
     }
     async function restoreFromS3(name) {
-        const data = await formModal({
+        // Das schmerzhafteste Formular der Anwendung, um es zweimal auszufuellen: ein
+        // langer Backup-Schluessel plus das Wort RESTORE. Deshalb ueber save — ein
+        // Tippfehler oder ein abgelehnter Schluessel laesst beides stehen (Hundert UX-51).
+        let done = false;
+        await formModal({
             title: 'Aus S3 wiederherstellen',
             submitLabel: 'Wiederherstellen',
             fields: [
                 { name: 'key', label: 'Backup-Schlüssel', type: 'password', required: true },
                 { name: 'confirm', label: 'Zum Bestätigen RESTORE eingeben', required: true, help: 'Überschreibt die gesamte Datenbank — atomar (rollt bei Fehler zurück).' },
             ],
+            save: async (data) => {
+                if (data.confirm !== 'RESTORE') throw new Error('Zum Bestätigen RESTORE eingeben');
+                const res = await fetch('/api/backup/restore-s3', {
+                    method: 'POST',
+                    headers: { 'X-CSRF-Token': getCookie('parkrr_csrf'), 'Content-Type': 'application/x-www-form-urlencoded' },
+                    credentials: 'same-origin',
+                    body: new URLSearchParams({ name, key: data.key, confirm: 'RESTORE' }).toString(),
+                });
+                if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Restore fehlgeschlagen'); }
+                done = true;
+            },
         });
-        if (!data) return;
-        if (data.confirm !== 'RESTORE') { toast('Zum Bestätigen RESTORE eingeben', 'error'); return; }
-        try {
-            const res = await fetch('/api/backup/restore-s3', {
-                method: 'POST',
-                headers: { 'X-CSRF-Token': getCookie('parkrr_csrf'), 'Content-Type': 'application/x-www-form-urlencoded' },
-                credentials: 'same-origin',
-                body: new URLSearchParams({ name, key: data.key, confirm: 'RESTORE' }).toString(),
-            });
-            if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Restore fehlgeschlagen'); }
-            toast('Wiederhergestellt — bitte neu anmelden', 'success');
-            setTimeout(() => logout(), 1800);
-        } catch (e) { toast(e.message, 'error'); }
+        if (!done) return;
+        toast('Wiederhergestellt — bitte neu anmelden', 'success');
+        setTimeout(() => logout(), 1800);
     }
     // Expandable user card: name + role/2FA badges in the header; the panel holds a
     // quick password reset, a full edit, and a clearly separated "Gefahrenzone" for
@@ -4051,7 +4702,10 @@
                 // phrasing content, so a heading here would be invalid HTML.
                 el('span', { class: 'u-name' }, esc(u.username), ' ',
                     el('span', { class: 'badge badge-role' }, ROLE_LABEL[u.role] || u.role),
-                    u.totp_enabled ? el('span', { class: 'badge badge-stored badge-ic', title: '2FA aktiv', 'aria-label': '2FA aktiv' }, icon('shield', 12), '2FA') : null),
+                    u.totp_enabled ? el('span', { class: 'badge badge-stored badge-ic', title: '2FA aktiv', 'aria-label': '2FA aktiv' }, icon('shield', 12), '2FA') : null,
+                    // Gesperrte Konten müssen in der Liste sofort erkennbar sein — sonst
+                    // sucht man den fehlenden Zugang beim Passwort statt beim Schalter.
+                    u.disabled ? el('span', { class: 'badge badge-cancelled badge-ic', title: 'Zugang gesperrt', 'aria-label': 'Zugang gesperrt' }, icon('power', 12), 'Gesperrt') : null),
                 el('span', { class: 'u-sub' }, esc(u.email) || 'keine E-Mail')),
             el('span', { class: 'tf-chev', 'aria-hidden': 'true' }, icon('chevron', 18)));
 
@@ -4070,6 +4724,10 @@
 
         const dz = el('div', { class: 'u-dz-actions' });
         if (u.totp_enabled) dz.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => resetUserMfa(u) }, icon('unlock', 15), ' 2FA zurücksetzen'));
+        // Sperren steht VOR dem Löschen: es ist die reversible Variante desselben
+        // Ziels und erhält im Gegensatz zum Löschen die Urheberschaft auf Belegen.
+        if (!isSelf) dz.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => toggleUserDisabled(u) },
+            icon('power', 15), u.disabled ? ' Zugang entsperren' : ' Zugang sperren'));
         if (!isSelf) dz.append(el('button', { class: 'btn btn-danger btn-sm', onclick: (e) => delUser(u, e.currentTarget.closest('.card')) }, icon('trash', 15), ' Benutzer löschen'));
         const hasDanger = u.totp_enabled || !isSelf;
 
@@ -4090,6 +4748,17 @@
             panel.inert = open;
         });
         return card;
+    }
+    // Sperren statt Löschen: ein Löschen nullt die Urheberschaft des Kontos auf
+    // Rechnungen, Zahlungen, Stornos und Übergabeprotokollen (API-31).
+    async function toggleUserDisabled(u) {
+        const off = !u.disabled;
+        if (off && !await confirmDialog('Zugang sperren?', `„${u.username}" kann sich danach nicht mehr anmelden; laufende Sitzungen enden sofort. Das Konto und seine Spur im Änderungsprotokoll bleiben erhalten.`, 'Sperren')) return;
+        try {
+            await api.put('/users/' + u.id, { username: u.username, email: u.email, role: u.role, disabled: off });
+            toast(off ? 'Zugang gesperrt' : 'Zugang entsperrt', 'success');
+            render();
+        } catch (e) { toast(e.message, 'error'); }
     }
     async function resetUserMfa(u) {
         if (!await confirmDialog('2FA zurücksetzen?', `Für „${u.username}" wird die Zwei-Faktor-Authentifizierung deaktiviert und alle Recovery-Codes gelöscht. Der Benutzer kann sich dann ohne 2FA anmelden und es neu einrichten.`, 'Zurücksetzen')) return;
@@ -4145,10 +4814,46 @@
         if (a.changes && Object.keys(a.changes).length) li.append(auditChangesEl(a.changes));
         return li;
     }
+    // E-Mail-Versandprotokoll (Hundert 86): "Hat der Kunde die Mahnung bekommen?"
+    // hat eine Anlaufstelle — jeder Versuch, Erfolg wie Fehlschlag, mit Grund.
+    async function showMailLog() {
+        let entries = [];
+        try { entries = await api.get('/mail-log'); } catch (e) { toast(e.message, 'error'); return; }
+        contentModal('E-Mail-Versand', (body, close) => {
+            if (!entries.length) { body.append(el('p', { class: 'muted' }, 'Noch kein Versand protokolliert.')); return; }
+            // Sagen, wenn es mehr gibt als hier steht. Der Server liefert ohne Angabe die
+            // neuesten 200 (pageParams in mail_log.go), dieses Fenster hat aber weder
+            // Seitenblaetterung noch Hinweis — und das Betreiberhandbuch verspricht
+            // "jeder Versuch mit SMTP-Diagnose". Ab Eintrag 201 stimmte das nicht mehr,
+            // und zwar unsichtbar: wer den aeltesten Fehlversuch suchte, sah schlicht
+            // ein Ende. Die Zahl liegt bereits vor — der Handler schickt X-Total-Count,
+            // api.get legt sie in totalCounts ab; sie wurde nur nie angezeigt. Gleiche
+            // Aussageform wie die Kuerzungszeile der Listen (mountList).
+            const total = totalFor('/mail-log');
+            if (Number.isFinite(total) && total > entries.length) {
+                body.append(el('p', { class: 'muted' },
+                    'Es werden die neuesten ' + entries.length + ' von ' + total + ' Versandversuchen angezeigt.'));
+            }
+            entries.forEach((m) => {
+                body.append(el('div', { class: 'card pay-row' },
+                    el('div', { class: 'pay-main' },
+                        el('div', { class: 'pay-method' }, esc(m.subject), ' ',
+                            m.ok ? el('span', { class: 'badge badge-stored' }, 'gesendet')
+                                : el('span', { class: 'badge badge-cancelled', title: m.error || '' }, 'fehlgeschlagen')),
+                        el('div', { class: 'pay-date' }, new Date(m.sent_at).toLocaleString('de-DE') + ' · an ' + esc(m.recipients)
+                            + (m.error ? ' · ' + esc(m.error) : ''))))); 
+            });
+        });
+    }
+
     routes.audit = async (page) => {
         if (!isAdmin()) { page.innerHTML = ''; page.append(emptyState('settings', 'Nur für Administratoren.')); return; }
         page.innerHTML = '';
-        page.append(el('div', { class: 'detail-head' }, el('button', { class: 'back-btn', onclick: () => navigate('dashboard') }, '‹'), el('h2', { style: 'margin:0' }, 'Audit-Log')));
+        page.append(el('div', { class: 'detail-head' }, el('button', { class: 'back-btn', onclick: () => navigate('dashboard') }, '‹'), el('h2', { style: 'margin:0' }, 'Audit-Log'),
+            // Revisionssicherer Export (Hundert 43): JSONL mit SHA-256-Hashkette —
+            // jede Zeile versiegelt alle vorigen, prüfbar ohne Parkrr.
+            el('a', { class: 'btn btn-ghost btn-sm', href: '/api/audit/export', download: '', title: 'Vollständiger Export mit SHA-256-Hashkette (JSONL)' }, icon('download', 15), ' Revisionsexport'),
+            el('button', { class: 'btn btn-ghost btn-sm', onclick: () => showMailLog(), title: 'Jeder E-Mail-Versuch mit Empfänger, Betreff und Ausgang' }, icon('mail', 15), ' E-Mail-Versand')));
 
         const q = { text: '', action: '', entity: '', from: '', to: '', offset: 0, limit: 50 };
         const search = el('input', { type: 'search', placeholder: 'Suchen (Benutzer, Beschreibung)…', 'aria-label': 'Audit-Log durchsuchen' });
@@ -4175,7 +4880,7 @@
             // sonst fällt er mit dem zerstörten Knopf auf <body> zurück.
             const mk = (label, clear, focusEl) => el('span', { class: 'audit-chip' }, label,
                 el('button', { type: 'button', 'aria-label': 'Filter ' + label + ' entfernen',
-                    onclick: () => { clear(); focusEl.focus(); } }, '✕'));
+                    onclick: () => { clear(); focusEl.focus(); } }, icon('close', 14)));
             if (q.text) chipsBar.append(mk('„' + q.text + '“', () => { search.value = ''; q.text = ''; apply(); }, search));
             if (q.action) chipsBar.append(mk('Aktion: ' + (AUDIT_ACTIONS[q.action] || q.action), () => { actSel.value = ''; q.action = ''; apply(); }, actSel));
             if (q.entity) chipsBar.append(mk('Objekt: ' + (AUDIT_ENTITIES[q.entity] || q.entity), () => { entSel.value = ''; q.entity = ''; apply(); }, entSel));
@@ -4213,9 +4918,16 @@
             if (q.entity) p.set('entity', q.entity);
             if (q.from) p.set('from', q.from);
             if (q.to) p.set('to', q.to);
-            let entries = [];
-            try { entries = await api.get('/audit?' + p.toString()); } catch { /* ignore */ }
+            let entries = [], loadErr = null;
+            moreBtn.disabled = true;
+            try { entries = await api.get('/audit?' + p.toString()); }
+            catch (e) { loadErr = e; }
+            finally { moreBtn.disabled = false; }
             if (seq !== loadSeq) return;
+            // Ein Netz-/Serverfehler ist von "keine weiteren Einträge" unterscheidbar:
+            // Fehler melden und den Knopf sichtbar lassen, damit ein Retry möglich
+            // bleibt (Hundert UX-57). Vorher verschwand der Knopf kommentarlos.
+            if (loadErr) { toast('Audit-Log laden fehlgeschlagen: ' + (loadErr.message || loadErr), 'error'); return; }
             const now = new Date();
             const yest = new Date(now); yest.setDate(now.getDate() - 1);
             const heute = dayKey(now), gestern = dayKey(yest);
@@ -4460,17 +5172,22 @@
         });
     }
     async function regenerateRecoveryCodes() {
-        const data = await formModal({
+        // Ein falsches Passwort ist hier der WAHRSCHEINLICHSTE Ausgang. Mit save bleibt
+        // der Dialog stehen und meldet es im Formular, statt ihn zu schliessen und den
+        // Nutzer von vorne anfangen zu lassen (Hundert UX-51).
+        let codes = null;
+        await formModal({
             title: 'Recovery-Codes neu generieren', submitLabel: 'Generieren',
             danger: 'Alle bisherigen Recovery-Codes werden sofort ungültig.',
             fields: [{ name: 'password', label: 'Passwort zur Bestätigung', type: 'password', required: true }],
+            save: async (data) => {
+                const res = await api.post('/auth/2fa/backup-codes/regenerate', { password: data.password });
+                codes = res.backup_codes || [];
+            },
         });
-        if (!data) return;
-        try {
-            const res = await api.post('/auth/2fa/backup-codes/regenerate', { password: data.password });
-            toast('Neue Recovery-Codes erstellt', 'success');
-            showBackupCodes(res.backup_codes || []);
-        } catch (e) { toast(e.message, 'error'); }
+        if (!codes) return;
+        toast('Neue Recovery-Codes erstellt', 'success');
+        showBackupCodes(codes);
     }
     async function revokeSession(handle) {
         try { await api.del('/auth/sessions/' + handle); toast('Sitzung abgemeldet', 'success'); render(); }
@@ -4707,6 +5424,83 @@
     }
 
     // ---- garages list ----
+    // Kalenderansicht (Hundert 55): die Termine des Betriebs in einem Monat —
+    // Abholungen (Enddatum), Reservierungsbeginne, faellige Rechnungen und
+    // Abholwuensche aus dem Portal. Alles aus vorhandenen APIs; der Kalender ist
+    // eine LESART, keine neue Datenquelle.
+    let calMonth = null; // 'YYYY-MM'; null = aktueller Monat
+    routes.calendar = async (page) => {
+        const now = new Date();
+        const [y, m] = calMonth ? calMonth.split('-').map(Number) : [now.getFullYear(), now.getMonth() + 1];
+        const first = new Date(y, m - 1, 1);
+        const label = first.toLocaleDateString('de-DE', { month: 'long', year: 'numeric' });
+
+        page.innerHTML = '';
+        const nav = (d) => { const t = new Date(y, m - 1 + d, 1); calMonth = t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0'); render(); };
+        page.append(el('div', { class: 'detail-head' },
+            el('button', { class: 'back-btn', onclick: () => navigate('dashboard'), 'aria-label': 'Zurück' }, '‹'),
+            el('h2', { style: 'margin:0;flex:1' }, 'Kalender · ' + label),
+            el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Voriger Monat', onclick: () => nav(-1) }, '‹'),
+            el('button', { class: 'btn btn-ghost btn-sm', onclick: () => { calMonth = null; render(); } }, 'Heute'),
+            el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Nächster Monat', onclick: () => nav(1) }, '›')));
+
+        let vehicles = [], overdue = [], requests = [];
+        // Fälligkeiten bis zum LETZTEN Tag des angezeigten Monats holen, nicht nur die
+        // bereits überfälligen: ohne das Fenster konnte die Ebene "Fällige Rechnung"
+        // im laufenden Monat nur Vergangenes zeigen und in jedem künftigen Monat gar
+        // nichts — ausgerechnet in der Ansicht, die vorausschauen soll.
+        const lastOfMonth = new Date(y, m, 0);
+        const dueUntil = lastOfMonth.getFullYear() + '-'
+            + String(lastOfMonth.getMonth() + 1).padStart(2, '0') + '-'
+            + String(lastOfMonth.getDate()).padStart(2, '0');
+        try {
+            [vehicles, overdue] = await Promise.all([
+                api.get('/vehicles'),
+                api.get('/invoices/overdue?due_until=' + dueUntil)]);
+            if (canManage()) { try { requests = await api.get('/portal-requests'); } catch (e) { requests = []; } }
+        } catch (e) { page.append(el('div', { class: 'empty' }, 'Kalender konnte nicht geladen werden: ' + e.message)); return; }
+
+        // Ereignisse je Tag einsammeln (nur dieser Monat).
+        const inMonth = (iso) => iso && iso.slice(0, 7) === (y + '-' + String(m).padStart(2, '0'));
+        const byDay = {};
+        const add = (iso, kind, text, href) => {
+            if (!inMonth(iso)) return;
+            const d = Number(iso.slice(8, 10));
+            (byDay[d] = byDay[d] || []).push({ kind, text, href });
+        };
+        vehicles.forEach((v) => {
+            const who = v.label || v.category_name || 'Gefährt';
+            if (v.status !== 'cancelled') add(v.end_date, 'pickup', 'Abholung: ' + who, '#/vehicles/' + v.id);
+            add(v.reserved_from, 'reserve', 'Reservierung: ' + who, '#/vehicles/' + v.id);
+        });
+        (overdue || []).forEach((iv) => add(iv.due_on, 'due', 'Fällig: Rechnung ' + iv.number, '#/invoices/' + iv.id));
+        (requests || []).filter((r) => r.status === 'offen' && r.kind === 'pickup').forEach((r) => {
+            const pl = asObj(r.payload);
+            add(pl.date, 'wish', 'Abholwunsch: ' + r.person_name, '#/person/' + r.person_id);
+        });
+
+        // Monatsraster: Mo-So, fuehrende Leerzellen aus dem Wochentag des Ersten.
+        const days = new Date(y, m, 0).getDate();
+        const lead = (first.getDay() + 6) % 7; // Mo=0
+        const grid = el('div', { class: 'cal-grid', role: 'grid', 'aria-label': 'Kalender ' + label });
+        ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'].forEach((d) => grid.append(el('div', { class: 'cal-head', role: 'columnheader' }, d)));
+        for (let i = 0; i < lead; i++) grid.append(el('div', { class: 'cal-cell empty' }));
+        const today = now.getFullYear() === y && now.getMonth() + 1 === m ? now.getDate() : -1;
+        for (let d = 1; d <= days; d++) {
+            const cell = el('div', { class: 'cal-cell' + (d === today ? ' today' : ''), role: 'gridcell' },
+                el('span', { class: 'cal-day' }, String(d)));
+            (byDay[d] || []).forEach((ev) => cell.append(
+                el('a', { class: 'cal-ev cal-' + ev.kind, href: ev.href, title: ev.text }, ev.text)));
+            grid.append(cell);
+        }
+        page.append(grid);
+        page.append(el('div', { class: 'cal-legend muted' },
+            el('span', { class: 'cal-ev cal-pickup' }, 'Abholung'), ' ',
+            el('span', { class: 'cal-ev cal-reserve' }, 'Reservierung'), ' ',
+            el('span', { class: 'cal-ev cal-due' }, 'Fällige Rechnung'), ' ',
+            el('span', { class: 'cal-ev cal-wish' }, 'Abholwunsch (Portal)')));
+    };
+
     routes.garages = async (page) => {
         const garages = await api.get('/garages');
         page.innerHTML = '';
@@ -4723,7 +5517,7 @@
                 el('div', { class: 'card-actions' },
                     el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': g.name + ' öffnen', onclick: () => navigate('garage/' + g.id) }, '›'),
                     canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Umbenennen', onclick: () => garageForm(g) }, icon('edit')),
-                    canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: () => delGarage(g) }, icon('trash')))))));
+                    canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: (e) => delGarage(g, e.currentTarget.closest('.card')) }, icon('trash')))))));
         page.append(list);
     };
     async function garageForm(g) {
@@ -4732,9 +5526,11 @@
             save: async (d) => { if (g) await api.put('/garages/' + g.id, { name: d.name.trim() }); else await api.post('/garages', { name: d.name.trim() }); } });
         render();
     }
-    async function delGarage(g) {
-        if (!await confirmDialog('Garage löschen?', `„${g.name}" samt allen Hallen und Stellplätzen wird entfernt. Zugewiesene Gefährte werden freigegeben (nicht gelöscht).`, 'Löschen')) return;
-        await api.del('/garages/' + g.id); toast('Garage gelöscht'); render();
+    function delGarage(g, node) {
+        // deleteWithUndo (Hundert UX-52): eine Garage nimmt alle Hallen und Plätze
+        // mit — genau die Sorte Klick, für die das Rückgängig-Fenster existiert.
+        deleteWithUndo('Garage löschen?', `„${g.name}" samt allen Hallen und Stellplätzen wird entfernt. Zugewiesene Gefährte werden freigegeben (nicht gelöscht).`,
+            () => api.del('/garages/' + g.id), () => render(), node);
     }
 
     // ---- halls of a garage ----
@@ -4760,7 +5556,7 @@
                     el('div', { class: 'card-actions' },
                         el('button', { class: 'btn btn-ghost btn-sm', onclick: () => navigate('hall/' + hl.id) }, 'Planer ›'),
                         canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Umbenennen', onclick: () => hallForm(id, hl) }, icon('edit')),
-                        canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: () => delHall(hl) }, icon('trash'))))));
+                        canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: (e) => delHall(hl, e.currentTarget.closest('.card')) }, icon('trash'))))));
         });
         page.append(list);
     };
@@ -4773,9 +5569,9 @@
             } });
         render();
     }
-    async function delHall(hl) {
-        if (!await confirmDialog('Halle löschen?', `„${hl.name}" samt Stellplätzen wird entfernt. Zugewiesene Gefährte werden freigegeben.`, 'Löschen')) return;
-        await api.del('/halls/' + hl.id); toast('Halle gelöscht'); render();
+    function delHall(hl, node) {
+        deleteWithUndo('Halle löschen?', `„${hl.name}" samt Stellplätzen wird entfernt. Zugewiesene Gefährte werden freigegeben.`,
+            () => api.del('/halls/' + hl.id), () => render(), node);
     }
 
     // ---- the planner ----
@@ -4945,8 +5741,8 @@
         const wallThUnit = el('span', { class: 'muted' }, 'cm');
         const wallDoorFlip = el('button', { class: 'gp-wallpop-btn', title: 'Öffnungsrichtung spiegeln (F)' }, '⇅');
         const wallDoorHinge = el('button', { class: 'gp-wallpop-btn', title: 'Anschlag links/rechts (Leertaste)' }, '⇄');
-        const wallZoneRot = el('button', { class: 'gp-wallpop-btn', title: 'Fläche 90° drehen (R) · Knopf oben = frei drehen' }, '⟳');
-        const wallPopDel = el('button', { class: 'gp-wallpop-del', title: 'Löschen', 'aria-label': 'Löschen' }, '🗑');
+        const wallZoneRot = el('button', { class: 'gp-wallpop-btn', title: 'Fläche 90° drehen (R) · Knopf oben = frei drehen', 'aria-label': 'Fläche 90° drehen' }, icon('redo', 14));
+        const wallPopDel = el('button', { class: 'gp-wallpop-del', title: 'Löschen', 'aria-label': 'Löschen' }, icon('trash', 14));
         const wallPop = el('div', { class: 'gp-wallpop' }, wallPopLabel, wallLenIn, wallPopUnit, wallThLabel, wallThIn, wallThUnit, wallDoorFlip, wallDoorHinge, wallZoneRot, wallPopDel);
         wallZoneRot.addEventListener('click', (e) => { e.stopPropagation(); if (P.sel != null) { const b = P.excl.find((x) => x.id === P.sel); if (b) { b.rot = ((b.rot || 0) + 90) % 360; commitGeom('Fläche gedreht'); } } });
         wallThIn.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') wallThIn.blur(); });
@@ -5081,9 +5877,33 @@
             const st = JSON.parse(js); P.floor = st.floor; P.Wm = st.Wm; P.Hm = st.Hm; P.tor = st.tor; P.load = st.load; P.shape = st.shape; P.excl = st.excl; if (st.walls) P.walls = st.walls; P.structSel = null;
             st.spots.forEach((g) => { const s = P.spots.find((x) => x._id === g._id); if (!s) return;
                 if (s.x !== g.x || s.y !== g.y || s.w !== g.w || s.h !== g.h || s.rot !== g.rot || s.status !== g.status || !!s.noBuf !== !!g.noBuf) { s.x = g.x; s.y = g.y; s.w = g.w; s.h = g.h; s.rot = g.rot; s.status = g.status; s.noBuf = !!g.noBuf; s._dirty = true; } });
+            // Undo/Redo tauscht P.excl, P.walls und P.floor KOMPLETT aus — also genau
+            // die Eingaben des Umschluss-Caches. Ohne diesen Stempel bliebe die
+            // berechnete Parkflaeche auf dem Stand VOR dem Zurueckgehen stehen.
+            bumpGeom();
         }
-        function pushUndo() { P.hist = P.hist.slice(0, P.hpos + 1); P.hist.push(snapshot()); if (P.hist.length > 80) P.hist.shift(); P.hpos = P.hist.length - 1; }
-        function commitGeom(msg, kind) { pushUndo(); markDirty(); draw(); if (msg) toast(msg, kind || ''); }
+        // Historie zusaetzlich per GESAMTGROESSE deckeln, nicht nur per Anzahl: ein
+        // Schnappschuss ist der komplette Grundriss als JSON, in einer grossen Halle
+        // also schnell dreistellige Kilobyte. 80 Schritte konnten so zweistellige MB
+        // im Speicher halten (Hundert PLAN-88). Aelteste Schritte fallen zuerst weg,
+        // mindestens 10 bleiben immer erhalten, damit Undo brauchbar bleibt.
+        const UNDO_MAX_STEPS = 80, UNDO_MAX_CHARS = 4 << 20, UNDO_MIN_STEPS = 10;
+        function pushUndo() {
+            P.hist = P.hist.slice(0, P.hpos + 1);
+            P.hist.push(snapshot());
+            while (P.hist.length > UNDO_MAX_STEPS) P.hist.shift();
+            let bytes = 0;
+            for (const h of P.hist) bytes += h.length;
+            while (P.hist.length > UNDO_MIN_STEPS && bytes > UNDO_MAX_CHARS) bytes -= P.hist.shift().length;
+            P.hpos = P.hist.length - 1;
+        }
+        // commitGeom ist der Sammelpunkt JEDER diskreten Geometrieaenderung: Wand oder
+        // Stuetze hinzufuegen, verschieben, drehen, loeschen, Art wechseln. Der
+        // Umschluss-Cache muss hier ungueltig werden — sonst zeichnet draw() die neue
+        // Wand, waehrend Parkflaeche, Raumbeschriftungen, der m²-Chip und der Titelblock
+        // im Export die Flaeche von VORHER weiterzeigen, bis zufaellig eine andere
+        // Aktion (fitView, expandCanvas) den Stempel hochzaehlt.
+        function commitGeom(msg, kind) { bumpGeom(); pushUndo(); markDirty(); draw(); if (msg) toast(msg, kind || ''); }
         let saveTimer = null;
         // Auto-save: geometry/placement edits are batched (atomic floor+spots, so an
         // undo across a refit can't desync them) but persisted automatically on a
@@ -5134,7 +5954,7 @@
             ];
             const modal = el('div', { class: 'gp-help-backdrop', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Tastaturkürzel' });
             const card = el('div', { class: 'gp-help-card' });
-            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '⌨ Tastaturkürzel'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => toggleShortcutHelp() }, '✕')));
+            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '⌨ Tastaturkürzel'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => toggleShortcutHelp() }, icon('close', 16))));
             const list = el('div', { class: 'gp-help-list' });
             rows.forEach(([k, d]) => { list.append(el('kbd', { class: 'gp-help-k' }, k), el('span', { class: 'gp-help-d' }, d)); });
             card.append(list, el('div', { class: 'gp-help-foot' }, 'Werkzeuge liegen rechts in der Leiste · „Passen" zentriert den Plan.'));
@@ -5217,14 +6037,41 @@
             const dxf = '0\nSECTION\n2\nENTITIES\n' + L.join('\n') + '\n0\nENDSEC\n0\nEOF\n';
             dlBlob('grundriss.dxf', dxf, 'application/dxf'); toast('DXF exportiert', 'ok');
         }
+        // Overlays als echte Dialoge fuehren: Rolle, Escape, Fokus hinein und beim
+        // Schliessen zurueck zum Ausloeser (Hundert A11Y-74). Der Shortcut-Overlay
+        // hatte die Rollen schon, aber keine Fokusfuehrung.
+        function wireDialog(modal, card) {
+            const prev = document.activeElement;
+            const onKey = (ev) => {
+                // Der Dialog kann verschwinden, OHNE dass close() lief — ein Routenwechsel
+                // leert #page und nimmt ihn mit. Der Capture-Listener am Dokument bliebe
+                // dann liegen und verschluckte jedes weitere Escape der Sitzung: weder der
+                // Planer-Shortcut noch die Befehlspalette kaemen je wieder dran, und jeder
+                // erneute Aufruf legte einen weiteren tauben Faenger obendrauf. Deshalb
+                // zuerst pruefen, ob der Dialog ueberhaupt noch im Dokument haengt — wenn
+                // nicht, sich selbst abmelden und das Ereignis unberuehrt weiterlaufen lassen.
+                if (!modal.isConnected) { document.removeEventListener('keydown', onKey, true); return; }
+                if (ev.key === 'Escape') { ev.stopPropagation(); close(); }
+            };
+            function close() {
+                document.removeEventListener('keydown', onKey, true);
+                modal.remove();
+                try { if (prev && prev.focus) prev.focus(); } catch { /* weg */ }
+            }
+            document.addEventListener('keydown', onKey, true);
+            modal.addEventListener('click', (ev) => { if (ev.target === modal) close(); });
+            setTimeout(() => { const f = card.querySelector('button, [href], input, select, textarea'); if (f) f.focus(); }, 0);
+            return close;
+        }
         function openExportMenu() {
             const opts = [['🖼 PNG', exportPlanPNG], ['📄 PDF (Drucken)', exportPlanPDF], ['⬔ SVG (Vektor)', exportPlanSVG], ['📐 DXF (CAD)', exportPlanDXF]];
-            const modal = el('div', { class: 'gp-help-backdrop' });
+            const modal = el('div', { class: 'gp-help-backdrop', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Exportieren' });
             const card = el('div', { class: 'gp-help-card', style: 'max-width:320px' });
-            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '⭳ Exportieren'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => modal.remove() }, '✕')));
             const list = el('div', { style: 'display:flex;flex-direction:column;gap:.4rem;padding:16px 18px' });
-            opts.forEach(([lab, fn]) => list.append(el('button', { class: 'gp-tbtn', style: 'justify-content:flex-start', onclick: () => { modal.remove(); fn(); } }, lab)));
-            card.append(list); modal.append(card); modal.addEventListener('click', (ev) => { if (ev.target === modal) modal.remove(); }); (root || document.body).append(modal);
+            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '⭳ Exportieren'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => close() }, icon('close', 16))));
+            opts.forEach(([lab, fn]) => list.append(el('button', { class: 'gp-tbtn', style: 'justify-content:flex-start', onclick: () => { close(); fn(); } }, lab)));
+            card.append(list); modal.append(card); (root || document.body).append(modal);
+            const close = wireDialog(modal, card);
         }
 
         // ---- FE3: reusable wall-layout templates (the building shape), stored client-side. ----
@@ -5242,16 +6089,39 @@
         const loadTemplates = () => tplCache || lsLoad();
         async function saveCurrentTemplate() {
             if (!P.walls.edges.length) { toast('Keine Wände zum Speichern', 'warn'); return; }
-            const data = await formModal({ title: 'Wand-Vorlage speichern', submitLabel: 'Speichern', fields: [{ name: 'name', label: 'Name der Vorlage', type: 'text', required: true, value: (P.hallName || 'Vorlage') + ' ' + (loadTemplates().length + 1) }] });
-            if (!data || !data.name) return;
-            const name = String(data.name).slice(0, 60), walls = JSON.parse(JSON.stringify(P.walls));
-            try { await api.post('/wall-templates', { name, walls }); await fetchTemplates(); toast('Vorlage gespeichert', 'ok'); }
-            catch (e) { const tpls = lsLoad(); tpls.unshift({ id: Date.now(), name, walls, local: true }); lsSave(tpls); tplCache = tpls; toast('Vorlage lokal gespeichert (offline)', 'warn'); }
+            // Über save: ein abgelehnter Name (zu lang, Rechte) lässt den Dialog stehen,
+            // statt die Eingabe zu verwerfen (Hundert UX-51). Der Offline-Zweig ist
+            // KEIN Fehler — er speichert lokal und darf deshalb schliessen.
+            let outcome = null;
+            await formModal({
+                title: 'Wand-Vorlage speichern', submitLabel: 'Speichern',
+                fields: [{ name: 'name', label: 'Name der Vorlage', type: 'text', required: true, value: (P.hallName || 'Vorlage') + ' ' + (loadTemplates().length + 1) }],
+                save: async (data) => {
+                    const name = String(data.name || '').slice(0, 60), walls = JSON.parse(JSON.stringify(P.walls));
+                    if (!name) throw new Error('Name der Vorlage fehlt');
+                    try { await api.post('/wall-templates', { name, walls }); await fetchTemplates(); outcome = 'server'; }
+                    catch (e) {
+                        // Nur ein NETZWERK-Fehler (kein e.status) fällt auf den lokalen Spiegel
+                        // zurück. Ein HTTP-Fehler (403, Validierung, 500) ist eine echte
+                        // Ablehnung: die als "lokal gespeichert (offline)" zu melden, täuscht
+                        // einen Erfolg vor, der nie wieder synct (Hundert UX-55).
+                        if (e && e.status) throw e;
+                        const tpls = lsLoad(); tpls.unshift({ id: Date.now(), name, walls, local: true }); lsSave(tpls); tplCache = tpls; outcome = 'local';
+                    }
+                },
+            });
+            if (outcome === 'server') toast('Vorlage gespeichert', 'ok');
+            else if (outcome === 'local') toast('Vorlage lokal gespeichert (offline)', 'warn');
         }
         async function deleteTemplate(t) {
             if (t.local) { const tpls = lsLoad().filter((x) => x.id !== t.id); lsSave(tpls); tplCache = tpls; return; } // local-only: remove from storage, no server call
             try { await api.del('/wall-templates/' + t.id); await fetchTemplates(); }
-            catch (e) { const tpls = lsLoad().filter((x) => x.id !== t.id); lsSave(tpls); tplCache = tpls; }
+            catch (e) {
+                // Wie beim Speichern (UX-55): HTTP-Fehler ist eine echte Ablehnung, die
+                // Server-Vorlage bleibt bestehen; nur offline wird lokal gespiegelt.
+                if (e && e.status) { toast('Vorlage löschen fehlgeschlagen: ' + e.message, 'error'); return; }
+                const tpls = lsLoad().filter((x) => x.id !== t.id); lsSave(tpls); tplCache = tpls;
+            }
         }
         async function applyTemplate(t) {
             if (P.walls.edges.length && !(await confirmDialog('Vorlage laden', 'Aktuelle Wände durch die Vorlage „' + t.name + '" ersetzen?', 'Ersetzen'))) return;
@@ -5259,20 +6129,24 @@
         }
         async function openTemplateMenu() {
             await fetchTemplates();
-            const modal = el('div', { class: 'gp-help-backdrop' });
+            const modal = el('div', { class: 'gp-help-backdrop', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Wand-Vorlagen' });
             const card = el('div', { class: 'gp-help-card', style: 'max-width:380px' });
-            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '▤ Wand-Vorlagen'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => modal.remove() }, '✕')));
+            card.append(el('div', { class: 'gp-help-head' }, el('h3', {}, '▤ Wand-Vorlagen'), el('button', { class: 'gp-help-x', 'aria-label': 'Schließen', onclick: () => close() }, icon('close', 16))));
             const body = el('div', { style: 'display:flex;flex-direction:column;gap:.45rem;padding:16px 18px' });
-            body.append(el('button', { class: 'gp-tbtn', style: 'justify-content:flex-start', onclick: () => { modal.remove(); saveCurrentTemplate(); } }, '＋ Aktuelle Wände als Vorlage speichern'));
+            body.append(el('button', { class: 'gp-tbtn', style: 'justify-content:flex-start', onclick: () => { close(); saveCurrentTemplate(); } }, '＋ Aktuelle Wände als Vorlage speichern'));
             const tpls = loadTemplates();
             if (!tpls.length) body.append(el('div', { class: 'muted', style: 'font-size:.82rem;padding:.3rem 0' }, 'Noch keine Vorlagen. Zeichne Wände und speichere sie hier.'));
             tpls.forEach((t) => {
                 const row = el('div', { style: 'display:flex;gap:.4rem;align-items:center' });
-                row.append(el('button', { class: 'gp-tbtn', style: 'flex:1;justify-content:flex-start', onclick: () => { modal.remove(); applyTemplate(t); } }, '▤ ' + t.name + ' · ' + (t.walls && t.walls.edges ? t.walls.edges.length : 0) + ' Wände'));
-                row.append(el('button', { class: 'gp-help-x', title: 'Löschen', onclick: async () => { await deleteTemplate(t); modal.remove(); openTemplateMenu(); } }, '🗑'));
+                row.append(el('button', { class: 'gp-tbtn', style: 'flex:1;justify-content:flex-start', onclick: () => { close(); applyTemplate(t); } }, '▤ ' + t.name + ' · ' + (t.walls && t.walls.edges ? t.walls.edges.length : 0) + ' Wände'));
+                row.append(el('button', { class: 'gp-help-x', title: 'Löschen', 'aria-label': 'Vorlage löschen', onclick: async () => { await deleteTemplate(t); close(); openTemplateMenu(); } }, icon('trash', 15)));
                 body.append(row);
             });
-            card.append(body); modal.append(card); modal.addEventListener('click', (ev) => { if (ev.target === modal) modal.remove(); }); (root || document.body).append(modal);
+            // Wie das Exportmenue nebenan ueber wireDialog: Escape schliesst, der Fokus
+            // wandert hinein und beim Schliessen zurueck zum Ausloeser. Ohne das war der
+            // eine Dialog tastaturbedienbar und der andere zwei Funktionen weiter nicht.
+            card.append(body); modal.append(card); (root || document.body).append(modal);
+            const close = wireDialog(modal, card);
         }
         window.addEventListener('keydown', keyHandler);
         window.addEventListener('keyup', keyUpHandler);
@@ -5726,7 +6600,7 @@
         // wall-enclosed outline (so placement/metrics use it); falls back to the wall bbox
         // while the ring is still open. Also grows the canvas to fit the drawing.
         function refreshFloorFromWalls() {
-            _encKey = null;
+            bumpGeom();
             if (P.walls.nodes.length) { const bb = wallsBBox(); P.Wm = Math.max(P.Wm, Math.ceil(bb.maxX + 1.5)); P.Hm = Math.max(P.Hm, Math.ceil(bb.maxY + 1.5)); }
             const poly = traceEnclosurePoly(encNow());
             if (poly && poly.length >= 3) P.floor = poly;
@@ -5788,7 +6662,7 @@
             if (!(l || t || r || b)) return false;
             const sl = planWrap.scrollLeft, st = planWrap.scrollTop;
             if (l || t) shiftWorld(l, t);
-            P.Wm += l + r; P.Hm += t + b; _encKey = null;
+            P.Wm += l + r; P.Hm += t + b; bumpGeom();
             layout();
             planWrap.scrollLeft = sl + l * P.CELL; planWrap.scrollTop = st + t * P.CELL;
             return true;
@@ -5851,10 +6725,16 @@
         // the Bezug via edgeOffs; delegated to the tested PG.roomAreas.
         function roomFaces() { return PG.roomAreas(P.walls.nodes, P.walls.edges, P.wallRef); }
         let _enc = null, _encKey = null;
+        // Geometrie-Stempel: wird von jeder Stelle hochgezaehlt, die Waende, wallRef
+        // oder P.floor aendert (siehe bumpGeom). enclosure() vergleicht nur noch diese
+        // Zahl, statt pro Aufruf saemtliche Wandbloecke zu einem String zu verketten
+        // und P.floor zu serialisieren (Hundert PLAN-85).
+        let _geomStamp = 0;
+        const bumpGeom = () => { _geomStamp++; _encKey = null; };
         function enclosure() {
-            const wb = wallBlocks();
-            const key = P.wallRef + '#' + wb.map((e) => e.kind + ':' + round2(e.x) + ',' + round2(e.y) + ',' + round2(e.w) + ',' + round2(e.h) + ',' + Math.round(e.rot || 0)).join('|') + '#' + JSON.stringify(P.floor);
+            const key = P.wallRef + '#' + _geomStamp;
             if (key === _encKey) return _enc;
+            const wb = wallBlocks();
             _encKey = key; _enc = wb.length ? computeEnclosure(wb) : null;
             // Replace each room's quantised raster area with the exact analytic face area (C1), matched
             // by the raster centroid; subtract interior Stützen inside that room (S1-A). A face is only
@@ -6215,7 +7095,14 @@
         // ---- toolbar ----
         function renderToolbar() {
             toolbar.innerHTML = '';
-            const tb = (label, title, fn, on, cls) => { const b = el('button', { class: 'gp-tbtn ' + (cls || '') + (on ? ' on' : ''), title: title || label, onclick: fn }, label); return b; };
+            const tb = (label, title, fn, on, cls) => {
+                // on === undefined -> reiner Befehl; sonst Umschalter, dessen Zustand
+                // bisher nur ueber die CSS-Klasse .on sichtbar war (A11Y-76). Titel auch
+                // als aria-label, damit Icon-Knoepfe einen Namen haben.
+                const attrs = { class: 'gp-tbtn ' + (cls || '') + (on ? ' on' : ''), title: title || label, 'aria-label': title || label, onclick: fn };
+                if (on !== undefined) attrs['aria-pressed'] = String(!!on);
+                return el('button', attrs, label);
+            };
             const undoB = tb('↶', 'Rückgängig (Strg+Z)', doUndo); undoB.disabled = P.hpos <= 0;
             const redoB = tb('↷', 'Wiederholen (Strg+Umschalt+Z)', doRedo); redoB.disabled = P.hpos >= P.hist.length - 1;
             toolbar.append(undoB, redoB);
@@ -6456,11 +7343,16 @@
             // early (so a second Auto-Arrange could re-snapshot P.spots mid-write — exactly what
             // the guard exists to prevent) and reported the summary before anything was saved.
             const writes = [];
+            // Geometrie-Schreibzugriffe SAMMELN statt je Platz einen PUT zu feuern: der
+            // Batch-Endpunkt wendet alle in EINER Transaktion an (alles-oder-nichts).
+            // Fünfzig Gefährte hießen vorher fünfzig Requests, und ein Abbruch in der
+            // Mitte hinterließ eine halb angeordnete Halle (Hundert 74).
+            const batch = [];
             for (const it of items) {
                 const pl = by.get(it.key);
                 if (it.spot) {
                     const b = it.spot;
-                    if (pl && pl.ok) { b.x = pl.x; b.y = pl.y; b.rot = pl.rot; b._invalid = false; b._dirty = true; writes.push(persistSpot(b)); arranged++; }
+                    if (pl && pl.ok) { b.x = pl.x; b.y = pl.y; b.rot = pl.rot; b._invalid = false; b._dirty = true; batch.push(b); arranged++; }
                     else { // no collision-free spot → delete the placement, vehicle returns to staging
                         try { await api.del('/spots/' + b._id); P.spots = P.spots.filter((x) => x !== b);
                             if (b.vehId) P.palette.push({ id: b.vehId, label: b.label, type: b.type, person_id: b.personId, person_name: b.personName, length_m: b.L, width_m: b.W, height_m: b.H, weight_t: b.t });
@@ -6486,7 +7378,22 @@
                 } // else: staging vehicle with no room → stays in staging
             }
 
-            // Wait for every spot PUT before the run reports done. allSettled, not all:
+            if (batch.length) {
+                try {
+                    await api.put('/halls/' + P.hallId + '/spots/geometry', {
+                        spots: batch.map((b) => ({ id: b._id, geometry: { x: round2(b.x), y: round2(b.y), w: round2(b.w), h: round2(b.h), rot: Math.round(b.rot || 0), status: b.status, noBuf: b.noBuf || undefined } })),
+                    });
+                    batch.forEach((b) => { b._dirty = false; });
+                } catch (err) {
+                    // Alles-oder-nichts: der Server hat NICHTS übernommen. Die Plätze bleiben
+                    // dirty, der Zustand auf dem Schirm ist der gewollte — erneut speichern
+                    // wiederholt genau diesen Batch.
+                    batch.forEach((b) => { b._dirty = true; });
+                    P.dirty = true; errs++;
+                    toast(err.message || 'Anordnung speichern fehlgeschlagen', 'error');
+                }
+            }
+            // Wait for every remaining PUT before the run reports done. allSettled, not all:
             // persistSpot already handles its own rejection (it re-flags _dirty and toasts),
             // so a failed write must not abort the remaining bookkeeping here.
             await Promise.allSettled(writes);
@@ -6730,7 +7637,14 @@
             else if (which === 'load') P.load = Math.max(0.5, Math.min(60, +(P.load + d * 0.5).toFixed(1)));
             hideLen(); pushUndo(); markDirty(); layout();
         }
-        function clampAll() { P.spots.concat(P.excl).forEach((t) => { const cl = clampXY(t, t.x, t.y); t.x = cl.x; t.y = cl.y; if (t._id) t._dirty = true; }); }
+        // clampAll VERSCHIEBT Bloecke (auch Waende und Stuetzen) und ist damit selbst
+        // eine Geometrieaenderung — der Stempel gehoert hierher, nicht an jede der
+        // Aufrufstellen. setDim/setDimTo (Hallenmasse per +/- und per Eingabe) und
+        // refit (Umriss aus Waenden uebernehmen) riefen es, ohne zu stempeln: die
+        // Waende rutschten sichtbar, enclosure() lieferte aber weiter den alten
+        // Raster — Parkflaeche, Raum-m², Frei/Belegt und der SVG/PDF-Export rechneten
+        // gegen einen Grundriss, den es nicht mehr gab.
+        function clampAll() { P.spots.concat(P.excl).forEach((t) => { const cl = clampXY(t, t.x, t.y); t.x = cl.x; t.y = cl.y; if (t._id) t._dirty = true; }); bumpGeom(); }
         function addExcl(k) {
             const s = EXCL[k]; const b = { id: 'e' + (P.uid++), kind: k, x: 1, y: 1, w: s.w, h: s.h, label: s.label, mat: s.mat };
             // Zones (Stellfläche) may sit anywhere; blocking structures seek a free cell.
@@ -6977,7 +7891,10 @@
                 const vehs = blocks.filter((b) => b._id && b.kind !== 'excl'), excls = blocks.filter((b) => !(b._id && b.kind !== 'excl'));
                 if (vehs.length && !(await confirmDialog('Gefährte entfernen', vehs.length + ' Gefährt(e) aus dem Plan entfernen?', 'Entfernen'))) return;
                 selSet = [];
-                if (excls.length) { excls.forEach((b) => { P.excl = P.excl.filter((x) => x !== b); if (P.sel === b.id) P.sel = null; }); pushUndo(); markDirty(); }
+                // bumpGeom wie im Einzelweg (removeExcl -> commitGeom): ohne ihn blieb der
+                // Umschluss-Cache auf dem Stand VOR dem Loeschen, und eine per Rahmen
+                // geloeschte Wand zaehlte in Parkflaeche und Raumgroessen weiter mit.
+                if (excls.length) { excls.forEach((b) => { P.excl = P.excl.filter((x) => x !== b); if (P.sel === b.id) P.sel = null; }); bumpGeom(); pushUndo(); markDirty(); }
                 if (vehs.length) {
                     // Count failures and report the REAL result after the API calls — don't claim
                     // every vehicle was removed when some api.del() rejected.
@@ -7213,6 +8130,8 @@
         if (isAdmin()) body.append(item('receipt', 'Rechnungen', () => navigate('billing')));
         if (isAdmin()) body.append(item('archive', 'Backup', () => navigate('backup')));
         body.append(item('theme', 'Design wechseln', () => toggleTheme()));
+        // Nur zeigen, solange der Browser die Installation tatsächlich anbietet.
+        if (canInstall()) body.append(item('download', 'App installieren', runInstallPrompt));
         body.append(item('logout', 'Abmelden', () => logout(), 'danger'));
         dlg.showModal();
     }
@@ -7481,11 +8400,42 @@
         const showPk = !!(state.capabilities.passkeys && webauthnSupported());
         if (pkBtn) pkBtn.hidden = !showPk;
         const or = $('#login-or'); if (or) or.hidden = !showPk;
-        $('#login-username').focus();
+        // Passkey-only (Hundert 42): den Passwortteil GAR NICHT zeigen, statt ihn
+        // beim Absenden am Server scheitern zu lassen. Ohne Passkey-Unterstützung im
+        // Browser bleibt die Maske sichtbar — mit Hinweis wäre schöner, aber ein
+        // Formular, das der Server sicher ablehnt, ist die schlechteste Variante.
+        const pkOnly = !!state.capabilities.passkey_only && showPk;
+        $('#login-form').classList.toggle('pk-only', pkOnly);
+        [document.querySelector('label[for="login-username"]'),
+            $('#login-username'),
+            document.querySelector('label[for="login-password"]'),
+            $('#login-password') && $('#login-password').closest('.input-affix'),
+            $('#login-form button[type="submit"]'),
+        ].forEach((n) => { if (n) n.hidden = pkOnly; });
+        if (or) or.hidden = !showPk || pkOnly;
+        if (!pkOnly) $('#login-username').focus();
+        else if (pkBtn) pkBtn.focus();
     }
     async function logout() {
         try { await api.post('/auth/logout'); } catch { /* ignore */ }
         state.user = null;
+        // Die Oberfläche wird beim Abmelden NICHT neu geladen — die Anwendung bleibt
+        // dieselbe Seite. Ohne das Zurücksetzen erbte der nächste Anmeldende am selben
+        // Rechner die Ansichtszustände des vorigen: dessen getippte Suchbegriffe
+        // (oft Kundennamen) standen wieder im Suchfeld, die Liste war stumm
+        // vorgefiltert, und die Mehrfachauswahl trug noch fremde Gefährte.
+        listState.clear();
+        bulkSel.clear();
+        bulkMode = false;
+        dashYear = null;
+        calMonth = null;
+        // Die 2FA-Hinweis-Sperre ist an die SITZUNG gebunden, nicht an die Seite.
+        // Blieb sie gesetzt, bekam der nächste Anmeldende ohne zweiten Faktor am
+        // selben Rechner keinen Hinweis und keine Weiterleitung mehr, sondern auf
+        // jeder Route nur "Fehler: 2fa_enrollment_required" — ohne zu erfahren, was
+        // zu tun ist. Ebenso die Zählerstände fremder Listen.
+        twoFARedirected = false;
+        totalCounts.clear();
         showLogin();
     }
 
@@ -7660,14 +8610,21 @@
         window.addEventListener('beforeinstallprompt', (e) => {
             e.preventDefault();
             deferredInstall = e;
-            toastAction('Parkrr als App installieren?', 'Installieren', async () => {
-                if (!deferredInstall) return;
-                deferredInstall.prompt();
-                await deferredInstall.userChoice;
-                deferredInstall = null;
-            }, 8000);
+            toastAction('Parkrr als App installieren?', 'Installieren', runInstallPrompt, 8000);
         });
+        // Nach erfolgreicher Installation ist das Angebot gegenstandslos.
+        window.addEventListener('appinstalled', () => { deferredInstall = null; });
     }
+    // Zweite Chance: der Toast lief nach 8 Sekunden ab und das Angebot war für immer
+    // weg (Chrome loggt dann "Banner not shown ... must call prompt()"). Das Menü hält
+    // den aufgehobenen Event dauerhaft verfügbar (Hundert PWA-64).
+    async function runInstallPrompt() {
+        if (!deferredInstall) return;
+        const ev = deferredInstall;
+        deferredInstall = null; // ein Event ist einmalig verwendbar
+        try { ev.prompt(); await ev.userChoice; } catch { /* vom Browser verworfen */ }
+    }
+    const canInstall = () => !!deferredInstall;
     // Offline indicator: a banner plus a body class while the network is down.
     function setupOfflineIndicator() {
         const banner = el('div', { class: 'offline-banner', role: 'status', 'aria-live': 'polite', hidden: true }, t('offline.banner'));
@@ -7914,13 +8871,23 @@
     // in the URL), so it stays out of server/reverse-proxy logs and Referer (SEC-01).
     // PDFs and the pay-QR therefore can't be plain <a>/<img> URLs — fetch them as
     // blobs and hand the browser an object URL.
-    async function portalFetch(token, path, as) {
+    async function portalFetch(token, path, as, opts = {}) {
+        const headers = { 'Authorization': 'Bearer ' + token, 'Accept': as === 'json' ? 'application/json' : '*/*' };
+        if (opts.body) headers['Content-Type'] = 'application/json';
         const res = await fetch('/api/portal' + path, {
+            method: opts.method || 'GET',
+            body: opts.body,
             credentials: 'omit',
             referrerPolicy: 'no-referrer',
-            headers: { 'Authorization': 'Bearer ' + token, 'Accept': as === 'json' ? 'application/json' : '*/*' },
+            headers,
         });
-        if (!res.ok) throw new Error('portal ' + res.status);
+        if (!res.ok) {
+            // Der Server antwortet mit deutschem Fehlertext im JSON — den zeigen,
+            // statt eines nackten Statuscodes (z. B. der 429-Deckel des Briefkastens).
+            let msg = 'portal ' + res.status;
+            try { const j = await res.json(); if (j && j.error) msg = j.error; } catch (e) { /* leer */ }
+            throw new Error(msg);
+        }
         return as === 'json' ? res.json() : res.blob();
     }
     async function portalOpenPdf(token, id) {
@@ -7933,10 +8900,56 @@
         try {
             const url = URL.createObjectURL(await portalFetch(token, '/invoices/' + id + '/pdf', 'blob'));
             if (win) win.location = url; else window.open(url, '_blank', 'noopener');
+            // Nach der Übergabe an den Tab wieder freigeben (großzügige Frist, der Tab
+            // hat den Blob dann geladen) — vorher leckte jede geöffnete Rechnung eine
+            // Objekt-URL pro Sitzung (Hundert PORTAL-91; dlBlob macht es vor).
+            setTimeout(() => URL.revokeObjectURL(url), 60000);
         } catch { if (win) win.close(); toast('PDF konnte nicht geladen werden', 'error'); }
     }
 
     // #/portal/<token>. Read-only view of one person's vehicles + invoices.
+    // Portal-Zweisprachigkeit (Hundert 89): das Portal ist die einzige Ansicht,
+    // die KUNDEN sehen — und nicht jeder Einsteller liest Deutsch. Ein kleines
+    // eigenes Wörterbuch statt einer App-weiten i18n (die wäre Punkt 98): die
+    // Portal-Oberfläche hat rund fünfzehn Texte, die App tausende.
+    const PORTAL_STR = {
+        de: {
+            invalid: 'Dieser Link ist ungültig oder abgelaufen. Bitte fordern Sie einen neuen an.',
+            open_total: 'Offener Betrag', your_vehicles: 'Ihre Gefährte', no_vehicles: 'Keine aktiven Gefährte.',
+            handovers: 'Übergabeprotokolle', signed: 'unterschrieben: ', storein: 'Einlagerung', storeout: 'Auslagerung',
+            invoices: 'Rechnungen', no_invoices: 'Keine Rechnungen.', invoice: 'Rechnung ', open_part: 'offen ',
+            scan_pay: 'Scan zum Bezahlen (SEPA)', qr_alt: 'SEPA-Zahlungs-QR', foot: 'Read-only Ansicht · Parkrr',
+            requests: 'Anliegen', req_contact: 'Kontaktdaten ändern', req_pickup: 'Abholung anmelden',
+            req_email: 'Neue E-Mail', req_phone: 'Neue Telefonnummer', req_address: 'Neue Adresse',
+            req_date: 'Wunschtermin', req_note: 'Anmerkung (optional)', req_send: 'Absenden',
+            req_sent: 'Übermittelt — der Betreiber meldet sich.', req_err: 'Senden fehlgeschlagen.',
+            req_hint: 'Änderungen werden vom Betreiber geprüft und übernommen.',
+            // Dieselben Worte wie in der Betreiberansicht (STATUS_LABEL): der Kunde las
+            // "eingestellt", wo am Telefon von "eingelagert" die Rede ist — derselbe
+            // Zustand unter zwei Namen.
+            status: { reserved: 'reserviert', stored: 'eingelagert', collected: 'abgeholt', cancelled: 'storniert' },
+            inv_status: { offen: 'offen', teilbezahlt: 'teilweise bezahlt', bezahlt: 'bezahlt', storniert: 'storniert', storno: 'Storno' },
+        },
+        en: {
+            invalid: 'This link is invalid or has expired. Please request a new one.',
+            open_total: 'Open balance', your_vehicles: 'Your vehicles', no_vehicles: 'No active vehicles.',
+            handovers: 'Handover protocols', signed: 'signed by ', storein: 'Check-in', storeout: 'Check-out',
+            invoices: 'Invoices', no_invoices: 'No invoices.', invoice: 'Invoice ', open_part: 'open ',
+            scan_pay: 'Scan to pay (SEPA)', qr_alt: 'SEPA payment QR', foot: 'Read-only view · Parkrr',
+            requests: 'Requests', req_contact: 'Update contact details', req_pickup: 'Request pickup',
+            req_email: 'New e-mail', req_phone: 'New phone number', req_address: 'New address',
+            req_date: 'Preferred date', req_note: 'Note (optional)', req_send: 'Send',
+            req_sent: 'Submitted — the operator will get back to you.', req_err: 'Sending failed.',
+            req_hint: 'Changes are reviewed and applied by the operator.',
+            status: { reserved: 'reserved', stored: 'stored', collected: 'collected', cancelled: 'cancelled' },
+            inv_status: { offen: 'open', teilbezahlt: 'partly paid', bezahlt: 'paid', storniert: 'cancelled', storno: 'credit note' },
+        },
+    };
+    function portalLang() {
+        try { const v = localStorage.getItem('parkrr_portal_lang'); if (v === 'de' || v === 'en') return v; } catch (e) { /* egal */ }
+        return String(navigator.language || 'de').toLowerCase().startsWith('de') ? 'de' : 'en';
+    }
+
     async function renderPortal(token) {
         const lv = $('#login-view'); if (lv) lv.hidden = true;
         const av = $('#app-view'); if (av) av.hidden = true;
@@ -7944,13 +8957,16 @@
         pv.hidden = false;
         pv.innerHTML = '';
         pv.append(skeleton(4));
+        const lang = portalLang();
+        const P9 = PORTAL_STR[lang];
+        const locale = lang === 'de' ? 'de-DE' : 'en-GB';
         let sum;
         try { sum = await portalFetch(token, '/summary', 'json'); }
         catch (e) {
             pv.innerHTML = '';
             pv.append(el('div', { class: 'portal-wrap' }, el('div', { class: 'portal-card' },
                 el('h1', {}, 'Parkrr'),
-                el('p', { class: 'muted' }, 'Dieser Link ist ungültig oder abgelaufen. Bitte fordern Sie einen neuen an.'))));
+                el('p', { class: 'muted' }, P9.invalid))));
             return;
         }
         pv.innerHTML = '';
@@ -7959,38 +8975,88 @@
             // Direkt gefüllt: init() lief mit applyBrand(), bevor dieser Kopf
             // existierte — ein zweiter Voll-Lauf würde nur das Favicon neu bauen.
             el('span', { class: 'brand-veh', 'data-veh': '34', 'aria-hidden': 'true', html: brandGlyph(34) }),
-            el('div', {}, el('h1', {}, 'Parkrr'), el('p', { class: 'muted' }, esc(sum.person_name)))));
+            el('div', {}, el('h1', {}, 'Parkrr'), el('p', { class: 'muted' }, esc(sum.person_name))),
+            // Sprachumschalter: die Wahl bleibt im Browser (localStorage) und gilt
+            // beim nächsten Öffnen wieder.
+            el('button', { class: 'btn btn-ghost btn-sm portal-lang', 'aria-label': lang === 'de' ? 'Switch to English' : 'Auf Deutsch umschalten',
+                onclick: () => { try { localStorage.setItem('parkrr_portal_lang', lang === 'de' ? 'en' : 'de'); } catch (e2) { /* egal */ } renderPortal(token); } },
+                lang === 'de' ? 'EN' : 'DE')));
         wrap.append(el('div', { class: 'portal-card' },
-            el('div', { class: 'muted' }, 'Offener Betrag'),
+            el('div', { class: 'muted' }, P9.open_total),
             el('div', { class: 'portal-amt' + (sum.open_total > 0.005 ? ' owe' : '') }, eur(sum.open_total))));
-        const vcard = el('div', { class: 'portal-card' }, el('h2', {}, 'Ihre Gefährte'));
-        if (!sum.vehicles.length) vcard.append(el('p', { class: 'muted' }, 'Keine aktiven Gefährte.'));
+        const vcard = el('div', { class: 'portal-card' }, el('h2', {}, P9.your_vehicles));
+        if (!sum.vehicles.length) vcard.append(el('p', { class: 'muted' }, P9.no_vehicles));
         else sum.vehicles.forEach((v) => vcard.append(el('div', { class: 'portal-row' },
-            el('span', {}, esc(v.label)), statusBadge(v.status))));
+            el('span', {}, esc(v.label)), el('span', { class: 'badge badge-' + v.status }, P9.status[v.status] || v.status))));
         wrap.append(vcard);
-        const icard = el('div', { class: 'portal-card' }, el('h2', {}, 'Rechnungen'));
-        if (!sum.invoices.length) icard.append(el('p', { class: 'muted' }, 'Keine Rechnungen.'));
+        // Übergabeprotokolle (Hundert 84): was der Kunde unterschrieben hat —
+        // Richtung, Datum, Zustandsnotizen. Ohne Unterschriftsbild (siehe Server).
+        if ((sum.handovers || []).length) {
+            const hcard = el('div', { class: 'portal-card' }, el('h2', {}, P9.handovers));
+            sum.handovers.forEach((ho) => hcard.append(el('div', { class: 'portal-row' },
+                el('span', {}, esc(ho.vehicle_label) + ' · ' + (ho.direction === 'einlagerung' ? P9.storein : P9.storeout),
+                    ho.notes ? el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, esc(ho.notes)) : null),
+                el('span', { class: 'muted', style: 'font-size:.8rem;text-align:right' },
+                    new Date(ho.created_at).toLocaleDateString(locale),
+                    ho.signer_name ? el('span', { style: 'display:block' }, P9.signed + esc(ho.signer_name)) : null))));
+            wrap.append(hcard);
+        }
+        const icard = el('div', { class: 'portal-card' }, el('h2', {}, P9.invoices));
+        if (!sum.invoices.length) icard.append(el('p', { class: 'muted' }, P9.no_invoices));
         else sum.invoices.forEach((iv) => {
             icard.append(
                 el('a', { class: 'portal-row link', role: 'button', tabindex: '0', style: 'cursor:pointer',
                     onclick: () => portalOpenPdf(token, iv.id),
                     onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); portalOpenPdf(token, iv.id); } } },
-                    el('span', {}, 'Rechnung ' + esc(iv.number),
-                        el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, new Date(iv.issued_on).toLocaleDateString('de-DE') + (iv.status ? ' · ' + esc(iv.status) : ''))),
+                    el('span', {}, P9.invoice + esc(iv.number),
+                        el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, new Date(iv.issued_on).toLocaleDateString(locale) + (iv.status ? ' · ' + (P9.inv_status[iv.status] || esc(iv.status)) : ''))),
                     el('span', { style: 'text-align:right' }, eur(iv.total),
-                        iv.open > 0.005 ? el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, 'offen ' + eur(iv.open)) : null)));
+                        iv.open > 0.005 ? el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, P9.open_part + eur(iv.open)) : null)));
             // Scan-to-pay QR for each still-open invoice.
             if (iv.open > 0.005) {
-                const qr = el('img', { alt: 'SEPA-Zahlungs-QR', width: 150, height: 150, style: 'max-width:150px;height:auto' });
+                const qr = el('img', { alt: P9.qr_alt, width: 150, height: 150, style: 'max-width:150px;height:auto' });
                 portalFetch(token, '/invoices/' + iv.id + '/pay-qr', 'blob')
-                    .then((b) => { qr.src = URL.createObjectURL(b); }).catch(() => { });
+                    // Objekt-URL nach dem Laden des Bilds freigeben (PORTAL-91); bei
+                    // Fehlschlag das leere img entfernen statt es kaputt stehen zu lassen.
+                    .then((b) => { qr.onload = () => URL.revokeObjectURL(qr.src); qr.src = URL.createObjectURL(b); })
+                    .catch(() => { qr.remove(); });
                 icard.append(el('div', { style: 'text-align:center;padding:.4rem 0 .2rem' },
                     qr,
-                    el('div', { class: 'muted', style: 'font-size:.72rem' }, 'Scan zum Bezahlen (SEPA)')));
+                    el('div', { class: 'muted', style: 'font-size:.72rem' }, P9.scan_pay)));
             }
         });
         wrap.append(icard);
-        wrap.append(el('p', { class: 'portal-foot muted' }, 'Read-only Ansicht · Parkrr'));
+        // Anliegen (Hundert 85/87): der einzige Schreibweg des Portals ist ein
+        // Briefkasten — der Kunde reicht ein, der Betreiber übernimmt.
+        {
+            const rcard = el('div', { class: 'portal-card' }, el('h2', {}, P9.requests),
+                el('p', { class: 'muted', style: 'font-size:.8rem' }, P9.req_hint));
+            const send = async (body, msgEl, btn) => {
+                btn.disabled = true;
+                try {
+                    await portalFetch(token, '/requests', 'json', { method: 'POST', body: JSON.stringify(body) });
+                    msgEl.textContent = P9.req_sent; msgEl.className = 'muted';
+                } catch (e) { msgEl.textContent = (e && e.message) || P9.req_err; msgEl.className = 'portal-err'; }
+                btn.disabled = false;
+            };
+            // Kontaktdaten
+            const cEmail = el('input', { type: 'email', placeholder: P9.req_email, 'aria-label': P9.req_email });
+            const cPhone = el('input', { type: 'tel', placeholder: P9.req_phone, 'aria-label': P9.req_phone });
+            const cAddr = el('input', { type: 'text', placeholder: P9.req_address, 'aria-label': P9.req_address });
+            const cMsg = el('p', { class: 'muted', role: 'status' });
+            const cBtn = el('button', { class: 'btn btn-primary btn-sm' }, P9.req_send);
+            cBtn.addEventListener('click', () => send({ kind: 'contact_update', email: cEmail.value.trim(), phone: cPhone.value.trim(), address: cAddr.value.trim() }, cMsg, cBtn));
+            rcard.append(el('h3', {}, P9.req_contact), el('div', { class: 'portal-form' }, cEmail, cPhone, cAddr, cBtn), cMsg);
+            // Abholung
+            const pDate = el('input', { type: 'date', 'aria-label': P9.req_date });
+            const pNote = el('input', { type: 'text', placeholder: P9.req_note, 'aria-label': P9.req_note });
+            const pMsg = el('p', { class: 'muted', role: 'status' });
+            const pBtn = el('button', { class: 'btn btn-primary btn-sm' }, P9.req_send);
+            pBtn.addEventListener('click', () => send({ kind: 'pickup', date: pDate.value, note: pNote.value.trim() }, pMsg, pBtn));
+            rcard.append(el('h3', {}, P9.req_pickup), el('div', { class: 'portal-form' }, pDate, pNote, pBtn), pMsg);
+            wrap.append(rcard);
+        }
+        wrap.append(el('p', { class: 'portal-foot muted' }, P9.foot));
         pv.append(wrap);
     }
 
@@ -8010,7 +9076,7 @@
         applyBrand();
         // Public portal short-circuits the whole app shell / auth flow.
         const pm = (location.hash || '').match(/^#\/portal\/([A-Za-z0-9_-]+)$/);
-        if (pm) { await renderPortal(pm[1]); document.documentElement.classList.remove('preboot'); return; }
+        if (pm) { await renderPortal(pm[1]); document.documentElement.classList.remove('preboot'); syncThemeColor(); return; }
         bindStatic();
         setupInstallPrompt();
         setupOfflineIndicator();
@@ -8020,7 +9086,25 @@
         // View steht (synchron in showApp/showLogin gesetzt) — Blaupause freigeben.
         // Vorher blieb sie waehrend der Auth-Roundtrips als Post-Login-Grund sichtbar.
         document.documentElement.classList.remove('preboot');
-        if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+        syncThemeColor();
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js').then((reg) => {
+                // Ein neuer Worker übernimmt wegen skipWaiting()+clients.claim() mitten
+                // in der Sitzung. Statt still auszutauschen einmal anbieten, neu zu
+                // laden — sonst mischen sich alte Seite und neue Assets (PWA-66).
+                reg.addEventListener('updatefound', () => {
+                    const sw = reg.installing;
+                    if (!sw) return;
+                    sw.addEventListener('statechange', () => {
+                        // Nur wenn schon ein Controller lief, ist das ein UPDATE und
+                        // keine Erstinstallation.
+                        if (sw.state === 'installed' && navigator.serviceWorker.controller) {
+                            toastAction('Neue Version verfügbar', 'Neu laden', () => location.reload(), 15000);
+                        }
+                    });
+                });
+            }).catch(() => {});
+        }
         const sb = $('#search-btn'); if (sb) sb.addEventListener('click', () => openCommandPalette());
         document.addEventListener('keydown', (e) => {
             if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K') && state.user) { e.preventDefault(); openCommandPalette(); }

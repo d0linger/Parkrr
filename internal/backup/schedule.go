@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -94,7 +95,7 @@ func dumpEncrypt(ctx context.Context, dbURL, key string) ([]byte, error) {
 // A written-but-unverified archive is deliberately not an error — the older, verified
 // archives must not be rotated out behind it — but callers must be able to tell the
 // two apart, or they report a success the status table simultaneously calls a failure.
-func RunVolume(ctx context.Context, pool *pgxpool.Pool, dbURL, key, dir string, keep int) (int64, bool, error) {
+func RunVolume(ctx context.Context, pool *pgxpool.Pool, dbURL, key, dir string, r Retention) (int64, bool, error) {
 	runMu.Lock()
 	defer runMu.Unlock()
 
@@ -177,14 +178,14 @@ func RunVolume(ctx context.Context, pool *pgxpool.Pool, dbURL, key, dir string, 
 	promoted = true
 	// Aufräumen erst NACH der Übernahme: sonst würde ein durchgefallener Lauf die
 	// alten, geprüften Archive wegräumen, ohne einen gültigen Ersatz zu hinterlassen.
-	pruneDir(ctx, dir, keep)
+	pruneDir(ctx, dir, r)
 	recordVolumeSafe(ctx, pool, size, true, true)
 	return size, true, nil
 }
 
 // RunS3 makes an encrypted backup, uploads it to the bucket (pruning to `keep`),
 // and records the outcome. Returns the object name.
-func RunS3(ctx context.Context, pool *pgxpool.Pool, dbURL, key string, s3 S3Config, keep int) (string, error) {
+func RunS3(ctx context.Context, pool *pgxpool.Pool, dbURL, key string, s3 S3Config, r Retention) (string, error) {
 	runMu.Lock()
 	defer runMu.Unlock()
 
@@ -199,7 +200,7 @@ func RunS3(ctx context.Context, pool *pgxpool.Pool, dbURL, key string, s3 S3Conf
 	// Stand, bevor überhaupt jemand das neue Objekt geprüft hatte. Aufgeräumt wird
 	// unten, erst nach bestandener Prüfung; dieselbe Reihenfolge wie beim
 	// Volume-Ziel.
-	if err := UploadS3(ctx, s3, name, enc, 0); err != nil {
+	if err := UploadS3(ctx, s3, name, enc, Retention{}); err != nil {
 		recordS3Safe(ctx, pool, false)
 		return "", err
 	}
@@ -223,7 +224,7 @@ func RunS3(ctx context.Context, pool *pgxpool.Pool, dbURL, key string, s3 S3Conf
 		return name, verr
 	}
 	// Erst jetzt aufräumen: bis hierher ist bewiesen, dass ein gültiger Ersatz da ist.
-	if perr := PruneS3(ctx, s3, keep); perr != nil {
+	if perr := PruneS3(ctx, s3, r); perr != nil {
 		slog.Warn("backup: S3 prune failed", "err", perr)
 	}
 	recordS3Safe(ctx, pool, true)
@@ -252,12 +253,46 @@ func recordS3Safe(ctx context.Context, pool *pgxpool.Pool, ok bool) {
 	}
 }
 
+// Alerter meldet einen Backup-Fehlschlag nach außen — an einen Menschen, nicht in
+// eine Datei. Log und Änderungsprotokoll halten den Fehlschlag zwar fest, aber
+// beide muss jemand ANSEHEN; genau das passiert bei einem Backup, das seit Wochen
+// nicht mehr läuft, erfahrungsgemäß nicht (Hundert 04). nil = kein Versand.
+type Alerter func(ctx context.Context, subject, body string)
+
+// alertBackupFailure baut die Nachricht und schickt sie, wenn ein Alerter gesetzt
+// ist. Als eigene Funktion, damit der Text an EINER Stelle steht und die drei
+// Fehlerzweige unten nicht je eine eigene Formulierung erfinden.
+func alertBackupFailure(ctx context.Context, alert Alerter, target, headline, detail string) {
+	if alert == nil {
+		return
+	}
+	// Vom Lauf-Context loesen, genau wie audit() zwoelf Zeilen weiter oben — und aus
+	// demselben Grund, nur mit mehr Gewicht: der haeufigste Grund, WARUM ein Lauf
+	// scheitert, ist das Ablaufen eben dieses Contexts (30-Minuten-Budget des Planers,
+	// oder das Herunterfahren). Ein Versand darueber liefe in einen bereits
+	// abgebrochenen Context, und ein context-treuer SMTP-Versand kaeme sofort
+	// ergebnislos zurueck: Der Betreiber bekaeme ausgerechnet fuer den Fehlschlag
+	// keine Nachricht, fuer den diese Funktion ueberhaupt existiert. Das Protokoll
+	// haelt ihn zwar fest, aber dorthin schaut niemand von selbst — das ist die
+	// gesamte Begruendung von Hundert 04.
+	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	var b strings.Builder
+	fmt.Fprintf(&b, "Das geplante %s-Backup ist fehlgeschlagen.\n\n%s\n", target, headline)
+	if detail != "" {
+		fmt.Fprintf(&b, "\nDetails: %s\n", detail)
+	}
+	b.WriteString("\nSolange das so bleibt, gibt es keinen frischen Wiederherstellungspunkt.\n")
+	b.WriteString("Die Backup-Kachel im Dashboard und das Änderungsprotokoll zeigen den Verlauf.\n")
+	alert(actx, "Parkrr: "+target+"-Backup fehlgeschlagen", b.String())
+}
+
 // StartScheduler runs scheduled backups driven by the DB-stored cron schedule
 // (backup_settings). Each minute it reloads the schedule and fires any target
 // whose cron is due since its last recorded run. Blocks until stop is closed —
 // run it in a goroutine. A no-op unless a key and at least one target (a backup
 // directory or S3) are configured.
-func StartScheduler(stop <-chan struct{}, pool *pgxpool.Pool, dbURL, key, dir string, s3 S3Config) {
+func StartScheduler(stop <-chan struct{}, pool *pgxpool.Pool, dbURL, key, dir string, s3 S3Config, alert Alerter) {
 	if key == "" || (dir == "" && !s3.Enabled()) {
 		return
 	}
@@ -272,14 +307,19 @@ func StartScheduler(stop <-chan struct{}, pool *pgxpool.Pool, dbURL, key, dir st
 		case <-stop:
 			return
 		case <-ticker.C:
-			schedulerTick(pool, dbURL, key, dir, s3, &lastVol, &lastS3)
+			schedulerTick(pool, dbURL, key, dir, s3, &lastVol, &lastS3, alert)
 		}
 	}
 }
 
-// effectiveLast returns the later of the persisted last-run and the in-memory
+// EffectiveLast returns the later of the persisted last-run and the in-memory
 // guard, or nil if neither is set (target never run).
-func effectiveLast(dbLast *time.Time, mem time.Time) *time.Time {
+//
+// Exportiert, weil der automatische Rechnungslauf (server.StartAutoInvoice) genau
+// dieselbe Frage stellt: ein gespeicherter Merker, ein Wächter im Speicher, und ein
+// drittes, ECHTES "noch nie gelaufen". Ihn dort nachzubauen hiesse, die Regel zweimal
+// zu haben — und beim naechsten Mal wuerde nur eine der beiden verbessert.
+func EffectiveLast(dbLast *time.Time, mem time.Time) *time.Time {
 	if dbLast == nil {
 		if mem.IsZero() {
 			return nil
@@ -292,7 +332,7 @@ func effectiveLast(dbLast *time.Time, mem time.Time) *time.Time {
 	return dbLast
 }
 
-func schedulerTick(pool *pgxpool.Pool, dbURL, key, dir string, s3 S3Config, lastVol, lastS3 *time.Time) {
+func schedulerTick(pool *pgxpool.Pool, dbURL, key, dir string, s3 S3Config, lastVol, lastS3 *time.Time, alert Alerter) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
@@ -320,13 +360,14 @@ func schedulerTick(pool *pgxpool.Pool, dbURL, key, dir string, s3 S3Config, last
 	// policy ages out on the short window. A FAILURE uses actionBackupFailed, which is
 	// deliberately absent from auditShortLivedActions, so "when did the nightly backups
 	// stop?" is still answerable once the 365-day short window has passed.
-	if dir != "" && fireDue(settings.VolumeCron, effectiveLast(status.LastVolumeAt, *lastVol), now) {
+	if dir != "" && fireDue(settings.VolumeCron, EffectiveLast(status.LastVolumeAt, *lastVol), now) {
 		*lastVol = now // advance the guard before running so a status-write failure can't re-fire
-		switch size, verified, err := RunVolume(ctx, pool, dbURL, key, dir, settings.VolumeKeep); {
+		switch size, verified, err := RunVolume(ctx, pool, dbURL, key, dir, settings.VolumeRetention()); {
 		case err != nil:
 			slog.Error("scheduled volume backup failed", "err", err)
 			audit(ctx, actionBackupFailed, "Geplantes Volume-Backup FEHLGESCHLAGEN",
 				map[string]any{"target": "volume", "ok": false, "cron": settings.VolumeCron, "error": err.Error()})
+			alertBackupFailure(ctx, alert, "Volume", "Der Lauf brach ab.", err.Error())
 		case !verified:
 			// Written, but it did not decrypt/restore-list cleanly. recordVolume already
 			// flagged it not-OK; reporting ok:true here would leave the append-only trail
@@ -334,18 +375,21 @@ func schedulerTick(pool *pgxpool.Pool, dbURL, key, dir string, s3 S3Config, last
 			slog.Warn("scheduled volume backup written but NOT verified", "dir", dir, "bytes", size)
 			audit(ctx, actionBackupFailed, "Geplantes Volume-Backup geschrieben, aber NICHT verifiziert",
 				map[string]any{"target": "volume", "ok": false, "verified": false, "bytes": size, "cron": settings.VolumeCron})
+			alertBackupFailure(ctx, alert, "Volume",
+				"Das Archiv wurde geschrieben, hat die Wiederherstellungsprüfung aber NICHT bestanden und wurde deshalb nicht übernommen.", "")
 		default:
 			slog.Info("scheduled volume backup written", "dir", dir, "bytes", size)
 			audit(ctx, "backup", "Geplantes Volume-Backup erstellt und verifiziert",
 				map[string]any{"target": "volume", "ok": true, "verified": true, "bytes": size, "cron": settings.VolumeCron, "keep": settings.VolumeKeep})
 		}
 	}
-	if s3.Enabled() && fireDue(settings.S3Cron, effectiveLast(status.LastS3At, *lastS3), now) {
+	if s3.Enabled() && fireDue(settings.S3Cron, EffectiveLast(status.LastS3At, *lastS3), now) {
 		*lastS3 = now
-		if name, err := RunS3(ctx, pool, dbURL, key, s3, settings.S3Keep); err != nil {
+		if name, err := RunS3(ctx, pool, dbURL, key, s3, settings.S3Retention()); err != nil {
 			slog.Error("scheduled S3 backup failed", "err", err)
 			audit(ctx, actionBackupFailed, "Geplantes S3-Backup FEHLGESCHLAGEN",
 				map[string]any{"target": "s3", "ok": false, "bucket": s3.Bucket, "cron": settings.S3Cron, "error": err.Error()})
+			alertBackupFailure(ctx, alert, "S3", "Der Lauf in den Bucket "+s3.Bucket+" brach ab.", err.Error())
 		} else {
 			slog.Info("scheduled S3 backup uploaded", "bucket", s3.Bucket, "name", name)
 			audit(ctx, "backup", "Geplantes S3-Backup hochgeladen",
@@ -405,17 +449,49 @@ func sweepStaleParts(dir, keep string) {
 }
 
 // pruneDir keeps only the newest `keep` timestamped backups in dir (0 = keep all).
-func pruneDir(ctx context.Context, dir string, keep int) {
-	if keep < 1 {
+// prunableFiles ist das Dateipendant zu prunableS3: alles jenseits der neuesten
+// `keep` UND älter als `keepDays` Tage. files muss chronologisch aufsteigend
+// sortiert sein (die Zeitstempel im Namen leisten das). keepDays=0 = keine
+// Altersgrenze, also das bisherige Verhalten.
+//
+// Das Alter kommt aus der Änderungszeit der Datei, nicht aus dem Namen: ein
+// wiederhergestelltes oder umbenanntes Archiv soll nach seinem tatsächlichen Alter
+// beurteilt werden. Ist sie nicht lesbar, gilt die Datei als NICHT alt genug —
+// im Zweifel aufbewahren statt löschen.
+func prunableFiles(files []string, r Retention, now time.Time) []string {
+	if r.Keep < 1 || len(files) <= r.Keep {
+		return nil
+	}
+	cand := files[:len(files)-r.Keep]
+	if r.KeepDays <= 0 {
+		return cand
+	}
+	cutoff := now.AddDate(0, 0, -r.KeepDays)
+	var out []string
+	for _, f := range cand {
+		fi, err := os.Stat(f)
+		if err != nil {
+			slog.Warn("backup: prune stat failed – keeping the archive", "path", f, "err", err)
+			continue
+		}
+		if fi.ModTime().Before(cutoff) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func pruneDir(ctx context.Context, dir string, r Retention) {
+	if r.Keep < 1 {
 		return
 	}
 	files, err := filepath.Glob(filepath.Join(dir, "parkrr-*.dump.enc"))
-	if err != nil || len(files) <= keep {
+	if err != nil || len(files) <= r.Keep {
 		return
 	}
 	sort.Strings(files) // timestamped names sort chronologically
 	var removed []string
-	for _, old := range files[:len(files)-keep] {
+	for _, old := range prunableFiles(files, r, time.Now()) {
 		if err := os.Remove(old); err != nil {
 			slog.Warn("backup: prune failed", "path", old, "err", err)
 			continue
@@ -427,7 +503,7 @@ func pruneDir(ctx context.Context, dir string, keep int) {
 	// so a missing restore point can be explained rather than guessed at.
 	if len(removed) > 0 {
 		audit(ctx, "delete",
-			fmt.Sprintf("%d alte Backup-Archive gelöscht (Aufbewahrung: %d)", len(removed), keep),
-			map[string]any{"deleted_files": removed, "deleted_count": len(removed), "keep": keep})
+			fmt.Sprintf("%d alte Backup-Archive gelöscht (Aufbewahrung: %d)", len(removed), r.Keep),
+			map[string]any{"deleted_files": removed, "deleted_count": len(removed), "keep": r.Keep, "keep_days": r.KeepDays})
 	}
 }

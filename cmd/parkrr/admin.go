@@ -53,9 +53,16 @@ func bootstrapAdmin(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config)
 			// existing session in ONE transaction, so a stolen admin cookie cannot
 			// outlive the old password even if one statement fails (finding H-04). The
 			// forced UPDATE always re-applies the password, so it always counts as changed.
+			//
+			// Der erzwungene Lauf hebt auch eine SPERRE dieses Kontos auf. Das ist der
+			// Notausgang: sperrt sich ein Betrieb versehentlich aus (jeder Admin
+			// deaktiviert), gäbe es sonst keinen Weg zurück, weil das Entsperren selbst
+			// hinter admin() liegt. Der normale Start unten tut das ausdrücklich NICHT —
+			// eine bewusst gesetzte Sperre soll einen Neustart überleben.
 			if err = pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 				if _, e := tx.Exec(ctx,
-					`UPDATE users SET email=$1, password_hash=$2, is_admin=TRUE, role='admin', updated_at=now()
+					`UPDATE users SET email=$1, password_hash=$2, is_admin=TRUE, role='admin',
+					        disabled=FALSE, updated_at=now()
 					 WHERE id=$3`, cfg.AdminEmail, hash, existingID); e != nil {
 					return e
 				}
