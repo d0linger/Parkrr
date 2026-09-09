@@ -196,6 +196,11 @@ angefasst wurde.
 - **Die Neustart-Warnung der Betriebsüberwachung kann erstmals auslösen:** die
   Prozess-Kennzahlen, auf die die mitgelieferte Alarmregel sich stützt, wurden
   bisher gar nicht ausgeliefert — eine stille Lücke, die wie „alles ruhig" aussah.
+- **Eine einmalige Wartungsaufgabe kann sich nicht mehr selbst dauerhaft
+  blockieren.** Beim Lösen ihrer Sperre wurde bisher nur ein Fehler beachtet, nicht
+  aber die Antwort „Sperre gar nicht gehalten"; die Verbindung ging danach samt
+  Sperre in den Pool zurück und jeder weitere Anlauf meldete bis zu einer Stunde
+  lang „läuft bereits". Dieselbe Behandlung wie beim Mahnen.
 - **Die Löschung einer Person erreicht jetzt auch das Mahn-Protokoll.** Die
   Anonymisierung reichte bis ins E-Mail-Protokoll, hörte aber genau davor auf, wo
   die Adresse ein zweites Mal steht: in den versendeten Mahnungen. Sie blieb dort

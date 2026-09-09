@@ -57,6 +57,11 @@ func (h *Handler) runOnce(ctx context.Context, task string, fn func(context.Cont
 
 	var got bool
 	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&got); err != nil {
+		// Ob die Sperre gesetzt wurde, ist hier UNBEKANNT: bricht der Aufrufer mitten im
+		// Hin und Her ab, kann Postgres sie längst gesetzt haben, während hier nur der
+		// Context-Fehler ankommt — und das Lösen ist noch nicht eingerichtet. Dieselbe
+		// Stelle wie in RemindInvoice; sie war hier nur nie behandelt.
+		discardLockedConn(conn)
 		return err
 	}
 	if !got {
@@ -69,9 +74,24 @@ func (h *Handler) runOnce(ctx context.Context, task string, fn func(context.Cont
 		// weiter, obwohl dieses Stück die Vorlage war.
 		ulCtx, ulCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer ulCancel()
-		if _, err := conn.Exec(ulCtx, `SELECT pg_advisory_unlock($1)`, key); err != nil {
-			slog.Warn("maintenance advisory unlock failed", "task", task, "err", err)
+		// Das ERGEBNIS auswerten, nicht nur den Fehler: pg_advisory_unlock meldet mit
+		// false, dass die Sitzung die Sperre gar nicht hielt. Über Exec ging dieser
+		// Rückgabewert verloren, und conn.Release() gab eine womöglich noch sperrende
+		// Verbindung in den Pool zurück — pgxpool setzt sie nicht zurück (kein
+		// DISCARD ALL). Der Wartungsschlüssel bliebe dann bis MaxConnLifetime (1 h)
+		// besetzt und jeder weitere Anlauf derselben Aufgabe liefe in ErrTaskBusy.
+		//
+		// Genau dieselbe Behandlung wie in RemindInvoice: dort war sie beim letzten Mal
+		// eingezogen worden, hier blieb nur die Frist übrig — die halbe Übernahme ist
+		// der Grund, warum die beiden Stellen überhaupt wieder auseinanderliefen.
+		var unlocked bool
+		err := conn.QueryRow(ulCtx, `SELECT pg_advisory_unlock($1)`, key).Scan(&unlocked)
+		if err == nil && unlocked {
+			return
 		}
+		slog.Warn("maintenance advisory unlock failed — Verbindung wird verworfen",
+			"task", task, "unlocked", unlocked, "err", err)
+		discardLockedConn(conn)
 	}()
 
 	// Nach der Lock ein zweites Mal prüfen: zwischen der ersten Prüfung und dem
