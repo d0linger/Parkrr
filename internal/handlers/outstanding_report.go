@@ -1,9 +1,12 @@
 package handlers
 
 import (
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
+
+	"github.com/preining/parkrr/internal/auth"
 )
 
 // OutstandingReportPDF liefert die Offene-Posten-Liste als druckfertiges A4-PDF
@@ -97,8 +100,14 @@ func (h *Handler) OutstandingReportPDF(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition",
 		`attachment; filename="parkrr-offene-posten-`+h.now().Format("2006-01-02")+`.pdf"`)
 	if err := pdf.Output(w); err != nil {
-		// Header sind schon raus; mehr als loggen geht hier nicht.
-		serverError(w, r, "PDF-Erzeugung fehlgeschlagen", err)
+		// Header UND Rumpf sind schon raus — genau das, was der Kommentar hier immer
+		// behauptet hat, wozu der Code aber das Gegenteil tat: serverError schrieb
+		// einen zweiten Statuscode und haengte JSON an das halbe PDF. Der Abrufer bekam
+		// eine unbrauchbare Datei mit Text am Ende, und Go meldete zusaetzlich
+		// "superfluous response.WriteHeader call". Die Ursache wird deshalb nur noch
+		// festgehalten: fuer das Zugriffsprotokoll (SetRequestError) und im Log.
+		auth.SetRequestError(r.Context(), err)
+		slog.Error("offene-posten-pdf: Ausgabe fehlgeschlagen", "err", err)
 	}
 }
 

@@ -70,13 +70,20 @@ func fitText(pdf *fpdf.Fpdf, s string, w float64) string {
 	if pdf.GetStringWidth(s) <= w-2 {
 		return s
 	}
-	for len(s) > 1 {
-		s = s[:len(s)-1]
-		if pdf.GetStringWidth(s+"...") <= w-2 {
-			return s + "..."
+	// Zeichenweise kuerzen, NICHT byteweise. Seit der Umstellung auf die eingebettete
+	// Unicode-Schrift ist der Uebersetzer die Identitaet, die Zeichenkette bleibt also
+	// UTF-8. Mit s[:len(s)-1] fiel ein Schnitt mitten in ein mehrbyte-Zeichen: eine
+	// Beschreibung, die auf ss, ue oder das Euro-Zeichen endet, wurde als kaputtes
+	// Zeichen gesetzt. Vorher, mit cp1252, war jedes Zeichen ein Byte und der Schnitt
+	// zufaellig sicher.
+	rs := []rune(s)
+	for len(rs) > 1 {
+		rs = rs[:len(rs)-1]
+		if cut := string(rs) + "..."; pdf.GetStringWidth(cut) <= w-2 {
+			return cut
 		}
 	}
-	return s
+	return string(rs)
 }
 
 // InvoicePDF renders a single invoice as an A4 PDF laid out per §11 UStG

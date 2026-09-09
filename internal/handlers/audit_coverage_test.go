@@ -153,9 +153,11 @@ func reachOf(name string, bodies map[string]string) string {
 
 var (
 	reUpdateSet = regexp.MustCompile(`(?s)UPDATE \w+ SET (.*?)(?:WHERE|RETURNING)`)
-	// Aufrufe im Rumpf: `name(` bzw. `x.name(`. Grob absichtlich — was kein Name
-	// einer Paketfunktion ist, findet reachOf schlicht nicht in der Tabelle wieder.
-	reCallName  = regexp.MustCompile(`(?:^|[^\w.])(\w+)\(`)
+	// Aufrufe im Rumpf: `name(` UND `x.name(`. Der Selektor-Vorsatz ist optional und
+	// wird verworfen — sonst blieb die haeufigste Form draussen: eine Hilfsfunktion,
+	// die als Methode auf *Handler gerufen wird (h.settleItemTx(...)), fiel aus Reach
+	// heraus und damit wieder aus der Pruefung — genau der Fluchtweg, den Reach schliesst.
+	reCallName  = regexp.MustCompile(`(?:^|[^\w])(?:\w+\.)?(\w+)\(`)
 	reQuotedKey = regexp.MustCompile(`"([a-z_]+)":`)
 	// A struct-based diff: diffFields(old|prev|existing, …) — or one built from a
 	// local audit-view struct literal, e.g. diffFields(hallAudit{…}, hallAudit{…}).
@@ -203,7 +205,27 @@ var auditIgnoredPerFunc = map[string]map[string]bool{
 	// Sichtbar wurde das erst, als der Wächter den Hilfsfunktionen zu folgen begann
 	// (siehe handlerFunc.Reach): settleItemTx trägt selbst keinen auditChange und
 	// wurde darum bis dahin gar nicht geprüft. Die Lücke war also immer da.
-	"ApplyCredit": {"paid": true},
+	"ApplyCredit": {"paid": true, "archived": true},
+	// archived (vehicles) ist ueberall dort ein mechanischer Nachvollzug, wo ein
+	// Gefaehrt durch Bezahlen/Abschliessen zu liegt: autoArchiveIfClosed (vehicles.go)
+	// und ArchiveSettledExpiredVehicles (agreements.go) setzen es, nicht der Bediener.
+	// Der Eintrag des ausloesenden Vorgangs IST die Spur.
+	//
+	// Bewusst je Handler und NICHT in auditIgnoredColumns: fuer Kategorien und
+	// Leistungen ist archived die eigene Entscheidung des Bedieners, mit eigenem
+	// Endpunkt (SetCategoryArchived, SetServiceArchived) — dort muss es protokolliert
+	// bleiben. Genau der Fall, vor dem der Kommentar oben warnt.
+	//
+	// Sichtbar wurde die Gruppe erst, als reCallName auch Methodenaufrufe (h.name(...))
+	// erfasste; vorher fiel jeder ueber *Handler gerufene Helfer aus der Pruefung.
+	"SetAgreementPaid":       {"archived": true},
+	"SetAgreementPeriodPaid": {"archived": true},
+	"ChangeVehicleStatus":    {"archived": true},
+	"MarkPaid":               {"archived": true},
+	"UpdateVehicle":          {"archived": true},
+	// CreatePayment deckt ueber settleItemTx Posten ab und stempelt dabei paid; dazu
+	// archiviert es geschlossene Gefaehrte. Dieselbe Begruendung wie DeletePayment.
+	"CreatePayment": {"paid": true, "archived": true},
 	// ResolvePortalRequest stempelt beim Erledigen resolved_at/resolved_by — das
 	// "wer/wann", das die Audit-Zeile selbst trägt (Nutzer + Zeitpunkt stehen in
 	// ihr), plus der status, den der Eintrag als Text nennt. Kein eigener Diff

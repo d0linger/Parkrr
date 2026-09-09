@@ -266,6 +266,17 @@ func alertBackupFailure(ctx context.Context, alert Alerter, target, headline, de
 	if alert == nil {
 		return
 	}
+	// Vom Lauf-Context loesen, genau wie audit() zwoelf Zeilen weiter oben — und aus
+	// demselben Grund, nur mit mehr Gewicht: der haeufigste Grund, WARUM ein Lauf
+	// scheitert, ist das Ablaufen eben dieses Contexts (30-Minuten-Budget des Planers,
+	// oder das Herunterfahren). Ein Versand darueber liefe in einen bereits
+	// abgebrochenen Context, und ein context-treuer SMTP-Versand kaeme sofort
+	// ergebnislos zurueck: Der Betreiber bekaeme ausgerechnet fuer den Fehlschlag
+	// keine Nachricht, fuer den diese Funktion ueberhaupt existiert. Das Protokoll
+	// haelt ihn zwar fest, aber dorthin schaut niemand von selbst — das ist die
+	// gesamte Begruendung von Hundert 04.
+	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
 	var b strings.Builder
 	fmt.Fprintf(&b, "Das geplante %s-Backup ist fehlgeschlagen.\n\n%s\n", target, headline)
 	if detail != "" {
@@ -273,7 +284,7 @@ func alertBackupFailure(ctx context.Context, alert Alerter, target, headline, de
 	}
 	b.WriteString("\nSolange das so bleibt, gibt es keinen frischen Wiederherstellungspunkt.\n")
 	b.WriteString("Die Backup-Kachel im Dashboard und das Änderungsprotokoll zeigen den Verlauf.\n")
-	alert(ctx, "Parkrr: "+target+"-Backup fehlgeschlagen", b.String())
+	alert(actx, "Parkrr: "+target+"-Backup fehlgeschlagen", b.String())
 }
 
 // StartScheduler runs scheduled backups driven by the DB-stored cron schedule

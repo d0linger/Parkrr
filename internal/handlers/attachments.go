@@ -143,9 +143,12 @@ func (h *Handler) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 		data, contentType = d, ct
 	}
 
+	// Nach ZEICHEN begrenzen, nicht nach Bytes: ein Schnitt bei 200 Bytes trifft bei
+	// einem deutschen Dateinamen mitten in ein Zeichen, und der kaputte Rest wird
+	// gespeichert, protokolliert und spaeter im Content-Disposition mitgeschickt.
 	filename := trim(header.Filename)
-	if len(filename) > 200 {
-		filename = filename[:200]
+	if rs := []rune(filename); len(rs) > 200 {
+		filename = string(rs[:200])
 	}
 	var attID int64
 	if err := h.Pool.QueryRow(r.Context(),
