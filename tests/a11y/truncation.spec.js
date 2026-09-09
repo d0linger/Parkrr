@@ -21,6 +21,19 @@ async function login(page) {
 test('Abgeschnittene Liste sagt, dass sie abgeschnitten ist', async ({ page }) => {
   await login(page);
 
+  // Eigene Personen saeen statt fremde vorauszusetzen: der Test verlangte
+  // X-Total-Count > 1, legte aber selbst nichts an — ob mehr als eine Person
+  // existiert, hing davon ab, welche anderen Spec-Dateien gerade gelaufen (und
+  // wieder aufgeraeumt) waren. Genau so fiel er in CI im Block mit um, samt
+  // beider Wiederholungen, waehrend er im naechsten Lauf gruen war.
+  await page.evaluate(async () => {
+    const csrf = document.cookie.split('; ').find((c) => c.startsWith('parkrr_csrf='))?.split('=')[1];
+    const hdr = { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf };
+    for (let i = 0; i < 2; i++) {
+      await fetch('/api/persons', { method: 'POST', credentials: 'same-origin', headers: hdr, body: JSON.stringify({ first_name: 'Trunc' + i, last_name: 'SeedUX53' }) });
+    }
+  });
+
   // Der Kopf muss zuerst ueberhaupt ankommen — sonst prueft der Test seine eigene
   // Annahme statt der Anzeige.
   const head = await page.evaluate(async () => {
@@ -70,4 +83,13 @@ test('Auch Gefährte und Zusatzkosten melden ihre Gesamtzahl', async ({ page }) 
     }, path);
     expect(total, path + ' meldet keine Gesamtzahl').not.toBeNull();
   }
+  // Aufraeumen: nur die eigenen Saat-Personen.
+  await page.evaluate(async () => {
+    const csrf = document.cookie.split('; ').find((c) => c.startsWith('parkrr_csrf='))?.split('=')[1];
+    const list = await (await fetch('/api/persons?limit=1000', { credentials: 'same-origin' })).json();
+    for (const p of (Array.isArray(list) ? list : []).filter((x) => x.last_name === 'SeedUX53')) {
+      await fetch('/api/persons/' + p.id, { method: 'DELETE', credentials: 'same-origin', headers: { 'X-CSRF-Token': csrf } });
+    }
+  });
+
 });

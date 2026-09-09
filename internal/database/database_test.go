@@ -123,11 +123,24 @@ func TestMigrateDetectsEditedMigration(t *testing.T) {
 	t.Cleanup(admin.Close)
 
 	const dbName = "parkrr_checksum_test"
-	if _, err := admin.Exec(ctx, `DROP DATABASE IF EXISTS `+dbName+` WITH (FORCE)`); err != nil {
-		t.Skipf("kann keine eigene Test-DB anlegen: %v", err)
+	// Anlegen mit Wiederholung statt sofortigem Skip: go test ./... laesst Pakete
+	// PARALLEL laufen, und zwei gleichzeitige CREATE DATABASE aus derselben Vorlage
+	// weist Postgres ab ("source database template1 is being accessed by other
+	// users"). Unter -race (CI) ist alles um ein Vielfaches langsamer und das
+	// Fenster entsprechend weit offen — der sofortige Skip machte daraus einen
+	// STILLEN Ausfall des ganzen Pakets in der Abdeckung. Erst ein DAUERHAFTER
+	// Fehler (etwa fehlendes CREATEDB-Recht einer lokalen Umgebung) bleibt ein Skip.
+	var derr error
+	for i := 0; i < 20; i++ {
+		if _, derr = admin.Exec(ctx, `DROP DATABASE IF EXISTS `+dbName+` WITH (FORCE)`); derr == nil {
+			if _, derr = admin.Exec(ctx, `CREATE DATABASE `+dbName); derr == nil {
+				break
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
-	if _, err := admin.Exec(ctx, `CREATE DATABASE `+dbName); err != nil {
-		t.Skipf("kann keine eigene Test-DB anlegen: %v", err)
+	if derr != nil {
+		t.Skipf("kann keine eigene Test-DB anlegen: %v", derr)
 	}
 	t.Cleanup(func() {
 		_, _ = admin.Exec(context.Background(), `DROP DATABASE IF EXISTS `+dbName+` WITH (FORCE)`)

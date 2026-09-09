@@ -51,7 +51,14 @@ jobs:
           PARKRR_ADMIN_USERNAME: admin
           PARKRR_ADMIN_PASSWORD: ci-a11y-admin-password
           PARKRR_SECURE_COOKIES: "false"
+          # Ohne Schluessel zeigt die Backup-Seite nur "Nicht aktiviert" und rendert
+          # KEINE .sched-col — der B8-Zeitplan-Test konnte in CI also nie bestehen
+          # (in allen Laeufen 3/3 rot, deterministisch). Kein echtes Geheimnis;
+          # config.go verlangt mindestens 32 Bytes.
+          PARKRR_BACKUP_KEY: ci-a11y-backup-key-not-a-real-secret-0000
+          PARKRR_BACKUP_DIR: /tmp/parkrr-a11y-backups
         run: |
+          mkdir -p /tmp/parkrr-a11y-backups
           ./parkrr &
           echo "PARKRR_PID=$!" >> "$GITHUB_ENV"
           for i in $(seq 1 30); do
