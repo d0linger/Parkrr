@@ -13,8 +13,17 @@ linters:
   settings:
     misspell:
       locale: US
+      # Deutsche Woerter, die der US-Rechtschreibpruefer fuer verunglueckte englische
+      # haelt. Die Oberflaeche UND die Kommentare dieses Projekts sind deutsch (siehe
+      # CONTRIBUTING.md), also sind das keine Tippfehler, sondern die Sprache selbst.
+      # "Konfiguration" ist nicht "Configuration", "irreversibel" nicht "irreversible".
       ignore-rules:
         - cancelled
+        - konfiguration
+        - konstellation
+        - destruktive
+        - irreversibel
+        - willk
     revive:
       rules:
         - name: exported

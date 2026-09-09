@@ -586,19 +586,13 @@ func (h *Handler) refInvoiced(ctx context.Context, q rowQuerier, kind string, re
 	return yes, err
 }
 
-// invoiceComplianceError checks the §11 UStG (AT) mandatory invoice fields and
-// returns a non-empty message naming what's missing, so an incomplete/non-compliant
-// invoice is never issued (GoBD/BAO: Richtigkeit & Vollständigkeit).
+// complianceOutcome benennt, auf welcher Seite der Mangel liegt — die Zeichenkette
+// landet so im Protokoll des automatischen Laufs.
 func complianceOutcome(sellerSide bool) string {
 	if sellerSide {
 		return OutcomeComplianceSeller
 	}
 	return OutcomeComplianceBuyer
-}
-
-func invoiceComplianceError(s billingSettings, buyerName, buyerAddress string, grossTotal float64) string {
-	msg, _ := invoiceComplianceDetail(s, buyerName, buyerAddress, grossTotal)
-	return msg
 }
 
 // invoiceComplianceDetail liefert zusätzlich, OB der Mangel beim Aussteller liegt.

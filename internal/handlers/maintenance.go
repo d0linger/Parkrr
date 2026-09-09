@@ -24,6 +24,13 @@ var ErrTaskBusy = errors.New("maintenance task already running elsewhere")
 func advisoryKey(name string) int64 {
 	hsh := fnv.New64a()
 	_, _ = hsh.Write([]byte(name))
+	// #nosec G115 -- der Ueberlauf ist hier der ZWECK, nicht ein Versehen:
+	// pg_advisory_lock nimmt einen vorzeichenbehafteten bigint, und genau die
+	// Umdeutung derselben 64 Bit haelt den Schluesselraum vollstaendig. Ein
+	// Abschneiden auf den positiven Bereich (etwa & 0x7FFF...) halbierte ihn und
+	// verdoppelte die Kollisionswahrscheinlichkeit — das Gegenteil dessen, wofuer
+	// diese Funktion ueberhaupt existiert. Die Abbildung ist umkehrbar eindeutig,
+	// derselbe Name ergibt immer denselben Schluessel.
 	return int64(hsh.Sum64())
 }
 
