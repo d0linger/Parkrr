@@ -21,8 +21,16 @@ async function seedVehicles(page, n) {
     const csrf = document.cookie.split('; ').find((c) => c.startsWith('parkrr_csrf='))?.split('=')[1];
     const hdr = { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf };
     const person = await (await fetch('/api/persons', { method: 'POST', credentials: 'same-origin', headers: hdr, body: JSON.stringify({ first_name: 'Bulk', last_name: 'SeedB54' }) })).json();
+    // Eigene Kategorie sicherstellen statt eine fremde vorauszusetzen: mit zwei
+    // parallelen Workern haengt es sonst von der Dateireihenfolge ab, ob schon eine
+    // existiert — cats war dann leer, cat undefined, und der Test fiel mit
+    // "Cannot read properties of undefined (reading 'id')" beim SEEDEN um, nicht
+    // an dem, was er prueft.
     const cats = await (await fetch('/api/categories', { credentials: 'same-origin' })).json();
-    const cat = cats.find((c) => !c.archived) || cats[0];
+    let cat = Array.isArray(cats) ? (cats.find((c) => !c.archived) || cats[0]) : undefined;
+    if (!cat || !cat.id) {
+      cat = await (await fetch('/api/categories', { method: 'POST', credentials: 'same-origin', headers: hdr, body: JSON.stringify({ name: 'BulkKat-SeedB54' }) })).json();
+    }
     const ids = [];
     for (let i = 0; i < count; i++) {
       const v = await (await fetch('/api/vehicles', { method: 'POST', credentials: 'same-origin', headers: hdr, body: JSON.stringify({ person_id: person.id, category_id: cat.id, status: 'stored', label: 'BulkAuto-' + Date.now() + '-' + i, billing_period: 'monthly', start_date: new Date().toISOString().slice(0, 10) }) })).json();

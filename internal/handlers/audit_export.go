@@ -127,8 +127,10 @@ func (h *Handler) ExportAudit(w http.ResponseWriter, r *http.Request) {
 			serverError(w, r, "encode failed", merr)
 			return
 		}
-		bw.Write(line)
-		bw.WriteByte('\n')
+		// Schreibfehler heisst hier: der Abrufer ist weg. Bewusst verworfen — und
+		// SICHTBAR verworfen, wie das _ = bw.Flush() am Ende es schon tat.
+		_, _ = bw.Write(line)
+		_ = bw.WriteByte('\n')
 		count++
 	}
 	if err := rows.Err(); err != nil {
@@ -138,7 +140,7 @@ func (h *Handler) ExportAudit(w http.ResponseWriter, r *http.Request) {
 	manifest, _ := json.Marshal(auditExportManifest{
 		Type: "manifest", Rows: count, FinalChain: chain, ExportedAt: h.now(),
 	})
-	bw.Write(manifest)
-	bw.WriteByte('\n')
+	_, _ = bw.Write(manifest)
+	_ = bw.WriteByte('\n')
 	_ = bw.Flush()
 }

@@ -201,6 +201,12 @@ angefasst wurde.
   aber die Antwort „Sperre gar nicht gehalten"; die Verbindung ging danach samt
   Sperre in den Pool zurück und jeder weitere Anlauf meldete bis zu einer Stunde
   lang „läuft bereits". Dieselbe Behandlung wie beim Mahnen.
+- **Die Belegungshistorie kennt jetzt auch die Gefährte, die beim Update schon
+  auf einem Platz standen.** Die Historie wird von einer Änderungsüberwachung
+  gefüllt; wer im Moment ihrer Einführung bereits stand, hatte nie eine Änderung
+  ausgelöst und fehlte deshalb — der Platz galt als frei, und die erste
+  Umplatzierung hinterließ keine Vorgeschichte. Übernommen wird „ab hier
+  nachweislich belegt": der wahre Beginn wurde nie aufgezeichnet.
 - **Die Löschung einer Person erreicht jetzt auch das Mahn-Protokoll.** Die
   Anonymisierung reichte bis ins E-Mail-Protokoll, hörte aber genau davor auf, wo
   die Adresse ein zweites Mal steht: in den versendeten Mahnungen. Sie blieb dort
