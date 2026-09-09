@@ -51,6 +51,12 @@ jobs:
           PARKRR_ADMIN_USERNAME: admin
           PARKRR_ADMIN_PASSWORD: ci-a11y-admin-password
           PARKRR_SECURE_COOKIES: "false"
+          # Der ganze a11y-Lauf kommt aus EINER IP; der Standard von 600/min reicht
+          # fuer 41 Tests mit Seed-/Cleanup-Verkehr nicht und die Middleware
+          # antwortete mit 429 {"error":"rate limit exceeded"} — das trieb render-race,
+          # truncation und die Planer-Tests in wandernde Fehlschlaege. Fuer den Testlauf
+          # praktisch abschalten.
+          PARKRR_RATE_LIMIT_PER_MIN: "100000"
           # Ohne Schluessel zeigt die Backup-Seite nur "Nicht aktiviert" und rendert
           # KEINE .sched-col — der B8-Zeitplan-Test konnte in CI also nie bestehen
           # (in allen Laeufen 3/3 rot, deterministisch). Kein echtes Geheimnis;

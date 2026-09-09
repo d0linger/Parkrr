@@ -82,6 +82,12 @@ jobs:
 
       - name: Coverage gate
         run: |
+          # Bei rotem Boden SOFORT zeigen, welches Paket eingebrochen ist — dieselbe
+          # Tabelle wie der Diagnoseschritt, aber HIER, direkt ueber dem Fehler, damit
+          # sie im geposteten Log nicht uebersehen wird. internal/server schwankt je
+          # nach DB-Verfuegbarkeit zwischen 97 % und 3 %; ein Paket weit unter seinem
+          # lokalen Wert ist das, dessen DB-Tests hier nicht laufen.
+          go tool cover -func=coverage.out | awk 'NR>1 { c=index($0,":"); f=substr($0,1,c-1); n=split(f,a,"/"); pkg=""; for(i=1;i<n;i++) pkg=pkg a[i] "/"; split(substr($0,c+1),x," "); tot[pkg]+=x[2]; if(x[3]>0) cov[pkg]+=x[2] } END { print "Abdeckung je Paket:"; for (k in tot) printf "  %6.1f%%  %s\n", 100*cov[k]/tot[k], k }' | sort -t% -k1 -n
           total=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/,"",$3); print $3}')
           echo "Total statement coverage: ${total}% (minimum ${COVERAGE_MIN}%)"
           awk -v t="$total" -v m="$COVERAGE_MIN" 'BEGIN { exit (t+0 < m+0) ? 1 : 0 }' \
