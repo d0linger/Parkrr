@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/preining/parkrr/internal/backup"
 	"github.com/preining/parkrr/internal/database"
 	"github.com/preining/parkrr/internal/handlers"
 )
@@ -173,5 +174,88 @@ func TestAutoInvoiceSkipsIncompletePersonAndKeepsGoing(t *testing.T) {
 	}
 	if !strings.Contains(summary, "Empfaengerdaten") && !strings.Contains(summary, "Empfängerdaten") {
 		t.Errorf("die Zusammenfassung verschweigt die uebersprungene Person: %q", summary)
+	}
+}
+
+// TestMerkerUnterscheidetNieGelaufenVonNichtLesbar ist der erste Test des
+// Merker-Pfades ueberhaupt — bis hierher deckte keiner der beiden Tests dieser Datei
+// loadAutoInvoiceLast, saveAutoInvoiceLast oder auto_invoice_status ab.
+//
+// Er haelt die Unterscheidung fest, an der vorher alles haengenblieb: "noch nie
+// gelaufen" und "gerade nicht lesbar" sahen gleich aus, weil beide "jetzt" ergaben.
+// Auf dem Stand VORHER war die Signatur time.Time ohne Fehler, dieser Test also gar
+// nicht schreibbar; er faellt auf jeder Rueckkehr zu jener Form sofort um.
+func TestMerkerUnterscheidetNieGelaufenVonNichtLesbar(t *testing.T) {
+	ctx, pool, _ := ownInvoiceDB(t, "parkrr_marker_test")
+
+	// 1. Frisch migriert: die Zeile steht, last_run_at ist NULL — noch nie gelaufen.
+	got, err := loadAutoInvoiceLast(pool)
+	if err != nil {
+		t.Fatalf("frische Migration darf keinen Fehler liefern: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("noch nie gelaufen muss nil sein, war %v", got)
+	}
+
+	// 2. Nach einem Lauf: der Zeitpunkt kommt zurueck.
+	want := time.Now().Add(-90 * time.Minute).Truncate(time.Second)
+	saveAutoInvoiceLast(pool, want)
+	got, err = loadAutoInvoiceLast(pool)
+	if err != nil {
+		t.Fatalf("nach dem Schreiben: %v", err)
+	}
+	if got == nil || !got.Truncate(time.Second).Equal(want) {
+		t.Fatalf("Merker %v, erwartet %v", got, want)
+	}
+
+	// 3. Zeile von Hand entfernt: das ist KEIN Fehler, sondern wieder "nie gelaufen" —
+	//    und saveAutoInvoiceLast legt sie danach wieder an (ON CONFLICT, kein blosses
+	//    UPDATE, das lautlos null Zeilen traefe).
+	if _, err := pool.Exec(ctx, `DELETE FROM auto_invoice_status`); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	got, err = loadAutoInvoiceLast(pool)
+	if err != nil {
+		t.Fatalf("fehlende Zeile darf kein Fehler sein: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("fehlende Zeile muss nil sein, war %v", got)
+	}
+	saveAutoInvoiceLast(pool, want)
+	if got, err = loadAutoInvoiceLast(pool); err != nil || got == nil {
+		t.Fatalf("saveAutoInvoiceLast muss die Zeile neu anlegen (got=%v err=%v)", got, err)
+	}
+
+	// 4. Tabelle weg = NICHT LESBAR. Der Punkt des ganzen Tests: hier muss ein FEHLER
+	//    herauskommen und KEIN Zeitpunkt. Kaeme wie frueher "jetzt" zurueck, verschoebe
+	//    eine voruebergehende Stoerung den naechsten Termin um eine volle Periode.
+	if _, err := pool.Exec(ctx, `DROP TABLE auto_invoice_status`); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+	got, err = loadAutoInvoiceLast(pool)
+	if err == nil {
+		t.Fatal("unlesbarer Merker muss einen Fehler liefern, nicht schweigen")
+	}
+	if got != nil {
+		t.Fatalf("bei einem Lesefehler darf KEIN Zeitpunkt behauptet werden, war %v", got)
+	}
+}
+
+// TestEffectiveLastIgnoriertEinenAelterenFremdenMerker haelt fest, warum der Lauf den
+// SPAETEREN von Speicher und Datenbank nimmt: wird die Datenbank unter dem laufenden
+// Prozess zurueckgesichert (reconcileSchemaAfterRestore laesst ihn bewusst
+// weiterlaufen), traegt der eingespielte Auszug einen FREMDEN, aelteren Zeitpunkt.
+// Ohne den Waechter im Speicher wuerde der Cron daraufhin sofort feuern und eine
+// echte Fakturierung gegen die eingespielten Daten starten.
+func TestEffectiveLastIgnoriertEinenAelterenFremdenMerker(t *testing.T) {
+	mem := time.Now().Add(-1 * time.Minute)
+	fremd := time.Now().Add(-30 * 24 * time.Hour)
+	got := backup.EffectiveLast(&fremd, mem)
+	if got == nil || !got.Equal(mem) {
+		t.Fatalf("der spaetere Zeitpunkt muss gewinnen: got=%v mem=%v", got, mem)
+	}
+	// Und ohne beides bleibt es bei "noch nie gelaufen".
+	if backup.EffectiveLast(nil, time.Time{}) != nil {
+		t.Fatal("weder Merker noch Waechter muss nil ergeben")
 	}
 }

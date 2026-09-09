@@ -301,9 +301,14 @@ func StartScheduler(stop <-chan struct{}, pool *pgxpool.Pool, dbURL, key, dir st
 	}
 }
 
-// effectiveLast returns the later of the persisted last-run and the in-memory
+// EffectiveLast returns the later of the persisted last-run and the in-memory
 // guard, or nil if neither is set (target never run).
-func effectiveLast(dbLast *time.Time, mem time.Time) *time.Time {
+//
+// Exportiert, weil der automatische Rechnungslauf (server.StartAutoInvoice) genau
+// dieselbe Frage stellt: ein gespeicherter Merker, ein Wächter im Speicher, und ein
+// drittes, ECHTES "noch nie gelaufen". Ihn dort nachzubauen hiesse, die Regel zweimal
+// zu haben — und beim naechsten Mal wuerde nur eine der beiden verbessert.
+func EffectiveLast(dbLast *time.Time, mem time.Time) *time.Time {
 	if dbLast == nil {
 		if mem.IsZero() {
 			return nil
@@ -344,7 +349,7 @@ func schedulerTick(pool *pgxpool.Pool, dbURL, key, dir string, s3 S3Config, last
 	// policy ages out on the short window. A FAILURE uses actionBackupFailed, which is
 	// deliberately absent from auditShortLivedActions, so "when did the nightly backups
 	// stop?" is still answerable once the 365-day short window has passed.
-	if dir != "" && fireDue(settings.VolumeCron, effectiveLast(status.LastVolumeAt, *lastVol), now) {
+	if dir != "" && fireDue(settings.VolumeCron, EffectiveLast(status.LastVolumeAt, *lastVol), now) {
 		*lastVol = now // advance the guard before running so a status-write failure can't re-fire
 		switch size, verified, err := RunVolume(ctx, pool, dbURL, key, dir, settings.VolumeRetention()); {
 		case err != nil:
@@ -367,7 +372,7 @@ func schedulerTick(pool *pgxpool.Pool, dbURL, key, dir string, s3 S3Config, last
 				map[string]any{"target": "volume", "ok": true, "verified": true, "bytes": size, "cron": settings.VolumeCron, "keep": settings.VolumeKeep})
 		}
 	}
-	if s3.Enabled() && fireDue(settings.S3Cron, effectiveLast(status.LastS3At, *lastS3), now) {
+	if s3.Enabled() && fireDue(settings.S3Cron, EffectiveLast(status.LastS3At, *lastS3), now) {
 		*lastS3 = now
 		if name, err := RunS3(ctx, pool, dbURL, key, s3, settings.S3Retention()); err != nil {
 			slog.Error("scheduled S3 backup failed", "err", err)

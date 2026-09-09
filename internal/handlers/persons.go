@@ -255,11 +255,27 @@ func anonymizeUnlinkedTraces(ctx context.Context, q execer, personID int64, prev
 	if prevEmail == "" {
 		return nil
 	}
-	_, err := q.Exec(ctx,
+	if _, err := q.Exec(ctx,
 		`UPDATE mail_log SET recipients = 'anonymisiert'
 		  WHERE strpos(lower(recipients), lower($1)) > 0
 		    AND lower($1) = ANY (SELECT lower(btrim(x, E' \t\r\n'))
-		                           FROM unnest(string_to_array(recipients, ',')) AS x)`, prevEmail)
+		                           FROM unnest(string_to_array(recipients, ',')) AS x)`, prevEmail); err != nil {
+		return err
+	}
+	// invoice_reminders.sent_to traegt dieselbe Adresse und wurde bisher von KEINER
+	// Stelle geraeumt — die Loeschung reichte bis ins Mail-Protokoll, hoerte aber genau
+	// davor auf, wo die Adresse ein zweites Mal steht. Beim Loeschen faellt hier nichts
+	// an (eine Person mit ausgestellten Rechnungen laesst sich gar nicht loeschen), beim
+	// ANONYMISIEREN dagegen blieb die Adresse des Kunden dauerhaft lesbar.
+	//
+	// Ueber die Rechnung zugeordnet, nicht ueber einen Textvergleich: wem eine Mahnung
+	// gehoert, sagt der Fremdschluessel, und ein Adressvergleich koennte fremde Zeilen
+	// treffen. Stufe und Zeitpunkt bleiben als Mahn-Nachweis stehen — nur das WOHIN
+	// verschwindet, dieselbe Abwaegung wie beim Mail-Protokoll.
+	_, err := q.Exec(ctx,
+		`UPDATE invoice_reminders SET sent_to = 'anonymisiert'
+		  WHERE invoice_id IN (SELECT id FROM invoices WHERE person_id = $1)
+		    AND sent_to <> 'anonymisiert'`, personID)
 	return err
 }
 

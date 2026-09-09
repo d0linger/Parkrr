@@ -877,7 +877,15 @@
     // ---------- generic list with search / sort / pagination ----------
     function mountList(page, opts) {
         const pageSize = opts.pageSize || 10;
-        const stateKey = opts.stateKey || opts.title || 'list';
+        // Der Schluessel ist BEWUSST kein Anzeigetext mehr. Faellt er auf opts.title
+        // zurueck, teilen sich zwei gleich betitelte Listen Suche, Sortierung, Seite
+        // UND controlState — und der controlState ist der gefaehrliche Teil: liest der
+        // extraFilter der einen Liste einen Schluessel, den die andere mit anderer
+        // Bedeutung setzt, steht die Liste leer da unter einer Leiste, die "kein
+        // Filter" behauptet. Suche, Sortierung und Seite erklaeren sich dagegen selbst.
+        // Ein Titel ist Text fuer Menschen und darf sich jederzeit aendern; ein
+        // Zustandsschluessel darf das nicht.
+        const stateKey = opts.stateKey || 'list';
         const saved = listState.get(stateKey) || {};
         let qRaw = saved.qRaw || '', sortIdx = (saved.sortIdx != null ? saved.sortIdx : (opts.defaultSort || 0)), pageNum = saved.pageNum || 1;
         let q = norm(qRaw);
@@ -940,6 +948,14 @@
             // Leeren des Suchfelds holte sie nicht zurueck.
             if (opts.onFiltered) opts.onFiltered(items);
             if (q) items = items.filter((it) => opts.searchText(it).includes(q));
+            // Einen gespeicherten Sortier-Index einfangen, der ins Leere zeigt: die
+            // sorts-Liste einer Ansicht kann sich aendern, waehrend der Index die
+            // Sitzung ueberlebt. Ohne die Klemme wurde GAR NICHT sortiert (das
+            // `s && s.cmp` schluckt es), die Auswahl zeigte trotzdem den ersten
+            // Eintrag, und der untaugliche Index wurde unten gleich wieder
+            // weggeschrieben — die Liste blieb also dauerhaft unsortiert, ohne dass
+            // etwas darauf hinwies.
+            if (!(sortIdx >= 0 && sortIdx < opts.sorts.length)) sortIdx = opts.defaultSort || 0;
             const s = opts.sorts[sortIdx];
             if (s && s.cmp) items.sort(s.cmp);
             const total = items.length;
@@ -1477,6 +1493,7 @@
         try { ((await api.get('/invoices/overdue')) || []).forEach((o) => { overdueByPerson[o.person_id] = Math.max(overdueByPerson[o.person_id] || 0, o.days_overdue); }); }
         catch (e) { /* dashboard already surfaces overdue; ignore here */ }
         mountList(page, {
+            stateKey: 'persons', // fester Schluessel, unabhaengig vom Anzeigetitel
             title: 'Personen', emptyIcon: 'users', emptyText: 'Noch keine Personen.', sourcePath: '/persons',
             onAdd: canManage() ? () => personForm() : null,
             items: state.persons,
@@ -2441,6 +2458,7 @@
         // die er auf dem Bildschirm nicht pruefen konnte.
         const bulkBarEl = canManage() ? bulkBar() : null;
         mountList(page, {
+            stateKey: 'vehicles', // fester Schluessel, unabhaengig vom Anzeigetitel
             title: 'Gefährte', emptyIcon: 'car', emptyText: 'Keine Gefährte in dieser Ansicht.', sourcePath: '/vehicles',
             onAdd: canManage() ? () => vehicleForm() : null,
             items: vehicles,
@@ -3737,6 +3755,7 @@
         await refreshLookups();
         const charges = await api.get('/charges');
         mountList(page, {
+            stateKey: 'charges', // fester Schluessel, unabhaengig vom Anzeigetitel
             title: 'Zusatzkosten', emptyIcon: 'receipt', emptyText: 'Keine Zusatzkosten erfasst.', sourcePath: '/charges',
             onAdd: canBill() ? () => chargeForm() : null,
             items: charges,
@@ -4194,6 +4213,7 @@
         if (!isAdmin()) { page.innerHTML = ''; page.append(emptyState('settings', 'Nur für Administratoren.')); return; }
         const users = await api.get('/users');
         mountList(page, {
+            stateKey: 'users', // fester Schluessel, unabhaengig vom Anzeigetitel
             title: 'Benutzer', emptyIcon: 'users', emptyText: 'Keine Benutzer.',
             onAdd: () => userForm(), items: users,
             searchText: (u) => norm([u.username, u.email, ROLE_LABEL[u.role]].join(' ')),
@@ -4798,6 +4818,19 @@
         try { entries = await api.get('/mail-log'); } catch (e) { toast(e.message, 'error'); return; }
         contentModal('E-Mail-Versand', (body, close) => {
             if (!entries.length) { body.append(el('p', { class: 'muted' }, 'Noch kein Versand protokolliert.')); return; }
+            // Sagen, wenn es mehr gibt als hier steht. Der Server liefert ohne Angabe die
+            // neuesten 200 (pageParams in mail_log.go), dieses Fenster hat aber weder
+            // Seitenblaetterung noch Hinweis — und das Betreiberhandbuch verspricht
+            // "jeder Versuch mit SMTP-Diagnose". Ab Eintrag 201 stimmte das nicht mehr,
+            // und zwar unsichtbar: wer den aeltesten Fehlversuch suchte, sah schlicht
+            // ein Ende. Die Zahl liegt bereits vor — der Handler schickt X-Total-Count,
+            // api.get legt sie in totalCounts ab; sie wurde nur nie angezeigt. Gleiche
+            // Aussageform wie die Kuerzungszeile der Listen (mountList).
+            const total = totalFor('/mail-log');
+            if (Number.isFinite(total) && total > entries.length) {
+                body.append(el('p', { class: 'muted' },
+                    'Es werden die neuesten ' + entries.length + ' von ' + total + ' Versandversuchen angezeigt.'));
+            }
             entries.forEach((m) => {
                 body.append(el('div', { class: 'card pay-row' },
                     el('div', { class: 'pay-main' },

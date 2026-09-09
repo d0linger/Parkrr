@@ -196,6 +196,27 @@ angefasst wurde.
 - **Die Neustart-Warnung der Betriebsüberwachung kann erstmals auslösen:** die
   Prozess-Kennzahlen, auf die die mitgelieferte Alarmregel sich stützt, wurden
   bisher gar nicht ausgeliefert — eine stille Lücke, die wie „alles ruhig" aussah.
+- **Die Löschung einer Person erreicht jetzt auch das Mahn-Protokoll.** Die
+  Anonymisierung reichte bis ins E-Mail-Protokoll, hörte aber genau davor auf, wo
+  die Adresse ein zweites Mal steht: in den versendeten Mahnungen. Sie blieb dort
+  dauerhaft lesbar. Stufe und Zeitpunkt bleiben als Nachweis stehen, nur die
+  Adresse verschwindet.
+- **Das E-Mail-Versandprotokoll sagt jetzt, wenn es mehr Einträge gibt als es
+  zeigt.** Angezeigt wurden immer nur die neuesten 200 — ohne Blätterung und ohne
+  Hinweis, während das Handbuch „jeder Versuch" verspricht. Wer den ältesten
+  Fehlversuch suchte, sah unsichtbar ein Ende.
+- **Ein vorübergehend unlesbarer Merker kostet keine Fakturierungsperiode mehr.**
+  Der automatische Rechnungslauf las ihn einmal beim Start und übersetzte einen
+  Lesefehler in „jetzt" — eine Störung beim Hochfahren (Datenbank noch nicht
+  oben) verschob den nächsten Termin damit lautlos um eine ganze Periode. Jetzt
+  wird je Takt gelesen; ein Fehler lässt den Takt aus, und sobald die Datenbank
+  antwortet, wird die versäumte Periode nachgeholt. Bleibt der Merker eine
+  Viertelstunde unlesbar, steht das als Fehler im Protokoll statt als einzelne
+  Warnung von vorhin.
+- **Eine unter dem laufenden Betrieb zurückgespielte Sicherung startet keinen
+  Rechnungslauf mehr.** Der eingespielte, ältere Merker gilt nicht mehr gegen den
+  Stand im Speicher. **Unverändert gilt:** in Test- und Kopier-Umgebungen
+  `PARKRR_AUTO_INVOICE_CRON` leer lassen.
 - **Rücksicherung und Unterschrift nennen jetzt erreichbare Grenzen.** Beide
   versprachen eine Größe, die nie durchging: bei der Rücksicherung lag die eigene
   Grenze exakt auf dem allgemeinen Deckel für eine Anfrage, sodass der Umschlag

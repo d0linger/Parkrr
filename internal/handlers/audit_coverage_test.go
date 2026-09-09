@@ -230,7 +230,11 @@ var auditIgnoredPerFunc = map[string]map[string]bool{
 	// Löschung damit aufheben — dieselbe Begründung, aus der der Anonymisierungs-
 	// Eintrag schon bisher keine Personendaten trägt (siehe Test
 	// TestAuditEintragEnthaeltDieGeloeschtenDatenNicht).
-	"AnonymizePerson": {"revoked": true, "payload": true, "recipients": true},
+	// sent_to (invoice_reminders) gehoert in dieselbe Klasse wie recipients und payload:
+	// die Loeschung greift bis in jede Nebentabelle mit Personenbezug durch, und der Sinn
+	// der Sache ist, dass die alten Werte VERSCHWINDEN. Ein Vorher/Nachher-Diff schriebe
+	// die geloeschte Adresse ins Aenderungsprotokoll und hoebe die Loeschung damit auf.
+	"AnonymizePerson": {"revoked": true, "payload": true, "recipients": true, "sent_to": true},
 }
 
 // TestAuditDiffsCoverEveryWrittenColumn fails when a handler records field changes

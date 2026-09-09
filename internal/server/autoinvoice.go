@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http/httptest"
 	"runtime/debug"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/preining/parkrr/internal/auth"
@@ -50,15 +52,54 @@ func StartAutoInvoice(pool *pgxpool.Pool, h *handlers.Handler, cron string, stop
 	//
 	// Ohne gespeicherten Wert (erste Inbetriebnahme) gilt weiter "jetzt": beim
 	// allerersten Start soll der Lauf nicht sofort feuern, sondern dem Cron gehören.
-	last := loadAutoInvoiceLast(pool)
+	// Der Merker wird bei JEDEM Takt gelesen, nicht einmal beim Start — dieselbe Form,
+	// die der Sicherungs-Planer (backup.schedulerTick) seit jeher hat.
+	//
+	// Einmal beim Start zu lesen zwang dazu, einen Lesefehler in einen Zeitpunkt zu
+	// uebersetzen: der Fehler wurde zu "jetzt", und damit kostete eine voruebergehende
+	// Stoerung beim Hochfahren (Datenbank noch nicht oben, statement_timeout unter Last)
+	// lautlos eine ganze Fakturierungsperiode. Jetzt laesst ein Lesefehler den Takt
+	// einfach aus: die naechste Minute liest erneut, und sobald die Datenbank antwortet,
+	// treibt der ALTE gespeicherte Merker den Cron — die versaeumte Periode wird
+	// nachgeholt, was seit Migration 065 ausdruecklich erwuenscht und durch die
+	// Periodensperre unbedenklich ist.
+	//
+	// `mem` ist der Waechter im Speicher. backup.EffectiveLast nimmt den SPAETEREN von
+	// beiden, und genau das schuetzt nebenbei gegen einen fremden Merker: wird die
+	// Datenbank unter dem laufenden Prozess zurueckgesichert (der Weg, den der Betreiber
+	// tatsaechlich klickt — reconcileSchemaAfterRestore laesst den Prozess bewusst
+	// weiterlaufen), ist der eingespielte, aeltere Zeitpunkt wirkungslos.
+	var mem time.Time
+	var loadFails int
 	for {
 		select {
 		case <-stop:
 			return
 		case <-ticker.C:
 			now := time.Now()
-			if backup.CronDue(cron, last, now) {
-				last = now
+			dbLast, err := loadAutoInvoiceLast(pool)
+			if err != nil {
+				loadFails++
+				// Eine einzelne Stoerung ist Alltag und bleibt eine Warnung; bleibt der
+				// Merker eine Viertelstunde unlesbar, laeuft nichts mehr und das gehoert
+				// laut gesagt — sonst steht im Protokoll nur eine Zeile von vorhin.
+				if loadFails%15 == 0 {
+					slog.Error("auto-invoice: Merker seit "+strconv.Itoa(loadFails)+" Minuten nicht lesbar — es laeuft nichts", "err", err)
+				} else {
+					slog.Warn("auto-invoice: Merker nicht lesbar — Takt ausgelassen", "err", err)
+				}
+				continue
+			}
+			loadFails = 0
+			last := backup.EffectiveLast(dbLast, mem)
+			if last == nil {
+				// Erstinbetriebnahme: noch nie gelaufen. Der erste Lauf gehoert dem Cron,
+				// nicht dem Start — deshalb hier nur den Waechter setzen und abwarten.
+				mem = now
+				continue
+			}
+			if backup.CronDue(cron, *last, now) {
+				mem = now
 				// NACH dem Lauf festhalten. Der Lauf ist durch die Periodensperre
 				// idempotent (siehe Migration 065) — eine bereits abgerechnete Periode
 				// liefert keine Positionen —, eine Wiederholung kostet also nichts.
@@ -104,20 +145,34 @@ func StartAutoInvoice(pool *pgxpool.Pool, h *handlers.Handler, cron string, stop
 	}
 }
 
-// loadAutoInvoiceLast liest den gespeicherten Zeitpunkt des letzten Laufs. Fehlt er
-// (oder ist die Abfrage nicht möglich), gilt "jetzt" — dieselbe Vorsicht wie bisher.
-func loadAutoInvoiceLast(pool *pgxpool.Pool) time.Time {
+// loadAutoInvoiceLast liest den gespeicherten Zeitpunkt des letzten Laufs.
+//
+// Drei Faelle, und sie werden AUSEINANDERGEHALTEN — vorher fielen alle drei auf
+// denselben Rueckgabewert "jetzt" zusammen, und der Lesefehler sah damit aus wie eine
+// Erstinbetriebnahme:
+//
+//	(nil, nil)   noch nie gelaufen — die Zeile fehlt oder last_run_at ist NULL.
+//	             Der erste Lauf gehoert dem Cron; der Aufrufer wartet ab.
+//	(&t,  nil)   gelaufen am Zeitpunkt t.
+//	(nil, err)   NICHT LESBAR. Kein Zeitpunkt, keine Behauptung — der Aufrufer laesst
+//	             den Takt aus und versucht es in einer Minute wieder.
+//
+// Dasselbe Muster wie backup.LoadStatus: ein fehlender Wert ist ein Wert, ein Fehler
+// ist ein Fehler.
+func loadAutoInvoiceLast(pool *pgxpool.Pool) (*time.Time, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var t *time.Time
 	if err := pool.QueryRow(ctx, `SELECT last_run_at FROM auto_invoice_status WHERE id = 1`).Scan(&t); err != nil {
-		slog.Warn("auto-invoice: Merker nicht lesbar — der erste Lauf gehört dem Cron", "err", err)
-		return time.Now()
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Die Zeile fehlt (Ruecksicherung eines Auszugs von vor 065, Aufraeumen von
+			// Hand). Das ist kein Fehler, sondern "noch nie gelaufen"; der naechste Lauf
+			// legt sie ueber saveAutoInvoiceLast wieder an.
+			return nil, nil
+		}
+		return nil, err
 	}
-	if t == nil {
-		return time.Now()
-	}
-	return *t
+	return t, nil
 }
 
 // saveAutoInvoiceLast hält den Zeitpunkt fest. Best effort: ein Schreibfehler darf
