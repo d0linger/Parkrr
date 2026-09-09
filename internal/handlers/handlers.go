@@ -156,8 +156,7 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 // — fehlende Boundary, kaputter Multipart-Rahmen, abgebrochener Upload — ist ein
 // fehlerhafter Request und bekommt 400, nicht die irreführende Zu-groß-Meldung.
 func writeMultipartError(w http.ResponseWriter, err error, tooLargeMsg string) {
-	var maxErr *http.MaxBytesError
-	if errors.As(err, &maxErr) {
+	if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 		writeError(w, http.StatusRequestEntityTooLarge, tooLargeMsg)
 		return
 	}

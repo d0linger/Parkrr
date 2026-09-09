@@ -84,7 +84,10 @@ func StartAutoInvoice(pool *pgxpool.Pool, h *handlers.Handler, cron string, stop
 				// Merker eine Viertelstunde unlesbar, laeuft nichts mehr und das gehoert
 				// laut gesagt — sonst steht im Protokoll nur eine Zeile von vorhin.
 				if loadFails%15 == 0 {
-					slog.Error("auto-invoice: Merker seit "+strconv.Itoa(loadFails)+" Minuten nicht lesbar — es laeuft nichts", "err", err)
+					// Zaehler als Attribut, nicht im Text: jede 15er-Stufe ergaebe sonst eine
+					// EIGENE Meldungsvorlage, und eine Log-Buendelung nach Vorlage zerfiele in
+					// eine Gruppe je Eskalationsschritt.
+					slog.Error("auto-invoice: Merker dauerhaft nicht lesbar — es laeuft nichts", "minutes", loadFails, "err", err)
 				} else {
 					slog.Warn("auto-invoice: Merker nicht lesbar — Takt ausgelassen", "err", err)
 				}
@@ -338,7 +341,9 @@ func runAutoInvoice(pool *pgxpool.Pool, h *handlers.Handler) bool {
 			" Personen wurden " + strconv.Itoa(processed) +
 			" bearbeitet, der Rest NICHT fakturiert"
 	}
-	if created > 0 || failed > 0 || incomplete > 0 || complianceStop || truncated {
+	hadEffect := created > 0 || failed > 0 || incomplete > 0
+	aborted := complianceStop || truncated
+	if hadEffect || aborted {
 		// WithoutCancel: genau der Lauf, der an der 15-Minuten-Grenze abgeschnitten
 		// wurde, ist der, dessen Protokolleintrag am wichtigsten wäre — und mit dem
 		// abgelaufenen ctx wäre er der einzige, der nicht geschrieben werden kann.

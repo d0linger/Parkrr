@@ -195,9 +195,11 @@ func TestMigrationChecksumIgnoriertZeilenenden(t *testing.T) {
 		"roh wie eingebettet": sha256Hex(lf),
 		"roh als CRLF":        sha256Hex(crlf),
 	} {
-		if !legacyChecksumMatch(lf, stored) {
-			t.Errorf("%s: alte Summe muss als dieselbe Datei erkannt werden", name)
-		}
+		t.Run(name, func(t *testing.T) {
+			if !legacyChecksumMatch(lf, stored) {
+				t.Error("alte Summe muss als dieselbe Datei erkannt werden")
+			}
+		})
 	}
 	if legacyChecksumMatch(lf, sha256Hex([]byte("SELECT 2;\n"))) {
 		t.Error("eine fremde Summe darf nicht als Altbestand durchgehen")
@@ -211,7 +213,7 @@ func TestMigrationChecksumIgnoriertZeilenenden(t *testing.T) {
 // überflüssige UPDATE je Prozessstart, unter der Migrations-Sperre.
 func TestMigrateSchreibtPruefsummenNichtBeiJedemStartNeu(t *testing.T) {
 	pool := testPool(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
 	if err := Migrate(ctx, pool); err != nil {
 		t.Fatalf("migrate: %v", err)

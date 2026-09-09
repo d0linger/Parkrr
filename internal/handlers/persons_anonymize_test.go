@@ -22,7 +22,7 @@ import (
 // anonymisiert werden, auch wenn sie in einer Empfängerliste steht.
 func TestMailLogAnonymisierungTrifftGenauDieEigeneAdresse(t *testing.T) {
 	h := testHandler(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Eigene Adresse mit Jokerzeichen: erlaubt, und der bisherige Vergleich hätte sie
 	// zum Platzhalter gemacht.
@@ -94,7 +94,7 @@ func TestMailLogAnonymisierungTrifftGenauDieEigeneAdresse(t *testing.T) {
 // Der Tabulator gehoert dazu: PostgreSQLs trim() entfernt nur Leerzeichen.
 func TestMailLogAnonymisierungTrimmtAuchDieGespeicherteAdresse(t *testing.T) {
 	h := testHandler(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	tag := strconv.FormatInt(time.Now().UnixNano(), 10)
 	clean := "lueckenhaft-" + tag + "@example.at"

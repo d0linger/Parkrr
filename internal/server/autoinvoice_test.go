@@ -9,7 +9,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/preining/parkrr/internal/backup"
 	"github.com/preining/parkrr/internal/database"
 	"github.com/preining/parkrr/internal/handlers"
 )
@@ -241,21 +240,7 @@ func TestMerkerUnterscheidetNieGelaufenVonNichtLesbar(t *testing.T) {
 	}
 }
 
-// TestEffectiveLastIgnoriertEinenAelterenFremdenMerker haelt fest, warum der Lauf den
-// SPAETEREN von Speicher und Datenbank nimmt: wird die Datenbank unter dem laufenden
-// Prozess zurueckgesichert (reconcileSchemaAfterRestore laesst ihn bewusst
-// weiterlaufen), traegt der eingespielte Auszug einen FREMDEN, aelteren Zeitpunkt.
-// Ohne den Waechter im Speicher wuerde der Cron daraufhin sofort feuern und eine
-// echte Fakturierung gegen die eingespielten Daten starten.
-func TestEffectiveLastIgnoriertEinenAelterenFremdenMerker(t *testing.T) {
-	mem := time.Now().Add(-1 * time.Minute)
-	fremd := time.Now().Add(-30 * 24 * time.Hour)
-	got := backup.EffectiveLast(&fremd, mem)
-	if got == nil || !got.Equal(mem) {
-		t.Fatalf("der spaetere Zeitpunkt muss gewinnen: got=%v mem=%v", got, mem)
-	}
-	// Und ohne beides bleibt es bei "noch nie gelaufen".
-	if backup.EffectiveLast(nil, time.Time{}) != nil {
-		t.Fatal("weder Merker noch Waechter muss nil ergeben")
-	}
-}
+// Der Test zu backup.EffectiveLast — warum der Lauf den SPAETEREN von Speicher und
+// Datenbank nimmt (Ruecksicherung unter laufendem Prozess) — liegt beim Besitzer
+// der Funktion: internal/backup/scheduler_test.go,
+// TestEffectiveLastIgnoriertEinenAelterenFremdenMerker.

@@ -114,10 +114,12 @@ func handlerFuncs(t *testing.T) []handlerFunc {
 	}
 	bodies := make(map[string]string, len(out))
 	for _, hf := range out {
-		// Gleichnamige Methoden auf verschiedenen Empfängern gibt es in diesem Paket
-		// nicht; käme eine dazu, hinge hier die zuletzt gelesene — das erweitert die
-		// Prüfung höchstens zu weit, nie zu eng.
-		bodies[hf.Name] = hf.Body
+		// Gleichnamige Funktionen GIBT es in diesem Paket (parse, Error, Send, Enabled
+		// auf verschiedenen Empfängern). Ein blosses Überschreiben verlöre alle Rümpfe
+		// bis auf den zuletzt gelesenen — die Prüfung würde also stillschweigend ENGER,
+		// nicht weiter. Deshalb anhängen: Reach kann dadurch höchstens zu weit greifen
+		// (ein fremder gleichnamiger Rumpf wird mitgeprüft), nie zu eng.
+		bodies[hf.Name] += hf.Body + "\n"
 	}
 	for i := range out {
 		out[i].Reach = reachOf(out[i].Name, bodies)

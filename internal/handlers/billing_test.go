@@ -667,14 +667,19 @@ func TestOverdueInvoicesZaehltAuchMitDueUntil(t *testing.T) {
 	if err := purgeExec(t.Context(), h.Pool, `UPDATE invoices SET due_on = CURRENT_DATE + 30 WHERE id=$1`, iv.ID); err != nil {
 		t.Fatalf("set due: %v", err)
 	}
-	for _, q := range []string{"", "?due_until=" + time.Now().AddDate(0, 0, 60).Format(dateLayout)} {
-		rec := httptest.NewRecorder()
-		h.OverdueInvoices(rec, httptest.NewRequest(http.MethodGet, "/api/invoices/overdue"+q, nil))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("overdue%q: %d", q, rec.Code)
-		}
-		if rec.Header().Get("X-Total-Count") == "" {
-			t.Fatalf("overdue%q: X-Total-Count fehlt — die Zählabfrage ist fehlgeschlagen", q)
-		}
+	for _, tc := range []struct{ name, q string }{
+		{"ohne Filter", ""},
+		{"mit due_until", "?due_until=" + time.Now().AddDate(0, 0, 60).Format(dateLayout)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			h.OverdueInvoices(rec, httptest.NewRequest(http.MethodGet, "/api/invoices/overdue"+tc.q, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("overdue: %d", rec.Code)
+			}
+			if rec.Header().Get("X-Total-Count") == "" {
+				t.Fatal("X-Total-Count fehlt — die Zählabfrage ist fehlgeschlagen")
+			}
+		})
 	}
 }
