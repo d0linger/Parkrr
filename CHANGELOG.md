@@ -228,6 +228,17 @@ angefasst wurde.
   Rechnungslauf mehr.** Der eingespielte, ältere Merker gilt nicht mehr gegen den
   Stand im Speicher. **Unverändert gilt:** in Test- und Kopier-Umgebungen
   `PARKRR_AUTO_INVOICE_CRON` leer lassen.
+- **Ein kaputter Upload heißt nicht mehr „zu groß".** Jeder Fehler beim Einlesen
+  eines Datei-Uploads — fehlender Rahmen, abgebrochene Übertragung — wurde als
+  „Datei ist zu groß" gemeldet, auf allen fünf Upload-Wegen (Anhänge, Fotos,
+  CSV-Import, Planer-Symbole). Jetzt sagt nur eine wirklich zu große Datei „zu
+  groß"; alles andere bekommt eine zutreffende Meldung.
+- **Der CSV-Export ist jetzt durchgehend deutsch formatiert:** USt-Prozent und
+  Menge kamen mit Punkt-Dezimalen („20.00"), die ein deutsches Excel nicht als
+  Zahl liest — alle übrigen Zahlenspalten hatten längst das Komma.
+- **Der Wechsel in den Garagenplaner wird Screenreadern jetzt angesagt.** Jede
+  andere Ansicht meldete den Routenwechsel über die Live-Region; der Planer baut
+  seine eigene Kopfleiste und blieb stumm.
 - **Rücksicherung und Unterschrift nennen jetzt erreichbare Grenzen.** Beide
   versprachen eine Größe, die nie durchging: bei der Rücksicherung lag die eigene
   Grenze exakt auf dem allgemeinen Deckel für eine Anfrage, sodass der Umschlag

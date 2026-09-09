@@ -1107,7 +1107,9 @@
     function syncPageTitle(page) {
         const h1 = $('#page-title');
         if (!h1) return;
-        const lead = page.querySelector('.page-head h2, .page-head h3, .detail-head h2');
+        // Der Garagenplaner (routes.hall) hat keinen page-head — sein Titel steht als
+        // <b> in der gp-appbar. Ohne den Zusatz bliebe der Routenwechsel dort unangesagt.
+        const lead = page.querySelector('.page-head h2, .page-head h3, .detail-head h2, .gp-appbar .gp-brand b');
         const name = lead ? lead.textContent.trim() : '';
         h1.textContent = name || 'Parkrr';
         // Tab, History-Eintrag und Task-Switcher der installierten App hiessen bisher
@@ -1116,7 +1118,8 @@
         // Routenwechsel gezielt ansagen. Vorher war das ganze <main> aria-live, was
         // bei jedem render() die KOMPLETTE Seite vorlesen liess (A11Y-72).
         const st = $('#route-status');
-        if (st && name) st.textContent = name;
+        // Fallback: auch ohne gefundene Überschrift ansagen, damit KEINE Route stumm bleibt.
+        if (st) st.textContent = name || 'Parkrr';
     }
 
     // ================= DASHBOARD =================

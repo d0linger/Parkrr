@@ -116,7 +116,11 @@ func TestMigrateDetectsEditedMigration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer admin.Close()
+	// Als Cleanup statt defer: defers laufen VOR den t.Cleanup-Callbacks, ein
+	// defer admin.Close() würde also das unten registrierte DROP DATABASE auf
+	// einem geschlossenen Pool laufen lassen (Fehler verworfen, DB bleibt liegen).
+	// Cleanups laufen LIFO — erst der Drop, dann dieses Close.
+	t.Cleanup(admin.Close)
 
 	const dbName = "parkrr_checksum_test"
 	if _, err := admin.Exec(ctx, `DROP DATABASE IF EXISTS `+dbName+` WITH (FORCE)`); err != nil {

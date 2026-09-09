@@ -38,6 +38,12 @@ func runSeedDemo(args []string) int {
 		fmt.Fprintln(os.Stderr, "config:", err)
 		return 1
 	}
+	// Wie in run(): die Geschäftszeitzone als Prozesszone setzen — VOR den
+	// time.Now()-Startdaten unten und vor database.Connect (das bindet die
+	// Sitzungszeitzone daran). Sonst liegen Demo-Startdaten nahe Mitternacht
+	// einen Kalendertag daneben, wenn die Container-Zone von PARKRR_TIMEZONE
+	// abweicht (Hundert 13).
+	time.Local = cfg.Location
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	pool, err := database.Connect(ctx, cfg.DatabaseURL)

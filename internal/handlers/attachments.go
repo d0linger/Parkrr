@@ -104,7 +104,7 @@ func (h *Handler) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxAttachmentBytes+1024)
 	// #nosec G120 -- der Body ist durch MaxBytesReader gedeckelt.
 	if err := r.ParseMultipartForm(maxAttachmentBytes + 1024); err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, "Datei ist zu groß (max. 8 MB)")
+		writeMultipartError(w, err, "Datei ist zu groß (max. 8 MB)")
 		return
 	}
 	defer func() { _ = r.MultipartForm.RemoveAll() }()

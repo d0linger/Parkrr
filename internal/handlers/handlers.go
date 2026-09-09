@@ -151,6 +151,19 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+// writeMultipartError beantwortet einen ParseMultipartForm-Fehler: 413 nur, wenn
+// wirklich der MaxBytesReader gedeckelt hat (die Datei war zu groß). Alles andere
+// — fehlende Boundary, kaputter Multipart-Rahmen, abgebrochener Upload — ist ein
+// fehlerhafter Request und bekommt 400, nicht die irreführende Zu-groß-Meldung.
+func writeMultipartError(w http.ResponseWriter, err error, tooLargeMsg string) {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		writeError(w, http.StatusRequestEntityTooLarge, tooLargeMsg)
+		return
+	}
+	writeError(w, http.StatusBadRequest, "Ungültiger Upload (fehlerhaftes Multipart-Formular)")
+}
+
 // serverError writes a 500 with a safe public message and stashes the underlying cause
 // on the request record, so the central request logger emits it at Error level with the
 // request id (finding OPS-01) instead of the handler dropping err silently. Prefer this

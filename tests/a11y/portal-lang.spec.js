@@ -1,7 +1,8 @@
 // @ts-check
 // Hundert 89: das Kundenportal kann Englisch. Der Test erstellt einen echten
-// Portal-Link, oeffnet ihn, prueft Deutsch als Default (de-Browser), schaltet um
-// und prueft, dass die Wahl einen Reload ueberlebt.
+// Portal-Link, oeffnet ihn, prueft Englisch als Default (Playwright faehrt en-US,
+// der Default folgt der Browsersprache), schaltet auf Deutsch um und prueft,
+// dass die Wahl einen Reload ueberlebt.
 const { test, expect } = require('@playwright/test');
 test.setTimeout(60000);
 

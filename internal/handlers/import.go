@@ -92,7 +92,7 @@ func (h *Handler) ImportPersons(w http.ResponseWriter, r *http.Request) {
 	// #nosec G120 -- the request body is capped by MaxBytesReader above, so the
 	// multipart parse is bounded and cannot exhaust memory.
 	if err := r.ParseMultipartForm(maxImportBytes + 1024); err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, "Datei zu groß")
+		writeMultipartError(w, err, "Datei zu groß")
 		return
 	}
 	file, _, err := r.FormFile("file")

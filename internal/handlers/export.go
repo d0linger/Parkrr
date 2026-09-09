@@ -260,7 +260,8 @@ func (h *Handler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 			}
 			rows = append(rows, []string{
 				number, csvDate(issuedOn), csvDateP(dueOn), strings.TrimSpace(fn + " " + ln),
-				csvMoney(subtotal), strconv.FormatFloat(ustRate, 'f', 2, 64), csvMoney(tax),
+				// USt-Satz wie die Geldspalten mit Komma — deutsches Excel liest '20.00' als Text.
+				csvMoney(subtotal), csvMoney(ustRate), csvMoney(tax),
 				csvMoney(total), csvMoney(paid), boolJaNein(canceled), cancelsNumber, note,
 			})
 		}
@@ -303,7 +304,7 @@ func (h *Handler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 			// Spalte — bei einer Menge von 3 um den Faktor 3 daneben.
 			rows = append(rows, []string{
 				csvDate(chargedOn), strings.TrimSpace(fn + " " + ln), veh, description,
-				strconv.FormatFloat(quantity, 'f', 2, 64), csvMoney(amount),
+				csvMoney(quantity), csvMoney(amount),
 				csvMoney(amount * quantity), boolJaNein(paid),
 			})
 		}

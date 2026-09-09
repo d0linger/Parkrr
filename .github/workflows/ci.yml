@@ -64,6 +64,22 @@ jobs:
       - name: Test
         run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
 
+      # Diagnose zur Abdeckungsluecke: der CI-Wert (56,8 %) liegt weit unter dem lokal
+      # gemessenen (72,9 %, vor UND nach den letzten Commits identisch). Da der
+      # Test-Schritt hier BESTEHT, muss ein Teil der Tests still uebersprungen werden.
+      # Diese Tabelle rechnet die Abdeckung je Paket direkt aus coverage.out (kein
+      # zweiter Testlauf) — ein Paket weit unter seinem lokalen Wert ist das, dessen
+      # Datenbanktests in CI nicht laufen. Laeuft auch bei rotem Gate (if: always()).
+      - name: Coverage per package (diagnostic)
+        if: always()
+        run: |
+          echo "Abdeckung je Paket (aufsteigend):"
+          awk 'NR>1 { colon=index($0,":"); file=substr($0,1,colon-1);
+                      n=split(file,parts,"/"); pkg=""; for(i=1;i<n;i++) pkg=pkg parts[i] "/";
+                      split(substr($0,colon+1),a," "); stmts=a[2]; cnt=a[3];
+                      tot[pkg]+=stmts; if (cnt>0) cov[pkg]+=stmts }
+               END { for (k in tot) printf "%6.1f%%  %s\n", 100*cov[k]/tot[k], k }' coverage.out | sort -n
+
       - name: Coverage gate
         run: |
           total=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/,"",$3); print $3}')

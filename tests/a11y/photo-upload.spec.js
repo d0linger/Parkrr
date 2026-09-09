@@ -58,7 +58,7 @@ test('Foto-Upload: verkleinert und mit Fortschrittsanzeige', async ({ page }) =>
     const p = list[0];
     const img = new Image();
     img.src = '/api/photos/' + p.id;
-    await new Promise((r) => { img.onload = r; });
+    await new Promise((r, rej) => { img.onload = r; img.onerror = () => rej(new Error('Foto ' + p.id + ' laedt nicht (onerror)')); });
     return { w: img.naturalWidth, h: img.naturalHeight, bytes: p.byte_size, orig: window.__origSize };
   }, ids.veh);
   expect(Math.max(meta.w, meta.h), 'nicht verkleinert').toBeLessThanOrEqual(2000);
