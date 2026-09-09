@@ -93,6 +93,27 @@ func TestPasswordLengthPolicy(t *testing.T) {
 			t.Errorf("TOTPRegenerateBackup with %d-byte password: expected 403, got %d", len(long), rec.Code)
 		}
 	}
+
+	// PasskeyRegisterBegin rejects an over-long password with 403 up front.
+	{
+		wa, err := auth.NewWebAuthnService(nil, "example.com", "Example", []string{"https://example.com"})
+		if err != nil {
+			t.Fatalf("failed to create webauthn service: %v", err)
+		}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/passkeys/register/begin",
+			strings.NewReader(`{"name":"key1","password":"`+long+`"}`))
+		ctx := auth.ContextWithUser(context.Background(), &models.User{Username: "testuser"})
+		req = req.WithContext(ctx)
+		ahWithWA := &AuthHandler{
+			Handler:  &Handler{},
+			WebAuthn: wa,
+		}
+		ahWithWA.PasskeyRegisterBegin(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("PasskeyRegisterBegin with %d-byte password: expected 403, got %d", len(long), rec.Code)
+		}
+	}
 }
 
 // Usernames are capped at 100 bytes; over-long ones are rejected before any
