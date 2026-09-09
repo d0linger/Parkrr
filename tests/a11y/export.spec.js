@@ -22,6 +22,15 @@ test('Export: Rechnungen und Zusatzkosten sind verlinkt und liefern CSV', async 
   await page.click('#login-form button[type="submit"]');
   await page.waitForSelector('#app-view:not([hidden])', { timeout: 15000 });
 
+  // Die Übersicht klappt bei LEERER Datenbank auf einen Leerzustand zusammen
+  // ("Noch keine Daten…") und rendert dann KEINE Export-Karte — die frische CI-DB
+  // ist genau dieser Fall, weshalb diese Prüfung in CI nie bestand. Eine eigene
+  // Person säen, damit die Übersicht ihren vollen Inhalt aufbaut.
+  await page.evaluate(async () => {
+    const csrf = document.cookie.split('; ').find((c) => c.startsWith('parkrr_csrf='))?.split('=')[1];
+    await fetch('/api/persons', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify({ first_name: 'Export', last_name: 'SeedDash' }) });
+  });
+
   // Die Export-Karte steht auf der ÜBERSICHT (routes.dashboard), nicht unter
   // #/finance. Dass diese Prüfung je unter #/finance grün war, lag am inzwischen
   // behobenen Render-Wettlauf: der noch laufende Dashboard-Aufbau überschrieb die
@@ -41,4 +50,13 @@ test('Export: Rechnungen und Zusatzkosten sind verlinkt und liefern CSV', async 
     // Semikolon-getrennte Kopfzeile mit BOM davor.
     expect(res.head, entity).toContain(';');
   }
+  // Aufräumen: nur die eigene Saat-Person.
+  await page.evaluate(async () => {
+    const csrf = document.cookie.split('; ').find((c) => c.startsWith('parkrr_csrf='))?.split('=')[1];
+    const list = await (await fetch('/api/persons?limit=1000', { credentials: 'same-origin' })).json();
+    for (const p of (Array.isArray(list) ? list : []).filter((x) => x.last_name === 'SeedDash')) {
+      await fetch('/api/persons/' + p.id, { method: 'DELETE', credentials: 'same-origin', headers: { 'X-CSRF-Token': csrf } });
+    }
+  });
+
 });
