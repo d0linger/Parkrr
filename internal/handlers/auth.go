@@ -33,6 +33,18 @@ type AuthHandler struct {
 	// (1 min) so that this account-wide counter can't be weaponized to lock a real
 	// user out for long — it slows brute force without becoming a lockout-DoS.
 	UserLimiter *auth.LoginLimiter
+	// CeremonyLimiter bounds how often ONE account may START a WebAuthn
+	// registration ceremony. Deliberately separate from the three counters above:
+	// those count FAILURES and are shared by login, re-auth, TOTP and passkey
+	// finish, so counting a perfectly ordinary "add a passkey" click against them
+	// would burn the user's own login budget — with UserLimiter being sticky and
+	// IP-independent, a user could lock themselves out of logging in just by
+	// opening the dialog a few times. Its own budget is therefore generous per
+	// account with a short cooldown: it exists to bound a flood of ceremony rows,
+	// not to punish a retry. Keyed on the username, not the IP, because the
+	// endpoint is authenticated and a per-IP key would be sidestepped by rotating
+	// addresses on one account.
+	CeremonyLimiter *auth.LoginLimiter
 }
 
 // NewAuthHandler constructs an AuthHandler. The background login-throttle
@@ -45,6 +57,14 @@ func NewAuthHandler(h *Handler, mgr *auth.Manager, wa *auth.WebAuthnService, sto
 		Limiter:     auth.NewLoginLimiter(5, 10*time.Minute, 15*time.Minute),
 		IPLimiter:   auth.NewLoginLimiter(20, 10*time.Minute, 15*time.Minute),
 		UserLimiter: auth.NewStickyLoginLimiter(20, 15*time.Minute, 1*time.Minute),
+		// Sticky, weil ein festes Fenster das Budget nach jeder kurzen Abkuehlung
+		// wieder auffuellt. Nachgerechnet mit denselben Werten: klebrig erlaubt rund
+		// 228 Zeremonie-Starts je Stunde und hoechstens ~19 gleichzeitig lebende
+		// Zeilen, ein festes Fenster rund 885 und ~75. Also nicht "unbegrenzt",
+		// sondern etwa viermal lockerer — klebrig bleibt trotzdem die richtige Wahl.
+		// Die 15 sind bewusst grosszuegig: der Zaehler soll eine Flut deckeln, nicht
+		// einen Nutzer bestrafen, der den Dialog ein paarmal neu oeffnet.
+		CeremonyLimiter: auth.NewStickyLoginLimiter(15, 5*time.Minute, 1*time.Minute),
 	}
 	go func() {
 		t := time.NewTicker(10 * time.Minute)
@@ -57,6 +77,7 @@ func NewAuthHandler(h *Handler, mgr *auth.Manager, wa *auth.WebAuthnService, sto
 				ah.Limiter.Cleanup()
 				ah.IPLimiter.Cleanup()
 				ah.UserLimiter.Cleanup()
+				ah.CeremonyLimiter.Cleanup()
 			}
 		}
 	}()

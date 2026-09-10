@@ -159,14 +159,29 @@ func (h *AuthHandler) PasskeyRegisterBegin(w http.ResponseWriter, r *http.Reques
 	if !h.requireStepUp(w, r, u.Username, body.Password) {
 		return
 	}
-	// Drosseln, AUCH wenn das Step-up-Fenster noch offen war. requireStepUp ruft
-	// checkRateLimit nur auf dem Passwort-Zweig auf; bei frischer Anmeldung kehrt
-	// es sofort zurueck und liess diesen Endpunkt bis hierher ungedrosselt. Damit
-	// blieb die Zeremonie-Erzeugung (BeginRegistration + storeCeremony, ein
-	// Datenbankschreibvorgang je Aufruf) im offenen Fenster frei wiederholbar.
-	// PasskeyRegisterFinish drosselt an genau dieser Stelle bereits — Begin zieht
-	// nach.
+	// Eine bestehende Sperre auch hier durchsetzen, AUCH wenn das Step-up-Fenster
+	// noch offen war: requireStepUp ruft checkRateLimit nur auf dem Passwort-Zweig
+	// auf, bei frischer Anmeldung kehrt es sofort zurueck und liess diesen
+	// Endpunkt bis hierher ungeprueft. PasskeyRegisterFinish prueft an genau
+	// dieser Stelle bereits — Begin zieht nach. Das ist eine reine PRUEFUNG: sie
+	// zaehlt nichts und greift nur, wenn anderswo (Login, Re-Auth, Finish) bereits
+	// genug Fehlversuche aufgelaufen sind.
 	if _, _, ok := h.checkRateLimit(w, r, u.Username); !ok {
+		return
+	}
+	// Deshalb zusaetzlich der eigene Zaehler: Begin verbucht selbst nie einen
+	// Fehlversuch, also wuerde die Pruefung oben eine frisch angemeldete Sitzung
+	// niemals stoppen — sie koennte BeginRegistration + storeCeremony beliebig oft
+	// ausloesen und je Aufruf eine Zeile in webauthn_ceremonies schreiben (5
+	// Minuten Lebensdauer, nur abgelaufene werden aufgeraeumt). Consume zaehlt
+	// jeden Start und prueft im selben Schloss, damit gleichzeitige Anfragen nicht
+	// gemeinsam durch die Luecke zwischen Pruefung und Zaehlung rutschen (nachge-
+	// messen: es sind wenige, aber die Luecke gibt es). Verbucht wird VOR
+	// der Zeremonie, sonst waere der Fehlerpfad ein Freifahrtschein.
+	if ok, wait := h.CeremonyLimiter.Consume(strings.ToLower(u.Username)); !ok {
+		w.Header().Set("Retry-After", formatSeconds(wait))
+		slog.Warn("passkey register begin throttle active", "ip", h.Auth.ClientIP(r), "path", r.URL.Path)
+		writeError(w, http.StatusTooManyRequests, "Zu viele Versuche – bitte in "+formatMinutes(wait)+" erneut versuchen")
 		return
 	}
 

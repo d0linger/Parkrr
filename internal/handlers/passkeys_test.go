@@ -160,6 +160,10 @@ func TestPasskeyRegisterBegin_RateLimitWithOpenStepUpWindow(t *testing.T) {
 		Limiter:     auth.NewLoginLimiter(3, time.Minute, time.Minute),
 		IPLimiter:   auth.NewLoginLimiter(1000, time.Minute, time.Minute),
 		UserLimiter: auth.NewStickyLoginLimiter(1000, time.Minute, time.Minute),
+		// Hier bewusst gross, damit dieser Test allein die Sperre aus
+		// checkRateLimit prueft und nicht versehentlich am Zeremonie-Zaehler
+		// haengenbleibt.
+		CeremonyLimiter: auth.NewStickyLoginLimiter(1000, time.Minute, time.Minute),
 	}
 
 	const uname = "passkey-begin-throttle-Integration"
@@ -224,5 +228,147 @@ func TestPasskeyRegisterBegin_RateLimitWithOpenStepUpWindow(t *testing.T) {
 	}
 	if w.Header().Get("Retry-After") == "" {
 		t.Error("throttled response should carry a Retry-After header")
+	}
+}
+
+// TestPasskeyRegisterBegin_BoundsCeremonyStartsWithoutFailures deckt die zweite,
+// unabhaengige Haelfte der Drosselung ab.
+//
+// checkRateLimit PRUEFT nur eine bestehende Sperre — gezaehlt wird dort nichts,
+// und Begin verbucht selbst nie einen Fehlversuch. Eine frisch angemeldete
+// Sitzung, die einfach nur oft genug anfragt und dabei NICHTS falsch macht,
+// liefe deshalb ohne CeremonyLimiter unbegrenzt durch und schriebe je Aufruf eine
+// Zeile in webauthn_ceremonies. Hier laeuft genau dieser Fall: kein einziger
+// aufgezeichneter Fehlversuch, nur Wiederholung.
+//
+// Zusaetzlich wird geprueft, dass der Zaehler das Anmeldebudget NICHT anfasst.
+// Wuerde man die Zeremonie-Starts (wie naheliegend) ueber recordReauthFailure auf
+// Limiter/UserLimiter buchen, koennte sich ein Nutzer allein durchs Oeffnen des
+// Dialogs von der Anmeldung aussperren — UserLimiter ist klebrig und
+// IP-unabhaengig. Diese Zusicherung haelt das fest.
+//
+// Laeuft nur mit PARKRR_TEST_DATABASE_URL (testHandler ueberspringt sonst).
+func TestPasskeyRegisterBegin_BoundsCeremonyStartsWithoutFailures(t *testing.T) {
+	h := testHandler(t)
+	ctx := context.Background()
+	mgr, err := auth.NewManager(h.Pool, auth.SessionConfig{MaxAge: 3600}, false, false, "a-sufficiently-long-test-secret")
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	wa, err := auth.NewWebAuthnService(h.Pool, "example.com", "Example", []string{"https://example.com"})
+	if err != nil {
+		t.Fatalf("NewWebAuthnService: %v", err)
+	}
+	const maxStarts = 3
+	ah := &AuthHandler{
+		Handler:  h,
+		Auth:     mgr,
+		WebAuthn: wa,
+		// Schwelle 1, damit die Zusicherungen am Ende ueberhaupt fehlschlagen
+		// KOENNEN: Allowed meldet nur eine SPERRE, nicht den Zaehlerstand. Mit einem
+		// grosszuegigen Budget waeren sie Dekoration — eine Umsetzung, die die
+		// Zeremonie-Starts zusaetzlich auf diese Zaehler buchte, kaeme trotzdem
+		// durch. Bei 1 sperrt schon eine einzige Fehlbuchung, und der naechste
+		// Start scheitert sichtbar.
+		Limiter:     auth.NewLoginLimiter(1, time.Minute, time.Minute),
+		IPLimiter:   auth.NewLoginLimiter(1, time.Minute, time.Minute),
+		UserLimiter: auth.NewStickyLoginLimiter(1, time.Minute, time.Minute),
+		// Klein gehalten, damit der Test die Grenze in wenigen Aufrufen erreicht.
+		CeremonyLimiter: auth.NewStickyLoginLimiter(maxStarts, time.Minute, time.Minute),
+	}
+
+	const uname = "passkey-begin-flood-Integration"
+	hash, err := auth.HashPassword("correct-horse-battery")
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var uid int64
+	if err := h.Pool.QueryRow(ctx,
+		`INSERT INTO users (username, password_hash) VALUES ($1,$2) RETURNING id`, uname, hash).Scan(&uid); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	t.Cleanup(func() { _, _ = h.Pool.Exec(ctx, `DELETE FROM users WHERE username = $1`, uname) })
+
+	rec := httptest.NewRecorder()
+	if err := mgr.CreateSession(ctx, rec, httptest.NewRequest(http.MethodPost, "/login", nil), uid); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	var sessionCookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == auth.SessionCookie {
+			sessionCookie = c
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("no session cookie created")
+	}
+
+	const ip = "192.0.2.9"
+	u := &models.User{ID: uid, Username: uname}
+	reqFrom := func() *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/api/auth/passkeys/register/begin",
+			bytes.NewReader([]byte(`{"name":"key1"}`)))
+		r.RemoteAddr = ip + ":1234"
+		r.AddCookie(sessionCookie)
+		return r.WithContext(auth.ContextWithUser(ctx, u))
+	}
+
+	liveRows := func() int {
+		var n int
+		if err := h.Pool.QueryRow(ctx,
+			`SELECT count(*) FROM webauthn_ceremonies WHERE expires_at > now()`).Scan(&n); err != nil {
+			t.Fatalf("count ceremonies: %v", err)
+		}
+		return n
+	}
+	before := liveRows()
+
+	// Die ersten maxStarts Starts sind erlaubt — es geht NICHT darum, den
+	// normalen Weg zu blockieren.
+	var created []string
+	for i := 0; i < maxStarts; i++ {
+		w := httptest.NewRecorder()
+		ah.PasskeyRegisterBegin(w, reqFrom())
+		if w.Code != http.StatusOK {
+			t.Fatalf("start %d should be allowed, got %d: %s", i, w.Code, w.Body.String())
+		}
+		for _, c := range w.Result().Cookies() {
+			if c.Name == waCookie && c.Value != "" {
+				created = append(created, c.Value)
+			}
+		}
+	}
+	// Nur die selbst erzeugten Zeilen wieder abraeumen — ein Rundumschlag auf der
+	// Tabelle wuerde die laufende Zeremonie eines anderen Tests mitnehmen.
+	t.Cleanup(func() {
+		_, _ = h.Pool.Exec(context.Background(),
+			`DELETE FROM webauthn_ceremonies WHERE id = ANY($1)`, created)
+	})
+
+	// Der naechste Start muss 429 liefern, obwohl NIE ein Fehlversuch verbucht
+	// wurde. Ohne den Zaehler antwortet der Endpunkt hier weiterhin mit 200.
+	w := httptest.NewRecorder()
+	ah.PasskeyRegisterBegin(w, reqFrom())
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("repeated begins without any recorded failure must eventually be throttled; got %d: %s",
+			w.Code, w.Body.String())
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Error("throttled response should carry a Retry-After header")
+	}
+
+	// Der eigentliche Punkt: die abgewiesene Anfrage darf KEINE Zeile hinterlassen
+	// haben. Der Statuscode allein wuerde auch dann noch stimmen, wenn die
+	// Zeremonie trotzdem geschrieben wuerde.
+	if got, want := liveRows()-before, maxStarts; got != want {
+		t.Errorf("expected exactly %d ceremony rows to be created, got %d", want, got)
+	}
+
+	// Das Anmeldebudget darf davon unberuehrt sein.
+	if allowed, _ := ah.Limiter.Allowed(strings.ToLower(uname) + "|" + ip); !allowed {
+		t.Error("ceremony throttling must not consume the username|ip login budget")
+	}
+	if allowed, _ := ah.UserLimiter.Allowed(strings.ToLower(uname)); !allowed {
+		t.Error("ceremony throttling must not consume the per-account login budget")
 	}
 }
