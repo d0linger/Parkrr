@@ -45,31 +45,20 @@ func archiveTOC(ctx context.Context, enc []byte, key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tmp, err := os.CreateTemp("", "parkrr-validate-*.dump")
+	return plainArchiveTOC(ctx, plain)
+}
+
+func plainArchiveTOC(ctx context.Context, plain []byte) (string, error) {
+	// No filename means stdin.
+	// #nosec G204 -- fixed executable and arguments.
+	cmd := exec.CommandContext(ctx, "pg_restore", "--list")
+	cmd.Stdin = bytes.NewReader(plain)
+	out, err := cmd.Output()
 	if err != nil {
-		return "", err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(plain); err != nil {
-		_ = tmp.Close()
-		return "", err
-	}
-	if err := tmp.Close(); err != nil {
-		return "", err
-	}
-	// #nosec G204 -- fixed command "pg_restore"; the only argument is a temp file
-	// path we created, not user input.
-	out, err := exec.CommandContext(ctx, "pg_restore", "--list", tmp.Name()).Output()
-	if err != nil {
-		// Den GRUND mitnehmen. pg_restore schreibt ihn auf stderr ("did not find magic
-		// string in file header", "unsupported version"), Output() legt ihn in
-		// ExitError.Stderr ab — ohne ihn blieb im Audit-Eintrag und im Log nur
-		// "exit status 1" stehen, womit niemand etwas anfangen kann. Ein Fehler, der
-		// gar kein ExitError ist (pg_restore fehlt im PATH, Context abgelaufen), hat
-		// keine stderr und behält seine eigene Meldung.
 		var ee *exec.ExitError
 		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
-			return "", fmt.Errorf("not a valid pg_dump archive: %w: %s", err, strings.TrimSpace(string(ee.Stderr)))
+			return "", fmt.Errorf("not a valid pg_dump archive: %w: %s",
+				err, strings.TrimSpace(string(ee.Stderr)))
 		}
 		return "", fmt.Errorf("not a valid pg_dump archive: %w", err)
 	}
@@ -222,45 +211,25 @@ func Decrypt(enc []byte, key string) ([]byte, error) {
 // DESTRUCTIVE: --clean --if-exists drops and recreates objects. The archive is
 // validated (pg_restore --list) before the DB is touched.
 func Restore(ctx context.Context, dbURL string, enc []byte, key string) error {
-	// Serialize against the dump path (RunVolume/RunS3): pg_restore --clean drops
-	// and recreates every table, so a scheduled backup firing mid-restore would dump
-	// a half-wiped DB and rotate that corrupt archive over a good one. runMu makes
-	// restore and backup mutually exclusive.
+	// A scheduled dump must never observe a partially restored schema.
 	runMu.Lock()
 	defer runMu.Unlock()
-
 	plain, err := Decrypt(enc, key)
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp("", "parkrr-restore-*.dump")
-	if err != nil {
+	if _, err := plainArchiveTOC(ctx, plain); err != nil {
 		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(plain); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	// Validate the archive header before touching the database.
-	// #nosec G204 -- fixed command "pg_restore"; the argument is a temp file we created.
-	if err := exec.CommandContext(ctx, "pg_restore", "--list", tmp.Name()).Run(); err != nil {
-		return fmt.Errorf("not a valid pg_dump archive: %w", err)
 	}
 	var errb bytes.Buffer
 	dsn, env := dbExecEnv(dbURL)
-	// --single-transaction makes the whole restore atomic: any error rolls back
-	// entirely, so a failed restore never leaves the DB half-wiped.
-	// #nosec G204 -- fixed command "pg_restore"; dbURL is operator config and the
-	// final argument is a temp file we created, neither is request input. The
-	// password is passed via PGPASSWORD, not on the command line.
+	// Keep restoration atomic and the database password out of argv.
+	// #nosec G204 -- fixed executable; DSN is operator configuration.
 	cmd := exec.CommandContext(ctx, "pg_restore",
-		"--single-transaction", "--clean", "--if-exists", "--no-owner", "--no-privileges",
-		"--dbname="+dsn, tmp.Name())
+		"--single-transaction", "--clean", "--if-exists",
+		"--no-owner", "--no-privileges", "--dbname="+dsn)
 	cmd.Env = env
+	cmd.Stdin = bytes.NewReader(plain)
 	cmd.Stderr = &errb
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("pg_restore failed: %w: %s", err, errb.String())

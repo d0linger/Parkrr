@@ -293,7 +293,11 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	// own via the failure window.
 	h.Limiter.Reset(key)
 	h.UserLimiter.Reset(userKeyOf(key, ip))
-	if err := h.Auth.CreateSession(r.Context(), w, r, u.ID); err != nil {
+	createSession := h.Auth.CreateSession
+	if u.TOTPEnabled {
+		createSession = h.Auth.CreateVerifiedSession
+	}
+	if err := createSession(r.Context(), w, r, u.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create session")
 		return
 	}

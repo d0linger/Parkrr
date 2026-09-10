@@ -176,12 +176,21 @@ func (s *WebAuthnService) FinishLogin(ctx context.Context, sd webauthn.SessionDa
 		}
 		return 0, false, err
 	}
+	return s.finishVerifiedLogin(ctx, uid, cred)
+}
+
+// ErrPasskeySuspended reports a credential rejected by the configured clone policy.
+var ErrPasskeySuspended = errors.New("auth: passkey suspended after clone warning")
+
+// finishVerifiedLogin applies credential policy only after cryptographic verification.
+func (s *WebAuthnService) finishVerifiedLogin(
+	ctx context.Context, uid int64, cred *webauthn.Credential,
+) (int64, bool, error) {
 	// go-webauthn sets CloneWarning when the presented sign counter did not advance
 	// past the stored value — a strong signal the authenticator was cloned. The
-	// assertion itself verified, so login proceeds, but we surface it (finding P-06):
-	// always as a security event, and — when configured — by deleting the credential
-	// so it must be re-enrolled. The caller writes the audit entry (it has the actor).
-	cloneWarning = cred.Authenticator.CloneWarning
+	// assertion itself verified, but suspension must reject this login as well as
+	// remove the credential. The caller writes the security audit event.
+	cloneWarning := cred.Authenticator.CloneWarning
 	if cloneWarning {
 		slog.Warn("passkey clone warning: authenticator sign counter did not advance", "user_id", uid)
 		if s.suspendOnClone {
@@ -194,7 +203,7 @@ func (s *WebAuthnService) FinishLogin(ctx context.Context, sd webauthn.SessionDa
 			}
 			slog.Warn("suspended passkey credential after clone warning; re-enrollment required", "user_id", uid)
 			// The credential is gone; skip the counter write.
-			return uid, true, nil
+			return uid, true, ErrPasskeySuspended
 		}
 	}
 	// The login already succeeded; a failed counter write must not fail it, but

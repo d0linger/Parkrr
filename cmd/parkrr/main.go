@@ -133,7 +133,7 @@ func run() error {
 	}
 	if cfg.Require2FA {
 		authMgr.SetRequire2FA(true)
-		slog.Info("2FA-Pflicht aktiv: Konten ohne TOTP/Passkey können nur die Einrichtung erreichen")
+		slog.Info("required MFA enabled: enrollment and verified session factor required")
 	}
 	if cfg.TrustedProxies && len(cfg.TrustedProxyCIDRs) == 0 {
 		// Fail closed at startup: trusting forwarded headers from ANY direct peer lets a

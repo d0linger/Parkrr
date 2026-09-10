@@ -70,6 +70,9 @@ jobs:
       - name: Test
         run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
 
+      - name: Verify large backup restore under hardened limits
+        run: bash scripts/test-backup-restore.sh
+
       # Diagnose zur Abdeckungsluecke: der CI-Wert (56,8 %) liegt weit unter dem lokal
       # gemessenen (72,9 %, vor UND nach den letzten Commits identisch). Da der
       # Test-Schritt hier BESTEHT, muss ein Teil der Tests still uebersprungen werden.

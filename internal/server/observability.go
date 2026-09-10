@@ -109,10 +109,17 @@ func metricsMiddleware(mux *http.ServeMux, next http.Handler) http.Handler {
 			route = pattern
 		}
 		start := time.Now()
+		method := r.Method
+		switch method {
+		case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+			http.MethodPatch, http.MethodDelete, http.MethodConnect, http.MethodOptions, http.MethodTrace:
+		default:
+			method = "other"
+		}
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
-		httpDuration.WithLabelValues(route, r.Method).Observe(time.Since(start).Seconds())
-		httpRequests.WithLabelValues(route, r.Method, strconv.Itoa(rec.status)).Inc()
+		httpDuration.WithLabelValues(route, method).Observe(time.Since(start).Seconds())
+		httpRequests.WithLabelValues(route, method, strconv.Itoa(rec.status)).Inc()
 	})
 }
 

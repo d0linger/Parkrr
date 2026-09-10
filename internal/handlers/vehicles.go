@@ -578,6 +578,11 @@ func (h *Handler) DeleteVehicle(w http.ResponseWriter, r *http.Request) {
 		`DELETE FROM vehicles WHERE id = $1 RETURNING label, license_plate, status, person_id`, id).
 		Scan(&delLabel, &delPlate, &delStatus, &delPerson)
 	if err != nil {
+		if isForeignKeyViolation(err) {
+			writeError(w, http.StatusConflict,
+				"Fahrzeug hat geschützte Belege oder Übergabeprotokolle und kann nicht gelöscht werden.")
+			return
+		}
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "vehicle not found")
 			return
@@ -819,6 +824,9 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	}); err != nil {
+		if writeSettlementConflict(w, err) {
+			return
+		}
 		writeError(w, http.StatusInternalServerError, failMsg)
 		return
 	}

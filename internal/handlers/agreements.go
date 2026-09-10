@@ -932,6 +932,9 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 		// (b) Extras: settle the bound Zusatzkosten open on covered vehicles right now
 		// (charges added later stay billable — Option A).
 		if err := h.settleAgreementExtrasTx(ctx, tx, ag, createdBy); err != nil {
+			if writeSettlementConflict(w, err) {
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "could not update agreement")
 			return
 		}

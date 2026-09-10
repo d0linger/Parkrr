@@ -335,6 +335,11 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 	h.clearCeremony(r.Context(), w, r)
 
 	uid, cloneWarning, err := h.WebAuthn.FinishLogin(r.Context(), cer.Session, r)
+	if errors.Is(err, auth.ErrPasskeySuspended) {
+		h.auditAs(r, uid, "", "security", "passkey", uid, "passkey suspended after clone warning")
+		writeError(w, http.StatusUnauthorized, "passkey login failed")
+		return
+	}
 	if err != nil {
 		// A backend error is not a brute-force signal; don't spend the throttle
 		// budget on it and surface it as a server error.
@@ -375,7 +380,7 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 	// throttled even after a successful passkey login. The passkey path is
 	// usernameless, so key the reset by the resolved account name (as UserLimiter is).
 	h.UserLimiter.Reset(strings.ToLower(u.Username))
-	if err := h.Auth.CreateSession(r.Context(), w, r, uid); err != nil {
+	if err := h.Auth.CreateVerifiedSession(r.Context(), w, r, uid); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create session")
 		return
 	}
