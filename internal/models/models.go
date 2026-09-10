@@ -146,12 +146,12 @@ type User struct {
 	// Übergabeprotokollen nullen — Aufzeichnungen, die unverändert bleiben sollen
 	// (API-31).
 	Disabled bool `json:"disabled"`
-	// HasPasskey wird bei der Sitzungsaufloesung mitgeladen (EXISTS auf
-	// webauthn_credentials) und traegt die 2FA-Pflicht (Hundert 41): TOTP ODER
-	// Passkey erfuellt sie. Nicht persistiert.
-	HasPasskey bool      `json:"has_passkey"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	// HasPasskey describes enrollment, not proof for the current session.
+	// FactorVerified is loaded from the session and never accepted from a client.
+	FactorVerified bool      `json:"-"`
+	HasPasskey     bool      `json:"has_passkey"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // Person is a customer who stores one or more vehicles. Flat-rate billing lives

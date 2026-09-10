@@ -3,13 +3,46 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/preining/parkrr/internal/models"
 )
+
+func TestWriteSettlementConflict(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "wrapped settlement race", err: fmt.Errorf("primary allocation: %w", errSettlementRace), want: true},
+		{name: "charge claim", err: &pgconn.PgError{Code: "23505", ConstraintName: "charge_claim_exclusive"}, want: true},
+		{name: "deadlock", err: &pgconn.PgError{Code: "40P01"}, want: true},
+		{name: "serialization", err: &pgconn.PgError{Code: "40001"}, want: true},
+		{name: "other unique constraint", err: &pgconn.PgError{Code: "23505"}},
+		{name: "other error", err: errors.New("connection lost")},
+		{name: "nil"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			if got := writeSettlementConflict(rec, tc.err); got != tc.want {
+				t.Fatalf("handled=%v, want %v", got, tc.want)
+			}
+			if tc.want && rec.Code != http.StatusConflict {
+				t.Fatalf("status=%d, want 409", rec.Code)
+			}
+			if !tc.want && (rec.Code != http.StatusOK || rec.Body.Len() != 0) {
+				t.Fatalf("unhandled error wrote a response: %d %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
 
 // createIntegrationPerson inserts a person (cleaned up by cleanupPersons) and
 // returns its id.

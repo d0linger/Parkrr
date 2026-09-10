@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/preining/parkrr/internal/auth"
 )
@@ -25,17 +26,39 @@ const maxMoneyAmount = 1e9
 // quantity from overflowing to a 500.
 const maxQuantity = 1e6
 
+var errSettlementRace = errors.New("settlement raced")
+
+// writeSettlementConflict reports a stale/concurrent claim without committing
+// partial money state. Call only after the transaction has failed.
+func writeSettlementConflict(w http.ResponseWriter, err error) bool {
+	if !errors.Is(err, errSettlementRace) {
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) {
+			return false
+		}
+		chargeClaim := pgErr.Code == "23505" && pgErr.ConstraintName == "charge_claim_exclusive"
+		retryTransaction := pgErr.Code == "40P01" || pgErr.Code == "40001"
+		if !chargeClaim && !retryTransaction {
+			return false
+		}
+	}
+	writeError(w, http.StatusConflict,
+		"Position wurde zwischenzeitlich bezahlt oder fakturiert – bitte neu laden.")
+	return true
+}
+
 // payment is one recorded money-in entry (see migration 023_payments.sql).
 type payment struct {
-	ID        int64     `json:"id"`
-	PersonID  int64     `json:"person_id"`
-	Amount    float64   `json:"amount"`
-	PaidOn    time.Time `json:"paid_on"`
-	Method    string    `json:"method"`
-	Note      string    `json:"note"`
-	VehicleID *int64    `json:"vehicle_id"`
-	CreatedAt time.Time `json:"created_at"`
-	Reversed  bool      `json:"reversed"` // storniert: kept for audit, excluded from all money sums
+	ID                int64     `json:"id"`
+	PersonID          int64     `json:"person_id"`
+	Amount            float64   `json:"amount"`
+	PaidOn            time.Time `json:"paid_on"`
+	Method            string    `json:"method"`
+	Note              string    `json:"note"`
+	VehicleID         *int64    `json:"vehicle_id"`
+	CreatedAt         time.Time `json:"created_at"`
+	Reversed          bool      `json:"reversed"` // storniert: kept for audit, excluded from all money sums
+	ManagedSettlement bool      `json:"managed_settlement"`
 	// Items are the resolved positions this payment settles (Gefährt/Pauschale/
 	// Zusatzkosten + Zeitraum + Betrag), filled by ListPayments so the overview can
 	// show what a payment covers — even across several Gefährte or Pauschalen.
@@ -46,11 +69,12 @@ type payment struct {
 // typo can't create an unfilterable method.
 var paymentMethods = map[string]bool{"bar": true, "ueberweisung": true, "paypal": true, "sonstiges": true}
 
-const paymentColumns = `id, person_id, amount, paid_on, method, note, vehicle_id, created_at, reversed`
+const paymentColumns = `id, person_id, amount, paid_on, method, note, vehicle_id, created_at, reversed, (settles_kind IS NOT NULL)`
 
 func scanPayment(row pgx.Row) (payment, error) {
 	var p payment
-	err := row.Scan(&p.ID, &p.PersonID, &p.Amount, &p.PaidOn, &p.Method, &p.Note, &p.VehicleID, &p.CreatedAt, &p.Reversed)
+	err := row.Scan(&p.ID, &p.PersonID, &p.Amount, &p.PaidOn, &p.Method, &p.Note, &p.VehicleID,
+		&p.CreatedAt, &p.Reversed, &p.ManagedSettlement)
 	return p, err
 }
 
@@ -469,7 +493,7 @@ func (h *Handler) syncTogglePaymentTx(ctx context.Context, tx pgx.Tx, kind strin
 		return err
 	}
 	if pTag.RowsAffected() == 0 {
-		return fmt.Errorf("settlement raced on %s %d; retry", kind, refID)
+		return fmt.Errorf("%w on %s %d; retry", errSettlementRace, kind, refID)
 	}
 	for _, b := range claimable {
 		cTag, cerr := tx.Exec(ctx,
@@ -479,7 +503,7 @@ func (h *Handler) syncTogglePaymentTx(ctx context.Context, tx pgx.Tx, kind strin
 			return cerr
 		}
 		if cTag.RowsAffected() == 0 {
-			return fmt.Errorf("settlement raced on charge %d; retry", b.id)
+			return fmt.Errorf("%w on charge %d; retry", errSettlementRace, b.id)
 		}
 		if _, err := tx.Exec(ctx, `UPDATE charges SET paid=true WHERE id=$1`, b.id); err != nil {
 			return err
@@ -683,6 +707,9 @@ func (h *Handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	})
+	if writeSettlementConflict(w, txErr) {
+		return
+	}
 	if txErr != nil {
 		if isForeignKeyViolation(txErr) {
 			writeError(w, http.StatusBadRequest, "person does not exist")
@@ -730,6 +757,18 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 	var delMethod string
 	var delOn time.Time
 	txErr := pgx.BeginFunc(ctx, h.Pool, func(tx pgx.Tx) error {
+		var settlesKind *string
+		if err := tx.QueryRow(ctx,
+			`SELECT settles_kind FROM payments WHERE id=$1 AND NOT reversed FOR UPDATE`, id).
+			Scan(&settlesKind); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errPaymentNotFound
+			}
+			return err
+		}
+		if settlesKind != nil {
+			return errPeriodManagedPayment
+		}
 		// Position toggles this payment stamped, and invoice allocations it funded.
 		var refs []ref
 		prows, err := tx.Query(ctx, `SELECT kind, ref_id FROM payment_allocations WHERE payment_id=$1`, id)
@@ -822,7 +861,12 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 			diffFields(map[string]any{"reversed": false, "amount": delAmt, "method": delMethod},
 				map[string]any{"reversed": true, "amount": delAmt, "method": delMethod}))
 	})
-	if txErr == errPaymentNotFound || (txErr == nil && !deleted) {
+	if errors.Is(txErr, errPeriodManagedPayment) {
+		writeError(w, http.StatusConflict,
+			"Periodenzahlung über den Bezahlt-Schalter der Pauschale/Nebenkosten zurücksetzen.")
+		return
+	}
+	if errors.Is(txErr, errPaymentNotFound) || (txErr == nil && !deleted) {
 		writeError(w, http.StatusNotFound, "payment not found")
 		return
 	}
@@ -834,6 +878,7 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 }
 
 var errPaymentNotFound = fmt.Errorf("payment not found")
+var errPeriodManagedPayment = errors.New("payment is managed by a period settlement")
 
 // OpenItems returns a person's open individually-owed positions (for the payment
 // dialog's selection list).
@@ -986,6 +1031,9 @@ func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	})
+	if writeSettlementConflict(w, txErr) {
+		return
+	}
 	if txErr != nil {
 		writeError(w, http.StatusInternalServerError, "could not apply credit")
 		return

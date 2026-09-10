@@ -5,7 +5,7 @@
 #   docker compose -f docker-compose.yml \
 #                  -f deploy/monitoring/docker-compose.monitoring.yml up -d
 #
-# Grafana comes up on http://localhost:3000 (admin / admin on first login) with
+# Grafana comes up on http://localhost:3000 (configured admin credentials) with
 # the Prometheus datasource and the "Parkrr — Service Overview" dashboard
 # already provisioned. Both services join the existing `parkrr-net` network so
 # Prometheus can scrape the app at app:8080/metrics.
@@ -24,12 +24,12 @@ services:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=30d
     ports:
-      - "${PARKRR_PROMETHEUS_PORT:-9090}:9090"
+      - "127.0.0.1:${PARKRR_PROMETHEUS_PORT:-9090}:9090"
     networks:
       - parkrr-net
 
   grafana:
-    image: grafana/grafana:11.3.0
+    image: grafana/grafana:13.2.1@sha256:f772d434e8fab0049deb2b1b30abd43342bcfca1537614aa8d36080232cf4283
     container_name: parkrr-grafana
     restart: unless-stopped
     depends_on:
@@ -40,12 +40,13 @@ services:
       # monitoring stack up (Compose fails fast if it is unset).
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD for the monitoring stack}
       GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SECURITY_CONTENT_SECURITY_POLICY: "true"
     volumes:
       - ./deploy/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./deploy/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
-      - "${PARKRR_GRAFANA_PORT:-3000}:3000"
+      - "127.0.0.1:${PARKRR_GRAFANA_PORT:-3000}:3000"
     networks:
       - parkrr-net
 

@@ -244,38 +244,31 @@ func (h *Handler) UpdatePerson(w http.ResponseWriter, r *http.Request) {
 // in der Zeile. Ohne sie läuft der unnest je Zeile des ganzen Protokolls — mail_log
 // unterliegt keiner Aufräumfrist und wächst unbegrenzt, und die Anweisung steckt in
 // der Löschtransaktion, die am statement_timeout hängt.
-func anonymizeUnlinkedTraces(ctx context.Context, q execer, personID int64, prevEmail string) error {
+func anonymizeUnlinkedTraces(
+	ctx context.Context, q execer, personID int64, prevEmail string,
+) error {
 	if _, err := q.Exec(ctx,
 		`UPDATE spot_occupancy_history
-		    SET vehicle_label = 'Anonymisiert', person_id = NULL
-		  WHERE person_id = $1`, personID); err != nil {
+         SET vehicle_label = 'Anonymisiert', person_id = NULL
+         WHERE person_id = $1`, personID); err != nil {
 		return err
 	}
-	prevEmail = strings.TrimSpace(prevEmail)
-	if prevEmail == "" {
-		return nil
+	if prevEmail = strings.TrimSpace(prevEmail); prevEmail != "" {
+		if _, err := q.Exec(ctx,
+			`UPDATE mail_log SET recipients = 'anonymisiert'
+             WHERE strpos(lower(recipients), lower($1)) > 0
+               AND lower($1) = ANY (
+                   SELECT lower(btrim(x, E' \t\r\n'))
+                   FROM unnest(string_to_array(recipients, ',')) AS x
+               )`, prevEmail); err != nil {
+			return err
+		}
 	}
-	if _, err := q.Exec(ctx,
-		`UPDATE mail_log SET recipients = 'anonymisiert'
-		  WHERE strpos(lower(recipients), lower($1)) > 0
-		    AND lower($1) = ANY (SELECT lower(btrim(x, E' \t\r\n'))
-		                           FROM unnest(string_to_array(recipients, ',')) AS x)`, prevEmail); err != nil {
-		return err
-	}
-	// invoice_reminders.sent_to traegt dieselbe Adresse und wurde bisher von KEINER
-	// Stelle geraeumt — die Loeschung reichte bis ins Mail-Protokoll, hoerte aber genau
-	// davor auf, wo die Adresse ein zweites Mal steht. Beim Loeschen faellt hier nichts
-	// an (eine Person mit ausgestellten Rechnungen laesst sich gar nicht loeschen), beim
-	// ANONYMISIEREN dagegen blieb die Adresse des Kunden dauerhaft lesbar.
-	//
-	// Ueber die Rechnung zugeordnet, nicht ueber einen Textvergleich: wem eine Mahnung
-	// gehoert, sagt der Fremdschluessel, und ein Adressvergleich koennte fremde Zeilen
-	// treffen. Stufe und Zeitpunkt bleiben als Mahn-Nachweis stehen — nur das WOHIN
-	// verschwindet, dieselbe Abwaegung wie beim Mail-Protokoll.
+	// Ownership identifies these recipients, not the current email value.
 	_, err := q.Exec(ctx,
 		`UPDATE invoice_reminders SET sent_to = 'anonymisiert'
-		  WHERE invoice_id IN (SELECT id FROM invoices WHERE person_id = $1)
-		    AND sent_to <> 'anonymisiert'`, personID)
+         WHERE invoice_id IN (SELECT id FROM invoices WHERE person_id = $1)
+           AND sent_to <> 'anonymisiert'`, personID)
 	return err
 }
 
@@ -332,7 +325,7 @@ func (h *Handler) DeletePerson(w http.ResponseWriter, r *http.Request) {
 			// Invoices reference the person (ON DELETE RESTRICT) for immutability —
 			// a person with issued invoices must be kept (storniere statt löschen).
 			writeError(w, http.StatusConflict,
-				"Person hat ausgestellte Rechnungen und kann nicht gelöscht werden (Storno statt Löschen).")
+				"Person hat geschützte Rechnungen oder Übergabeprotokolle und kann nicht gelöscht werden.")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "could not delete person")

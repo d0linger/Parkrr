@@ -113,6 +113,9 @@ jobs:
       - name: Test (race)
         run: go test -race ./...
 
+      - name: Verify large backup restore under hardened limits
+        run: bash scripts/test-backup-restore.sh
+
       - name: Run govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -171,7 +174,8 @@ jobs:
             # exact commit / deploy by digest, and every image maps back to a commit.
             type=sha,format=long
 
-      - name: Build and push
+      - name: Build candidate (no release tags)
+        id: candidate
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
@@ -179,7 +183,52 @@ jobs:
             VERSION=${{ github.sha }}
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Install pinned Trivy
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --show-error --silent --location \
+            https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz \
+            --output "$RUNNER_TEMP/trivy.tar.gz"
+          printf '%s  %s\n' \
+            '2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a' \
+            "$RUNNER_TEMP/trivy.tar.gz" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/parkrr-trivy"
+          tar -xzf "$RUNNER_TEMP/trivy.tar.gz" \
+            -C "$RUNNER_TEMP/parkrr-trivy" trivy
+
+      - name: Scan shipped digest on both architectures
+        shell: bash
+        env:
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.candidate.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for platform in linux/amd64 linux/arm64; do
+            "$RUNNER_TEMP/parkrr-trivy/trivy" image \
+              --image-src remote \
+              --platform "$platform" \
+              --scanners vuln \
+              --exit-code 1 \
+              --ignore-unfixed \
+              --severity HIGH,CRITICAL \
+              "$IMAGE_REF"
+          done
+
+      - name: Promote scanned digest to release tags
+        shell: bash
+        env:
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.candidate.outputs.digest }}
+          METADATA_JSON: ${{ steps.meta.outputs.json }}
+        run: |
+          set -euo pipefail
+          tags=()
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] && tags+=(--tag "$tag")
+          done < <(jq -r '.tags[]' <<< "$METADATA_JSON")
+          ((${#tags[@]} > 0))
+          docker buildx imagetools create "${tags[@]}" "$IMAGE_REF"

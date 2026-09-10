@@ -211,6 +211,7 @@
     // diesem maschinenlesbaren Grund. EINMAL hinführen statt bei jedem Aufruf einen
     // nackten Fehler zu zeigen.
     let twoFARedirected = false;
+    let twoFALoggingOut = false;
 
     async function handle(res, path) {
         if (res.status === 204) return null;
@@ -223,6 +224,13 @@
         }
         if (ct.includes('application/json')) data = await res.json();
         if (!res.ok) {
+            if (res.status === 403 && data && data.error === '2fa_authentication_required') {
+                if (state.user && !twoFALoggingOut) {
+                    twoFALoggingOut = true;
+                    await logout();
+                    toast('Bitte erneut mit Passkey oder Zwei-Faktor-Code anmelden.', 'warn');
+                }
+            }
             if (res.status === 403 && data && data.error === '2fa_enrollment_required' && !twoFARedirected) {
                 twoFARedirected = true;
                 toast('Dieser Betrieb verlangt einen zweiten Faktor — bitte jetzt einrichten.', 'warn');
@@ -2050,7 +2058,7 @@
                 el('div', { class: 'pay-date' }, meta)),
             el('div', { class: 'pay-amt' }, eur(p.amount)));
         // A reversed payment is kept for the record (BAO) — no further action on it.
-        if (canBill() && !p.reversed) {
+        if (canBill() && !p.reversed && !p.managed_settlement) {
             head.append(el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Zahlung stornieren', title: 'Zahlung stornieren', onclick: (e) => delPayment(p, e.currentTarget.closest('.card')) }, icon('trash', 15)));
         }
         const card = el('div', { class: 'card pay-card' + (p.reversed ? ' is-reversed' : '') }, head);
@@ -8435,6 +8443,7 @@
         // jeder Route nur "Fehler: 2fa_enrollment_required" — ohne zu erfahren, was
         // zu tun ist. Ebenso die Zählerstände fremder Listen.
         twoFARedirected = false;
+        twoFALoggingOut = false;
         totalCounts.clear();
         showLogin();
     }

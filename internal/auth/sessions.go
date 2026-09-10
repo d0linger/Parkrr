@@ -65,10 +65,14 @@ func (m *Manager) RevokeAllSessions(ctx context.Context, userID int64) error {
 // change so the new credentials are bound to a brand-new session and any other
 // (potentially compromised) sessions are terminated.
 func (m *Manager) RotateSession(ctx context.Context, w http.ResponseWriter, r *http.Request, userID int64) error {
+	verified := false
+	if u, ok := UserFrom(ctx); ok && u != nil && u.ID == userID {
+		verified = u.FactorVerified
+	}
 	if err := m.RevokeAllSessions(ctx, userID); err != nil {
 		return err
 	}
-	return m.CreateSession(ctx, w, r, userID)
+	return m.createSession(ctx, w, r, userID, verified)
 }
 
 // CurrentToken exposes the request's session token (used by handlers).

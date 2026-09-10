@@ -618,6 +618,9 @@ func (h *Handler) SetChargePaid(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	}); err != nil {
+		if writeSettlementConflict(w, err) {
+			return
+		}
 		writeError(w, http.StatusInternalServerError, failMsg)
 		return
 	}

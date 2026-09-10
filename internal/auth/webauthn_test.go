@@ -1,14 +1,16 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"testing"
+
+	"github.com/go-webauthn/webauthn/webauthn"
 )
 
 // SetSuspendOnClone must be nil-safe (passkeys disabled => service is nil) and
-// otherwise set the flag (finding P-06). The full clone-detection + delete path
-// runs inside FinishLogin and requires a real cloned-authenticator assertion, so
-// it is exercised end-to-end rather than here.
+// otherwise set the flag. Credential policy is tested separately after the
+// cryptographic verification boundary in TestFinishVerifiedLoginClonePolicy.
 func TestSetSuspendOnClone(t *testing.T) {
 	var nilSvc *WebAuthnService
 	nilSvc.SetSuspendOnClone(true) // must not panic on a nil service
@@ -20,6 +22,46 @@ func TestSetSuspendOnClone(t *testing.T) {
 	s.SetSuspendOnClone(true)
 	if !s.suspendOnClone {
 		t.Error("SetSuspendOnClone(true) did not set the flag")
+	}
+}
+
+func TestFinishVerifiedLoginClonePolicy(t *testing.T) {
+	for _, suspend := range []bool{false, true} {
+		name := "warn"
+		if suspend {
+			name = "suspend"
+		}
+		t.Run(name, func(t *testing.T) {
+			_, pool := testAuthManager(t)
+			id := mkAuthUser(t, pool, "editor", false)
+			credentialID := []byte(t.Name())
+			if _, err := pool.Exec(t.Context(),
+				`INSERT INTO webauthn_credentials(user_id, credential_id, public_key, name) VALUES($1,$2,$3,'test')`,
+				id, credentialID, []byte("key")); err != nil {
+				t.Fatal(err)
+			}
+			svc := &WebAuthnService{pool: pool, suspendOnClone: suspend}
+			cred := &webauthn.Credential{ID: credentialID}
+			cred.Authenticator.CloneWarning = true
+			uid, warning, err := svc.finishVerifiedLogin(context.Background(), id, cred)
+			if uid != id || !warning {
+				t.Fatalf("lost actor or warning: %d %v", uid, warning)
+			}
+			if suspend && !errors.Is(err, ErrPasskeySuspended) {
+				t.Fatalf("suspension must reject login: %v", err)
+			}
+			if !suspend && err != nil {
+				t.Fatal(err)
+			}
+			var exists bool
+			if err := pool.QueryRow(t.Context(), `SELECT EXISTS(SELECT 1 FROM webauthn_credentials WHERE credential_id=$1)`,
+				credentialID).Scan(&exists); err != nil {
+				t.Fatal(err)
+			}
+			if exists == suspend {
+				t.Fatalf("credential retained=%v, suspension=%v", exists, suspend)
+			}
+		})
 	}
 }
 

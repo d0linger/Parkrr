@@ -70,6 +70,9 @@ jobs:
       - name: Test
         run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
 
+      - name: Verify large backup restore under hardened limits
+        run: bash scripts/test-backup-restore.sh
+
       # Diagnose zur Abdeckungsluecke: der CI-Wert (56,8 %) liegt weit unter dem lokal
       # gemessenen (72,9 %, vor UND nach den letzten Commits identisch). Da der
       # Test-Schritt hier BESTEHT, muss ein Teil der Tests still uebersprungen werden.
@@ -161,15 +164,14 @@ jobs:
           echo "All external actions are SHA-pinned."
 
   geometry:
-    name: Planner geometry tests
+    name: Frontend unit tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Pure geometry unit tests for web/static/js/geometry.js via Node's built-in test
-      # runner (preinstalled on the runner — no extra action). Guards the planner's
-      # area / wall-offset / collinear-inheritance maths on every PR.
-      - name: Run geometry unit tests
-        run: node --test tests/geometry/geometry.test.js
+      # Pure geometry and isolated SPA auth tests via Node's built-in test runner
+      # (preinstalled on the runner — no extra action or running backend).
+      - name: Run frontend unit tests
+        run: node --test tests/geometry/geometry.test.js tests/frontend/auth-redirect.test.js
