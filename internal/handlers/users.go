@@ -372,6 +372,10 @@ func (h *Handler) ResetUserTOTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not reset two-factor")
 		return
 	}
+	if _, err := tx.Exec(r.Context(), `DELETE FROM sessions WHERE user_id=$1`, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not reset two-factor")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not reset two-factor")
 		return

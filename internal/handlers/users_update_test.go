@@ -52,6 +52,11 @@ func TestResetUser2FAClearsBackupCodesAndPasskeys(t *testing.T) {
 		 VALUES ($1, $2, $3, 'Test Key')`, userID, []byte("cred123"), []byte("pubkey123")); err != nil {
 		t.Fatalf("insert webauthn_credential: %v", err)
 	}
+	if _, err := h.Pool.Exec(ctx,
+		`INSERT INTO sessions (token, user_id, expires_at)
+		 VALUES ('testtoken123', $1, now() + interval '1 hour')`, userID); err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/users/1/reset-2fa", nil)
 	req.SetPathValue("id", strconv.FormatInt(userID, 10))
@@ -84,5 +89,13 @@ func TestResetUser2FAClearsBackupCodesAndPasskeys(t *testing.T) {
 	}
 	if passkeyCount != 0 {
 		t.Errorf("expected 0 webauthn credentials remaining, got %d", passkeyCount)
+	}
+
+	var sessionCount int
+	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM sessions WHERE user_id=$1`, userID).Scan(&sessionCount); err != nil {
+		t.Fatalf("query sessions: %v", err)
+	}
+	if sessionCount != 0 {
+		t.Errorf("expected 0 sessions remaining, got %d", sessionCount)
 	}
 }
