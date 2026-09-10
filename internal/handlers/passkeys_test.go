@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -251,9 +252,12 @@ func TestPasskeyRegisterBegin_RateLimitWithOpenStepUpWindow(t *testing.T) {
 func TestPasskeyRegisterBegin_BoundsCeremonyStartsWithoutFailures(t *testing.T) {
 	h := testHandler(t)
 	ctx := context.Background()
-	mgr, err := auth.NewManager(h.Pool, auth.SessionConfig{MaxAge: 3600}, false, false, "a-sufficiently-long-test-secret")
+	mgr, err := auth.NewManager(h.Pool, auth.SessionConfig{MaxAge: 3600}, false, true, "a-sufficiently-long-test-secret")
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
+	}
+	if err := mgr.SetTrustedProxyCIDRs([]string{"127.0.0.1/32"}); err != nil {
+		t.Fatalf("SetTrustedProxyCIDRs: %v", err)
 	}
 	wa, err := auth.NewWebAuthnService(h.Pool, "example.com", "Example", []string{"https://example.com"})
 	if err != nil {
@@ -308,9 +312,13 @@ func TestPasskeyRegisterBegin_BoundsCeremonyStartsWithoutFailures(t *testing.T) 
 	reqFrom := func() *http.Request {
 		r := httptest.NewRequest(http.MethodPost, "/api/auth/passkeys/register/begin",
 			bytes.NewReader([]byte(`{"name":"key1"}`)))
-		r.RemoteAddr = ip + ":1234"
+		r.RemoteAddr = "127.0.0.1:1234"
+		r.Header.Set("X-Forwarded-For", ip)
 		r.AddCookie(sessionCookie)
 		return r.WithContext(auth.ContextWithUser(ctx, u))
+	}
+	if got := mgr.ClientIP(reqFrom()); got != ip {
+		t.Fatalf("setup: expected client IP from the forwarded header, got %q", got)
 	}
 
 	liveRows := func() int {
@@ -348,13 +356,30 @@ func TestPasskeyRegisterBegin_BoundsCeremonyStartsWithoutFailures(t *testing.T) 
 	// Der naechste Start muss 429 liefern, obwohl NIE ein Fehlversuch verbucht
 	// wurde. Ohne den Zaehler antwortet der Endpunkt hier weiterhin mit 200.
 	w := httptest.NewRecorder()
-	ah.PasskeyRegisterBegin(w, reqFrom())
+	var logs bytes.Buffer
+	func() {
+		// Capture only this request and restore the process logger before assertions.
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+		defer slog.SetDefault(previous)
+		ah.PasskeyRegisterBegin(w, reqFrom())
+	}()
 	if w.Code != http.StatusTooManyRequests {
 		t.Fatalf("repeated begins without any recorded failure must eventually be throttled; got %d: %s",
 			w.Code, w.Body.String())
 	}
 	if w.Header().Get("Retry-After") == "" {
 		t.Error("throttled response should carry a Retry-After header")
+	}
+
+	// The warning must remain observable without exposing request data (CodeQL #34).
+	if !strings.Contains(logs.String(), "passkey register begin throttle active") {
+		t.Error("ceremony throttling should emit a warning")
+	}
+	for _, value := range []string{ip, uname, sessionCookie.Value, reqFrom().URL.Path} {
+		if strings.Contains(logs.String(), value) {
+			t.Error("ceremony throttle warning contains request data")
+		}
 	}
 
 	// Der eigentliche Punkt: die abgewiesene Anfrage darf KEINE Zeile hinterlassen

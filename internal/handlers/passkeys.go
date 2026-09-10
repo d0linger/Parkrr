@@ -180,7 +180,8 @@ func (h *AuthHandler) PasskeyRegisterBegin(w http.ResponseWriter, r *http.Reques
 	// der Zeremonie, sonst waere der Fehlerpfad ein Freifahrtschein.
 	if ok, wait := h.CeremonyLimiter.Consume(strings.ToLower(u.Username)); !ok {
 		w.Header().Set("Retry-After", formatSeconds(wait))
-		slog.Warn("passkey register begin throttle active", "ip", h.Auth.ClientIP(r), "path", r.URL.Path)
+		// Keep this event free of request data: ClientIP may contain forwarded headers.
+		slog.Warn("passkey register begin throttle active")
 		writeError(w, http.StatusTooManyRequests, "Zu viele Versuche – bitte in "+formatMinutes(wait)+" erneut versuchen")
 		return
 	}
