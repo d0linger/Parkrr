@@ -137,6 +137,18 @@ jobs:
         with:
           persist-credentials: false
 
+      # github.repository preserves display casing (for example d0linger/Parkrr),
+      # while every component of a Docker repository name must be lowercase.
+      - name: Normalize GHCR image name
+        id: image
+        shell: bash
+        env:
+          RAW_IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        run: |
+          set -euo pipefail
+          printf 'name=%s\n' "$RAW_IMAGE_NAME" |
+            LC_ALL=C tr '[:upper:]' '[:lower:]' >> "$GITHUB_OUTPUT"
+
       # Minify the embedded static JS before the image build so the shipped image
       # (go:embed web/static) carries the compact assets. Runs in the ephemeral
       # workspace only — the committed sources stay readable.
@@ -164,7 +176,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -183,7 +195,7 @@ jobs:
             VERSION=${{ github.sha }}
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          tags: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -205,7 +217,7 @@ jobs:
       - name: Scan shipped digest on both architectures
         shell: bash
         env:
-          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.candidate.outputs.digest }}
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}@${{ steps.candidate.outputs.digest }}
         run: |
           set -euo pipefail
           for platform in linux/amd64 linux/arm64; do
@@ -222,7 +234,7 @@ jobs:
       - name: Promote scanned digest to release tags
         shell: bash
         env:
-          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.candidate.outputs.digest }}
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}@${{ steps.candidate.outputs.digest }}
           METADATA_JSON: ${{ steps.meta.outputs.json }}
         run: |
           set -euo pipefail
