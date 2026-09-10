@@ -159,6 +159,16 @@ func (h *AuthHandler) PasskeyRegisterBegin(w http.ResponseWriter, r *http.Reques
 	if !h.requireStepUp(w, r, u.Username, body.Password) {
 		return
 	}
+	// Drosseln, AUCH wenn das Step-up-Fenster noch offen war. requireStepUp ruft
+	// checkRateLimit nur auf dem Passwort-Zweig auf; bei frischer Anmeldung kehrt
+	// es sofort zurueck und liess diesen Endpunkt bis hierher ungedrosselt. Damit
+	// blieb die Zeremonie-Erzeugung (BeginRegistration + storeCeremony, ein
+	// Datenbankschreibvorgang je Aufruf) im offenen Fenster frei wiederholbar.
+	// PasskeyRegisterFinish drosselt an genau dieser Stelle bereits — Begin zieht
+	// nach.
+	if _, _, ok := h.checkRateLimit(w, r, u.Username); !ok {
+		return
+	}
 
 	opts, sd, err := h.WebAuthn.BeginRegistration(r.Context(), u)
 	if err != nil {
