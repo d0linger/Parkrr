@@ -61,12 +61,42 @@ func (l *LoginLimiter) Allowed(key string) (bool, time.Duration) {
 	return true, 0
 }
 
+// Consume atomically registers ONE attempt for key and reports whether it may
+// proceed. It differs from Allowed+RecordFailure in two ways that matter where
+// the attempt itself is the cost being bounded (starting a WebAuthn ceremony
+// writes a row) rather than a failed credential guess:
+//
+//   - it counts every call, not just failures, so a caller that never fails is
+//     still bounded;
+//   - the check and the increment happen under ONE lock. Allowed followed by
+//     RecordFailure leaves a window between the two in which concurrent callers
+//     all still see "not locked yet"; measured, that leaks a small number of
+//     extra attempts past the threshold rather than a flood, but it is a real
+//     window and Consume closes it.
+//
+// A key that is already locked is rejected WITHOUT counting, so hammering a
+// locked key cannot keep extending its own cooldown.
+func (l *LoginLimiter) Consume(key string) (bool, time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	if st := l.attempts[key]; st != nil && now.Before(st.lockedTill) {
+		return false, time.Until(st.lockedTill)
+	}
+	l.recordLocked(key, now)
+	return true, 0
+}
+
 // RecordFailure registers a failed attempt for key and locks it if over the
 // threshold within the failure window.
 func (l *LoginLimiter) RecordFailure(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	now := time.Now()
+	l.recordLocked(key, time.Now())
+}
+
+// recordLocked counts one attempt against key. Caller must hold l.mu.
+func (l *LoginLimiter) recordLocked(key string, now time.Time) {
 	st := l.attempts[key]
 	if st == nil || now.Sub(st.firstFail) > l.failWindow {
 		st = &attemptState{firstFail: now}
