@@ -2,10 +2,76 @@ package handlers
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// Inject the zero-row result of a lost allocation without timing a second writer.
+// All other statements execute in a real transaction, including the payment insert.
+type lostAllocationTx struct {
+	pgx.Tx
+	failAt int
+	seen   int
+}
+
+func (tx *lostAllocationTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	if strings.HasPrefix(sql, "INSERT INTO payment_allocations ") {
+		tx.seen++
+		if tx.seen == tx.failAt {
+			return pgconn.NewCommandTag("INSERT 0 0"), nil
+		}
+	}
+	return tx.Tx.Exec(ctx, sql, args...)
+}
+
+func TestSyncTogglePaymentRollsBackLostAllocation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		failAt int
+	}{
+		{name: "primary allocation", failAt: 1},
+		{name: "bound charge allocation", failAt: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := testHandler(t)
+			ctx := t.Context()
+			pid := createIntegrationPerson(t, h)
+			vid := mkStoredVehicle(t, h, pid, 30, firstOfMonthMonthsAgo(1).Format("2006-01-02"))
+			var cid int64
+			if err := h.Pool.QueryRow(ctx, `INSERT INTO charges(person_id,vehicle_id,description,amount,quantity)
+				VALUES($1,$2,'lost claim',20,1) RETURNING id`, pid, vid).Scan(&cid); err != nil {
+				t.Fatal(err)
+			}
+			err := pgx.BeginFunc(ctx, h.Pool, func(tx pgx.Tx) error {
+				return h.syncTogglePaymentTx(
+					ctx,
+					&lostAllocationTx{Tx: tx, failAt: tc.failAt},
+					"vehicle", vid, pid, true, 30, []boundCharge{{id: cid, total: 20}},
+				)
+			})
+			if !errors.Is(err, errSettlementRace) {
+				t.Fatalf("expected settlement race, got %v", err)
+			}
+			rec := httptest.NewRecorder()
+			if !writeSettlementConflict(rec, err) || rec.Code != http.StatusConflict {
+				t.Fatalf("lost allocation must map to 409: %d %s", rec.Code, rec.Body.String())
+			}
+			var payments int
+			if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM payments WHERE person_id=$1`, pid).Scan(&payments); err != nil {
+				t.Fatal(err)
+			}
+			if payments != 0 || chargePaid(t, h, cid) {
+				t.Fatalf("lost allocation committed partial settlement: payments=%d", payments)
+			}
+		})
+	}
+}
 
 // TestSyncTogglePaymentTrimsLostBoundCharge exercises the H-03 fix: when a bound
 // charge is already claimed by another payment (the concurrent manual settlement

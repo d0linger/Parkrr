@@ -6,8 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/preining/parkrr/internal/auth"
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/preining/parkrr/internal/auth"
 )
 
 // Metrics must remain bounded even for extension methods rejected by the limiter.

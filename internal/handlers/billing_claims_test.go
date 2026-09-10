@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -24,7 +25,11 @@ func TestCreateInvoiceRejectsConcurrentlyPaidCharge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer blocker.Rollback(context.Background())
+	defer func() {
+		if err := blocker.Rollback(context.Background()); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			t.Errorf("rollback blocker: %v", err)
+		}
+	}()
 	if _, err := blocker.Exec(ctx, `SELECT id FROM billing_settings WHERE id=1 FOR UPDATE`); err != nil {
 		t.Fatal(err)
 	}
@@ -103,16 +108,22 @@ func TestChargeClaimsExcludeConcurrentOwners(t *testing.T) {
 			invSQL := `INSERT INTO invoice_source(invoice_id,kind,ref_id,period_key) VALUES($1,'charge',$2,'')`
 			paySQL := `INSERT INTO payment_allocations(payment_id,kind,ref_id,amount) VALUES($1,'charge',$2,100) ON CONFLICT(kind,ref_id) DO NOTHING`
 			firstSQL, secondSQL := paySQL, invSQL
+			secondTable := "invoice_source"
 			firstID, secondID := payID, iv.ID
 			if invoiceFirst {
 				firstSQL, secondSQL = invSQL, paySQL
+				secondTable = "payment_allocations"
 				firstID, secondID = iv.ID, payID
 			}
 			tx, err := h.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer tx.Rollback(context.Background())
+			defer func() {
+				if err := tx.Rollback(context.Background()); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+					t.Errorf("rollback first claim: %v", err)
+				}
+			}()
 			if _, err := tx.Exec(ctx, firstSQL, firstID, cid); err != nil {
 				t.Fatal(err)
 			}
@@ -120,7 +131,9 @@ func TestChargeClaimsExcludeConcurrentOwners(t *testing.T) {
 			go func() { _, err := h.Pool.Exec(ctx, secondSQL, secondID, cid); done <- err }()
 			for {
 				var blocked bool
-				if err := h.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event='advisory')`).Scan(&blocked); err != nil {
+				if err := h.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity
+					WHERE datname=current_database() AND wait_event='advisory' AND query LIKE $1)`,
+					"INSERT INTO "+secondTable+"%").Scan(&blocked); err != nil {
 					t.Fatal(err)
 				}
 				if blocked {

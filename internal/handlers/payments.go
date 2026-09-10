@@ -26,17 +26,21 @@ const maxMoneyAmount = 1e9
 // quantity from overflowing to a 500.
 const maxQuantity = 1e6
 
+var errSettlementRace = errors.New("settlement raced")
+
 // writeSettlementConflict reports a stale/concurrent claim without committing
 // partial money state. Call only after the transaction has failed.
 func writeSettlementConflict(w http.ResponseWriter, err error) bool {
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) {
-		return false
-	}
-	chargeClaim := pgErr.Code == "23505" && pgErr.ConstraintName == "charge_claim_exclusive"
-	retryTransaction := pgErr.Code == "40P01" || pgErr.Code == "40001"
-	if !chargeClaim && !retryTransaction {
-		return false
+	if !errors.Is(err, errSettlementRace) {
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) {
+			return false
+		}
+		chargeClaim := pgErr.Code == "23505" && pgErr.ConstraintName == "charge_claim_exclusive"
+		retryTransaction := pgErr.Code == "40P01" || pgErr.Code == "40001"
+		if !chargeClaim && !retryTransaction {
+			return false
+		}
 	}
 	writeError(w, http.StatusConflict,
 		"Position wurde zwischenzeitlich bezahlt oder fakturiert – bitte neu laden.")
@@ -489,7 +493,7 @@ func (h *Handler) syncTogglePaymentTx(ctx context.Context, tx pgx.Tx, kind strin
 		return err
 	}
 	if pTag.RowsAffected() == 0 {
-		return fmt.Errorf("settlement raced on %s %d; retry", kind, refID)
+		return fmt.Errorf("%w on %s %d; retry", errSettlementRace, kind, refID)
 	}
 	for _, b := range claimable {
 		cTag, cerr := tx.Exec(ctx,
@@ -499,7 +503,7 @@ func (h *Handler) syncTogglePaymentTx(ctx context.Context, tx pgx.Tx, kind strin
 			return cerr
 		}
 		if cTag.RowsAffected() == 0 {
-			return fmt.Errorf("settlement raced on charge %d; retry", b.id)
+			return fmt.Errorf("%w on charge %d; retry", errSettlementRace, b.id)
 		}
 		if _, err := tx.Exec(ctx, `UPDATE charges SET paid=true WHERE id=$1`, b.id); err != nil {
 			return err

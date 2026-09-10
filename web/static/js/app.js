@@ -211,6 +211,7 @@
     // diesem maschinenlesbaren Grund. EINMAL hinführen statt bei jedem Aufruf einen
     // nackten Fehler zu zeigen.
     let twoFARedirected = false;
+    let twoFALoggingOut = false;
 
     async function handle(res, path) {
         if (res.status === 204) return null;
@@ -224,7 +225,8 @@
         if (ct.includes('application/json')) data = await res.json();
         if (!res.ok) {
             if (res.status === 403 && data && data.error === '2fa_authentication_required') {
-                if (state.user) {
+                if (state.user && !twoFALoggingOut) {
+                    twoFALoggingOut = true;
                     await logout();
                     toast('Bitte erneut mit Passkey oder Zwei-Faktor-Code anmelden.', 'warn');
                 }
@@ -8441,6 +8443,7 @@
         // jeder Route nur "Fehler: 2fa_enrollment_required" — ohne zu erfahren, was
         // zu tun ist. Ebenso die Zählerstände fremder Listen.
         twoFARedirected = false;
+        twoFALoggingOut = false;
         totalCounts.clear();
         showLogin();
     }

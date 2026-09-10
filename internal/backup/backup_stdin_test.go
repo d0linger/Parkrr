@@ -64,7 +64,6 @@ func TestRestoreLargeArchiveWithoutTemporaryStorage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plain = nil
 	// A missing temporary directory made the previous implementation fail before
 	// invoking pg_restore. Both validation and restore must now use stdin.
 	unavailable := filepath.Join(t.TempDir(), "not-created")
