@@ -12,6 +12,11 @@ LICENSE
 /bin
 /dist
 node_modules
+**/node_modules
+/tmp
+/.impeccable
+/tests/a11y/test-results
+/tests/a11y/playwright-report
 .vscode
 .idea
 *.log

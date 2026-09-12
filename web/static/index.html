@@ -25,6 +25,8 @@
                 <h1>Parkrr</h1>
                 <p class="muted">Einstellplatz-Verwaltung</p>
             </div>
+            <h2 class="login-heading">Anmelden</h2>
+            <p class="login-intro">Mit deinem Benutzerkonto zur Verwaltung.</p>
             <label for="login-username">Benutzername</label>
             <input id="login-username" name="username" type="text" required autocomplete="username">
             <label for="login-password">Passwort</label>
@@ -49,6 +51,10 @@
             <button type="submit" class="btn btn-primary btn-block">Anmelden</button>
             <div class="or-divider" id="login-or" hidden>oder</div>
             <button type="button" id="passkey-login" class="btn btn-ghost btn-block" hidden><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8.5" cy="8.5" r="4.5"/><path d="M11.8 11.8 20 20M17 17l2.2-2.2M14.4 14.4l1.8-1.8"/></svg> Mit Passkey anmelden</button>
+            <details class="login-help">
+                <summary>Kein Zugang oder Passwort vergessen?</summary>
+                <p>Bitte wende dich an die Administration deines Betriebs. Kundenzugänge werden über einen separaten Self-Service-Link geöffnet.</p>
+            </details>
         </form>
     </section>
 
@@ -85,7 +91,7 @@
              screen-reader heading navigation has an h1 root (pages start at h2). -->
         <h1 id="page-title" class="sr-only">Parkrr</h1>
         <p id="route-status" class="sr-only" role="status" aria-live="polite"></p>
-        <main id="page" class="page"></main>
+        <main id="page" class="page" tabindex="-1"></main>
 
         <nav class="tabbar" aria-label="Hauptnavigation">
             <button class="tab" data-route="dashboard" type="button">
@@ -107,7 +113,7 @@
     </div>
 
     <!-- Slide-in menu (secondary navigation) -->
-    <dialog id="menu" class="sheet">
+    <dialog id="menu" class="sheet" aria-label="Menü">
         <div id="menu-body" class="sheet-body"></div>
     </dialog>
 

@@ -74,7 +74,8 @@
         const m = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
         return m ? decodeURIComponent(m.pop()) : '';
     };
-    const eur = (n) => new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(Number(n) || 0);
+    const euroFormat = new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' });
+    const eur = (n) => euroFormat.format(Number(n) || 0);
     const fmtDate = (s) => (s ? new Date(s).toLocaleDateString('de-DE') : '–');
     const fmtDateTime = (s) => (s ? new Date(s).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' }) : '–');
     // Local calendar date (not UTC): toISOString() would yield yesterday between
@@ -429,7 +430,8 @@
             $('#modal-submit').classList.toggle('btn-danger', !!danger);
             $('#modal-submit').classList.toggle('btn-primary', !danger);
             $('#modal-submit').disabled = false; // a prior form (e.g. onRender gating) may have disabled it
-            $('#modal')._canClose = null; // never inherit a prior gated contentModal's close guard
+            let pending = false;
+            dlg._canClose = () => !pending;
             $('#modal-cancel').disabled = false; $('#modal-close').disabled = false; // clear a prior busy state
             $('#modal-cancel').style.display = '';
             const body = $('#modal-body');
@@ -490,15 +492,20 @@
                 form.removeEventListener('submit', onSubmit);
                 $('#modal-cancel').removeEventListener('click', onCancel);
                 $('#modal-close').removeEventListener('click', onCancel);
+                dlg.removeEventListener('cancel', onEscape);
+                dlg._canClose = null;
             };
             // Detach the submit handler on ANY close path (buttons, Escape, backdrop
             // click). Otherwise a re-opened form accumulates stale submit listeners on
             // the shared #modal-form, and a single OK fires the save once per prior
             // open — e.g. two accidental backdrop-dismisses then OK = three saves.
             dlg.addEventListener('close', () => { cleanup(); settle(null); }, { once: true });
-            const onCancel = () => { cleanup(); settle(null); dlg.close(); };
+            const onCancel = () => { if (pending) return; cleanup(); settle(null); dlg.close(); };
+            const onEscape = (e) => { if (pending) e.preventDefault(); };
+            dlg.addEventListener('cancel', onEscape);
             // Toggle the modal's busy state while an async save is in flight.
             const setPending = (on) => {
+                pending = on;
                 const submit = $('#modal-submit');
                 submit.disabled = on;
                 submit.setAttribute('aria-busy', on ? 'true' : 'false');
@@ -517,6 +524,7 @@
             };
             const onSubmit = async (e) => {
                 e.preventDefault();
+                if (pending) return;
                 const data = {};
                 let firstInvalid = null;
                 for (const f of fields) {
@@ -931,7 +939,7 @@
 
         const listEl = el('div', {});
         const pagerEl = el('div', {});
-        const countEl = el('p', { class: 'sr-only', role: 'status', 'aria-live': 'polite' });
+        const countEl = el('p', { class: 'list-summary', role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true' });
         // Warnt, wenn der Server MEHR Datensätze hat, als er geliefert hat. Ohne das
         // blättert man durch eine abgeschnittene Liste und hält sie für vollständig
         // (Hundert UX-53). opts.sourcePath ist der Listen-Endpunkt, aus dem
@@ -975,7 +983,9 @@
             listEl.innerHTML = '';
             // Trefferzahl fuer Screenreader ansagen (A11Y-77): die gefilterte Menge war
             // bisher nur visuell im Pager ablesbar.
-            countEl.textContent = q ? `${total} Treffer` : '';
+            countEl.textContent = total
+                ? `${start + 1}–${Math.min(start + pageSize, total)} von ${total}` + (q ? ' Treffern' : ' Einträgen')
+                : (q ? 'Keine Treffer' : 'Keine Einträge');
             // Abgeschnitten? Dann sagen, WIE viele fehlen, statt so zu tun, als sei das
             // alles. Die Suche geht über die geladene Menge — deshalb der Hinweis, dass
             // sie hier nicht weiterhilft.
@@ -988,16 +998,29 @@
             } else {
                 truncEl.hidden = true;
             }
-            if (!slice.length) listEl.append(emptyState(opts.emptyIcon || 'box', opts.emptyText || 'Keine Einträge.'));
-            else slice.forEach((it) => listEl.append(opts.render(it)));
+            if (!slice.length) {
+                const empty = emptyState(opts.emptyIcon || 'box', q ? 'Keine passenden Einträge.'
+                    : opts.items.length ? 'Keine Einträge für die gewählten Filter.' : opts.emptyText || 'Keine Einträge.');
+                if (q) empty.append(el('button', { class: 'btn btn-ghost', type: 'button', onclick: () => {
+                    search.value = ''; qRaw = ''; q = ''; pageNum = 1; refresh(); search.focus();
+                } }, 'Suche zurücksetzen'));
+                listEl.append(empty);
+            } else slice.forEach((it) => listEl.append(opts.render(it)));
             pagerEl.innerHTML = '';
             if (total > pageSize) {
                 pagerEl.append(el('div', { class: 'pager' },
-                    el('button', { class: 'btn btn-ghost btn-sm', disabled: pageNum <= 1, onclick: () => { pageNum--; refresh(); } }, '‹'),
+                    el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Vorherige Seite', disabled: pageNum <= 1, onclick: () => changePage(-1) }, '‹'),
                     el('span', { class: 'info' }, `${pageNum} / ${pages} · ${total}`),
-                    el('button', { class: 'btn btn-ghost btn-sm', disabled: pageNum >= pages, onclick: () => { pageNum++; refresh(); } }, '›'),
+                    el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Nächste Seite', disabled: pageNum >= pages, onclick: () => changePage(1) }, '›'),
                 ));
             }
+        }
+        function changePage(delta) {
+            pageNum += delta;
+            refresh();
+            countEl.tabIndex = -1;
+            countEl.focus({ preventScroll: true });
+            countEl.scrollIntoView({ block: 'start', behavior: 'instant' });
         }
         opts.refresh = refresh;
         refresh();
@@ -1075,6 +1098,11 @@
     let renderSeq = 0;
     async function render() {
         const mySeq = ++renderSeq;
+        const portal = (location.hash || '').match(/^#\/portal\/([A-Za-z0-9_-]+)$/);
+        if (portal) { await renderPortal(portal[1]); return; }
+        if (state.user && !$('#portal-view').hidden) {
+            ++portalRenderSeq; $('#portal-view').hidden = true; $('#app-view').hidden = false;
+        }
         const { name, id } = parseHash();
         const routeName = id != null && (name === 'persons' || name === 'vehicles') ? name.slice(0, -1) : name;
         $$('.tab').forEach((t) => {
@@ -1084,6 +1112,9 @@
             else t.removeAttribute('aria-current');
         });
         const host = $('#page');
+        host.setAttribute('aria-busy', 'true');
+        const status = $('#route-status');
+        if (status) status.textContent = 'Ansicht wird geladen …';
         // EIGENER Container je Aufbau, und die Route bekommt IHN statt #page. Der
         // Sequenzvergleich unten allein genügt nicht: die Routen schreiben INNERHALB
         // ihrer async-Funktion, also lange bevor sie zurückkehrt. Räumt ein neuerer
@@ -1098,6 +1129,7 @@
         try {
             await fn(page, id);
             if (mySeq !== renderSeq) return; // überholt: eine neuere Route hat die Seite schon
+            finishRouteLayout(page, routeName);
             window.scrollTo(0, 0);
             syncPageTitle(host);
         } catch (err) {
@@ -1106,18 +1138,84 @@
             if (err.status === 401) { logout(); return; }
             if (mySeq !== renderSeq) return; // der Abbruch gehört zur alten Route — nicht anzeigen
             page.innerHTML = '';
-            page.append(el('div', { class: 'empty' }, 'Fehler: ' + err.message));
+            page.append(el('div', { class: 'empty route-error', role: 'alert' },
+                el('div', { class: 'page-head' }, el('h2', {}, 'Ansicht nicht geladen')),
+                el('p', {}, err.message || 'Die Verbindung ist unterbrochen. Bitte erneut versuchen.'),
+                el('button', { class: 'btn btn-primary', type: 'button', onclick: () => render() }, 'Erneut versuchen')));
             syncPageTitle(host);
+        } finally {
+            if (mySeq === renderSeq) host.setAttribute('aria-busy', 'false');
         }
     }
+    const PAGE_CONTEXT = {
+        persons: 'Kontakte finden, offene Salden prüfen und die nächste Saison vorbereiten.',
+        person: 'Gefährte, Vereinbarungen und Abrechnung dieser Person an einem Ort.',
+        vehicles: 'Status und Zahlung direkt ändern. Für Fotos, Standort und Verlauf das Gefährt öffnen.',
+        vehicle: 'Status ändern, Standort prüfen und Fotos oder Übergabeprotokolle ergänzen.',
+        finance: 'Einmalige Zusatzkosten prüfen und begleichen. Wiederkehrende Kosten stehen bei der Person.',
+        tariffs: 'Standardpreise pflegen und Leistungen für die schnelle Erfassung vorbereiten.',
+        users: 'Zugänge und Berechtigungen für dein Team verwalten.',
+        billing: 'Aussteller, Steuer und Zahlungsdaten für neue Rechnungen festlegen.',
+        backup: 'Sicherungen herunterladen, automatische Abläufe prüfen und Daten wiederherstellen.',
+        audit: 'Änderungen nach Zeitpunkt, Aktion und Objekt nachvollziehen.',
+        settings: 'Dein Konto schützen und angemeldete Geräte verwalten.',
+        calendar: 'Abholungen, Reservierungen und fällige Rechnungen im gewählten Monat.',
+        garages: 'Garage wählen, Halle öffnen und Gefährte im Plan zuordnen.',
+        garage: 'Halle auswählen, um Belegung und Grundriss zu bearbeiten.',
+    };
+    function sectionIndex(page, headings) {
+        if (headings.length < 2) return;
+        const nav = el('nav', { class: 'section-index no-print', 'aria-label': 'Abschnitte dieser Seite' });
+        headings.forEach((heading, i) => {
+            if (!heading.id) heading.id = 'section-' + i;
+            nav.append(el('a', { href: '#' + heading.id, onclick: (e) => {
+                e.preventDefault();
+                const details = heading.closest('details'); if (details) details.open = true;
+                heading.tabIndex = -1;
+                heading.focus({ preventScroll: true });
+                heading.scrollIntoView({ block: 'start', behavior: 'instant' });
+            } }, heading.textContent.trim()));
+        });
+        const intro = page.querySelector('.page-context') || page.firstElementChild;
+        intro.after(nav);
+    }
+    function finishRouteLayout(page, route) {
+        page.classList.add('screen-' + route);
+        const head = page.querySelector(':scope > .page-head, :scope > .detail-head');
+        if (!head) return; // Access-denied, missing records, and the planner own their layout.
+        if (PAGE_CONTEXT[route]) head.after(el('p', { class: 'page-context' }, PAGE_CONTEXT[route]));
+        const back = head.querySelector('.back-btn');
+        if (back && !back.hasAttribute('aria-label')) back.setAttribute('aria-label', 'Zurück');
+        if (route === 'person') {
+            const hero = page.querySelector('.bal-hero-num')?.parentElement;
+            const figures = page.querySelector('.bal-figs');
+            if (hero && figures) { const overview = el('div', { class: 'person-overview' }); hero.before(overview); overview.append(hero, figures); }
+            sectionIndex(page, [...page.querySelectorAll(':scope > .section-head h3')]);
+        } else if (route === 'vehicle') {
+            const cards = [...page.children].filter(n => n.classList.contains('card'));
+            const controls = cards.find(n => ['Status & Zahlung', 'Archiviert'].includes(n.querySelector('h3')?.textContent));
+            if (cards[0] && controls && cards[0] !== controls) {
+                const overview = el('div', { class: 'vehicle-overview' }); cards[0].before(overview); overview.append(cards[0], controls);
+            }
+            sectionIndex(page, [...page.querySelectorAll(':scope > .card h3')].filter(n => n.closest('.card')?.parentElement === page));
+        } else if (route === 'backup') {
+            const cards = [...page.children].filter(n => n.classList.contains('card'));
+            const restore = cards.find(n => n.querySelector('h3')?.textContent === 'Wiederherstellen');
+            if (restore) restore.classList.add('restore-section');
+            sectionIndex(page, cards.map(n => n.querySelector('h3')).filter(Boolean));
+        } else if (route === 'settings') {
+            sectionIndex(page, [...page.querySelectorAll('.set-col > .card h3')]);
+        }
+    }
+
     // Mirror each route's leading heading into the visually-hidden page-level h1
     // so screen-reader heading navigation has a root. Layout is untouched.
     function syncPageTitle(page) {
         const h1 = $('#page-title');
         if (!h1) return;
         // Der Garagenplaner (routes.hall) hat keinen page-head — sein Titel steht als
-        // <b> in der gp-appbar. Ohne den Zusatz bliebe der Routenwechsel dort unangesagt.
-        const lead = page.querySelector('.page-head h2, .page-head h3, .detail-head h2, .gp-appbar .gp-brand b');
+        // <h2> in der gp-appbar. Ohne den Zusatz bliebe der Routenwechsel dort unangesagt.
+        const lead = page.querySelector('.page-head h2, .page-head h3, .detail-head h2, .gp-appbar .gp-brand h2');
         const name = lead ? lead.textContent.trim() : '';
         h1.textContent = name || 'Parkrr';
         // Tab, History-Eintrag und Task-Switcher der installierten App hiessen bisher
@@ -1231,11 +1329,23 @@
     }
 
     routes.dashboard = async (page) => {
-        const ov = await api.get('/overview' + (dashYear ? '?year=' + dashYear : ''));
-        let occ = null;
-        try { occ = await api.get('/occupancy'); } catch (e) { /* occupancy is best-effort */ }
+        const missing = [];
+        const optional = (path, label, fallback) => api.get(path).then(data => data ?? fallback).catch((err) => {
+            if (err.status === 401) throw err;
+            missing.push(label);
+            return fallback;
+        });
+        // These independent reads share one network round trip, instead of five.
+        const [ov, occ, overdue, ending, prCard] = await Promise.all([
+            api.get('/overview' + (dashYear ? '?year=' + dashYear : '')),
+            optional('/occupancy', 'Belegung', null),
+            optional('/invoices/overdue', 'Überfällige Rechnungen', []),
+            optional('/vehicles/ending-soon?days=30', 'Auslaufende Verträge', []),
+            portalRequestsCard(),
+        ]);
         dashYear = ov.year;
         page.innerHTML = '';
+        page.classList.add('dashboard-view');
         // Year switcher: browse past years; forward capped at the current year
         // (future years would be all zeros).
         const nowYear = new Date().getFullYear();
@@ -1246,8 +1356,11 @@
             el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Nächstes Jahr', disabled: ov.year >= nowYear,
                 onclick: () => { dashYear = ov.year + 1; render(); } }, '›'));
         page.append(el('div', { class: 'page-head' }, el('h2', {}, 'Übersicht'),
-            el('a', { class: 'btn btn-ghost btn-sm', href: '#/calendar', title: 'Abholungen, Reservierungen, fällige Rechnungen und Abholwünsche im Monat' }, 'Kalender'),
-            yearSel));
+            el('div', { class: 'page-head-actions' },
+                el('a', { class: 'btn btn-ghost btn-sm', href: '#/calendar', title: 'Abholungen, Reservierungen, fällige Rechnungen und Abholwünsche im Monat' }, 'Kalender'), yearSel)));
+        if (missing.length) page.append(el('div', { class: 'load-notice', role: 'status' },
+            el('span', {}, missing.join(', ') + ' konnten nicht geladen werden.'),
+            el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => render() }, 'Erneut versuchen')));
 
         // Empty state for a fresh install: no persons yet -> onboard instead of
         // showing a wall of zeros and empty charts.
@@ -1274,7 +1387,7 @@
         }
         // "Eingegangen" = recorded payments (money-in log); surfaced next to Umsatz
         // once any payment exists, distinct from "Bezahlt" (the paid-flag total).
-        const moneyRow = el('div', { class: 'stat-grid' }, umsatz);
+        const moneyRow = el('div', { class: 'stat-grid dash-money' }, umsatz);
         if ((Number(ov.payments_this_year) || 0) > 0 || (Number(ov.payments_total) || 0) > 0) {
             moneyRow.append(stat(eur(ov.payments_this_year), 'Eingegangen ' + ov.year, { icon: 'receipt', tone: 'teal' }));
         }
@@ -1289,7 +1402,7 @@
                     onclick: () => { yoyMode = m; try { localStorage.setItem('parkrr-yoy', m); } catch (e) { /* storage blocked */ } render(); } }, lbl));
             page.append(el('div', { class: 'yoy-modes', role: 'group', 'aria-label': 'Vergleichsmodus Umsatz' }, ...modeBtns));
         }
-        page.append(el('div', { class: 'stat-grid' },
+        page.append(el('div', { class: 'stat-grid dash-counts' },
             stat(ov.total_persons, 'Personen', { icon: 'users' }),
             stat(ov.active_vehicles, 'aktiv eingestellt', { icon: 'warehouse' }),
             stat(ov.total_vehicles, 'Gefährte gesamt', { icon: 'car' }),
@@ -1406,8 +1519,6 @@
         }
 
         // Überfällige Rechnungen — Mahnwesen light: wen mahnen, ein Tap zur Rechnung.
-        let overdue = [];
-        try { overdue = (await api.get('/invoices/overdue')) || []; } catch (e) { /* ignore */ }
         if (overdue.length) {
             const odCard = el('div', { class: 'owe-card' });
             const odTotal = overdue.reduce((s, o) => s + (Number(o.open_amount) || 0), 0);
@@ -1424,8 +1535,6 @@
 
         // Verträge, die auslaufen — end_date in den nächsten 30 Tagen, ein Tap zum
         // Gefährt (Vertrag verlängern / Status ändern).
-        let ending = [];
-        try { ending = (await api.get('/vehicles/ending-soon?days=30')) || []; } catch (e) { /* ignore */ }
         if (ending.length) {
             const enCard = el('div', { class: 'owe-card' });
             enCard.append(el('div', { class: 'owe-head' },
@@ -1444,13 +1553,12 @@
         const revCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Umsatz pro Monat · ' + ov.year));
         revCard.append(chartLine(ov.revenue_by_month, MONTHS, 'Umsatz pro Monat'));
         revCard.append(el('div', { class: 'legend' }, el('span', {}, el('span', { class: 'dotc', style: 'background:var(--primary)' }), 'Miete + Zusatzkosten')));
-        page.append(revCard);
 
         // Extra charges per month
         const pcCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Zusatzkosten pro Monat · ' + ov.year));
         pcCard.append(chartBars(ov.charges_by_month, MONTHS, 'Zusatzkosten pro Monat'));
         pcCard.append(el('div', { class: 'legend' }, el('span', {}, el('span', { class: 'dotc', style: 'background:var(--primary)' }), 'Zusatzkosten')));
-        page.append(pcCard);
+        page.append(el('div', { class: 'dashboard-charts' }, revCard, pcCard));
 
         // Status distribution
         const sc = ov.status_counts || {};
@@ -1473,7 +1581,6 @@
         // cookie; the server sends it as a ;-separated, BOM-prefixed attachment.
         const expLink = (entity, label) => el('a', { class: 'btn btn-ghost btn-sm', href: '/api/export/' + entity, download: '' }, icon('download', 15), ' ' + label);
         // Betreiber-Postfach (Hundert 85/87) — nur sichtbar, wenn Wünsche offen sind.
-        const prCard = await portalRequestsCard();
         if (prCard) page.append(prCard);
 
         page.append(el('div', { class: 'chart-card' },
@@ -1552,8 +1659,8 @@
                 const stateCls = known ? (owes ? ' is-owed' : ' is-clear') : '';
                 return el('div', { class: 'card pcard' + stateCls },
                     el('div', { class: 'card-row' },
-                        el('div', { style: 'flex:1;cursor:pointer', onclick: () => navigate('persons/' + p.id) },
-                            el('h3', {}, personName(p), ' ', p.has_flat_rate ? el('span', { class: 'badge badge-active', title: 'Pauschale' }, 'Pauschale') : null),
+                        el('div', { class: 'person-identity', style: 'flex:1' },
+                            el('h3', {}, el('a', { class: 'record-link', href: '#/persons/' + p.id }, personName(p)), ' ', p.has_flat_rate ? el('span', { class: 'badge badge-active', title: 'Pauschale' }, 'Pauschale') : null),
                             el('div', { class: 'card-meta' }, [p.email, p.phone].filter(Boolean).join(' · ') || 'keine Kontaktdaten')),
                         el('div', { class: 'row-side' },
                             known ? el('div', { class: 'pcard__status' },
@@ -2291,10 +2398,10 @@
             el('td', { class: 'r' }, fmtQty(it.quantity)),
             el('td', { class: 'r' }, eur(it.unit_amount)),
             el('td', { class: 'r' }, eur(it.line_total)))));
-        doc.append(el('table', { class: 'inv-table' },
+        doc.append(el('div', { class: 'invoice-table-scroll', role: 'region', 'aria-label': 'Rechnungspositionen', tabindex: '0' }, el('table', { class: 'inv-table' },
             el('thead', {}, el('tr', {}, el('th', {}, 'Pos'), el('th', {}, 'Beschreibung'),
                 el('th', { class: 'r' }, 'Menge'), el('th', { class: 'r' }, iv.kleinunternehmer ? 'Betrag' : 'Netto'), el('th', { class: 'r' }, 'Summe'))),
-            tb));
+            tb)));
         const tot = el('div', { class: 'inv-totals' });
         if (iv.kleinunternehmer) {
             tot.append(totRow('Gesamt', eur(iv.total), true));
@@ -2339,6 +2446,11 @@
                 el('img', { src: '/api/invoices/' + iv.id + '/pay-qr', alt: 'SEPA-Zahlungs-QR', width: 200, height: 200, style: 'max-width:200px;height:auto' }),
                 el('p', { class: 'muted', style: 'font-size:.82rem;margin-bottom:0' }, 'Mit der Banking-App scannen — Betrag und Zahlungsreferenz sind vorausgefüllt.')));
         }
+        const documentView = page.querySelector('.invoice-doc');
+        const workspace = el('div', { class: 'invoice-workspace' });
+        documentView.before(workspace); workspace.append(documentView);
+        const paymentCard = page.querySelector(':scope > .card.no-print');
+        if (paymentCard) workspace.append(paymentCard);
     };
 
     // ---------- Rechnungs-Einstellungen (admin) ----------
@@ -2350,8 +2462,12 @@
             el('button', { class: 'back-btn', onclick: () => navigate('dashboard'), 'aria-label': 'Zurück' }, '‹'),
             el('h2', { style: 'margin:0' }, 'Rechnungs-Einstellungen')));
 
-        const field = (label, input, help) => el('div', { class: 'bill-field' },
-            el('label', {}, label), input, help ? el('div', { class: 'card-meta' }, help) : null);
+        const field = (label, input, help) => {
+            const helpId = input.id + '-help';
+            if (help) input.setAttribute('aria-describedby', helpId);
+            return el('div', { class: 'bill-field' }, el('label', { for: input.id }, label), input,
+                help ? el('div', { class: 'card-meta', id: helpId }, help) : null);
+        };
         const inp = (name, val, attrs = {}) => el('input', Object.assign({ id: 'bs_' + name, value: val ?? '' }, attrs));
 
         const seller = el('div', { class: 'card' }, el('h3', {}, 'Aussteller'),
@@ -2375,13 +2491,18 @@
             field('Rechnungsnr.-Präfix', inp('prefix', s.invoice_prefix, { placeholder: '2026-' })),
             field('Nächste Nummer', inp('next_no', s.next_invoice_no ?? 1, { type: 'number', min: '1' }), 'Kann nur vorwärts gesetzt werden.'),
             field('Stellen (Nullen)', inp('pad', s.number_pad ?? 4, { type: 'number', min: '1', max: '10' })),
-            field('Zahlungsziel (Tage)', inp('terms', s.payment_terms_days ?? 14, { type: 'number', min: '0' })),
+            field('Zahlungsziel (Tage)', inp('terms', s.payment_terms_days ?? 14, { type: 'number', min: '0' })));
+        const banking = el('div', { class: 'card' }, el('h3', {}, 'Bankverbindung & Fußnote'),
             field('IBAN', inp('iban', s.iban)),
             field('BIC', inp('bic', s.bic)),
             field('Fußnote', el('textarea', { id: 'bs_footer', rows: '2' }, s.footer_note || '')));
 
-        const saveBtn = el('button', { class: 'btn btn-primary' }, 'Einstellungen speichern');
-        saveBtn.addEventListener('click', async () => {
+        const saveBtn = el('button', { class: 'btn btn-primary', type: 'submit' }, 'Einstellungen speichern');
+        const feedback = el('p', { class: 'save-feedback', role: 'status', 'aria-live': 'polite' });
+        const form = el('form', { class: 'billing-form' });
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (saveBtn.disabled) return;
             const val = (id) => (document.getElementById(id) || {}).value;
             const payload = {
                 seller_name: val('bs_seller_name'), seller_address: val('bs_seller_address'), seller_uid: val('bs_seller_uid'),
@@ -2391,11 +2512,14 @@
                 iban: val('bs_iban'), bic: val('bs_bic'), footer_note: val('bs_footer'),
             };
             saveBtn.disabled = true;
-            try { await api.post('/billing/settings', payload); toast('Gespeichert', 'success'); }
-            catch (e) { toast(e.message, 'error'); }
-            saveBtn.disabled = false;
+            saveBtn.textContent = 'Speichert …'; feedback.textContent = '';
+            try { await api.post('/billing/settings', payload); feedback.textContent = 'Einstellungen gespeichert.'; toast('Gespeichert', 'success'); }
+            catch (err) { feedback.textContent = 'Nicht gespeichert: ' + err.message; toast(err.message, 'error'); }
+            finally { saveBtn.disabled = false; saveBtn.textContent = 'Einstellungen speichern'; }
         });
-        page.append(seller, tax, numbering, el('div', { style: 'margin-top:1rem' }, saveBtn));
+        form.append(el('div', { class: 'billing-grid' }, el('div', { class: 'billing-col' }, seller, tax), el('div', { class: 'billing-col' }, numbering, banking)),
+            el('div', { class: 'form-savebar' }, saveBtn, feedback));
+        page.append(form);
     };
 
     // ================= VEHICLES =================
@@ -3257,7 +3381,7 @@
         const act = seg.querySelector('button.active');
         if (!act || !act.offsetWidth) { th.style.opacity = '0'; return; }
         th.style.opacity = '1';
-        th.style.left = act.offsetLeft + 'px';
+        th.style.transform = 'translateX(' + act.offsetLeft + 'px)';
         th.style.width = act.offsetWidth + 'px';
         th.className = 'seg-thumb ' + THUMB_CLASSES.filter((c) => act.classList.contains(c)).join(' ');
     }
@@ -3305,7 +3429,14 @@
         requestAnimationFrame(() => placeThumb(seg));
         return seg;
     }
-    window.addEventListener('resize', () => $$('.seg-mini').forEach(moveThumb));
+    let thumbResizeFrame = 0;
+    window.addEventListener('resize', () => {
+        if (thumbResizeFrame) return;
+        thumbResizeFrame = requestAnimationFrame(() => {
+            thumbResizeFrame = 0;
+            $$('.seg-mini').forEach(moveThumb);
+        });
+    });
 
     const STATUS_FLOW = ['reserved', 'stored', 'collected'];
     function statusSlider(v) {
@@ -3772,6 +3903,18 @@
             items: charges,
             searchText: (c) => norm([c.person_name, c.description].join(' ')),
             sorts: [{ label: 'Neueste zuerst', cmp: (a, b) => new Date(b.charged_on) - new Date(a.charged_on) }, { label: 'Betrag', cmp: (a, b) => b.total - a.total }],
+            controls: (refresh, cs) => {
+                const person = el('select', { 'aria-label': 'Person filtern' }, el('option', { value: '' }, 'Alle Personen'),
+                    ...state.persons.map(p => el('option', { value: p.id, selected: String(p.id) === cs.person }, personName(p))));
+                if (cs.person && !state.persons.some(p => String(p.id) === cs.person)) cs.person = '';
+                person.addEventListener('change', () => { cs.person = person.value; refresh(); });
+                const status = el('select', { 'aria-label': 'Zahlstatus filtern' },
+                    ...[['', 'Alle Zahlstatus'], ['open', 'Offen'], ['paid', 'Bezahlt']].map(([value, label]) => el('option', { value, selected: value === cs.status }, label)));
+                status.addEventListener('change', () => { cs.status = status.value; refresh(); });
+                return [person, status];
+            },
+            extraFilter: (c, cs) => (!cs.person || String(c.person_id) === cs.person) &&
+                (!cs.status || chargeIsPaid(c) === (cs.status === 'paid')),
             render: (c) => financeRow(c),
         });
     };
@@ -3782,6 +3925,12 @@
         items.forEach((it) => wrap.append(financeRow(it)));
         return wrap;
     }
+    function chargeIsPaid(it) {
+        // Once invoiced, settlement belongs to the invoice for every charge,
+        // including standalone extras. Raw paid flags are no longer authoritative.
+        if (it.invoiced) return !it.invoice_open;
+        return !!it.paid || (it.vehicle_id != null && !!it.vehicle_paid);
+    }
     function financeRow(it) {
         const bound = it.vehicle_id != null;
         // A bound charge is settled by its vehicle's slider (vehicle_paid), its
@@ -3789,8 +3938,7 @@
         // fully-paid Rechnung (invoiced && !invoice_open — PayInvoices settles the
         // invoice, not the raw flag). Honour all three, else a paid extra lingers
         // as "offen".
-        const invoiceSettled = bound && it.invoiced && !it.invoice_open;
-        const paidEff = bound ? (!!it.paid || !!it.vehicle_paid || invoiceSettled) : !!it.paid;
+        const paidEff = chargeIsPaid(it);
         const title = it.description ? esc(it.description) : 'Zusatzkosten';
         const metaBits = [esc(it.person_name), fmtDate(it.charged_on)];
         if (it.quantity !== 1) metaBits.push(`${it.quantity}×${eur(it.amount)}`);
@@ -3799,7 +3947,7 @@
         // its vehicle (read-only badge); a free charge gets its offen/bezahlt
         // slider. Keeping it left of the amount keeps the right rail slim.
         let statusEl;
-        if (bound && it.invoiced) {
+        if (it.invoiced) {
             // Billed on a Rechnung: mirror the vehicle's derived status exactly —
             // "fakturiert" while a covering invoice is open, "bezahlt · Rechnung" once
             // all are paid.
@@ -4010,9 +4158,9 @@
         const manage = canManage();
         page.innerHTML = '';
         page.append(el('div', { class: 'page-head' }, el('h2', {}, 'Tarife & Dienste')));
-        page.append(el('div', { class: 'segments' },
-            el('button', { class: isCat ? 'active' : '', onclick: () => { tariffTab = 'categories'; render(); } }, 'Tarife'),
-            el('button', { class: !isCat ? 'active' : '', onclick: () => { tariffTab = 'services'; render(); } }, 'Dienste')));
+        page.append(el('div', { class: 'segments', role: 'group', 'aria-label': 'Katalog wählen' },
+            el('button', { type: 'button', class: isCat ? 'active' : '', 'aria-pressed': String(isCat), onclick: () => { tariffTab = 'categories'; render(); } }, 'Tarife (' + state.categories.length + ')'),
+            el('button', { type: 'button', class: !isCat ? 'active' : '', 'aria-pressed': String(!isCat), onclick: () => { tariffTab = 'services'; render(); } }, 'Dienste (' + state.services.length + ')')));
         page.append(el('p', { class: 'muted', style: 'margin:.2rem 0 .7rem' },
             isCat ? 'Zentrale Gefährt-Typen mit Standardpreisen (beim Gefährt überschreibbar).'
                 : 'Katalog für Zusatzleistungen (Strom, Reinigung …).'));
@@ -4020,7 +4168,7 @@
         const list = el('div', {});
         // "+ Neu" opens a blank, already-expanded inline card at the top.
         if (manage) {
-            const addBtn = el('button', { class: 'btn btn-ghost btn-block', style: 'margin-bottom:.6rem' },
+            const addBtn = el('button', { class: 'btn btn-primary btn-sm' },
                 icon('plus', 15), isCat ? ' Neuer Tarif' : ' Neuer Dienst');
             addBtn.addEventListener('click', () => {
                 // Keep at most one unsaved blank card, and clear the empty-state so
@@ -4030,7 +4178,7 @@
                 cfgCloseAll(list);
                 list.prepend(isCat ? categoryCard(null, true) : serviceCard(null, true));
             });
-            page.append(addBtn);
+            page.querySelector('.page-head').append(addBtn);
         }
         const items = isCat ? state.categories : state.services;
         if (!items.length) list.append(emptyState(isCat ? 'tag' : 'receipt', isCat ? 'Noch keine Tarife.' : 'Noch keine Dienste.'));
@@ -4227,6 +4375,13 @@
             stateKey: 'users', // fester Schluessel, unabhaengig vom Anzeigetitel
             title: 'Benutzer', emptyIcon: 'users', emptyText: 'Keine Benutzer.',
             onAdd: () => userForm(), items: users,
+            controls: (refresh, cs) => {
+                const roles = el('select', { 'aria-label': 'Rolle filtern' }, el('option', { value: '' }, 'Alle Rollen'),
+                    ...Object.entries(ROLE_LABEL).map(([value, label]) => el('option', { value, selected: value === cs.role }, label)));
+                roles.addEventListener('change', () => { cs.role = roles.value; refresh(); });
+                return [roles];
+            },
+            extraFilter: (u, cs) => !cs.role || u.role === cs.role,
             searchText: (u) => norm([u.username, u.email, ROLE_LABEL[u.role]].join(' ')),
             sorts: [{ label: 'Name A–Z', cmp: (a, b) => a.username.localeCompare(b.username) }],
             render: (u) => userCard(u),
@@ -4509,7 +4664,8 @@
             el('button', { class: 'back-btn', onclick: () => navigate('dashboard') }, '‹'),
             el('h2', { style: 'margin:0' }, 'Backup')));
         let st = { enabled: false, scheduled: false, s3: false, dir: '', schema_version: '', settings: {}, status: {}, files: [], s3_files: [] };
-        try { st = (await api.get('/backup/status')) || st; } catch (e) { /* keep defaults */ }
+        st = { ...st, ...await api.get('/backup/status') };
+        st.files = st.files || []; st.s3_files = st.s3_files || [];
 
         if (!st.enabled) {
             page.append(el('div', { class: 'card' },
@@ -4602,9 +4758,9 @@
             if (!/\.enc$/i.test(f.name)) { toast('Bitte eine .enc-Backupdatei ablegen', 'error'); return; }
             fileIn.files = e.dataTransfer.files; fileIn.dispatchEvent(new Event('change'));
         });
-        const keyIn = el('input', { type: 'password', placeholder: 'Backup-Schlüssel', autocomplete: 'off' });
-        const confirmIn = el('input', { type: 'text', placeholder: 'RESTORE', autocomplete: 'off' });
-        const result = el('div', { class: 'card-meta', style: 'margin:.5rem 0' });
+        const keyIn = el('input', { id: 'restore-key', type: 'password', placeholder: 'Backup-Schlüssel', autocomplete: 'off' });
+        const confirmIn = el('input', { id: 'restore-confirm', type: 'text', placeholder: 'RESTORE', autocomplete: 'off' });
+        const result = el('div', { class: 'card-meta', role: 'status', 'aria-live': 'polite', style: 'margin:.5rem 0' });
         const restoreBtn = el('button', { class: 'btn btn-danger', disabled: true, onclick: (e) => restoreBackup(fileIn, keyIn, confirmIn, e.currentTarget) }, 'Wiederherstellen');
         const validateBtn = el('button', { class: 'btn btn-ghost', onclick: () => validateBackup(fileIn, keyIn, result, restoreBtn) }, 'Validieren');
         // Re-validation is required after any change, so the restore stays gated.
@@ -4619,10 +4775,10 @@
             el('div', { class: 'card-meta', style: 'margin:.3rem 0 .6rem;color:var(--accent-text);font-weight:600' },
                 '⚠ Überschreibt die gesamte aktuelle Datenbank. Atomar (rollt bei Fehler komplett zurück). Erst validieren.'),
             fileIn, drop, chipWrap,
-            el('label', {}, 'Schlüssel'), keyIn,
+            el('label', { for: keyIn.id }, 'Schlüssel'), keyIn,
             el('div', { style: 'margin-top:.6rem' }, validateBtn),
             result,
-            el('label', {}, 'Zum Bestätigen RESTORE eingeben'), confirmIn,
+            el('label', { for: confirmIn.id }, 'Zum Bestätigen RESTORE eingeben'), confirmIn,
             el('div', { style: 'margin-top:.6rem' }, restoreBtn));
     }
     async function validateBackup(fileIn, keyIn, result, restoreBtn) {
@@ -4872,7 +5028,8 @@
         const toIn = el('input', { type: 'date', 'aria-label': 'Bis-Datum', title: 'Bis' });
         page.append(el('div', { class: 'card audit-filters' }, search,
             el('div', { class: 'audit-filter-row' }, actSel, entSel),
-            el('div', { class: 'audit-filter-row' }, fromIn, toIn)));
+            el('div', { class: 'audit-filter-row' },
+                el('label', {}, 'Von', fromIn), el('label', {}, 'Bis', toIn))));
 
         // Aktive Filter als Chips (Audit-Befund 3): sobald die Filterkarte aus dem
         // Bild scrollt, war bisher unsichtbar, WAS gerade filtert. Jeder Chip räumt
@@ -4898,6 +5055,8 @@
         };
         const apply = () => { renderChips(); load(true); };
 
+        const loadStatus = el('p', { class: 'list-summary', role: 'status', 'aria-live': 'polite' });
+        page.append(loadStatus);
         const ul = el('ul', { class: 'timeline' });
         page.append(el('div', { class: 'card' }, ul));
         const moreBtn = el('button', { class: 'btn btn-ghost btn-block', onclick: () => load(false) }, 'Mehr laden');
@@ -4927,15 +5086,24 @@
             if (q.from) p.set('from', q.from);
             if (q.to) p.set('to', q.to);
             let entries = [], loadErr = null;
+            loadStatus.textContent = 'Änderungen werden geladen …';
+            ul.setAttribute('aria-busy', 'true');
             moreBtn.disabled = true;
             try { entries = await api.get('/audit?' + p.toString()); }
             catch (e) { loadErr = e; }
-            finally { moreBtn.disabled = false; }
             if (seq !== loadSeq) return;
+            moreBtn.disabled = false; ul.setAttribute('aria-busy', 'false');
             // Ein Netz-/Serverfehler ist von "keine weiteren Einträge" unterscheidbar:
             // Fehler melden und den Knopf sichtbar lassen, damit ein Retry möglich
             // bleibt (Hundert UX-57). Vorher verschwand der Knopf kommentarlos.
-            if (loadErr) { toast('Audit-Log laden fehlgeschlagen: ' + (loadErr.message || loadErr), 'error'); return; }
+            if (loadErr) {
+                if (loadErr.status === 401) { await logout(); return; }
+                loadStatus.textContent = 'Änderungen konnten nicht geladen werden. Bitte erneut versuchen.';
+                moreBtn.textContent = 'Erneut versuchen'; moreBtn.hidden = false;
+                return;
+            }
+            entries = entries || [];
+            moreBtn.textContent = 'Mehr laden';
             const now = new Date();
             const yest = new Date(now); yest.setDate(now.getDate() - 1);
             const heute = dayKey(now), gestern = dayKey(yest);
@@ -4950,6 +5118,7 @@
                 ul.append(auditItem(a));
             }
             q.offset += entries.length;
+            loadStatus.textContent = q.offset ? q.offset + ' Änderungen geladen' : 'Keine Änderungen für diese Auswahl.';
             moreBtn.hidden = entries.length < q.limit;
             if (!ul.children.length) ul.append(el('li', { class: 'muted' }, 'Keine Einträge.'));
         }
@@ -4973,7 +5142,7 @@
         page.append(el('div', { class: 'set-grid' }, colA, colB));
 
         // account
-        colA.append(el('div', { class: 'card' },
+        colA.append(el('div', { class: 'card' }, el('h3', {}, 'Dein Konto'),
             el('div', { class: 'balance' }, el('span', {}, 'Angemeldet als'), el('strong', {}, esc(state.user.username))),
             el('div', { class: 'balance' }, el('span', {}, 'Rolle'), el('span', {}, ROLE_LABEL[state.user.role] || state.user.role)),
             el('button', { class: 'btn btn-ghost btn-block', style: 'margin-top:.7rem', onclick: changePasswordForm }, 'Passwort ändern')));
@@ -5058,14 +5227,27 @@
         const sessCard = el('div', { class: 'card' });
         sessCard.append(el('div', { class: 'page-head' }, el('h3', {}, 'Aktive Sitzungen'),
             el('button', { class: 'btn btn-ghost btn-sm', onclick: revokeOthers }, 'Andere abmelden')));
-        const sessions = await api.get('/auth/sessions');
-        for (const s of sessions) {
-            sessCard.append(el('div', { class: 'balance' },
+        const sessionBody = el('div', { role: 'status' }, 'Sitzungen werden geladen …');
+        sessCard.append(sessionBody); colB.append(sessCard);
+        let sessions;
+        try { sessions = (await api.get('/auth/sessions')) || []; }
+        catch (err) {
+            if (err.status === 401) throw err; // Preserve the route's expired-session logout.
+            sessionBody.replaceChildren(el('p', { class: 'muted' }, 'Sitzungen konnten nicht geladen werden.'),
+                el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => render() }, 'Erneut versuchen'));
+            sessions = null;
+        }
+        if (sessions) sessionBody.replaceChildren();
+        if (sessions && !sessions.length) sessionBody.append(el('p', { class: 'muted' }, 'Keine Sitzungen verfügbar.'));
+        for (const s of sessions || []) {
+            sessionBody.append(el('div', { class: 'balance' },
                 el('div', {}, el('div', {}, esc(shortUA(s.user_agent)), s.current ? el('span', { class: 'badge badge-stored', style: 'margin-left:.4rem' }, 'aktuell') : null),
                     el('div', { class: 't-time' }, (s.ip || '?') + ' · zuletzt ' + fmtDateTime(s.last_seen))),
                 s.current ? null : el('button', { class: 'btn btn-ghost btn-sm', onclick: () => revokeSession(s.token) }, 'Abmelden')));
         }
-        colB.append(sessCard);
+        if (isAdmin()) colB.append(el('div', { class: 'card admin-links' }, el('h3', {}, 'Betrieb verwalten'),
+            ...[['users', 'Benutzer & Rollen'], ['billing', 'Rechnungs-Einstellungen'], ['backup', 'Sicherungen'], ['audit', 'Änderungsverlauf']]
+                .map(([route, label]) => el('a', { href: '#/' + route }, label, el('span', { 'aria-hidden': 'true' }, '›')))));
     };
     function shortUA(ua) {
         if (!ua) return 'Unbekanntes Gerät';
@@ -5466,7 +5648,7 @@
                 api.get('/vehicles'),
                 api.get('/invoices/overdue?due_until=' + dueUntil)]);
             if (canManage()) { try { requests = await api.get('/portal-requests'); } catch (e) { requests = []; } }
-        } catch (e) { page.append(el('div', { class: 'empty' }, 'Kalender konnte nicht geladen werden: ' + e.message)); return; }
+        } catch (e) { throw e; } // The route error view provides recovery.
 
         // Ereignisse je Tag einsammeln (nur dieser Monat).
         const inMonth = (iso) => iso && iso.slice(0, 7) === (y + '-' + String(m).padStart(2, '0'));
@@ -5490,18 +5672,35 @@
         // Monatsraster: Mo-So, fuehrende Leerzellen aus dem Wochentag des Ersten.
         const days = new Date(y, m, 0).getDate();
         const lead = (first.getDay() + 6) % 7; // Mo=0
-        const grid = el('div', { class: 'cal-grid', role: 'grid', 'aria-label': 'Kalender ' + label });
-        ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'].forEach((d) => grid.append(el('div', { class: 'cal-head', role: 'columnheader' }, d)));
-        for (let i = 0; i < lead; i++) grid.append(el('div', { class: 'cal-cell empty' }));
+        const grid = el('div', { class: 'cal-grid', role: 'group', 'aria-label': 'Kalender ' + label });
+        ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'].forEach((d) => grid.append(el('div', { class: 'cal-head' }, d)));
+        for (let i = 0; i < lead; i++) grid.append(el('div', { class: 'cal-cell cal-placeholder', 'aria-hidden': 'true' }));
         const today = now.getFullYear() === y && now.getMonth() + 1 === m ? now.getDate() : -1;
         for (let d = 1; d <= days; d++) {
-            const cell = el('div', { class: 'cal-cell' + (d === today ? ' today' : ''), role: 'gridcell' },
+            const cell = el('div', { class: 'cal-cell' + (d === today ? ' today' : ''), role: 'group', 'aria-label': d + '. ' + label },
                 el('span', { class: 'cal-day' }, String(d)));
             (byDay[d] || []).forEach((ev) => cell.append(
                 el('a', { class: 'cal-ev cal-' + ev.kind, href: ev.href, title: ev.text }, ev.text)));
             grid.append(cell);
         }
-        page.append(grid);
+        const agenda = el('div', { class: 'cal-agenda' });
+        const eventDays = Object.keys(byDay).map(Number).sort((a, b) => a - b);
+        eventDays.forEach(day => {
+            const date = new Date(y, m - 1, day).toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
+            const items = el('ul', {});
+            byDay[day].forEach(ev => items.append(el('li', {}, el('a', { class: 'cal-agenda-link cal-' + ev.kind, href: ev.href }, ev.text))));
+            agenda.append(el('section', { class: 'cal-agenda-day' }, el('h3', {}, date), items));
+        });
+        if (!eventDays.length) agenda.append(emptyState('log', 'Keine Termine in diesem Monat. Mit den Pfeilen einen anderen Monat wählen.'));
+        const views = el('div', { class: 'segments cal-views', role: 'group', 'aria-label': 'Kalenderansicht' });
+        const setView = list => {
+            grid.hidden = list; agenda.hidden = !list;
+            [...views.children].forEach((button, i) => { const active = list === (i === 1); button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active)); });
+        };
+        views.append(el('button', { type: 'button', onclick: () => setView(false) }, 'Monat'),
+            el('button', { type: 'button', onclick: () => setView(true) }, 'Terminliste'));
+        setView(window.matchMedia('(max-width: 640px)').matches);
+        page.append(views, grid, agenda);
         page.append(el('div', { class: 'cal-legend muted' },
             el('span', { class: 'cal-ev cal-pickup' }, 'Abholung'), ' ',
             el('span', { class: 'cal-ev cal-reserve' }, 'Reservierung'), ' ',
@@ -5515,15 +5714,15 @@
         const head = el('div', { class: 'page-head' }, el('h2', {}, 'Stellplätze'));
         if (canManage()) head.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => garageForm() }, '+ Garage'));
         page.append(head);
-        if (!garages.length) { page.append(emptyState('box', 'Noch keine Garage angelegt.')); return; }
-        const list = el('div', {});
+        if (!garages.length) { page.append(emptyState('box', 'Noch keine Garage. Lege zuerst eine Garage an und füge anschließend ihre Hallen hinzu.')); return; }
+        const list = el('div', { class: 'storage-list' });
         garages.forEach((g) => list.append(el('div', { class: 'card' },
             el('div', { class: 'card-row' },
-                el('div', { style: 'flex:1;cursor:pointer', onclick: () => navigate('garage/' + g.id) },
-                    el('h3', {}, g.name),
+                el('div', { style: 'flex:1' },
+                    el('h3', {}, el('a', { class: 'record-link', href: '#/garage/' + g.id }, g.name)),
                     el('div', { class: 'card-meta' }, (g.hall_count || 0) + (g.hall_count === 1 ? ' Halle' : ' Hallen'))),
                 el('div', { class: 'card-actions' },
-                    el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': g.name + ' öffnen', onclick: () => navigate('garage/' + g.id) }, '›'),
+                    el('a', { class: 'btn btn-ghost btn-sm', href: '#/garage/' + g.id, 'aria-label': g.name + ' öffnen' }, 'Hallen öffnen'),
                     canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Umbenennen', onclick: () => garageForm(g) }, icon('edit')),
                     canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', onclick: (e) => delGarage(g, e.currentTarget.closest('.card')) }, icon('trash')))))));
         page.append(list);
@@ -5552,14 +5751,14 @@
         const head = el('div', { class: 'page-head' }, el('h3', {}, 'Hallen'));
         if (canManage()) head.append(el('button', { class: 'btn btn-primary btn-sm', onclick: () => hallForm(id) }, '+ Halle'));
         page.append(head);
-        if (!halls.length) { page.append(emptyState('box', 'Noch keine Halle in dieser Garage.')); return; }
-        const list = el('div', {});
+        if (!halls.length) { page.append(emptyState('box', 'Noch keine Halle. Mit „+ Halle“ einen Grundriss anlegen und anschließend Gefährte platzieren.')); return; }
+        const list = el('div', { class: 'storage-list hall-list' });
         halls.forEach((hl) => {
             const geo = asObj(hl.geometry); const area = (geo.floor && geo.floor.length >= 3) ? polyArea(geo.floor) : 0;
             list.append(el('div', { class: 'card' },
                 el('div', { class: 'card-row' },
-                    el('div', { style: 'flex:1;cursor:pointer', onclick: () => navigate('hall/' + hl.id) },
-                        el('h3', {}, hl.name),
+                    el('div', { style: 'flex:1' },
+                        el('h3', {}, el('a', { class: 'record-link', href: '#/hall/' + hl.id }, hl.name)),
                         el('div', { class: 'card-meta' }, (hl.spot_count || 0) + ' Gefährte' + (area ? ' · ' + Math.round(area).toLocaleString('de-DE') + ' m²' : ''))),
                     el('div', { class: 'card-actions' },
                         el('button', { class: 'btn btn-ghost btn-sm', onclick: () => navigate('hall/' + hl.id) }, 'Planer ›'),
@@ -5663,14 +5862,14 @@
         const root = el('div', { class: 'gp' }); root.dataset.mode = P.mode;
         page.append(root);
         // appbar
-        const modeSwitch = el('div', { class: 'gp-switch' });
-        const mkModeBtn = (m, label) => el('button', { 'data-mode': m, class: P.mode === m ? 'on' : '', onclick: () => setMode(m) }, label);
+        const modeSwitch = el('div', { class: 'gp-switch', role: 'group', 'aria-label': 'Planermodus' });
+        const mkModeBtn = (m, label) => el('button', { type: 'button', 'data-mode': m, 'aria-pressed': String(P.mode === m), class: P.mode === m ? 'on' : '', onclick: () => setMode(m) }, label);
         const rebuildSwitch = () => { modeSwitch.innerHTML = ''; modeSwitch.append(mkModeBtn('plan', 'Garagenplaner'), mkModeBtn('manage', 'Stellplätze')); };
         const occN = el('b', { class: 'num' }, '–'); const occBar = el('i', {});
         const maxBtn = el('button', { class: 'gp-iconbtn', title: 'Vollbild', 'aria-label': 'Vollbild', onclick: () => toggleMax() }, '⛶');
         const appbar = el('div', { class: 'gp-appbar' },
             el('button', { class: 'back-btn', 'aria-label': 'Zurück', onclick: () => navigate(P.garageId ? 'garage/' + P.garageId : 'garages') }, '‹'),
-            el('div', { class: 'gp-brand' }, el('b', {}, P.hallName), el('span', { class: 'muted' }, P.garageName)),
+            el('div', { class: 'gp-brand' }, el('h2', {}, P.hallName), el('span', { class: 'muted' }, P.garageName)),
             modeSwitch, el('span', { class: 'gp-spacer' }),
             el('div', { class: 'gp-occ' }, el('span', { class: 'eyebrow' }, 'Belegung'), occN, el('span', { class: 'gp-bar' }, occBar)),
             maxBtn);
@@ -5693,7 +5892,9 @@
         // rail
         const rail = el('div', { class: 'gp-rail' });
         const stage = el('div', { class: 'gp-stage' }, canvas, rail);
-        root.append(appbar, stage);
+        const plannerGuide = el('details', { class: 'planner-guide' }, el('summary', {}, 'Bedienung & Speichern'),
+            el('p', {}, 'Stellplätze: Gefährt auswählen und im Plan platzieren. Gültige Platzierungen werden direkt gespeichert. Im Garagenplaner den Grundriss bearbeiten und mit „Speichern“ übernehmen.'));
+        root.append(appbar, plannerGuide, stage);
 
         // Transparent capture layer for interactive wall drawing / node editing (plan mode).
         const drawOverlay = el('div', { class: 'gp-drawoverlay' }); drawOverlay.style.display = 'none'; planEl.append(drawOverlay);
@@ -8548,8 +8749,18 @@
     }
 
     function bindStatic() {
+        $('.skip-link').addEventListener('click', (e) => {
+            e.preventDefault();
+            $('#page').focus({ preventScroll: true });
+            $('#page').scrollIntoView({ block: 'start' });
+        });
         $('#login-form').addEventListener('submit', async (e) => {
             e.preventDefault();
+            const submit = $('#login-form button[type="submit"]');
+            if (submit.disabled) return;
+            submit.disabled = true;
+            submit.setAttribute('aria-busy', 'true');
+            submit.textContent = 'Anmelden …';
             const errEl = $('#login-error'); errEl.hidden = true;
             const body = { username: $('#login-username').value, password: $('#login-password').value };
             const totp = getTotpValue();
@@ -8575,6 +8786,10 @@
                     errEl.textContent = err.message;
                 }
                 errEl.hidden = false;
+            } finally {
+                submit.disabled = false;
+                submit.setAttribute('aria-busy', 'false');
+                submit.textContent = 'Anmelden';
             }
         });
         const pkBtn = $('#passkey-login');
@@ -8895,7 +9110,7 @@
             // statt eines nackten Statuscodes (z. B. der 429-Deckel des Briefkastens).
             let msg = 'portal ' + res.status;
             try { const j = await res.json(); if (j && j.error) msg = j.error; } catch (e) { /* leer */ }
-            throw new Error(msg);
+            const err = new Error(msg); err.status = res.status; throw err;
         }
         return as === 'json' ? res.json() : res.blob();
     }
@@ -8959,11 +9174,14 @@
         return String(navigator.language || 'de').toLowerCase().startsWith('de') ? 'de' : 'en';
     }
 
+    let portalRenderSeq = 0;
     async function renderPortal(token) {
+        const seq = ++portalRenderSeq;
         const lv = $('#login-view'); if (lv) lv.hidden = true;
         const av = $('#app-view'); if (av) av.hidden = true;
         const pv = $('#portal-view');
         pv.hidden = false;
+        pv.setAttribute('aria-busy', 'true');
         pv.innerHTML = '';
         pv.append(skeleton(4));
         const lang = portalLang();
@@ -8972,12 +9190,19 @@
         let sum;
         try { sum = await portalFetch(token, '/summary', 'json'); }
         catch (e) {
+            if (seq !== portalRenderSeq) return;
             pv.innerHTML = '';
+            pv.setAttribute('aria-busy', 'false');
+            const expired = [401, 403, 404, 410].includes(e.status);
             pv.append(el('div', { class: 'portal-wrap' }, el('div', { class: 'portal-card' },
                 el('h1', {}, 'Parkrr'),
-                el('p', { class: 'muted' }, P9.invalid))));
+                el('p', { class: 'muted', role: 'alert' }, expired ? P9.invalid : (lang === 'de' ? 'Der Zugang konnte gerade nicht geladen werden.' : 'Unable to load your portal right now.')),
+                !expired ? el('button', { class: 'btn btn-primary', type: 'button', onclick: () => renderPortal(token) }, lang === 'de' ? 'Erneut versuchen' : 'Try again') : null)));
             return;
         }
+        if (seq !== portalRenderSeq) return;
+        sum.vehicles = sum.vehicles || []; sum.invoices = sum.invoices || [];
+        pv.setAttribute('aria-busy', 'false');
         pv.innerHTML = '';
         const wrap = el('div', { class: 'portal-wrap' });
         wrap.append(el('div', { class: 'portal-head' },
@@ -8990,7 +9215,7 @@
             el('button', { class: 'btn btn-ghost btn-sm portal-lang', 'aria-label': lang === 'de' ? 'Switch to English' : 'Auf Deutsch umschalten',
                 onclick: () => { try { localStorage.setItem('parkrr_portal_lang', lang === 'de' ? 'en' : 'de'); } catch (e2) { /* egal */ } renderPortal(token); } },
                 lang === 'de' ? 'EN' : 'DE')));
-        wrap.append(el('div', { class: 'portal-card' },
+        wrap.append(el('div', { class: 'portal-card portal-balance' },
             el('div', { class: 'muted' }, P9.open_total),
             el('div', { class: 'portal-amt' + (sum.open_total > 0.005 ? ' owe' : '') }, eur(sum.open_total))));
         const vcard = el('div', { class: 'portal-card' }, el('h2', {}, P9.your_vehicles));
@@ -9014,9 +9239,8 @@
         if (!sum.invoices.length) icard.append(el('p', { class: 'muted' }, P9.no_invoices));
         else sum.invoices.forEach((iv) => {
             icard.append(
-                el('a', { class: 'portal-row link', role: 'button', tabindex: '0', style: 'cursor:pointer',
-                    onclick: () => portalOpenPdf(token, iv.id),
-                    onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); portalOpenPdf(token, iv.id); } } },
+                el('button', { class: 'portal-row link', type: 'button', 'aria-label': P9.invoice + iv.number + ' PDF',
+                    onclick: () => portalOpenPdf(token, iv.id) },
                     el('span', {}, P9.invoice + esc(iv.number),
                         el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, new Date(iv.issued_on).toLocaleDateString(locale) + (iv.status ? ' · ' + (P9.inv_status[iv.status] || esc(iv.status)) : ''))),
                     el('span', { style: 'text-align:right' }, eur(iv.total),
@@ -9024,23 +9248,40 @@
             // Scan-to-pay QR for each still-open invoice.
             if (iv.open > 0.005) {
                 const qr = el('img', { alt: P9.qr_alt, width: 150, height: 150, style: 'max-width:150px;height:auto' });
-                portalFetch(token, '/invoices/' + iv.id + '/pay-qr', 'blob')
-                    // Objekt-URL nach dem Laden des Bilds freigeben (PORTAL-91); bei
-                    // Fehlschlag das leere img entfernen statt es kaputt stehen zu lassen.
-                    .then((b) => { qr.onload = () => URL.revokeObjectURL(qr.src); qr.src = URL.createObjectURL(b); })
-                    .catch(() => { qr.remove(); });
-                icard.append(el('div', { style: 'text-align:center;padding:.4rem 0 .2rem' },
-                    qr,
-                    el('div', { class: 'muted', style: 'font-size:.72rem' }, P9.scan_pay)));
+                const message = el('p', { class: 'muted', role: 'status' });
+                const details = el('details', { class: 'portal-qr' }, el('summary', {}, P9.scan_pay), message);
+                let loaded = false, loading = false;
+                details.addEventListener('toggle', async () => {
+                    if (!details.open || loaded || loading) return;
+                    loading = true; message.textContent = lang === 'de' ? 'QR-Code wird geladen …' : 'Loading QR code …';
+                    try {
+                        const blob = await portalFetch(token, '/invoices/' + iv.id + '/pay-qr', 'blob');
+                        const url = URL.createObjectURL(blob);
+                        try {
+                            await new Promise((resolve, reject) => {
+                                qr.onload = resolve;
+                                qr.onerror = () => reject(new Error('Invalid QR image'));
+                                qr.src = url;
+                            });
+                            if (seq !== portalRenderSeq) return;
+                            details.append(qr); loaded = true; message.textContent = '';
+                        } finally { URL.revokeObjectURL(url); }
+                    } catch {
+                        qr.remove();
+                        message.textContent = lang === 'de' ? 'QR-Code nicht verfügbar. Zum erneuten Laden schließen und öffnen.' : 'QR code unavailable. Close and reopen to retry.';
+                    } finally { loading = false; }
+                });
+                icard.append(details);
             }
         });
         wrap.append(icard);
         // Anliegen (Hundert 85/87): der einzige Schreibweg des Portals ist ein
         // Briefkasten — der Kunde reicht ein, der Betreiber übernimmt.
         {
-            const rcard = el('div', { class: 'portal-card' }, el('h2', {}, P9.requests),
+            const rcard = el('div', { class: 'portal-card portal-requests' }, el('h2', {}, P9.requests),
                 el('p', { class: 'muted', style: 'font-size:.8rem' }, P9.req_hint));
             const send = async (body, msgEl, btn) => {
+                if (btn.disabled) return;
                 btn.disabled = true;
                 try {
                     await portalFetch(token, '/requests', 'json', { method: 'POST', body: JSON.stringify(body) });
@@ -9053,16 +9294,26 @@
             const cPhone = el('input', { type: 'tel', placeholder: P9.req_phone, 'aria-label': P9.req_phone });
             const cAddr = el('input', { type: 'text', placeholder: P9.req_address, 'aria-label': P9.req_address });
             const cMsg = el('p', { class: 'muted', role: 'status' });
-            const cBtn = el('button', { class: 'btn btn-primary btn-sm' }, P9.req_send);
-            cBtn.addEventListener('click', () => send({ kind: 'contact_update', email: cEmail.value.trim(), phone: cPhone.value.trim(), address: cAddr.value.trim() }, cMsg, cBtn));
-            rcard.append(el('h3', {}, P9.req_contact), el('div', { class: 'portal-form' }, cEmail, cPhone, cAddr, cBtn), cMsg);
+            const cBtn = el('button', { class: 'btn btn-primary btn-sm', type: 'submit' }, P9.req_send);
+            const contact = el('form', { class: 'portal-form' },
+                el('label', {}, P9.req_email, cEmail), el('label', {}, P9.req_phone, cPhone), el('label', {}, P9.req_address, cAddr), cBtn);
+            contact.addEventListener('submit', e => {
+                e.preventDefault();
+                if (![cEmail, cPhone, cAddr].some(input => input.value.trim())) {
+                    cMsg.textContent = lang === 'de' ? 'Bitte mindestens eine Kontaktangabe eintragen.' : 'Please enter at least one contact detail.'; cEmail.focus(); return;
+                }
+                send({ kind: 'contact_update', email: cEmail.value.trim(), phone: cPhone.value.trim(), address: cAddr.value.trim() }, cMsg, cBtn);
+            });
             // Abholung
-            const pDate = el('input', { type: 'date', 'aria-label': P9.req_date });
+            const pDate = el('input', { type: 'date', required: true, 'aria-label': P9.req_date });
             const pNote = el('input', { type: 'text', placeholder: P9.req_note, 'aria-label': P9.req_note });
             const pMsg = el('p', { class: 'muted', role: 'status' });
-            const pBtn = el('button', { class: 'btn btn-primary btn-sm' }, P9.req_send);
-            pBtn.addEventListener('click', () => send({ kind: 'pickup', date: pDate.value, note: pNote.value.trim() }, pMsg, pBtn));
-            rcard.append(el('h3', {}, P9.req_pickup), el('div', { class: 'portal-form' }, pDate, pNote, pBtn), pMsg);
+            const pBtn = el('button', { class: 'btn btn-primary btn-sm', type: 'submit' }, P9.req_send);
+            const pickup = el('form', { class: 'portal-form' }, el('label', {}, P9.req_date, pDate), el('label', {}, P9.req_note, pNote), pBtn);
+            pickup.addEventListener('submit', e => { e.preventDefault(); send({ kind: 'pickup', date: pDate.value, note: pNote.value.trim() }, pMsg, pBtn); });
+            rcard.append(el('div', { class: 'portal-request-groups' },
+                el('section', {}, el('h3', {}, P9.req_contact), contact, cMsg),
+                el('section', {}, el('h3', {}, P9.req_pickup), pickup, pMsg)));
             wrap.append(rcard);
         }
         wrap.append(el('p', { class: 'portal-foot muted' }, P9.foot));
