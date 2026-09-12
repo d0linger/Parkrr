@@ -51,6 +51,9 @@ jobs:
           PARKRR_ADMIN_USERNAME: admin
           PARKRR_ADMIN_PASSWORD: ci-a11y-admin-password
           PARKRR_SECURE_COOKIES: "false"
+          PARKRR_CHECK_BREACHED_PASSWORDS: "false"
+          PARKRR_WEBAUTHN_RP_ID: localhost
+          PARKRR_WEBAUTHN_ORIGINS: http://localhost:8080
           # Der ganze a11y-Lauf kommt aus EINER IP; der Standard von 600/min reicht
           # fuer 41 Tests mit Seed-/Cleanup-Verkehr nicht und die Middleware
           # antwortete mit 429 {"error":"rate limit exceeded"} — das trieb render-race,
@@ -82,6 +85,7 @@ jobs:
         working-directory: tests/a11y
         env:
           PARKRR_BASE_URL: http://localhost:8080
+          PARKRR_E2E_ISOLATED: "1"
         run: |
           npm ci
           npx playwright install --with-deps chromium

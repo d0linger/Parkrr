@@ -24,7 +24,7 @@ func TestDropFlatrateArchivesLeftoverRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer admin.Close()
+	t.Cleanup(admin.Close)
 
 	const dbName = "parkrr_dropflat_test"
 	if _, err := admin.Exec(ctx, `DROP DATABASE IF EXISTS `+dbName+` WITH (FORCE)`); err != nil {

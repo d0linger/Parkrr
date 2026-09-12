@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Die Suche im Änderungsprotokoll lief als zwei ungeankerte ILIKE '%…%' und damit
@@ -16,7 +17,8 @@ import (
 // launisch. "Benutzt Postgres den Index?" ist die Frage, die zählt.
 func TestAuditSearchUsesTheTrigramIndex(t *testing.T) {
 	h := testHandler(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	defer cancel()
 
 	var hasTrgm bool
 	if err := h.Pool.QueryRow(ctx,
@@ -27,19 +29,62 @@ func TestAuditSearchUsesTheTrigramIndex(t *testing.T) {
 		t.Skip("pg_trgm nicht installiert — Migration 055 legt dann bewusst keinen Index an")
 	}
 
-	// Der Planer wählt bei einer FAST LEEREN Tabelle zu Recht den Seq Scan: ihn zu
-	// lesen ist dann billiger als den Index zu befragen. Damit die Aussage etwas
-	// wert ist, braucht es genug Zeilen — sonst prüfte der Test die Statistik, nicht
-	// den Index.
-	var n int
-	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_log`).Scan(&n); err != nil {
-		t.Fatalf("count: %v", err)
+	// Auch 500 bis 1500 zufällig vorhandene Testzeilen sind oft billiger sequenziell
+	// zu lesen. Eigene, ausreichend große Historie statt eines Reihenfolge-abhängigen
+	// Skips: seltene Treffer in BEIDEN Suchspalten, normale Einträge dazwischen.
+	// Alles bleibt in dieser Transaktion und wird auch bei einem Fehler zurückgerollt.
+	tx, err := h.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin audit fixture: %v", err)
 	}
-	if n < 500 {
-		t.Skipf("nur %d Audit-Zeilen — zu wenig, als dass ein Index-Plan aussagekräftig wäre", n)
+	var fixtureIDs []int64
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		if err := tx.Rollback(cleanupCtx); err != nil {
+			t.Errorf("rollback audit fixture: %v", err)
+			return
+		}
+		if len(fixtureIDs) > 0 {
+			var remaining int
+			if err := h.Pool.QueryRow(cleanupCtx,
+				`SELECT count(*) FROM audit_log WHERE id = ANY($1)`, fixtureIDs).Scan(&remaining); err != nil {
+				t.Errorf("verify audit fixture rollback: %v", err)
+			} else if remaining != 0 {
+				t.Errorf("audit fixture left %d rows after rollback", remaining)
+			} else {
+				t.Logf("audit fixture rollback: %d inserted rows, %d remaining", len(fixtureIDs), remaining)
+			}
+		}
+	}()
+	if err := tx.QueryRow(ctx, `WITH inserted AS (
+		INSERT INTO audit_log (username, action, entity, entity_id, summary, created_at)
+		SELECT CASE WHEN i = 301 THEN 'zzqxmueller' ELSE 'operator-' || (i % 32) END,
+		       'update', 'vehicle', i,
+		       CASE WHEN i = 17003 THEN 'Gefährt für zzqxmueller umgestellt'
+		            ELSE 'Gefährt ' || i || ': Stellplatz von Halle ' || (i % 31) ||
+		                 ' nach Halle ' || ((i + 1) % 31) || ' geändert; Übergabe kontrolliert'
+		       END,
+		       now() - (i % 2555) * interval '1 day'
+		FROM generate_series(1, 20000) AS fixture(i)
+		RETURNING id
+	) SELECT array_agg(id) FROM inserted`).Scan(&fixtureIDs); err != nil {
+		t.Fatalf("seed audit fixture: %v", err)
+	}
+	// Der Bulk-Insert hinterlässt GIN-Pending-Listen. Diese Wartung übernimmt sonst
+	// VACUUM; ohne sie würde der Test den vorübergehenden Ladezustand bewerten.
+	for _, index := range []string{"idx_audit_username_trgm", "idx_audit_summary_trgm"} {
+		var cleaned int64
+		if err := tx.QueryRow(ctx, `SELECT gin_clean_pending_list($1::regclass)`, index).Scan(&cleaned); err != nil {
+			t.Fatalf("clean pending entries for %s: %v", index, err)
+		}
+	}
+	// Nicht auf Autovacuum warten: EXPLAIN soll die gerade angelegte Historie kennen.
+	if _, err := tx.Exec(ctx, `ANALYZE audit_log`); err != nil {
+		t.Fatalf("analyze audit fixture: %v", err)
 	}
 
-	rows, err := h.Pool.Query(ctx,
+	rows, err := tx.Query(ctx,
 		`EXPLAIN (COSTS OFF) SELECT id FROM audit_log
 		  WHERE (username ILIKE $1 OR summary ILIKE $1)
 		  ORDER BY created_at DESC, id DESC LIMIT 50`, "%zzqxmueller%")
@@ -60,6 +105,7 @@ func TestAuditSearchUsesTheTrigramIndex(t *testing.T) {
 		t.Fatalf("read plan: %v", err)
 	}
 	got := plan.String()
+	t.Logf("audit search plan:\n%s", got)
 	for _, want := range []string{"idx_audit_username_trgm", "idx_audit_summary_trgm"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("die Audit-Suche benutzt %s nicht:\n%s", want, got)
