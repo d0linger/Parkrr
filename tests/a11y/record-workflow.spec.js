@@ -50,7 +50,7 @@ test('person creation/edit, detail navigation and additional-cost payment surviv
     await page.goto('/#/finance');
     await page.getByRole('button', { name: '+ Neu', exact: true }).click();
     await modal.getByRole('combobox', { name: 'Person', exact: true }).selectOption(String(personId));
-    await modal.getByRole('textbox', { name: 'Bezeichnung', exact: true }).fill(lastName);
+    await modal.getByRole('combobox', { name: 'Bezeichnung', exact: true }).fill(lastName);
     await modal.getByRole('spinbutton', { name: 'Betrag (€)', exact: true }).fill('12.50');
     await modal.getByLabel('Menge', { exact: true }).fill('2');
     const chargeResponse = page.waitForResponse(res => new URL(res.url()).pathname === '/api/charges' && res.request().method() === 'POST');

@@ -72,3 +72,10 @@ Frontend unit tests can be run from the project root without a browser:
 ```sh
 node --test tests/geometry/geometry.test.js tests/frontend/*.test.js
 ```
+
+`compact-workflows.spec.js` adds isolated form-contract checks for progressive
+disclosure, catalog autocomplete, live totals, date shortcuts, locked vehicle
+prices, preserved bindings on lookup failure, agreement vehicles, tariff coupling,
+both portal languages and keyboard/axe/reflow checks at 320/390/1440px. It needs
+no backend. Run it alongside the three synthetic suites above. The real-backend
+record and portal tests explicitly open the newly disclosed controls.

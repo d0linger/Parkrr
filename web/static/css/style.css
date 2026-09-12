@@ -2202,7 +2202,7 @@ a.portal-row.link:hover { color: var(--primary-ink); }
 .screen-finance .charge-main { min-width:0; }
 .screen-finance .charge-main .card-meta { max-width:65ch; }
 .screen-finance .charge-row { align-items:center; }
-.screen-finance .toolbar .search { flex-basis:100%; }
+.screen-finance .toolbar .search { flex:1 1 16rem; }
 .screen-tariffs > .segments { max-width:26rem; margin-bottom:.5rem; }
 .screen-tariffs .cfg-main { min-width:0; }
 .screen-tariffs .cfg-title { overflow-wrap:anywhere; }
@@ -2282,7 +2282,7 @@ button.portal-row { width:100%; border:0; border-bottom:1px solid var(--border);
     .vehicle-overview { grid-template-columns:minmax(0,1.4fr) minmax(0,1fr); }
     .billing-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
     .screen-backup > .stat-grid { grid-template-columns:repeat(4,minmax(0,1fr)); }
-    .portal-wrap { max-width:900px; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-items:start; }
+    .portal-wrap { max-width:900px; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-items:start; align-content:start; }
     .portal-head, .portal-balance, .portal-requests, .portal-foot { grid-column:1 / -1; }
     .portal-request-groups { grid-template-columns:repeat(2,minmax(0,1fr)); }
 }
@@ -2315,3 +2315,74 @@ button.portal-row { width:100%; border:0; border-bottom:1px solid var(--border);
     .invoice-table-scroll { overflow:visible; }
     .invoice-table-scroll .inv-table { min-width:0; }
 }
+
+/* Compact workflows: shared fields, explicit optional details, unchanged tokens. */
+.modal.modal-wide { width:min(46rem, calc(100vw - 2rem)); }
+.form-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:1rem; }
+.form-field { min-width:0; display:flex; flex-direction:column; gap:.375rem; }
+.form-field[hidden] { display:none; }
+.form-field-wide { grid-column:1 / -1; }
+.form-field > label { margin:0; font-size:.875rem; font-weight:600; }
+.form-field input, .form-field select, .form-field textarea { width:100%; min-width:0; margin:0; }
+.form-field textarea { min-height:5rem; resize:vertical; }
+.form-field .input-affix { margin:0; }
+.form-field .field-error, .form-field .card-meta { margin:0; }
+.form-field .switch { min-height:2.75rem; }
+.form-field .switch input { width:0; }
+.form-disclosure { border-top:1px solid var(--border); margin-top:1rem; }
+.form-disclosure > summary { cursor:pointer; padding:.75rem 0; min-height:2.75rem; font-weight:600; font-size:.875rem; color:var(--text); }
+.form-disclosure[open] > summary { margin-bottom:.25rem; }
+.form-disclosure > summary:hover { color:var(--primary); }
+.form-disclosure > summary:focus-visible { outline:2px solid var(--primary); outline-offset:3px; border-radius:var(--radius-sm); }
+.date-shortcuts { display:flex; gap:.25rem; flex-wrap:wrap; }
+.date-shortcuts .btn { min-height:2rem; padding:.25rem .5rem; }
+.form-total { display:flex; flex-direction:column; justify-content:center; gap:.25rem; padding:.75rem 1rem; background:var(--bg); border:1px solid var(--border); border-radius:var(--radius-sm); }
+.form-total output { font-size:1.375rem; font-weight:700; font-variant-numeric:tabular-nums; }
+.toolbar-primary { display:flex; flex:1 1 100%; gap:.75rem; min-width:0; }
+.toolbar-primary .search { min-width:0; flex:1 1 16rem; }
+.toolbar-primary > select { flex:0 1 14rem; min-width:0; }
+.billing-fields { display:grid; grid-template-columns:minmax(0,1fr); gap:0 1rem; }
+.billing-fields .bill-field { min-width:0; }
+.audit-advanced { margin-top:0; }
+.audit-advanced .audit-filter-row { gap:.75rem; margin-bottom:.75rem; }
+.calendar-navigation { display:flex; align-items:center; gap:.25rem; }
+.calendar-head .cal-views { margin:0; flex:0 1 15rem; }
+.storage-list { display:grid; gap:1rem; align-items:start; }
+.storage-list > .card { margin:0; min-width:0; }
+.portal-request { margin:0; }
+.portal-request-groups { gap:1rem; }
+.portal-request .portal-form { padding:.25rem 0; }
+.portal-request .portal-form button { grid-column:1 / -1; }
+.route-view > .page-head, .route-view > .detail-head { gap:.75rem; }
+.route-view .section-index { gap:.25rem 1rem; }
+.screen-person > .section-head { margin-top:1.5rem; }
+.screen-settings .set-col .balance { padding-block:.625rem; }
+.screen-tariffs .tf-panel .field-row { gap:1rem; }
+.screen-invoices .invoice-workspace > .card { padding:1.25rem; }
+.gp-appbar, .gp-canvas-top { row-gap:.75rem; }
+@media (min-width:600px) {
+    .modal-wide .form-grid, .billing-fields, .portal-request .portal-form { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .modal-wide .new-vehicle-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) auto; gap:.5rem; }
+    .modal-wide .new-vehicle-row > * { min-width:0; width:auto; }
+}
+@media (min-width:1100px) {
+    .storage-list { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media (max-width:640px) {
+    .toolbar-primary { flex-wrap:wrap; gap:.5rem; }
+    .modal.modal-wide { width:100%; }
+    .toolbar-primary .search { flex-basis:100%; }
+    .toolbar-primary > select { flex:1 1 100%; }
+    .calendar-navigation { flex:1; }
+    .calendar-head .cal-views { flex:1 1 100%; max-width:none; }
+    .modal-wide .new-vehicle-row { display:grid; grid-template-columns:minmax(0,1fr) auto; }
+    .modal-wide .new-vehicle-row > select, .modal-wide .new-vehicle-row > input:nth-of-type(1) { grid-column:1 / -1; }
+    .modal-wide .new-vehicle-row > * { min-width:0; width:100%; }
+    .modal .form-field input, .modal .form-field select, .modal .form-field textarea { font-size:1rem; }
+}
+@media (max-width:599px) {
+    .modal-wide .form-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .modal-wide .form-grid > * { grid-column:1 / -1; }
+    .modal-wide .form-grid > .form-field-compact { grid-column:auto; }
+}
+@media (pointer:coarse) { .date-shortcuts .btn { min-height:2.75rem; } }

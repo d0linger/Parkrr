@@ -27,6 +27,7 @@ for (const initial of [true, false]) {
     if (!initial) {
       await expect(page.getByText('Keine Änderungen für diese Auswahl.')).toBeVisible();
       expired = true;
+      await page.locator('.audit-advanced summary').click();
       await page.getByRole('combobox', { name: 'Aktion filtern' }).selectOption('create');
     }
     await expect(page.locator('#login-view')).toBeVisible();
@@ -48,6 +49,7 @@ test('stale audit unauthorized response cannot log out a newer successful filter
   } });
   await page.goto(origin + '/#/audit');
   await expect.poll(() => started).toBe(true);
+  await page.locator('.audit-advanced summary').click();
   await page.getByRole('combobox', { name: 'Aktion filtern' }).selectOption('create');
   await expect(page.getByText('Keine Änderungen für diese Auswahl.')).toBeVisible();
   const oldResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/audit' && response.status() === 401);
@@ -170,6 +172,7 @@ test('portal contact submission uses the exact contract and ignores duplicate su
   } });
   await page.goto(origin + '/#/portal/demo');
   const contact = page.locator('.portal-form').first();
+  await page.getByText('Kontaktdaten ändern', { exact: true }).click();
   await contact.getByLabel('Neue E-Mail', { exact: true }).fill('kein-email');
   await contact.getByRole('button').click();
   expect(writes).toHaveLength(0);

@@ -80,10 +80,8 @@
     const fmtDateTime = (s) => (s ? new Date(s).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' }) : '–');
     // Local calendar date (not UTC): toISOString() would yield yesterday between
     // local midnight and the UTC offset, wrong-dating a payment/charge default.
-    const today = () => {
-        const d = new Date();
-        return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-    };
+    const localYMD = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    const today = () => localYMD(new Date());
     // Diakritika falten, nicht bloß kleinschreiben. Vorher fand "Muller" kein
     // "Müller" und "Doebler" kein "Döbler" — in einem österreichischen Bestand der
     // häufigste Fehlschlag überhaupt. NFD zerlegt "ü" in "u" plus Kombinationszeichen,
@@ -416,12 +414,20 @@
         return '';
     }
 
+    // Reveal validation targets without discarding values in collapsed sections.
+    function revealFormField(node) {
+        for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+            if (parent.tagName === 'DETAILS') parent.open = true;
+        }
+    }
+
     // save: optional async (data) => Promise. When given, formModal awaits it on
     // submit — showing a "Speichern…" busy button, keeping the modal open, and
     // surfacing a thrown error inline (with retry) instead of closing first.
     function formModal({ title, fields, submitLabel = 'Speichern', onRender = null, save = null, danger = null }) {
         return new Promise((resolve) => {
             const dlg = $('#modal');
+            dlg.classList.toggle('modal-wide', fields.length >= 4);
             $('#modal-title').textContent = title;
             $('#modal-submit').textContent = submitLabel;
             $('#modal-submit').style.display = '';
@@ -430,21 +436,43 @@
             $('#modal-submit').classList.toggle('btn-danger', !!danger);
             $('#modal-submit').classList.toggle('btn-primary', !danger);
             $('#modal-submit').disabled = false; // a prior form (e.g. onRender gating) may have disabled it
+            $('#modal-submit').setAttribute('aria-busy', 'false');
             let pending = false;
             dlg._canClose = () => !pending;
             $('#modal-cancel').disabled = false; $('#modal-close').disabled = false; // clear a prior busy state
             $('#modal-cancel').style.display = '';
+            $('#modal-cancel').textContent = 'Abbrechen';
             const body = $('#modal-body');
             body.innerHTML = '';
             // Async-save error banner (used only when `save` is provided).
             const formErr = el('p', { class: 'form-error', id: 'modal-form-error', role: 'alert', hidden: true });
             body.append(formErr);
             if (danger) body.append(el('p', { class: 'danger-note' }, icon('alert', 16), el('span', {}, danger)));
+            const grid = el('div', { class: 'form-grid' });
+            body.append(grid);
+            const groups = new Map();
             for (const f of fields) {
+                let target = grid;
+                // Optional groups are explicitly assigned by each form, never
+                // inferred from required=false (many essential fields allow blanks).
+                if (f.optional) {
+                    if (!groups.has(f.optional)) {
+                        const contents = el('div', { class: 'form-grid' });
+                        const details = el('details', { class: 'form-disclosure' },
+                            el('summary', {}, f.optional), contents);
+                        groups.set(f.optional, { details, contents });
+                        body.append(details);
+                    }
+                    const group = groups.get(f.optional);
+                    if (f.value != null && f.value !== '' && f.value !== false) group.details.open = true;
+                    target = group.contents;
+                }
+                const field = el('div', { class: 'form-field' + (f.wide || f.type === 'textarea' || f.type === 'checkbox' ? ' form-field-wide' : '') + (f.compact ? ' form-field-compact' : '') });
+                target.append(field);
                 if (f.type === 'checkbox') {
                     const input = el('input', { type: 'checkbox', id: 'f_' + f.name, name: f.name });
                     if (f.value) input.checked = true;
-                    body.append(el('label', { class: 'switch', for: 'f_' + f.name }, input, el('span', { class: 'track' }), el('span', {}, f.label)));
+                    field.append(el('label', { class: 'switch', for: 'f_' + f.name }, input, el('span', { class: 'track' }), el('span', {}, f.label)));
                     continue;
                 }
                 const id = 'f_' + f.name;
@@ -452,7 +480,7 @@
                 const helpId = 'help_' + f.name;
                 // The required asterisk is decorative — aria-required carries the
                 // meaning, so hide the star from screen readers.
-                body.append(el('label', { for: id }, f.label,
+                field.append(el('label', { for: id }, f.label,
                     f.required ? el('span', { 'aria-hidden': 'true' }, ' *') : null));
                 let input;
                 if (f.type === 'select') {
@@ -480,16 +508,30 @@
                 if (f.required) input.setAttribute('aria-required', 'true');
                 input.setAttribute('aria-describedby', f.help ? errId + ' ' + helpId : errId);
                 // Password fields get a show/hide affix toggle to catch typos.
-                if (f.type === 'password') body.append(el('div', { class: 'input-affix' }, input, pwToggleBtn(input)));
-                else body.append(input);
-                body.append(el('div', { class: 'field-error', id: errId, role: 'alert', hidden: true }));
-                if (f.help) body.append(el('div', { class: 'card-meta', id: helpId }, f.help));
+                if (f.type === 'password') field.append(el('div', { class: 'input-affix' }, input, pwToggleBtn(input)));
+                else field.append(input);
+                field.append(el('div', { class: 'field-error', id: errId, role: 'alert', hidden: true }));
+                if (f.help) field.append(el('div', { class: 'card-meta', id: helpId }, f.help));
+                if (f.quickDate) {
+                    const shortcuts = el('div', { class: 'date-shortcuts', role: 'group', 'aria-label': f.label + ': Schnellauswahl' });
+                    for (const [label, offset] of [['Heute', 0], ['Gestern', -1]]) {
+                        shortcuts.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => {
+                            const date = new Date(); date.setDate(date.getDate() + offset);
+                            input.value = localYMD(date);
+                            input.dispatchEvent(new Event('input', { bubbles: true }));
+                            input.dispatchEvent(new Event('change', { bubbles: true }));
+                            input.focus();
+                        } }, label));
+                    }
+                    field.append(shortcuts);
+                }
             }
             const form = $('#modal-form');
             let settled = false;
             const settle = (v) => { if (!settled) { settled = true; resolve(v); } };
             const cleanup = () => {
                 form.removeEventListener('submit', onSubmit);
+                form.removeEventListener('invalid', onInvalid, true);
                 $('#modal-cancel').removeEventListener('click', onCancel);
                 $('#modal-close').removeEventListener('click', onCancel);
                 dlg.removeEventListener('cancel', onEscape);
@@ -502,6 +544,7 @@
             dlg.addEventListener('close', () => { cleanup(); settle(null); }, { once: true });
             const onCancel = () => { if (pending) return; cleanup(); settle(null); dlg.close(); };
             const onEscape = (e) => { if (pending) e.preventDefault(); };
+            const onInvalid = (e) => revealFormField(e.target);
             dlg.addEventListener('cancel', onEscape);
             // Toggle the modal's busy state while an async save is in flight.
             const setPending = (on) => {
@@ -541,7 +584,7 @@
                         node.removeAttribute('aria-invalid');
                     }
                 }
-                if (firstInvalid) { firstInvalid.focus(); return; }
+                if (firstInvalid) { revealFormField(firstInvalid); firstInvalid.focus(); return; }
                 // settle() before dlg.close() so the close-event's settle(null) is a
                 // no-op and callers still receive the submitted data.
                 if (!save) { cleanup(); settle(data); dlg.close(); return; }
@@ -558,12 +601,14 @@
                 }
             };
             form.addEventListener('submit', onSubmit);
+            form.addEventListener('invalid', onInvalid, true);
             $('#modal-cancel').addEventListener('click', onCancel);
             $('#modal-close').addEventListener('click', onCancel);
             if (typeof onRender === 'function') onRender(body);
             dlg.showModal();
             // Accessibility: move focus into the dialog's first field.
-            const firstField = body.querySelector('input:not([type=checkbox]), select, textarea, input');
+            const firstField = Array.from(body.querySelectorAll('input, select, textarea, button'))
+                .find((node) => !node.disabled && node.getClientRects().length && !node.closest('details:not([open])'));
             if (firstField) firstField.focus();
         });
     }
@@ -574,6 +619,7 @@
     // acknowledgement before one-time content (e.g. backup codes) disappears.
     function contentModal(title, buildBody, { closeLabel = 'Schließen', canClose = null, hideCancel = false } = {}) {
         const dlg = $('#modal');
+        dlg.classList.remove('modal-wide');
         $('#modal-title').textContent = title;
         $('#modal-submit').style.display = 'none';
         $('#modal-cancel').textContent = closeLabel;
@@ -915,7 +961,7 @@
 
         const search = el('input', { class: 'search', type: 'search', placeholder: 'Suche …', value: qRaw, 'aria-label': 'In ' + (opts.title || 'Liste') + ' suchen' });
         const sortSel = el('select', { 'aria-label': 'Sortierung' }, ...opts.sorts.map((s, i) => el('option', { value: i, selected: i === sortIdx }, s.label)));
-        const toolbar = el('div', { class: 'toolbar' }, search, sortSel);
+        const toolbar = el('div', { class: 'toolbar' }, el('div', { class: 'toolbar-primary' }, search, sortSel));
         // Der Filterzustand der Werkzeugleiste gehoert zum Listenzustand wie Suche,
         // Sortierung und Seite. Ein frisches {} bei jedem Aufbau warf ihn weg — und
         // render() baut die Seite nach JEDER Massenaktion, nach "Abbrechen" und nach
@@ -1689,8 +1735,8 @@
                 { name: 'last_name', label: 'Nachname', value: existing?.last_name },
                 { name: 'email', label: 'E-Mail', type: 'email', value: existing?.email },
                 { name: 'phone', label: 'Telefon', value: existing?.phone },
-                { name: 'address', label: 'Adresse', type: 'textarea', value: existing?.address },
-                { name: 'notes', label: 'Notizen', type: 'textarea', value: existing?.notes },
+                { name: 'address', label: 'Adresse', type: 'textarea', value: existing?.address, optional: 'Adresse & Notizen' },
+                { name: 'notes', label: 'Notizen', type: 'textarea', value: existing?.notes, optional: 'Adresse & Notizen' },
             ],
             save: async (data) => {
                 if (existing) await api.put('/persons/' + existing.id, data);
@@ -2197,7 +2243,7 @@
             title: 'Zahlung erfassen',
             fields: [
                 { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', required: true, value: open ? open.toFixed(2) : '', help: open ? 'Vorausgefüllt: offener Saldo – für Teil-/Vorauszahlung anpassen.' : '' },
-                { name: 'paid_on', label: 'Datum', type: 'date', value: today() },
+                { name: 'paid_on', label: 'Datum', type: 'date', value: today(), quickDate: true },
                 { name: 'method', label: 'Methode', type: 'select', value: 'bar', options: PAY_METHODS.map((m) => ({ value: m.v, label: m.l })) },
                 { name: 'note', label: 'Notiz (optional)', value: '' },
             ],
@@ -2304,7 +2350,7 @@
             title: 'Rechnung ' + iv.number + ' bezahlen',
             fields: [
                 { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', required: true, value: Number(iv.open_amount).toFixed(2), help: 'Offen: ' + eur(iv.open_amount) + ' – für Teilzahlung anpassen.' },
-                { name: 'paid_on', label: 'Datum', type: 'date', value: today() },
+                { name: 'paid_on', label: 'Datum', type: 'date', value: today(), quickDate: true },
                 { name: 'method', label: 'Methode', type: 'select', value: 'bar', options: PAY_METHODS.map((m) => ({ value: m.v, label: m.l })) },
             ],
             onRender: (body) => segmentedField(body, 'method', PAY_METHODS),
@@ -2487,14 +2533,13 @@
             rateWrap);
         applyKl();
 
-        const numbering = el('div', { class: 'card' }, el('h3', {}, 'Nummerierung & Zahlung'),
+        const numbering = el('div', { class: 'card' }, el('h3', {}, 'Nummerierung & Zahlung'), el('div', { class: 'billing-fields' },
             field('Rechnungsnr.-Präfix', inp('prefix', s.invoice_prefix, { placeholder: '2026-' })),
             field('Nächste Nummer', inp('next_no', s.next_invoice_no ?? 1, { type: 'number', min: '1' }), 'Kann nur vorwärts gesetzt werden.'),
             field('Stellen (Nullen)', inp('pad', s.number_pad ?? 4, { type: 'number', min: '1', max: '10' })),
-            field('Zahlungsziel (Tage)', inp('terms', s.payment_terms_days ?? 14, { type: 'number', min: '0' })));
+            field('Zahlungsziel (Tage)', inp('terms', s.payment_terms_days ?? 14, { type: 'number', min: '0' }))));
         const banking = el('div', { class: 'card' }, el('h3', {}, 'Bankverbindung & Fußnote'),
-            field('IBAN', inp('iban', s.iban)),
-            field('BIC', inp('bic', s.bic)),
+            el('div', { class: 'billing-fields' }, field('IBAN', inp('iban', s.iban)), field('BIC', inp('bic', s.bic))),
             field('Fußnote', el('textarea', { id: 'bs_footer', rows: '2' }, s.footer_note || '')));
 
         const saveBtn = el('button', { class: 'btn btn-primary', type: 'submit' }, 'Einstellungen speichern');
@@ -3201,12 +3246,12 @@
             title: existing ? 'Wiederkehrende Kosten bearbeiten' : 'Neue wiederkehrende Kosten',
             submitLabel: 'Speichern',
             fields: [
-                { name: 'description', label: 'Bezeichnung', required: true, value: existing?.description },
+                { name: 'description', label: 'Bezeichnung', required: true, value: existing?.description, wide: true },
                 { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', min: 0, required: true, value: existing?.amount ?? '' },
                 { name: 'period', label: 'Abrechnung', type: 'select', value: existing?.period || 'monthly', options: [{ value: 'monthly', label: 'monatlich' }, { value: 'yearly', label: 'jährlich' }] },
                 { name: 'start_date', label: 'Gültig ab', type: 'date', required: true, value: existing?.start_date ? existing.start_date.slice(0, 10) : today() },
                 { name: 'end_date', label: 'Gültig bis (optional)', type: 'date', value: existing?.end_date ? existing.end_date.slice(0, 10) : '', help: 'Leer = laufend. Läuft je Zeitraum auf und ist je Zeitraum bezahlbar.' },
-                { name: 'vehicle_id', label: 'Zuordnung (optional)', type: 'select', value: existing?.vehicle_id ?? '', options: vehOpts, help: 'An ein Gefährt binden → erscheint dort, Bezahlt läuft über Gefährt/Pauschale. Sonst frei markierbar.' },
+                { name: 'vehicle_id', label: 'Zuordnung (optional)', type: 'select', value: existing?.vehicle_id ?? '', options: vehOpts, wide: true, optional: 'Gefährt zuordnen', help: 'An ein Gefährt binden → erscheint dort, Bezahlt läuft über Gefährt/Pauschale. Sonst frei markierbar.' },
             ],
             save: async (data) => {
                 const payload = {
@@ -3294,10 +3339,10 @@
                 toast('Kein aktiver Tarif – zuerst einen reaktivieren oder anlegen', 'error');
                 return;
             }
-            const cat = el('select', {}, ...state.categories.filter((c) => !c.archived || (v && c.id === v.category_id)).map((c) => el('option', { value: c.id }, c.name)));
+            const cat = el('select', { 'aria-label': 'Tarif des Gefährts' }, ...state.categories.filter((c) => !c.archived || (v && c.id === v.category_id)).map((c) => el('option', { value: c.id }, c.name)));
             if (v && v.category_id) for (const o of cat.options) if (Number(o.value) === v.category_id) o.selected = true;
-            const label = el('input', { type: 'text', placeholder: 'Bezeichnung', value: (v && v.label) || '' });
-            const plate = el('input', { type: 'text', placeholder: 'Kennzeichen', value: (v && v.license_plate) || '' });
+            const label = el('input', { type: 'text', placeholder: 'Bezeichnung', 'aria-label': 'Bezeichnung des Gefährts', value: (v && v.label) || '' });
+            const plate = el('input', { type: 'text', placeholder: 'Kennzeichen', 'aria-label': 'Kennzeichen des Gefährts', value: (v && v.license_plate) || '' });
             const entry = { id: v ? v.id : null, cat, label, plate };
             entry.node = el('div', { class: 'new-vehicle-row' }, cat, label, plate,
                 el('button', { type: 'button', class: 'btn btn-ghost btn-sm', title: 'Entfernen',
@@ -3315,7 +3360,7 @@
                 { name: 'period', label: 'Zeitraum', type: 'select', value: existing?.period || 'monthly', options: [{ value: 'monthly', label: 'pro Monat' }, { value: 'yearly', label: 'pro Jahr' }] },
                 { name: 'start_date', label: 'Gültig ab', type: 'date', required: true, value: existing?.start_date ? existing.start_date.slice(0, 10) : today() },
                 { name: 'end_date', label: 'Gültig bis (optional)', type: 'date', value: existing?.end_date ? existing.end_date.slice(0, 10) : '', help: 'Leer = laufend. Läuft die Pauschale aus, werden die Gefährte automatisch archiviert.' },
-                { name: 'note', label: 'Notiz (optional)', value: existing?.note },
+                { name: 'note', label: 'Notiz (optional)', value: existing?.note, wide: true, optional: 'Notiz hinzufügen' },
             ],
             onRender: (body) => {
                 segmentedField(body, 'period', [{ v: 'monthly', l: 'pro Monat' }, { v: 'yearly', l: 'pro Jahr' }]);
@@ -3327,7 +3372,7 @@
                 body.append(emptyNote);
                 const controls = el('div', { class: 'controls-row' });
                 controls.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: () => addRow(null) }, '+ Neues Gefährt'));
-                existSel = el('select', {});
+                existSel = el('select', { 'aria-label': 'Vorhandenes Gefährt zuordnen' });
                 existSel.addEventListener('change', () => { const id = Number(existSel.value); if (id) { const v = vehicles.find((x) => x.id === id); if (v) addRow(v); } });
                 controls.append(existSel);
                 body.append(controls);
@@ -3516,9 +3561,9 @@
                 { name: 'end_date', label: 'Abholdatum (optional)', type: 'date', value: existing?.end_date ? existing.end_date.slice(0, 10) : '', help: 'Leer = noch eingelagert. Hier auch nachträglich änderbar.' },
                 { name: 'billing_period', label: 'Abrechnung', type: 'select', value: initPeriod, options: [{ value: 'monthly', label: 'monatlich' }, { value: 'yearly', label: 'jährlich' }] },
                 { name: 'rate', label: 'Preis (€)', type: 'number', step: '0.01', min: 0, required: true, value: initRate, help: 'Aus dem Tarif übernommen und fest hinterlegt. Eine spätere Tarifänderung ändert diesen Preis nicht.' },
-                { name: 'notes', label: 'Notizen', type: 'textarea', value: existing?.notes },
-                { name: 'needs_power', label: 'Ladebedarf (Strom) — E-Fahrzeug / Kühlung', type: 'checkbox', value: !!existing?.needs_power },
-                { name: 'planner_symbol', label: 'Planer-Symbol', type: 'select', value: existing?.planner_symbol || '', help: 'Standard: automatisch aus dem Tarif/Typ. Optional ein festes Draufsicht-Symbol oder ein eigenes hochgeladenes Icon wählen (im Planer unter „Eigene Icons verwalten").', options: [{ value: '', label: 'Automatisch (aus Typ)' }].concat(['PKW', 'Motorrad', 'Transporter', 'Wohnmobil', 'Wohnwagen', 'Anhänger', 'Boot / Trailer', 'Traktor', 'Ladewagen', 'Rückewagen', 'Kipper'].map((k) => ({ value: k, label: k }))).concat(customIcons.map((ic) => ({ value: 'custom:' + ic.id, label: 'Eigenes: ' + ic.name }))) },
+                { name: 'notes', label: 'Notizen', type: 'textarea', value: existing?.notes, optional: 'Notizen & Planer-Details' },
+                { name: 'needs_power', label: 'Ladebedarf (Strom) — E-Fahrzeug / Kühlung', type: 'checkbox', value: !!existing?.needs_power, optional: 'Notizen & Planer-Details' },
+                { name: 'planner_symbol', label: 'Planer-Symbol', type: 'select', value: existing?.planner_symbol || '', optional: 'Notizen & Planer-Details', wide: true, help: 'Standard: automatisch aus dem Tarif/Typ. Eigene Icons lassen sich im Planer verwalten.', options: [{ value: '', label: 'Automatisch (aus Typ)' }].concat(['PKW', 'Motorrad', 'Transporter', 'Wohnmobil', 'Wohnwagen', 'Anhänger', 'Boot / Trailer', 'Traktor', 'Ladewagen', 'Rückewagen', 'Kipper'].map((k) => ({ value: k, label: k }))).concat(customIcons.map((ic) => ({ value: 'custom:' + ic.id, label: 'Eigenes: ' + ic.name }))) },
             ],
             onRender: (body) => {
                 segmentedField(body, 'billing_period', [{ v: 'monthly', l: 'monatlich' }, { v: 'yearly', l: 'jährlich' }]);
@@ -4032,13 +4077,19 @@
 
     async function chargeForm(presetPerson, existing) {
         if (!state.persons.length) { toast('Zuerst eine Person anlegen', 'error'); return; }
-        const svcOptions = [{ value: '', label: '— frei —' }, ...state.services.filter((s) => !s.archived).map((s) => ({ value: String(s.id), label: `${s.name} (${eur(s.default_amount)})` }))];
+        const services = state.services.filter((s) => !s.archived);
+        const serviceLabel = (s) => `${s.name} (${eur(s.default_amount)})`;
         const initPerson = existing?.person_id ?? presetPerson ?? state.persons[0].id;
         // Bindable vehicles: active + not archived, plus the charge's own bound one
         // (keepId) so editing a charge on an archived vehicle keeps the binding.
         const vehOpts = async (pid, keepId) => {
             let vs = [];
-            try { vs = await api.get('/vehicles?person_id=' + pid); } catch { /* ignore */ }
+            try { vs = await api.get('/vehicles?person_id=' + pid); }
+            catch {
+                // Editing unrelated fields must not silently remove an existing
+                // binding when the optional vehicle list is temporarily unavailable.
+                if (keepId != null) return [{ value: keepId, label: (existing?.vehicle_label || 'Aktuelles Gefährt') + ' · Liste nicht geladen' }];
+            }
             return [{ value: '', label: '— frei (direkt bezahlbar) —' },
                 ...vs.filter((v) => !v.archived || v.id === keepId).map((v) => ({ value: v.id, label: vehicleTitle(v) + (v.archived ? ' · archiviert' : '') }))];
         };
@@ -4048,24 +4099,20 @@
             fields: [
                 { name: 'person_id', label: 'Person', type: 'select', required: true, value: initPerson, options: state.persons.map((p) => ({ value: p.id, label: personName(p) })) },
                 { name: 'billing', label: 'Abrechnung', type: 'select', value: 'once', options: [{ value: 'once', label: 'einmalig' }, { value: 'monthly', label: 'monatlich' }, { value: 'yearly', label: 'jährlich' }] },
-                { name: 'service', label: 'Aus Katalog', type: 'select', value: '', options: svcOptions, help: 'Optional – füllt Bezeichnung & Betrag vor.' },
-                { name: 'description', label: 'Bezeichnung', required: true, value: existing?.description ?? '' },
-                { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', required: true, value: existing?.amount ?? '' },
-                { name: 'quantity', label: 'Menge', type: 'number', step: '0.5', value: existing?.quantity ?? '1' },
-                { name: 'charged_on', label: 'Datum', type: 'date', value: existing?.charged_on ? existing.charged_on.slice(0, 10) : today() },
+                { name: 'description', label: 'Bezeichnung', required: true, value: existing?.description ?? '', wide: true, placeholder: 'Leistung suchen oder frei eingeben', help: services.length ? 'Katalogvorschlag wählen: Der Preis wird übernommen und bleibt änderbar.' : null },
+                { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', required: true, value: existing?.amount ?? '', compact: true },
+                { name: 'quantity', label: 'Menge', type: 'number', step: '0.5', value: existing?.quantity ?? '1', compact: true },
+                { name: 'charged_on', label: 'Datum', type: 'date', quickDate: true, value: existing?.charged_on ? existing.charged_on.slice(0, 10) : today() },
                 { name: 'start_date', label: 'Gültig ab', type: 'date', value: today() },
                 { name: 'end_date', label: 'Gültig bis (optional)', type: 'date', value: '', help: 'Leer = laufend. Läuft je Zeitraum auf und ist je Zeitraum bezahlbar.' },
-                { name: 'vehicle_id', label: 'Zuordnung (optional)', type: 'select', value: existing?.vehicle_id ?? '', options: initVehOpts, help: 'An ein Gefährt binden → erscheint dort, Bezahlt läuft über Gefährt/Pauschale. Sonst frei markierbar.' },
+                { name: 'vehicle_id', label: 'Zuordnung (optional)', type: 'select', value: existing?.vehicle_id ?? '', options: initVehOpts, wide: true, optional: 'Gefährt zuordnen', help: 'An ein Gefährt binden → erscheint dort, Bezahlt läuft über Gefährt/Pauschale. Sonst frei markierbar.' },
             ],
             onRender: (body) => {
                 // Billing mode toggles which fields apply: once → Menge/Datum/Zuordnung;
                 // monthly/yearly → Gültig ab/bis (recurring, accrues per period).
                 const setShown = (name, show) => {
-                    const lbl = body.querySelector('label[for="f_' + name + '"]');
                     const inp = body.querySelector('#f_' + name);
-                    const help = body.querySelector('#help_' + name);
-                    const wrap = inp ? (inp.closest('.input-affix') || inp) : null;
-                    for (const n of [lbl, wrap, help]) if (n) n.style.display = show ? '' : 'none';
+                    if (inp) inp.closest('.form-field').hidden = !show;
                 };
                 const applyMode = (mode) => {
                     const once = mode === 'once';
@@ -4084,21 +4131,39 @@
                 if (existing) { billing.value = 'once'; setShown('billing', false); } // editing a one-off: type fixed
                 applyMode(billing.value);
 
-                const svc = body.querySelector('#f_service');
                 const desc = body.querySelector('#f_description');
                 const amt = body.querySelector('#f_amount');
-                // Picking a catalog entry fills Bezeichnung + Betrag right away (both
-                // stay editable) — otherwise the required-field validation blocks
-                // submit before the save-time fallback ever runs.
-                svc.addEventListener('change', () => {
-                    const s = state.services.find((x) => String(x.id) === svc.value);
+                // Native autocomplete combines catalog selection and free entry.
+                // No service ID is persisted: description and amount remain editable.
+                const suggestions = el('datalist', { id: 'charge-services' },
+                    ...services.map((s) => el('option', { value: serviceLabel(s) })));
+                desc.setAttribute('list', suggestions.id);
+                desc.after(suggestions);
+                const total = el('output', { id: 'charge-total', for: 'f_amount f_quantity f_billing', 'aria-live': 'polite' });
+                const totalLabel = el('span', { class: 'card-meta' });
+                const preview = el('div', { class: 'form-total' }, totalLabel, total);
+                body.querySelector('.form-grid').append(preview);
+                const updateTotal = () => {
+                    const once = billing.value === 'once';
+                    const amount = Number(amt.value);
+                    const quantity = once ? Number(body.querySelector('#f_quantity').value) || 1 : 1;
+                    totalLabel.textContent = once ? 'Gesamtbetrag' : billing.value === 'monthly' ? 'Betrag pro Monat' : 'Betrag pro Jahr';
+                    total.value = amt.value !== '' && Number.isFinite(amount * quantity) ? eur(amount * quantity) : '–';
+                };
+                desc.addEventListener('input', () => {
+                    const s = services.find((x) => serviceLabel(x) === desc.value);
                     if (!s) return;
                     desc.value = s.name; amt.value = s.default_amount;
                     for (const [node, errId] of [[desc, 'err_description'], [amt, 'err_amount']]) {
                         node.removeAttribute('aria-invalid');
                         const e = body.querySelector('#' + errId); if (e) e.hidden = true;
                     }
+                    updateTotal();
                 });
+                amt.addEventListener('input', updateTotal);
+                body.querySelector('#f_quantity').addEventListener('input', updateTotal);
+                billing.addEventListener('change', updateTotal);
+                updateTotal();
                 // Switching person reloads the bindable vehicles. A request token
                 // guards against an earlier (slower) response overwriting a newer one.
                 const per = body.querySelector('#f_person_id');
@@ -4118,14 +4183,6 @@
                 });
             },
             save: async (data) => {
-                // Fallback for a catalog pick left otherwise untouched.
-                if (data.service) {
-                    const s = state.services.find((x) => String(x.id) === String(data.service));
-                    if (s) {
-                        if (!data.description) data.description = s.name;
-                        if (!data.amount) data.amount = s.default_amount;
-                    }
-                }
                 const personID = Number(data.person_id);
                 if (existing || data.billing === 'once') {
                     // One-off charge: same payload whether creating or editing.
@@ -4283,20 +4340,21 @@
         });
 
         const saveRow = el('div', { class: 'cfg-save' }, saveBtn);
+        const dimensions = el('details', { class: 'form-disclosure tariff-dimensions',
+            open: [dLenI, dWidI, dHgtI, dWgtI].some(input => input.value !== '') },
+            el('summary', {}, 'Standardmaße für den Planer'),
+            el('div', { class: 'card-meta' }, 'Für Gefährte ohne eigene Messung. Leer = keine Vorgabe.'),
+            el('div', { class: 'field-row' },
+                el('label', {}, 'Länge (m)', dLenI), el('label', {}, 'Breite (m)', dWidI)),
+            el('div', { class: 'field-row' },
+                el('label', {}, 'Höhe (m)', dHgtI), el('label', {}, 'Gewicht (t)', dWgtI)));
         const inner = el('div', { class: 'cfg-panel-in' },
             el('label', { for: nameCatId }, 'Name'), nameI,
             el('label', { class: 'switch', for: syncId }, syncI, el('span', { class: 'track' }), el('span', {}, 'Monats-/Jahrespreis koppeln (Jahr = Monat × 12)')),
             el('div', { class: 'field-row', style: 'margin-top:.5rem' },
-                el('div', {}, el('label', {}, 'Preis / Monat (€)'), monI),
-                el('div', {}, el('label', {}, 'Preis / Jahr (€)'), yearI)),
-            el('div', { class: 'card-meta', style: 'margin-top:.6rem' },
-                'Standardmaße für den Garagenplaner — gelten für Gefährte dieses Tarifs ohne eigene Messung. Leer = keine Vorgabe.'),
-            el('div', { class: 'field-row' },
-                el('div', {}, el('label', {}, 'Länge (m)'), dLenI),
-                el('div', {}, el('label', {}, 'Breite (m)'), dWidI)),
-            el('div', { class: 'field-row' },
-                el('div', {}, el('label', {}, 'Höhe (m)'), dHgtI),
-                el('div', {}, el('label', {}, 'Gewicht (t)'), dWgtI)),
+                el('label', {}, 'Preis / Monat (€)', monI),
+                el('label', {}, 'Preis / Jahr (€)', yearI)),
+            dimensions,
             saveRow);
         if (c) {
             inner.append(el('div', { class: 'cfg-actions2' }, c.archived
@@ -4935,7 +4993,7 @@
             fields: [
                 { name: 'username', label: 'Benutzername', required: !existing, value: existing?.username },
                 { name: 'email', label: 'E-Mail', type: 'email', value: existing?.email },
-                { name: 'password', label: existing ? 'Neues Passwort (optional)' : 'Passwort', type: 'password', required: !existing, minLength: 8, help: 'Mindestens 8 Zeichen.' },
+                { name: 'password', label: existing ? 'Neues Passwort (optional)' : 'Passwort', type: 'password', required: !existing, minLength: 8, help: 'Mindestens 8 Zeichen.', optional: existing ? 'Passwort ändern' : null },
                 { name: 'role', label: 'Rolle', type: 'select', value: existing?.role || 'editor', options: Object.entries(ROLE_LABEL).map(([v, l]) => ({ value: v, label: l })) },
             ],
             save: async (data) => {
@@ -5026,10 +5084,12 @@
         const entSel = el('select', { 'aria-label': 'Objekt filtern' }, ...optionList(AUDIT_ENTITIES, 'Alle Objekte'));
         const fromIn = el('input', { type: 'date', 'aria-label': 'Von-Datum', title: 'Von' });
         const toIn = el('input', { type: 'date', 'aria-label': 'Bis-Datum', title: 'Bis' });
-        page.append(el('div', { class: 'card audit-filters' }, search,
+        const advancedFilters = el('details', { class: 'form-disclosure audit-advanced' },
+            el('summary', {}, 'Aktion, Objekt & Zeitraum filtern'),
             el('div', { class: 'audit-filter-row' }, actSel, entSel),
             el('div', { class: 'audit-filter-row' },
-                el('label', {}, 'Von', fromIn), el('label', {}, 'Bis', toIn))));
+                el('label', {}, 'Von', fromIn), el('label', {}, 'Bis', toIn)));
+        page.append(el('div', { class: 'card audit-filters' }, search, advancedFilters));
 
         // Aktive Filter als Chips (Audit-Befund 3): sobald die Filterkarte aus dem
         // Bild scrollt, war bisher unsichtbar, WAS gerade filtert. Jeder Chip räumt
@@ -5045,7 +5105,7 @@
             // sonst fällt er mit dem zerstörten Knopf auf <body> zurück.
             const mk = (label, clear, focusEl) => el('span', { class: 'audit-chip' }, label,
                 el('button', { type: 'button', 'aria-label': 'Filter ' + label + ' entfernen',
-                    onclick: () => { clear(); focusEl.focus(); } }, icon('close', 14)));
+                    onclick: () => { clear(); revealFormField(focusEl); focusEl.focus(); } }, icon('close', 14)));
             if (q.text) chipsBar.append(mk('„' + q.text + '“', () => { search.value = ''; q.text = ''; apply(); }, search));
             if (q.action) chipsBar.append(mk('Aktion: ' + (AUDIT_ACTIONS[q.action] || q.action), () => { actSel.value = ''; q.action = ''; apply(); }, actSel));
             if (q.entity) chipsBar.append(mk('Objekt: ' + (AUDIT_ENTITIES[q.entity] || q.entity), () => { entSel.value = ''; q.entity = ''; apply(); }, entSel));
@@ -5627,12 +5687,14 @@
 
         page.innerHTML = '';
         const nav = (d) => { const t = new Date(y, m - 1 + d, 1); calMonth = t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0'); render(); };
-        page.append(el('div', { class: 'detail-head' },
+        const calendarHead = el('div', { class: 'detail-head calendar-head' },
             el('button', { class: 'back-btn', onclick: () => navigate('dashboard'), 'aria-label': 'Zurück' }, '‹'),
             el('h2', { style: 'margin:0;flex:1' }, 'Kalender · ' + label),
+            el('div', { class: 'calendar-navigation', role: 'group', 'aria-label': 'Monat wählen' },
             el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Voriger Monat', onclick: () => nav(-1) }, '‹'),
             el('button', { class: 'btn btn-ghost btn-sm', onclick: () => { calMonth = null; render(); } }, 'Heute'),
             el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Nächster Monat', onclick: () => nav(1) }, '›')));
+        page.append(calendarHead);
 
         let vehicles = [], overdue = [], requests = [];
         // Fälligkeiten bis zum LETZTEN Tag des angezeigten Monats holen, nicht nur die
@@ -5700,7 +5762,8 @@
         views.append(el('button', { type: 'button', onclick: () => setView(false) }, 'Monat'),
             el('button', { type: 'button', onclick: () => setView(true) }, 'Terminliste'));
         setView(window.matchMedia('(max-width: 640px)').matches);
-        page.append(views, grid, agenda);
+        calendarHead.append(views);
+        page.append(grid, agenda);
         page.append(el('div', { class: 'cal-legend muted' },
             el('span', { class: 'cal-ev cal-pickup' }, 'Abholung'), ' ',
             el('span', { class: 'cal-ev cal-reserve' }, 'Reservierung'), ' ',
@@ -9296,7 +9359,7 @@
             const cMsg = el('p', { class: 'muted', role: 'status' });
             const cBtn = el('button', { class: 'btn btn-primary btn-sm', type: 'submit' }, P9.req_send);
             const contact = el('form', { class: 'portal-form' },
-                el('label', {}, P9.req_email, cEmail), el('label', {}, P9.req_phone, cPhone), el('label', {}, P9.req_address, cAddr), cBtn);
+                el('label', {}, P9.req_email, cEmail), el('label', {}, P9.req_phone, cPhone), el('label', { class: 'form-field-wide' }, P9.req_address, cAddr), cBtn);
             contact.addEventListener('submit', e => {
                 e.preventDefault();
                 if (![cEmail, cPhone, cAddr].some(input => input.value.trim())) {
@@ -9312,8 +9375,8 @@
             const pickup = el('form', { class: 'portal-form' }, el('label', {}, P9.req_date, pDate), el('label', {}, P9.req_note, pNote), pBtn);
             pickup.addEventListener('submit', e => { e.preventDefault(); send({ kind: 'pickup', date: pDate.value, note: pNote.value.trim() }, pMsg, pBtn); });
             rcard.append(el('div', { class: 'portal-request-groups' },
-                el('section', {}, el('h3', {}, P9.req_contact), contact, cMsg),
-                el('section', {}, el('h3', {}, P9.req_pickup), pickup, pMsg)));
+                el('details', { class: 'portal-request form-disclosure' }, el('summary', {}, P9.req_contact), contact, cMsg),
+                el('details', { class: 'portal-request form-disclosure' }, el('summary', {}, P9.req_pickup), pickup, pMsg)));
             wrap.append(rcard);
         }
         wrap.append(el('p', { class: 'portal-foot muted' }, P9.foot));
