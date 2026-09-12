@@ -110,3 +110,56 @@ Die aktuelle Galerie ist `.impeccable/review/compact-workflows/index.html`.
 Die normale Docker-App auf Port 8099 wurde in diesem Durchgang nicht aktualisiert.
 Änderungen werden auf `dev` committed, nicht gepusht. Testcontainer und Testnetze
 werden nach dem Lauf entfernt; das lokale validierte Image bleibt verfügbar.
+
+## Impeccable und Vorher-/Nachher-Vergleich
+
+Die Überarbeitung in `bc5c86e` wurde mit Impeccable ausgeführt, insbesondere mit
+den Vorgaben aus `distill`, `layout`, `operate` und `craft-floor`: vorhandene
+Identität erhalten, Felder nach Aufgabe gruppieren, optionale Angaben ausdrücklich
+definieren und den Fokus auch nach dem Aufklappen zuverlässig führen. Die
+Browser-/Unit-Tests sind der zusätzliche Funktionsnachweis, kein Ersatz für den
+Design-Skill. Deshalb wurde für den nachgeforderten Vergleich keine weitere
+Änderungsrunde am Anwendungscode begonnen.
+
+Der Vergleich ist in `.impeccable/review/before-after/index.html` ergänzt und in
+der geöffneten Übersicht `.impeccable/review/compact-workflows/index.html`
+direkt verlinkt. Zwei Vergleichsstände sind auswählbar:
+
+- **Letzte Überarbeitung:** `539fb45` → `bc5c86e`.
+- **Gesamte Überarbeitung:** `9756ae2` → `bc5c86e`.
+
+Beide umfassen dieselben 19 Seiten und sieben Formularzustände: neue Person,
+neues Gefährt, neue Zusatzkosten, neue Pauschale, neue Zahlung, Benutzer bearbeiten
+und geöffneter Tarif. Pro Stand werden Desktop/hell (1440 × 900) und Mobil/dunkel
+(390 × 900) aufgenommen. Beibehaltene Bereiche sind beim letzten Vergleich
+ausdrücklich als solche beschrieben; ein unveränderter Bildschirm wird nicht als
+neue Gestaltung ausgegeben.
+
+Alle HTML-/CSS-/JS-/Bild-/Schriftdateien stammen aus dem jeweils bezeichneten
+Git-Commit. API-Antworten sind synthetisch und identisch; Datum, deutsche Sprache,
+Zeitzone und Pixeldichte sind festgelegt. Zwischen Aufnahmen wird das Dokument
+neu geladen, damit keine Dialog-, Navigations- oder Anmeldezustände übertragen
+werden. Es werden keine Formulare abgesendet und weder Docker noch Betriebsdaten
+verwendet. Das Manifest enthält Commit-IDs sowie Asset-, Fixture- und Bild-Hashes.
+
+Die reproduzierbare Erstellung und Galerieprüfung ist mit
+`node tests/a11y/capture-before-after.cjs` möglich. Skript und HTML-Vorlage sind
+versioniert; generierte Bilder und Galerie bleiben Git-ignoriert. Die
+Funktionsresultate von 99 Browser- und 55 Unit-Tests oben gehören weiterhin zur
+vorherigen Umsetzung; dieser Nachtrag verändert nur Vergleich und Dokumentation.
+
+Abschließende Galerieprüfung: **156 Aufnahmen**, **104 Vergleichskombinationen**
+erfolgreich geladen, Bildmaße und SHA-256 geprüft. Tastaturfokus,
+Fehlermeldung bei fehlendem Bild, direktes Öffnen per Datei und Reflow bei
+320/390/1440 Pixeln bestanden; keine schweren/kritischen axe-Funde und keine
+ungefangenen JavaScript-Fehler. Desktop- und Mobilvergleich wurden zusätzlich
+visuell kontrolliert. Mit `--verify-only` lässt sich dieser Lauf ohne erneute
+Aufnahmen wiederholen; geänderte Revisionen, Fixtures oder PNGs werden abgelehnt.
+
+Der ursprüngliche mobile Planer (`9756ae2`) hat bei 390 Pixeln Bildschirmbreite
+eine 445 Pixel breite Vollseitenaufnahme. Diese historische Überbreite bleibt
+im Vorher-Bild unverfälscht sichtbar; bei der aktuellen Version tritt sie nicht
+auf. Die erste Prüfung setzte Bild- und Bildschirmbreite irrtümlich gleich;
+jetzt werden die tatsächlichen PNG-Abmessungen erfasst und verglichen. Auch der
+Browser-Kontext für axe wurde im Prüfskript korrigiert. Der abschließende Lauf
+bestand mit unveränderten, über ihre Hashes geprüften Aufnahmen.
