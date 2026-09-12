@@ -5097,6 +5097,7 @@
             // Fehler melden und den Knopf sichtbar lassen, damit ein Retry möglich
             // bleibt (Hundert UX-57). Vorher verschwand der Knopf kommentarlos.
             if (loadErr) {
+                if (loadErr.status === 401) { await logout(); return; }
                 loadStatus.textContent = 'Änderungen konnten nicht geladen werden. Bitte erneut versuchen.';
                 moreBtn.textContent = 'Erneut versuchen'; moreBtn.hidden = false;
                 return;
@@ -5690,7 +5691,7 @@
             byDay[day].forEach(ev => items.append(el('li', {}, el('a', { class: 'cal-agenda-link cal-' + ev.kind, href: ev.href }, ev.text))));
             agenda.append(el('section', { class: 'cal-agenda-day' }, el('h3', {}, date), items));
         });
-        if (!eventDays.length) agenda.append(emptyState('calendar', 'Keine Termine in diesem Monat. Mit den Pfeilen einen anderen Monat wählen.'));
+        if (!eventDays.length) agenda.append(emptyState('log', 'Keine Termine in diesem Monat. Mit den Pfeilen einen anderen Monat wählen.'));
         const views = el('div', { class: 'segments cal-views', role: 'group', 'aria-label': 'Kalenderansicht' });
         const setView = list => {
             grid.hidden = list; agenda.hidden = !list;

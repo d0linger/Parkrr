@@ -24,7 +24,7 @@ sehen aus wie Flakiness. Für die Backup-Prüfungen muss außerdem
 `PARKRR_BACKUP_KEY` gesetzt sein, sonst rendert die Backup-Ansicht nur
 „Nicht aktiviert". Der Passkey-E2E (auth-flows.spec.js) läuft nur, wenn die
 Instanz WebAuthn kann — `PARKRR_WEBAUTHN_RP_ID=localhost` und
-`PARKRR_WEBAUTHN_ORIGINS=http://localhost:8099` — und überspringt sich sonst
+`PARKRR_WEBAUTHN_ORIGINS=http://localhost:18099` — und überspringt sich sonst
 selbst mit Begründung.
 
 Use dedicated test credentials via `PARKRR_E2E_USER` / `PARKRR_E2E_PASS` (defaults:

@@ -12,7 +12,9 @@ test('person creation/edit, detail navigation and additional-cost payment surviv
   await page.locator('#login-password').fill(process.env.PARKRR_E2E_PASS || 'ci-a11y-admin-password');
   await page.locator('#login-form button[type=submit]').click();
   await expect(page.locator('#app-view')).toBeVisible();
-  const csrf = (await context.cookies()).find(cookie => cookie.name === 'parkrr_csrf').value;
+  const csrfCookie = (await context.cookies()).find(cookie => cookie.name === 'parkrr_csrf');
+  expect(csrfCookie, 'Expected parkrr_csrf cookie after login').toBeDefined();
+  const csrf = csrfCookie.value;
   const headers = { 'X-CSRF-Token': csrf };
   let personId, chargeId;
   const tag = Date.now();

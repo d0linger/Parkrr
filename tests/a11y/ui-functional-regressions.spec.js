@@ -17,6 +17,58 @@ test('expired sessions leave settings and return to login', async ({ page }) => 
   await expect(page.locator('#app-view')).toBeHidden();
 });
 
+for (const initial of [true, false]) {
+  test(`audit returns to login on ${initial ? 'initial' : 'filtered'} unauthorized response`, async ({ page }) => {
+    let expired = initial;
+    await mockUI(page, { role: 'admin', overrides: { ...overrides,
+      '/audit': route => route.fulfill({ status: expired ? 401 : 200, json: expired ? { error: 'unauthorized' } : [] }),
+    } });
+    await page.goto(origin + '/#/audit');
+    if (!initial) {
+      await expect(page.getByText('Keine Änderungen für diese Auswahl.')).toBeVisible();
+      expired = true;
+      await page.getByRole('combobox', { name: 'Aktion filtern' }).selectOption('create');
+    }
+    await expect(page.locator('#login-view')).toBeVisible();
+    await expect(page.locator('#app-view')).toBeHidden();
+  });
+}
+
+test('stale audit unauthorized response cannot log out a newer successful filter', async ({ page }) => {
+  let release;
+  let started = false;
+  const pending = new Promise(resolve => { release = resolve; });
+  const requests = await mockUI(page, { role: 'admin', overrides: { ...overrides,
+    '/audit': async route => {
+      if (new URL(route.request().url()).searchParams.has('action')) return route.fulfill({ json: [] });
+      started = true;
+      await pending;
+      return route.fulfill({ status: 401, json: { error: 'unauthorized' } });
+    },
+  } });
+  await page.goto(origin + '/#/audit');
+  await expect.poll(() => started).toBe(true);
+  await page.getByRole('combobox', { name: 'Aktion filtern' }).selectOption('create');
+  await expect(page.getByText('Keine Änderungen für diese Auswahl.')).toBeVisible();
+  const oldResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/audit' && response.status() === 401);
+  release();
+  await oldResponse;
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await expect(page.locator('#app-view')).toBeVisible();
+  await expect(page.locator('#login-view')).toBeHidden();
+  expect(requests.filter(request => request.path === '/auth/logout')).toHaveLength(0);
+});
+
+test('empty calendar agenda renders a populated icon', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockUI(page, { overrides: { ...overrides, '/vehicles': [], '/invoices/overdue': [], '/portal-requests': [] } });
+  await page.goto(origin + '/#/calendar');
+  const empty = page.locator('.cal-agenda .empty');
+  await expect(empty).toContainText('Keine Termine in diesem Monat.');
+  await expect(empty.locator('svg')).toBeVisible();
+  await expect(empty.locator('svg path').first()).toHaveAttribute('d', /.+/);
+});
+
 test('invoice-paid standalone charges use the paid filter and cannot be paid twice', async ({ page }) => {
   const paid = { ...charges[0], id: 10, description: 'Beglichene Rechnung', vehicle_id: null, invoiced: true, invoice_open: false, paid: false };
   const open = { ...paid, id: 11, description: 'Offene Rechnung', invoice_open: true };
@@ -62,6 +114,7 @@ test('billing validates payload, guards duplicate saves, preserves failed input 
   await page.getByRole('button', { name: 'Einstellungen speichern' }).click();
   await expect(page.getByRole('button', { name: 'Speichert …' })).toBeDisabled();
   await page.locator('.billing-form').evaluate(form => { form.requestSubmit(); form.requestSubmit(); });
+  await expect.poll(() => writes.length).toBe(1);
   expect(writes).toHaveLength(1);
   expect(writes[0]).toEqual({ seller_name: 'Prüfbetrieb ÄÖÜ', seller_address: 'Musterstraße 12', seller_uid: '',
     kleinunternehmer: true, ust_rate: 20, invoice_prefix: '2026-', next_invoice_no: 23, number_pad: 4,
@@ -125,6 +178,7 @@ test('portal contact submission uses the exact contract and ignores duplicate su
   await contact.getByRole('button').click();
   await expect(contact.getByRole('button')).toBeDisabled();
   await contact.evaluate(form => { form.requestSubmit(); form.requestSubmit(); });
+  await expect.poll(() => writes.length).toBe(1);
   expect(writes).toEqual([{ kind: 'contact_update', email: 'test@example.invalid', phone: '+43 123 456', address: '' }]);
   release();
   await expect(page.getByText('Übermittelt — der Betreiber meldet sich.', { exact: true })).toBeVisible();
