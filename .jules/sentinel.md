@@ -37,3 +37,8 @@
 *Vulnerability:* `PasskeyRegisterFinish` recorded failed attestation verifications using `h.Limiter.RecordFailure(key)`, which only updated the per-IP `username|ip` rate limiter. An attacker rotating source IP addresses could bypass the throttle and attempt unlimited passkey registration verifications for an account.
 *Learning:* Post-authentication ceremonies that verify credentials or enrolment attestations (such as TOTP setup or Passkey registration) must record failures against both per-IP and per-account (`UserLimiter`) limiters.
 *Prevention:* Always use `recordReauthFailure` and `resetReauth` helpers on all secondary auth/re-auth/registration endpoints to ensure per-account limiters are updated across IP rotations.
+
+## 2026-07-18 - [Session Revocation on Administrative 2FA Reset]
+*Vulnerability:* The administrative 2FA reset handler (`ResetUserTOTP`) revoked TOTP secrets, backup codes, and passkey credentials, but failed to invalidate active user sessions in `sessions`.
+*Learning:* Resetting multi-factor authentication or secondary credentials often occurs during account recovery or suspected compromise. If active sessions are not invalidated, an attacker holding a valid session token remains authenticated despite the factor reset.
+*Prevention:* Always execute `DELETE FROM sessions WHERE user_id=$1` within the transaction handling credential or 2FA resets.
