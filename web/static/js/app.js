@@ -4231,7 +4231,7 @@
                     const opts = await vehOpts(per.value, keepId);
                     if (my !== vehReq) return; // superseded by a newer change
                     veh.innerHTML = '';
-                    for (const o of opts) veh.append(el('option', { value: o.value }, o.label));
+                    for (const o of opts) veh.append(el('option', { value: o.value, selected: keepId != null && String(o.value) === String(keepId) }, o.label));
                     veh.disabled = false;
                     veh.dispatchEvent(new Event('change', { bubbles: true }));
                 });

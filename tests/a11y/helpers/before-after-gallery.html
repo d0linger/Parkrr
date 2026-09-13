@@ -73,19 +73,22 @@
   let generation = 0;
   async function update() {
     const current = ++generation;
+    // Only literal version keys may enter capture URLs, never raw DOM values.
+    const baselineVersion = baseline.value === 'original' ? 'original' : 'previous';
+    baseline.value = baselineVersion;
     const surface = comparison.surfaces.find(s => s.id === page.value);
     const capture = comparison.captures.find(c => c.id === viewport.value);
-    document.getElementById('note').textContent = baseline.value === 'previous' ? surface.note : 'Gesamtvergleich seit dem ursprünglichen Stand vor beiden UI-Überarbeitungen.';
-    const from = comparison.versions[baseline.value].commit.slice(0, 7);
+    document.getElementById('note').textContent = baselineVersion === 'previous' ? surface.note : 'Gesamtvergleich seit dem ursprünglichen Stand vor beiden UI-Überarbeitungen.';
+    const from = comparison.versions[baselineVersion].commit.slice(0, 7);
     const to = comparison.versions.current.commit.slice(0, 7);
-    document.getElementById('scope').textContent = `${from} → ${to} · ` + (baseline.value === 'previous'
+    document.getElementById('scope').textContent = `${from} → ${to} · ` + (baselineVersion === 'previous'
       ? 'Kompakte Formulare und seitenweite Verfeinerung. Bewährte Bereiche sind bewusst unverändert.'
       : 'Alle Seitenüberarbeitungen einschließlich der aktuellen Formularverbesserungen.');
     pair.classList.toggle('mobile', capture.width < 700);
     pair.setAttribute('aria-busy', 'true');
     status.textContent = 'Aufnahmen werden geladen …';
     const images = [];
-    for (const [side, version] of [['before', baseline.value], ['after', 'current']]) {
+    for (const [side, version] of [['before', baselineVersion], ['after', 'current']]) {
       const img = document.getElementById(side);
       const file = `captures/${version}/${capture.id}-${surface.id}.png`;
       img.alt = `${surface.label} – ${side === 'before' ? 'vorher' : 'nachher'}, ${capture.label}`;
@@ -94,7 +97,7 @@
       img.src = file;
       images.push(img);
     }
-    history.replaceState(null, '', '#'+new URLSearchParams({ surface: surface.id, baseline: baseline.value, capture: capture.id }));
+    history.replaceState(null, '', '#'+new URLSearchParams({ surface: surface.id, baseline: baselineVersion, capture: capture.id }));
     try {
       await Promise.all(images.map(img => img.decode()));
       if (current === generation) status.textContent = 'Beide Aufnahmen geladen · ' + surface.label;

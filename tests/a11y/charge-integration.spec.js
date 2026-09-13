@@ -106,6 +106,54 @@ test('recurring edit uses the same preview and preserves existing optional field
   expect(writes[0]).toEqual({ description: 'Strom', amount: 240, period: 'yearly', start_date: '2026-09-01', end_date: '2026-12-31', vehicle_id: 1 });
 });
 
+for (const scenario of ['active', 'archived', 'unavailable', 'unbound']) {
+  test(`editing a charge restores its ${scenario} vehicle binding after switching person`, async ({ page }) => {
+    const writes = [];
+    const charge = { ...overrides['/charges'][2], vehicle_id: scenario === 'unbound' ? null : 1 };
+    const fleet = [
+      { ...overrides['/vehicles'][0], archived: scenario === 'archived' },
+      overrides['/vehicles'][1],
+      { ...overrides['/vehicles'][0], id: 99, archived: true },
+    ];
+    let targetLoads = 0;
+    await mockUI(page, { overrides: { ...overrides,
+      '/charges': [charge],
+      '/charges/3': route => {
+        expect(route.request().method()).toBe('PUT');
+        writes.push(route.request().postDataJSON());
+        return route.fulfill({ json: charge });
+      },
+      '/vehicles': route => {
+        const person = new URL(route.request().url()).searchParams.get('person_id');
+        if (person === '1' && ++targetLoads > 1 && scenario === 'unavailable') {
+          return route.fulfill({ status: 503, json: { error: 'Test: vehicle list unavailable' } });
+        }
+        return route.fulfill({ json: person ? fleet.filter(v => String(v.person_id) === person) : fleet });
+      },
+    } });
+    await page.goto(origin + '/#/finance');
+    await page.getByRole('button', { name: 'Batterieservice bearbeiten', exact: true }).click();
+    if (scenario === 'unbound') await page.getByText('Weitere Angaben', { exact: true }).click();
+    const person = page.locator('#f_person_id');
+    const vehicle = page.locator('#f_vehicle_id');
+    const expected = charge.vehicle_id == null ? '' : String(charge.vehicle_id);
+    await expect(vehicle).toHaveValue(expected);
+    await person.selectOption('2');
+    await expect(vehicle).toBeEnabled();
+    await expect.poll(() => vehicle.locator('option').evaluateAll(options => options.map(o => o.value))).toEqual(['', '2']);
+    await expect(vehicle).toHaveValue('');
+    await person.selectOption('1');
+    await expect(vehicle).toBeEnabled();
+    await expect(vehicle).toHaveValue(expected);
+    await expect(vehicle.locator('option[value="99"]')).toHaveCount(0);
+    if (scenario === 'unavailable') await expect(vehicle).toContainText('Liste nicht geladen');
+    await page.locator('#modal-submit').click();
+    await expect.poll(() => writes.length).toBe(1);
+    expect(writes[0]).toEqual({ person_id: 1, description: charge.description, amount: charge.amount,
+      quantity: charge.quantity, charged_on: charge.charged_on, vehicle_id: charge.vehicle_id });
+  });
+}
+
 for (const [width, theme] of [[1440, 'light'], [390, 'dark'], [320, 'light']]) {
   test(`charge layout and keyboard ${width} ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
