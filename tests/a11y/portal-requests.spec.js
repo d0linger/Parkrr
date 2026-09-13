@@ -32,6 +32,7 @@ test('Portal-Briefkasten: einreichen, übernehmen, Stammdaten geändert', async 
   await page.goto('about:blank');
   await page.goto('/#/portal/' + token);
   await page.waitForSelector('#portal-view:not([hidden])', { timeout: 15000 });
+  await page.locator('.portal-request summary').first().click();
   const emailIn = page.locator('.portal-form input[type=email]');
   await expect(emailIn).toBeVisible({ timeout: 15000 });
   await emailIn.fill('briefkasten@example.com');

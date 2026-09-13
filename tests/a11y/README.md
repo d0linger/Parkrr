@@ -72,3 +72,49 @@ Frontend unit tests can be run from the project root without a browser:
 ```sh
 node --test tests/geometry/geometry.test.js tests/frontend/*.test.js
 ```
+
+`compact-workflows.spec.js` adds isolated form-contract checks for progressive
+disclosure, catalog autocomplete, live totals, date shortcuts, locked vehicle
+prices, preserved bindings on lookup failure, agreement vehicles, tariff coupling,
+both portal languages and keyboard/axe/reflow checks at 320/390/1440px. It needs
+no backend. Run it alongside the three synthetic suites above. The real-backend
+record and portal tests explicitly open the newly disclosed controls.
+
+`charge-integration.spec.js` verifies the production integration of the standalone
+dialog: amount/result grouping, native date shortcuts, optional end-date
+validation, preserved values when switching billing modes, recurring edits,
+oversized totals, exact API payloads and keyboard/axe/reflow at 320/390/1440px.
+It uses synthetic APIs, not the demo's browser storage. The real total calculation
+also has table-driven tests in `tests/frontend/charge-form-total.test.js`.
+
+## Reproduce the before/after gallery
+
+From the repository root, with Chromium and the dependencies above installed:
+
+```sh
+node tests/a11y/capture-before-after.cjs
+```
+
+This reads the complete static assets from three fixed Git revisions without
+checking out another branch: original `9756ae2`, pre-form-refinement `539fb45`,
+and current UI `cf4e9c0`. Every API response is synthetic. No app, credentials,
+database, external service or Docker container is required. The script does not
+submit forms. It uses the same fixtures, date, German locale, Europe/Vienna time
+zone, 1× pixel ratio and viewport for every revision.
+
+Output: `.impeccable/review/before-after/index.html`, capture PNGs and a provenance
+manifest with commit IDs, asset/fixture/image hashes and gallery checks. The viewer
+switches between the latest and complete overhaul, 19 pages and 7 form states,
+desktop/light and mobile/dark. Pages use full-page captures; dialogs use an equal
+900px-tall viewport, including their ordinary scroll areas. Historical overflow
+is preserved (the original mobile planner produces a 445px-wide full-page image
+at a 390px viewport); actual PNG dimensions are recorded and checked. Generated
+output is Git-ignored; the capture script and viewer template are versioned.
+
+The generator checks all comparison selections, image decoding, keyboard focus,
+missing-image feedback, 320/390/1440px reflow, direct file opening and axe A/AA.
+Use `node tests/a11y/capture-before-after.cjs --verify-only` to rerun those checks
+against an existing gallery; it first verifies revisions, fixtures and PNG hashes.
+Those checks validate the comparison gallery, not a new run of the app's full
+functional suite. To compare a later UI revision, update the explicit revision
+mapping in the script and regenerate the captures and viewer together.

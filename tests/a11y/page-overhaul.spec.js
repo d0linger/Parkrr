@@ -93,6 +93,7 @@ test('portal validates requests and does not prefetch payment QR images', async 
   await page.goto(origin + '/#/portal/demo');
   await expect(page.locator('#portal-view')).toHaveAttribute('aria-busy', 'false');
   expect(requests.filter(r => r.path.endsWith('/pay-qr'))).toHaveLength(0);
+  await page.getByText('Kontaktdaten ändern', { exact: true }).click();
   const field = page.locator('.portal-form input').first();
   const box = await field.boundingBox();
   expect(box.height).toBeGreaterThanOrEqual(40);
