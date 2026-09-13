@@ -105,9 +105,9 @@ test('recurring mode hides complete field wrappers and ignores one-off quantity'
   await expect(page.locator('#f_quantity').locator('..')).toBeHidden();
   await expect(page.getByLabel('Gültig ab', { exact: true })).toBeVisible();
   await expect(page.locator('#charge-total')).toHaveText(/20,00/);
-  await page.getByText('Gefährt zuordnen', { exact: true }).click();
+  await page.getByText('Weitere Angaben', { exact: true }).click();
   await page.getByLabel('Zuordnung (optional)', { exact: true }).selectOption('1');
-  await page.getByText('Gefährt zuordnen', { exact: true }).click();
+  await page.getByText('Weitere Angaben', { exact: true }).click();
   await save(page, writes);
   expect(writes[0]).toEqual({ description: 'Strom', amount: 20, period: 'monthly', start_date: '2026-09-10', end_date: null, vehicle_id: 1 });
 });

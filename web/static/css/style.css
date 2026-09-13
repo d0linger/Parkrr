@@ -2332,12 +2332,18 @@ button.portal-row { width:100%; border:0; border-bottom:1px solid var(--border);
 .form-disclosure { border-top:1px solid var(--border); margin-top:1rem; }
 .form-disclosure > summary { cursor:pointer; padding:.75rem 0; min-height:2.75rem; font-weight:600; font-size:.875rem; color:var(--text); }
 .form-disclosure[open] > summary { margin-bottom:.25rem; }
+.form-disclosure-count { color:var(--text-muted); font-weight:400; }
 .form-disclosure > summary:hover { color:var(--primary); }
 .form-disclosure > summary:focus-visible { outline:2px solid var(--primary); outline-offset:3px; border-radius:var(--radius-sm); }
 .date-shortcuts { display:flex; gap:.25rem; flex-wrap:wrap; }
+.form-date-row { display:flex; align-items:center; flex-wrap:wrap; gap:.5rem; }
+.form-field .form-date-row input { flex:1 1 9rem; width:auto; }
 .date-shortcuts .btn { min-height:2rem; padding:.25rem .5rem; }
-.form-total { display:flex; flex-direction:column; justify-content:center; gap:.25rem; padding:.75rem 1rem; background:var(--bg); border:1px solid var(--border); border-radius:var(--radius-sm); }
-.form-total output { font-size:1.375rem; font-weight:700; font-variant-numeric:tabular-nums; }
+.form-cost-row { display:grid; grid-template-columns:minmax(0,1fr); align-items:end; gap:1rem; }
+.form-cost-inputs { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); align-items:start; gap:1rem; }
+.form-cost-single { grid-template-columns:minmax(0,1fr); }
+.form-total { display:flex; flex-direction:column; justify-content:center; min-width:0; gap:.25rem; }
+.form-total output { font-size:1.375rem; font-weight:700; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
 .toolbar-primary { display:flex; flex:1 1 100%; gap:.75rem; min-width:0; }
 .toolbar-primary .search { min-width:0; flex:1 1 16rem; }
 .toolbar-primary > select { flex:0 1 14rem; min-width:0; }
@@ -2361,6 +2367,7 @@ button.portal-row { width:100%; border:0; border-bottom:1px solid var(--border);
 .screen-invoices .invoice-workspace > .card { padding:1.25rem; }
 .gp-appbar, .gp-canvas-top { row-gap:.75rem; }
 @media (min-width:600px) {
+    .form-cost-row { grid-template-columns:repeat(2,minmax(0,1fr)); }
     .modal-wide .form-grid, .billing-fields, .portal-request .portal-form { grid-template-columns:repeat(2,minmax(0,1fr)); }
     .modal-wide .new-vehicle-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) auto; gap:.5rem; }
     .modal-wide .new-vehicle-row > * { min-width:0; width:auto; }
@@ -2385,4 +2392,6 @@ button.portal-row { width:100%; border:0; border-bottom:1px solid var(--border);
     .modal-wide .form-grid > * { grid-column:1 / -1; }
     .modal-wide .form-grid > .form-field-compact { grid-column:auto; }
 }
-@media (pointer:coarse) { .date-shortcuts .btn { min-height:2.75rem; } }
+@media (pointer:coarse) {
+    .date-shortcuts .btn, .modal .segments button { min-height:2.75rem; }
+}

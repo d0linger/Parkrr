@@ -80,6 +80,13 @@ both portal languages and keyboard/axe/reflow checks at 320/390/1440px. It needs
 no backend. Run it alongside the three synthetic suites above. The real-backend
 record and portal tests explicitly open the newly disclosed controls.
 
+`charge-integration.spec.js` verifies the production integration of the standalone
+dialog: amount/result grouping, native date shortcuts, optional end-date
+validation, preserved values when switching billing modes, recurring edits,
+oversized totals, exact API payloads and keyboard/axe/reflow at 320/390/1440px.
+It uses synthetic APIs, not the demo's browser storage. The real total calculation
+also has table-driven tests in `tests/frontend/charge-form-total.test.js`.
+
 ## Reproduce the before/after gallery
 
 From the repository root, with Chromium and the dependencies above installed:

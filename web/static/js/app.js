@@ -458,8 +458,18 @@
                 if (f.optional) {
                     if (!groups.has(f.optional)) {
                         const contents = el('div', { class: 'form-grid' });
+                        const count = el('span', { class: 'form-disclosure-count', hidden: true });
                         const details = el('details', { class: 'form-disclosure' },
-                            el('summary', {}, f.optional), contents);
+                            el('summary', {}, el('span', {}, f.optional), count), contents);
+                        const updateCount = () => {
+                            const filled = Array.from(contents.querySelectorAll('input, select, textarea'))
+                                .filter(node => !node.disabled && (node.type === 'checkbox' ? node.checked : node.value.trim() !== '')).length;
+                            count.hidden = !filled;
+                            count.textContent = filled ? ` · ${filled} ${filled === 1 ? 'Angabe' : 'Angaben'}` : '';
+                        };
+                        details.addEventListener('input', updateCount);
+                        details.addEventListener('change', updateCount);
+                        details.addEventListener('toggle', updateCount);
                         groups.set(f.optional, { details, contents });
                         body.append(details);
                     }
@@ -511,6 +521,13 @@
                 if (f.type === 'password') field.append(el('div', { class: 'input-affix' }, input, pwToggleBtn(input)));
                 else field.append(input);
                 field.append(el('div', { class: 'field-error', id: errId, role: 'alert', hidden: true }));
+                const clearFieldError = () => {
+                    input.removeAttribute('aria-invalid');
+                    const err = field.querySelector('.field-error');
+                    if (err) err.hidden = true;
+                };
+                input.addEventListener('input', clearFieldError);
+                input.addEventListener('change', clearFieldError);
                 if (f.help) field.append(el('div', { class: 'card-meta', id: helpId }, f.help));
                 if (f.quickDate) {
                     const shortcuts = el('div', { class: 'date-shortcuts', role: 'group', 'aria-label': f.label + ': Schnellauswahl' });
@@ -523,7 +540,9 @@
                             input.focus();
                         } }, label));
                     }
-                    field.append(shortcuts);
+                    const row = el('div', { class: 'form-date-row' });
+                    input.before(row);
+                    row.append(input, shortcuts);
                 }
             }
             const form = $('#modal-form');
@@ -544,7 +563,12 @@
             dlg.addEventListener('close', () => { cleanup(); settle(null); }, { once: true });
             const onCancel = () => { if (pending) return; cleanup(); settle(null); dlg.close(); };
             const onEscape = (e) => { if (pending) e.preventDefault(); };
-            const onInvalid = (e) => revealFormField(e.target);
+            const onInvalid = (e) => {
+                revealFormField(e.target);
+                const err = body.querySelector('#err_' + e.target.name);
+                if (err) { err.textContent = e.target.validationMessage; err.hidden = false; }
+                e.target.setAttribute('aria-invalid', 'true');
+            };
             dlg.addEventListener('cancel', onEscape);
             // Toggle the modal's busy state while an async save is in flight.
             const setPending = (on) => {
@@ -574,7 +598,7 @@
                     const node = $('#f_' + f.name, body);
                     const value = f.type === 'checkbox' ? node.checked : node.value;
                     data[f.name] = value;
-                    const msg = validateField(f, value);
+                    const msg = node.disabled ? '' : validateField(f, value);
                     const errNode = $('#err_' + f.name, body);
                     if (errNode) { errNode.textContent = msg; errNode.hidden = !msg; }
                     if (msg) {
@@ -3249,10 +3273,11 @@
                 { name: 'description', label: 'Bezeichnung', required: true, value: existing?.description, wide: true },
                 { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', min: 0, required: true, value: existing?.amount ?? '' },
                 { name: 'period', label: 'Abrechnung', type: 'select', value: existing?.period || 'monthly', options: [{ value: 'monthly', label: 'monatlich' }, { value: 'yearly', label: 'jährlich' }] },
-                { name: 'start_date', label: 'Gültig ab', type: 'date', required: true, value: existing?.start_date ? existing.start_date.slice(0, 10) : today() },
-                { name: 'end_date', label: 'Gültig bis (optional)', type: 'date', value: existing?.end_date ? existing.end_date.slice(0, 10) : '', help: 'Leer = laufend. Läuft je Zeitraum auf und ist je Zeitraum bezahlbar.' },
-                { name: 'vehicle_id', label: 'Zuordnung (optional)', type: 'select', value: existing?.vehicle_id ?? '', options: vehOpts, wide: true, optional: 'Gefährt zuordnen', help: 'An ein Gefährt binden → erscheint dort, Bezahlt läuft über Gefährt/Pauschale. Sonst frei markierbar.' },
+                { name: 'start_date', label: 'Gültig ab', type: 'date', required: true, quickDate: true, value: existing?.start_date ? existing.start_date.slice(0, 10) : today() },
+                { name: 'end_date', label: 'Gültig bis (optional)', type: 'date', optional: 'Weitere Angaben', value: existing?.end_date ? existing.end_date.slice(0, 10) : '', help: 'Leer = laufend. Läuft je Zeitraum auf und ist je Zeitraum bezahlbar.' },
+                { name: 'vehicle_id', label: 'Zuordnung (optional)', type: 'select', value: existing?.vehicle_id ?? '', options: vehOpts, optional: 'Weitere Angaben', help: 'An ein Gefährt binden → erscheint dort, Bezahlt läuft über Gefährt/Pauschale. Sonst frei markierbar.' },
             ],
+            onRender: body => enhanceChargeFields(body, 'period'),
             save: async (data) => {
                 const payload = {
                     description: data.description, amount: Number(data.amount), period: data.period,
@@ -4075,6 +4100,47 @@
         sel.after(seg);
     }
 
+    // Match the existing save contract: an empty/zero one-off quantity means one;
+    // recurring amounts never multiply a previously entered one-off quantity.
+    function chargeFormTotal(amount, quantity, period) {
+        if (String(amount).trim() === '') return null;
+        const total = Number(amount) * (period === 'once' ? Number(quantity) || 1 : 1);
+        return Number.isFinite(total) && Number.isSafeInteger(Math.round(total * 100)) ? total : null;
+    }
+
+    function enhanceChargeFields(body, periodName) {
+        const amount = body.querySelector('#f_amount');
+        const quantity = body.querySelector('#f_quantity');
+        const period = body.querySelector('#f_' + periodName);
+        const start = body.querySelector('#f_start_date');
+        const end = body.querySelector('#f_end_date');
+        const inputs = el('div', { class: 'form-cost-inputs' });
+        const label = el('span', { class: 'card-meta' });
+        const total = el('output', { id: 'charge-total', for: [amount, quantity, period].filter(Boolean).map(node => node.id).join(' '), 'aria-live': 'polite' });
+        const row = el('div', { class: 'form-cost-row form-field-wide' }, inputs,
+            el('div', { class: 'form-total' }, label, total));
+        const amountField = amount.closest('.form-field');
+        amountField.before(row);
+        inputs.append(amountField);
+        if (quantity) inputs.append(quantity.closest('.form-field'));
+        const update = () => {
+            const once = period.value === 'once';
+            const value = chargeFormTotal(amount.value, quantity?.value, period.value);
+            inputs.classList.toggle('form-cost-single', !once || !quantity);
+            label.textContent = once ? 'Gesamtbetrag' : period.value === 'monthly' ? 'Betrag pro Monat' : 'Betrag pro Jahr';
+            total.value = value == null ? '–' : eur(value);
+            amount.setCustomValidity(amount.value !== '' && value == null ? 'Betrag oder Menge ist zu groß. Bitte kleinere Werte verwenden.' : '');
+            // Native date constraints also reveal/focus an invalid collapsed field.
+            end.min = start.value;
+        };
+        for (const node of [amount, quantity, period, start, end].filter(Boolean)) {
+            node.addEventListener('input', update);
+            node.addEventListener('change', update);
+        }
+        update();
+        return update;
+    }
+
     async function chargeForm(presetPerson, existing) {
         if (!state.persons.length) { toast('Zuerst eine Person anlegen', 'error'); return; }
         const services = state.services.filter((s) => !s.archived);
@@ -4103,22 +4169,23 @@
                 { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', required: true, value: existing?.amount ?? '', compact: true },
                 { name: 'quantity', label: 'Menge', type: 'number', step: '0.5', value: existing?.quantity ?? '1', compact: true },
                 { name: 'charged_on', label: 'Datum', type: 'date', quickDate: true, value: existing?.charged_on ? existing.charged_on.slice(0, 10) : today() },
-                { name: 'start_date', label: 'Gültig ab', type: 'date', value: today() },
-                { name: 'end_date', label: 'Gültig bis (optional)', type: 'date', value: '', help: 'Leer = laufend. Läuft je Zeitraum auf und ist je Zeitraum bezahlbar.' },
-                { name: 'vehicle_id', label: 'Zuordnung (optional)', type: 'select', value: existing?.vehicle_id ?? '', options: initVehOpts, wide: true, optional: 'Gefährt zuordnen', help: 'An ein Gefährt binden → erscheint dort, Bezahlt läuft über Gefährt/Pauschale. Sonst frei markierbar.' },
+                { name: 'start_date', label: 'Gültig ab', type: 'date', quickDate: true, value: today() },
+                { name: 'end_date', label: 'Gültig bis (optional)', type: 'date', value: '', optional: 'Weitere Angaben', help: 'Leer = laufend. Läuft je Zeitraum auf und ist je Zeitraum bezahlbar.' },
+                { name: 'vehicle_id', label: 'Zuordnung (optional)', type: 'select', value: existing?.vehicle_id ?? '', options: initVehOpts, optional: 'Weitere Angaben', help: 'An ein Gefährt binden → erscheint dort, Bezahlt läuft über Gefährt/Pauschale. Sonst frei markierbar.' },
             ],
             onRender: (body) => {
                 // Billing mode toggles which fields apply: once → Menge/Datum/Zuordnung;
                 // monthly/yearly → Gültig ab/bis (recurring, accrues per period).
                 const setShown = (name, show) => {
                     const inp = body.querySelector('#f_' + name);
-                    if (inp) inp.closest('.form-field').hidden = !show;
+                    if (inp) { inp.closest('.form-field').hidden = !show; inp.disabled = !show; }
                 };
                 const applyMode = (mode) => {
                     const once = mode === 'once';
                     // Zuordnung gilt für alle Abrechnungsarten (einmalig wie wiederkehrend).
                     setShown('quantity', once); setShown('charged_on', once); setShown('vehicle_id', true);
                     setShown('start_date', !once); setShown('end_date', !once);
+                    body.querySelector('#f_end_date').dispatchEvent(new Event('change', { bubbles: true }));
                 };
                 const billing = body.querySelector('#f_billing');
                 billing.addEventListener('change', () => applyMode(billing.value));
@@ -4139,17 +4206,7 @@
                     ...services.map((s) => el('option', { value: serviceLabel(s) })));
                 desc.setAttribute('list', suggestions.id);
                 desc.after(suggestions);
-                const total = el('output', { id: 'charge-total', for: 'f_amount f_quantity f_billing', 'aria-live': 'polite' });
-                const totalLabel = el('span', { class: 'card-meta' });
-                const preview = el('div', { class: 'form-total' }, totalLabel, total);
-                body.querySelector('.form-grid').append(preview);
-                const updateTotal = () => {
-                    const once = billing.value === 'once';
-                    const amount = Number(amt.value);
-                    const quantity = once ? Number(body.querySelector('#f_quantity').value) || 1 : 1;
-                    totalLabel.textContent = once ? 'Gesamtbetrag' : billing.value === 'monthly' ? 'Betrag pro Monat' : 'Betrag pro Jahr';
-                    total.value = amt.value !== '' && Number.isFinite(amount * quantity) ? eur(amount * quantity) : '–';
-                };
+                const updateTotal = enhanceChargeFields(body, 'billing');
                 desc.addEventListener('input', () => {
                     const s = services.find((x) => serviceLabel(x) === desc.value);
                     if (!s) return;
@@ -4160,10 +4217,6 @@
                     }
                     updateTotal();
                 });
-                amt.addEventListener('input', updateTotal);
-                body.querySelector('#f_quantity').addEventListener('input', updateTotal);
-                billing.addEventListener('change', updateTotal);
-                updateTotal();
                 // Switching person reloads the bindable vehicles. A request token
                 // guards against an earlier (slower) response overwriting a newer one.
                 const per = body.querySelector('#f_person_id');
@@ -4180,6 +4233,7 @@
                     veh.innerHTML = '';
                     for (const o of opts) veh.append(el('option', { value: o.value }, o.label));
                     veh.disabled = false;
+                    veh.dispatchEvent(new Event('change', { bubbles: true }));
                 });
             },
             save: async (data) => {
