@@ -13,7 +13,7 @@ const { overrides } = require('./helpers/overhaul-fixture');
 const root = path.resolve(__dirname, '../..');
 const output = path.join(root, '.impeccable/review/before-after');
 const fixedTime = '2026-09-10T12:00:00Z';
-const revisions = { original: '9756ae2', previous: '539fb45', current: 'bc5c86e' };
+const revisions = { original: '9756ae2', previous: '539fb45', current: 'cf4e9c0' };
 const captures = [
   { id: 'light-1440', width: 1440, height: 900, theme: 'light', label: 'Desktop · 1440 px · Hell' },
   { id: 'dark-390', width: 390, height: 900, theme: 'dark', label: 'Mobil · 390 px · Dunkel' },
@@ -43,7 +43,7 @@ const click = (name) => page => page.getByRole('button', { name, exact: true }).
 surfaces.push(
   { id: 'form-person', label: 'Neue Person', route: 'persons', note: 'Name und Kontakt paarweise, Adresse/Notizen standardmäßig eingeklappt.', open: click('+ Neu') },
   { id: 'form-vehicle', label: 'Neues Gefährt', route: 'vehicles', note: 'Stammdaten, Datum und Preis gruppiert; zusätzliche Planerangaben aufklappbar.', open: click('+ Neu') },
-  { id: 'form-charge', label: 'Neue Zusatzkosten', route: 'finance', note: 'Ein Katalog-/Freitextfeld, Live-Summe und Datumskurzwege statt doppelter Eingaben.', open: click('+ Neu') },
+  { id: 'form-charge', label: 'Neue Zusatzkosten', route: 'finance', note: 'Katalog/Freitext vereint; Betrag, Menge und Live-Summe zusammen; Datumskürzel inline und weitere Angaben aufklappbar.', open: click('+ Neu') },
   { id: 'form-agreement', label: 'Neue Pauschale', route: 'persons/1', note: 'Betrag/Zeitraum und Gültigkeitsdaten paarweise; Gefährt-Verwaltung bleibt sichtbar.', open: click('+ Pauschale') },
   { id: 'form-payment', label: 'Neue Zahlung', route: 'persons/1', note: 'Kompaktes Feldraster und Datumskurzwege; Zuordnungslogik unverändert.', open: click('+ Zahlung') },
   { id: 'form-user', label: 'Benutzer bearbeiten', route: 'users', note: 'Kompakte Stammdaten; optionale Passwortänderung hinter einer eigenen Aufklappzeile.', open: async page => {
@@ -164,7 +164,7 @@ async function verifyGallery(browser, data) {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `Gallery overflow at ${width}px`);
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.locator('#page').selectOption('form-person');
+  await page.locator('#page').selectOption('form-charge');
   await expect(page.locator('#status')).toContainText('Beide Aufnahmen geladen');
   await page.screenshot({ path: path.join(output, 'gallery-desktop.png'), fullPage: true });
   await page.locator('#viewport').selectOption('dark-390');

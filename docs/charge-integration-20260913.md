@@ -74,3 +74,24 @@ Healthcheck und ausgelieferte JS-/CSS-Hashes stimmen. Nicht angemeldete Zugriffe
 auf `/api/auth/me` und `/api/persons` liefern weiterhin HTTP 401.
 Die Identität von `parkrr-db` und die Backup-Volume-Zuordnung blieben unverändert.
 Das vorherige App-Image ist als `parkrr:before-charge-integration-20260913` erhalten.
+Die zwei eigens angelegten Testcontainer und ihr separates Netz wurden nach dem
+Lauf entfernt. Dabei wurden ausschließlich deren synthetische, temporäre
+Testdaten verworfen; die Betriebsdatenbank und andere Projekte blieben erhalten.
+
+## Vorher / Nachher
+
+Die vorhandene Galerie `.impeccable/review/before-after/index.html` ist auf den
+integrierten Stand `cf4e9c0` aktualisiert und startet beim Zusatzkosten-Dialog.
+Vergleichsstände bleiben `539fb45` (vor den Formularverfeinerungen) und `9756ae2`
+(vor dem gesamten Seitenumbau). Alle **19 Seiten und sieben Formularansichten**
+wurden mit denselben synthetischen Daten in Desktop/hell und Mobil/dunkel neu
+aufgenommen: **156 Bilder**, **104 Vergleichskombinationen erfolgreich geprüft**.
+Dateiöffnung, Bilddekodierung, Fehleranzeige, Tastatur und Reflow bei
+320/390/1440 Pixeln bestanden; keine schweren/kritischen axe-Funde und keine
+ungefangenen JavaScript-Fehler. Der Vergleich wurde visuell bestätigt.
+
+Die geöffnete Übersicht `.impeccable/review/compact-workflows/index.html` verlinkt
+direkt auf diesen Vergleich. Das Manifest enthält die tatsächlichen Commit-IDs,
+Bildmaße und Hashes. Nur Generator, Vorlage und Dokumentation werden versioniert;
+die reproduzierbaren Bilder bleiben Git-ignoriert. Änderungen liegen auf `dev`
+und wurden nicht gepusht.

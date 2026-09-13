@@ -1,5 +1,10 @@
 # Seitenweite UI-Verfeinerung – 12. September 2026
 
+Nachtrag vom 13. September: Die verbleibenden Teile der eigenständigen
+Dialogvorlage sind [in die echte Anwendung integriert](charge-integration-20260913.md).
+Die lokale App auf Port 8099 wurde anschließend aktualisiert. Der nachfolgende
+Bericht dokumentiert weiterhin den ursprünglichen Durchgang vom 12. September.
+
 ## Umfang
 
 Fortsetzung der vorhandenen [Seitenüberarbeitung](page-by-page-overhaul-20260910.md),

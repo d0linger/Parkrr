@@ -97,7 +97,7 @@ node tests/a11y/capture-before-after.cjs
 
 This reads the complete static assets from three fixed Git revisions without
 checking out another branch: original `9756ae2`, pre-form-refinement `539fb45`,
-and current UI `bc5c86e`. Every API response is synthetic. No app, credentials,
+and current UI `cf4e9c0`. Every API response is synthetic. No app, credentials,
 database, external service or Docker container is required. The script does not
 submit forms. It uses the same fixtures, date, German locale, Europe/Vienna time
 zone, 1× pixel ratio and viewport for every revision.

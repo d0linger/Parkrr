@@ -76,9 +76,11 @@
     const surface = comparison.surfaces.find(s => s.id === page.value);
     const capture = comparison.captures.find(c => c.id === viewport.value);
     document.getElementById('note').textContent = baseline.value === 'previous' ? surface.note : 'Gesamtvergleich seit dem ursprünglichen Stand vor beiden UI-Überarbeitungen.';
-    document.getElementById('scope').textContent = baseline.value === 'previous'
-      ? '539fb45 → bc5c86e · Kompakte Formulare und seitenweite Verfeinerung. Bewährte Bereiche sind bewusst unverändert.'
-      : '9756ae2 → bc5c86e · Alle Seitenüberarbeitungen einschließlich der aktuellen Formularverbesserungen.';
+    const from = comparison.versions[baseline.value].commit.slice(0, 7);
+    const to = comparison.versions.current.commit.slice(0, 7);
+    document.getElementById('scope').textContent = `${from} → ${to} · ` + (baseline.value === 'previous'
+      ? 'Kompakte Formulare und seitenweite Verfeinerung. Bewährte Bereiche sind bewusst unverändert.'
+      : 'Alle Seitenüberarbeitungen einschließlich der aktuellen Formularverbesserungen.');
     pair.classList.toggle('mobile', capture.width < 700);
     pair.setAttribute('aria-busy', 'true');
     status.textContent = 'Aufnahmen werden geladen …';
@@ -102,7 +104,7 @@
   }
   function readHash() {
     const values = new URLSearchParams(location.hash.slice(1));
-    page.value = comparison.surfaces.some(s => s.id === values.get('surface')) ? values.get('surface') : 'form-person';
+    page.value = comparison.surfaces.some(s => s.id === values.get('surface')) ? values.get('surface') : 'form-charge';
     baseline.value = values.get('baseline') === 'original' ? 'original' : 'previous';
     viewport.value = comparison.captures.some(c => c.id === values.get('capture')) ? values.get('capture') : 'light-1440';
     update();
