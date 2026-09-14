@@ -37,3 +37,8 @@
 *Vulnerability:* `PasskeyRegisterFinish` recorded failed attestation verifications using `h.Limiter.RecordFailure(key)`, which only updated the per-IP `username|ip` rate limiter. An attacker rotating source IP addresses could bypass the throttle and attempt unlimited passkey registration verifications for an account.
 *Learning:* Post-authentication ceremonies that verify credentials or enrolment attestations (such as TOTP setup or Passkey registration) must record failures against both per-IP and per-account (`UserLimiter`) limiters.
 *Prevention:* Always use `recordReauthFailure` and `resetReauth` helpers on all secondary auth/re-auth/registration endpoints to ensure per-account limiters are updated across IP rotations.
+
+## 2026-07-18 - [MFA Enrolment State Inconsistency and Recovery Code Generation]
+*Vulnerability:* In `TOTPEnable`, `UPDATE users SET totp_enabled=TRUE` was executed prior to `GenerateBackupCodes`. A failure during backup code generation (such as DB or PRNG errors) left 2FA marked enabled on the user's account without recovery codes ever being generated or returned, leaving the user vulnerable to lockout.
+*Learning:* MFA enrolment operations must ensure all secondary credential artifacts (like recovery codes) are generated successfully before flipping the account's 2FA status flag to enabled.
+*Prevention:* Always generate and persist recovery artifacts prior to enabling the second-factor status flag on the user record.
