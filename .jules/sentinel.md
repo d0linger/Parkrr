@@ -42,3 +42,8 @@
 *Vulnerability:* The `TOTPSetup` endpoint lacked ceremony rate limiting, allowing an authenticated user (or compromised session) to repeatedly generate cryptographic secrets, encrypt them, and update the database in rapid succession.
 *Learning:* Initiation endpoints that trigger cryptographic operations and database mutations for enrolment ceremonies must be throttled per account, even if they do not process failed authentication attempts.
 *Prevention:* Apply `CeremonyLimiter` to all enrolment initiation endpoints (such as `TOTPSetup` and `PasskeyRegisterBegin`).
+
+## 2026-07-18 - [MFA Enrolment State Inconsistency and Recovery Code Generation]
+*Vulnerability:* In `TOTPEnable`, `UPDATE users SET totp_enabled=TRUE` was executed prior to `GenerateBackupCodes`. A failure during backup code generation (such as DB or PRNG errors) left 2FA marked enabled on the user's account without recovery codes ever being generated or returned, leaving the user vulnerable to lockout.
+*Learning:* MFA enrolment operations must ensure all secondary credential artifacts (like recovery codes) are generated successfully before flipping the account's 2FA status flag to enabled.
+*Prevention:* Always generate and persist recovery artifacts prior to enabling the second-factor status flag on the user record.
