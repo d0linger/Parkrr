@@ -37,3 +37,8 @@
 *Vulnerability:* `PasskeyRegisterFinish` recorded failed attestation verifications using `h.Limiter.RecordFailure(key)`, which only updated the per-IP `username|ip` rate limiter. An attacker rotating source IP addresses could bypass the throttle and attempt unlimited passkey registration verifications for an account.
 *Learning:* Post-authentication ceremonies that verify credentials or enrolment attestations (such as TOTP setup or Passkey registration) must record failures against both per-IP and per-account (`UserLimiter`) limiters.
 *Prevention:* Always use `recordReauthFailure` and `resetReauth` helpers on all secondary auth/re-auth/registration endpoints to ensure per-account limiters are updated across IP rotations.
+
+## 2026-07-18 - [Throttling TOTP Setup Initiation Ceremonies]
+*Vulnerability:* The `TOTPSetup` endpoint lacked ceremony rate limiting, allowing an authenticated user (or compromised session) to repeatedly generate cryptographic secrets, encrypt them, and update the database in rapid succession.
+*Learning:* Initiation endpoints that trigger cryptographic operations and database mutations for enrolment ceremonies must be throttled per account, even if they do not process failed authentication attempts.
+*Prevention:* Apply `CeremonyLimiter` to all enrolment initiation endpoints (such as `TOTPSetup` and `PasskeyRegisterBegin`).
