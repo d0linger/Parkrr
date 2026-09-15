@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/preining/parkrr/internal/auth"
 )
@@ -12,6 +13,11 @@ func (h *AuthHandler) TOTPSetup(w http.ResponseWriter, r *http.Request) {
 	u, _ := auth.UserFrom(r.Context())
 	if u.TOTPEnabled {
 		writeError(w, http.StatusConflict, "two-factor is already enabled")
+		return
+	}
+	if ok, wait := h.CeremonyLimiter.Consume(strings.ToLower(u.Username)); !ok {
+		w.Header().Set("Retry-After", formatSeconds(wait))
+		writeError(w, http.StatusTooManyRequests, "Zu viele Versuche – bitte in "+formatMinutes(wait)+" erneut versuchen")
 		return
 	}
 	key, err := auth.GenerateTOTP(u.Username)
