@@ -78,6 +78,10 @@ func (h *Handler) PortalCreateRequest(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "date is required")
 			return
 		}
+		if !validDateLength(req.Date) {
+			writeError(w, http.StatusBadRequest, "date is invalid or too long")
+			return
+		}
 		d, err := time.Parse(dateLayout, req.Date)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "date must be YYYY-MM-DD")
