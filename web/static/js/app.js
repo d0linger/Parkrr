@@ -1017,7 +1017,17 @@
         const truncEl = el('div', { class: 'list-trunc', role: 'status', hidden: true });
         page.append(countEl, truncEl, listEl, pagerEl);
 
-        search.addEventListener('input', () => { qRaw = search.value; q = norm(qRaw); pageNum = 1; refresh(); });
+        // Entprellt, wie die Suche im Audit-Log. refresh() kopiert die Liste, filtert
+        // und SORTIERT sie vollstaendig neu — das lief bisher bei JEDEM Tastendruck,
+        // und die Sortierung ist der teure Teil. Der Rueckstellknopf weiter unten
+        // ruft refresh() weiterhin direkt auf: dort soll nichts warten.
+        let searchTimer = null;
+        search.addEventListener('input', () => {
+            clearTimeout(searchTimer);
+            searchTimer = setTimeout(() => {
+                qRaw = search.value; q = norm(qRaw); pageNum = 1; refresh();
+            }, 200);
+        });
         sortSel.addEventListener('change', () => { sortIdx = Number(sortSel.value); refresh(); });
 
         function refresh() {
@@ -1072,6 +1082,7 @@
                 const empty = emptyState(opts.emptyIcon || 'box', q ? 'Keine passenden Einträge.'
                     : opts.items.length ? 'Keine Einträge für die gewählten Filter.' : opts.emptyText || 'Keine Einträge.');
                 if (q) empty.append(el('button', { class: 'btn btn-ghost', type: 'button', onclick: () => {
+                    clearTimeout(searchTimer);
                     search.value = ''; qRaw = ''; q = ''; pageNum = 1; refresh(); search.focus();
                 } }, 'Suche zurücksetzen'));
                 listEl.append(empty);
