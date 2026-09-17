@@ -97,8 +97,19 @@ func TestPortalPickupRequestValidationAndCap(t *testing.T) {
 	if rec := portalRequestReq(t, h, token, map[string]any{"kind": "pickup", "date": "gestern"}); rec.Code != http.StatusBadRequest {
 		t.Errorf("kaputtes Datum: %d, erwartet 400", rec.Code)
 	}
+	// Ein aufgeblaehtes Datum muss schon an der Laengengrenze scheitern, NICHT erst
+	// an time.Parse. Beide Wege enden in 400, deshalb pruefen wir die konkrete
+	// Meldung: ohne validDateLength antwortet der Handler "date must be YYYY-MM-DD".
 	if rec := portalRequestReq(t, h, token, map[string]any{"kind": "pickup", "date": "2026-01-012026-01-01123"}); rec.Code != http.StatusBadRequest {
-		t.Errorf("zu meilenweites Datum: %d, erwartet 400", rec.Code)
+		t.Errorf("zu langes Datum: %d, erwartet 400", rec.Code)
+	} else {
+		var body map[string]string
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("Fehlerkoerper unlesbar: %v", err)
+		}
+		if body["error"] != "date is invalid or too long" {
+			t.Errorf("zu langes Datum: %q, erwartet die Laengenabweisung", body["error"])
+		}
 	}
 	past := time.Now().AddDate(0, 0, -3).Format("2006-01-02")
 	if rec := portalRequestReq(t, h, token, map[string]any{"kind": "pickup", "date": past}); rec.Code != http.StatusBadRequest {
