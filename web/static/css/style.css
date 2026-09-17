@@ -16,6 +16,9 @@
     --text: #E8F0EE;
     --text-muted: #8CA09B;
     --muted: var(--text-muted); /* Alias — vier Regeln nutzten var(--muted) ohne Definition */
+    /* Diagramm-Serien: benannte Aliase, damit ein Chart nie direkt --primary greift. */
+    --chart-c1: var(--primary);
+    --chart-c2: var(--primary-hover);
     --primary: #2FB3A8;
     --primary-hover: #4CC9BE;
     --primary-ink: #5ED4C9;
@@ -46,7 +49,16 @@
     --tab-active: #5ED4C9;
     --tabbar-h: 64px;
     --header-h: 56px;
-    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    /* Schrift-Stimmen des Fahrwerk-Systems. Diese drei standen bis hierher in einem
+       ZWEITEN :root weiter unten, direkt bei den @font-face-Regeln — und dieses
+       zweite Blockformat definierte --font ein weiteres Mal, mit einem ANDEREN Wert
+       (System-Stack hier, Hanken Grotesk dort). Gewonnen hat immer der spaetere,
+       der System-Stack war toter Code; wer ihn las, las die falsche Wahrheit.
+       Die @font-face-Regeln bleiben unten stehen: ihre Reihenfolge im Dokument
+       spielt fuer die Aufloesung keine Rolle. */
+    --font: 'Hanken Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --font-head: 'Bricolage Grotesque', 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
 
 /* Automatic light theme when the OS prefers light and no manual choice set. */
@@ -379,9 +391,10 @@ textarea { resize: vertical; min-height: 72px; }
 .cfg-panel-in { padding-top: 0.7rem; }
 .cfg-panel-in > label:first-child { margin-top: 0; }
 .cfg-save { margin-top: 0.8rem; display: flex; gap: 0.5rem; }
-/* The tariff form is taller than the 2FA panel default; give it headroom so the
-   danger zone isn't clipped by the collapse max-height. */
-.cfg-card .tf-panel.open { max-height: 680px; }
+/* Hier stand eine zweite Deckelung (max-height: 680px), weil das Tarif-Formular
+   hoeher ist als die 340px des 2FA-Panels und seine Gefahrenzone sonst abgeschnitten
+   wurde. Beide Deckel sind weg: .tf-panel faehrt ueber grid-template-rows 0fr->1fr
+   auf die tatsaechliche Inhaltshoehe und kann deshalb gar nicht mehr clippen. */
 /* Archived tariff/service: dim the collapsed header, keep the panel usable. */
 .cfg-arch .cfg-head { opacity: 0.55; }
 .cfg-actions2 { margin-top: 0.7rem; }
@@ -464,14 +477,14 @@ textarea { resize: vertical; min-height: 72px; }
     12% { opacity: .5; transform: scale(1); }
     26%, 100% { opacity: 0; transform: scale(1); }
 }
-/* Der globale reduced-motion-Reset (weiter unten) friert per !important ALLES ein.
-   Für diesen EINEN sanften Login-Marken-Moment (Skalieren + Ausblenden, kein Blitzen/
-   Rotieren) heben wir ihn gezielt wieder auf (höhere Spezifität + !important), damit
-   er auch unter erzwungenem reduce läuft (z. B. Remote-Desktop). Die per CSSOM
-   gesetzten Zell-Delays bleiben; der App-Hintergrund selbst bleibt statisch. */
-@media (prefers-reduced-motion: reduce) {
-    .lv-bays i { animation-duration: 20s !important; animation-iteration-count: infinite !important; }
-}
+/* Unter `reduce` steht dieser Marken-Moment STILL. Früher hob eine Regel an dieser
+   Stelle den globalen Reset gezielt wieder auf (!important + infinite), damit die
+   Bucht-Animation auch bei erzwungenem reduce lief. Das stellte die Rangfolge auf den
+   Kopf: reines Dekor lief endlos weiter, während der Reset gleichzeitig die
+   Lade-Spirale einfror — die einzige Rückmeldung, dass überhaupt etwas passiert.
+   `.lv-bays i` trägt als Grundzustand opacity:0, die Buchten bleiben also schlicht
+   unsichtbar; es entsteht kein Rest-Artefakt. Was Information trägt, läuft weiter —
+   siehe die `.spin`-Ausnahme im Abschnitt "Accessibility: respect reduced motion". */
 .login-card {
     position: relative; overflow: hidden; z-index: 1;
     width: 100%; max-width: 380px;
@@ -733,7 +746,6 @@ div.empty .big svg { width: 30px; height: 30px; }
     animation: spin 0.6s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .spin { animation-duration: 1.5s; } }
 
 .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 1rem; }
 .chip {
@@ -820,7 +832,7 @@ div.empty .big svg { width: 30px; height: 30px; }
 
 /* On phones, dialogs become bottom sheets: full width, docked to the bottom
    edge, rounded top corners, a grabber and a slide-up entrance. */
-@media (max-width: 640px) {
+@media (max-width: 639px) {
     .modal {
         margin: auto 0 0;
         width: 100vw;
@@ -1060,12 +1072,24 @@ div.empty .big svg { width: 30px; height: 30px; }
 .timeline .t-time { font-size: 0.78rem; color: var(--text-muted); }
 
 /* ---------- Accessibility: respect reduced motion ---------- */
+/* Bewegung reduzieren heißt NICHT Rückmeldung entfernen. Der Pauschal-Reset deckelt
+   jede Animation und jeden Übergang — Zustandswechsel passieren dann sofort statt
+   animiert, was genau richtig ist. Unbestimmte Fortschrittsanzeigen sind die
+   Ausnahme: ihre Bewegung IST die Information ("läuft noch"). Steht die Spirale
+   still, unterscheidet nichts mehr "lädt" von "hängt".
+   Bestimmte Anzeigen (.bar-fill, .upl-progress) brauchen die Ausnahme nicht: dort
+   trägt die Breite den Wert, der Sprung ohne Übergang bleibt lesbar. */
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
         animation-duration: 0.001ms !important;
         animation-iteration-count: 1 !important;
         transition-duration: 0.001ms !important;
         scroll-behavior: auto !important;
+    }
+    /* Ruhiger, aber weiterhin drehend — die einzige Anzeige, dass etwas läuft. */
+    .spin {
+        animation-duration: 1.6s !important;
+        animation-iteration-count: infinite !important;
     }
 }
 /* Foto-Upload-Fortschritt (Hundert 50): schmale Leiste neben den Knoepfen, nur
@@ -1080,7 +1104,7 @@ div.empty .big svg { width: 30px; height: 30px; }
 /* Kalenderansicht (Hundert 55) */
 .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-top:.6rem}
 .cal-head{font-size:.72rem;font-weight:700;color:var(--text-muted);text-align:center;padding:.2rem 0;text-transform:uppercase;letter-spacing:.04em}
-.cal-cell{min-height:74px;border:1px solid var(--border);border-radius:8px;padding:.25rem;background:var(--card-bg,var(--bg-elev-1));display:flex;flex-direction:column;gap:2px;overflow:hidden}
+.cal-cell{min-height:74px;border:1px solid var(--border);border-radius:8px;padding:.25rem;background:var(--card-bg);display:flex;flex-direction:column;gap:2px;overflow:hidden}
 .cal-cell.cal-placeholder{border:0;background:transparent}
 .cal-cell.today{border-color:var(--primary);box-shadow:inset 0 0 0 1px var(--primary)}
 .cal-day{font-size:.72rem;color:var(--text-muted);font-variant-numeric:tabular-nums}
@@ -1089,7 +1113,7 @@ div.empty .big svg { width: 30px; height: 30px; }
 .cal-pickup{background:#0F7A73}.cal-reserve{background:#5B6DC8}.cal-due{background:#B4552F}.cal-wish{background:#8a6d1f}
 .cal-legend{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.6rem;font-size:.75rem;align-items:center}
 .cal-legend .cal-ev{display:inline-block}
-@media (max-width:640px){.cal-cell{min-height:56px}.cal-ev{font-size:.6rem}}
+@media (max-width:639px){.cal-cell{min-height:56px}.cal-ev{font-size:.6rem}}
 /* Datei-Anhaenge (Hundert 57) */
 .att-row{display:flex;align-items:center;gap:.55rem;padding:.4rem 0;border-bottom:1px solid var(--border)}
 .att-row:last-of-type{border-bottom:0}
@@ -1099,7 +1123,7 @@ div.empty .big svg { width: 30px; height: 30px; }
 /* Portal-Anliegen-Formulare (Hundert 85/87) */
 .portal-form{display:flex;flex-wrap:wrap;gap:.45rem;margin:.35rem 0 .2rem}
 .portal-form input{flex:1 1 160px;min-width:0;padding:.5rem .6rem;border:1px solid var(--border);
-    border-radius:var(--radius-sm);background:var(--bg-elev-1,var(--bg));color:var(--text);font:inherit}
+    border-radius:var(--radius-sm);background:var(--bg);color:var(--text);font:inherit}
 .portal-err{color:var(--danger);font-size:.85rem}
 /* Betreiber-Postfach */
 .pr-row{display:flex;align-items:center;gap:.6rem;padding:.45rem 0;border-bottom:1px solid var(--border)}
@@ -1194,8 +1218,15 @@ div.empty .big svg { width: 30px; height: 30px; }
 .tf-toggle { width: 100%; font: inherit; color: inherit; cursor: pointer; transition: border-color 0.15s ease, background 0.15s ease; }
 .tf-toggle:hover { border-color: color-mix(in srgb, var(--primary) 40%, var(--border)); }
 .tf-toggle:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
-.tf-panel { overflow: hidden; max-height: 0; opacity: 0; transition: max-height 0.25s ease, opacity 0.2s ease; }
-.tf-panel.open { max-height: 340px; opacity: 1; }
+/* Aufklapp-Panel ohne Magic Number. `max-height: 340px` deckelte den OFFENEN
+   Zustand: längere Texte, größere Schrift oder Browser-Zoom schnitten Inhalt
+   ersatzlos ab — mit overflow:hidden ohne Scrollbalken, der darauf hingewiesen
+   hätte. 0fr→1fr animiert stattdessen die TATSÄCHLICHE Höhe des Inhalts und kann
+   deshalb nicht clippen. Jedes .tf-panel hat genau ein Element-Kind; dieses Kind
+   trägt overflow/min-height, damit das Raster wirklich auf 0 zusammenfährt. */
+.tf-panel { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 0.25s ease, opacity 0.2s ease; }
+.tf-panel > * { overflow: hidden; min-height: 0; }
+.tf-panel.open { grid-template-rows: 1fr; opacity: 1; }
 .tf-action { padding-top: 0.85rem; }
 .tf-action-label { display: block; font-size: 0.82rem; font-weight: 600; color: var(--text-muted); margin-bottom: 0.35rem; }
 .tf-action-label .req { color: var(--danger); }
@@ -1241,12 +1272,8 @@ div.empty .big svg { width: 30px; height: 30px; }
    Display-Schrift — die Überschriften-Stimme des Fahrwerk-Systems. */
 @font-face{font-family:'Bricolage Grotesque';font-weight:200 800;font-style:normal;font-display:swap;src:url(/fonts/bricolage.woff2) format('woff2')}
 
-:root{
-  --font:'Hanken Grotesk',system-ui,-apple-system,'Segoe UI',sans-serif;
-  --font-head:'Bricolage Grotesque','Segoe UI Variable Display','Segoe UI',system-ui,sans-serif;
-  --font-mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;
-  --radius:16px; --radius-sm:12px;
-}
+/* Der zweite :root stand hier: --font/-head/-mono sind in den ersten :root oben
+   gezogen, --radius und --radius-sm wiederholten dort nur dieselben Werte. */
 
 body{ font-family:var(--font); background:transparent; }
 h1,h2,h3,.sectitle,.mtitle,.bal-hero-num,.ag-accrued,.stat .value,.owe-amt,.amt{ font-family:var(--font-head); }
@@ -1397,7 +1424,9 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .status-name{ font-weight:600; color:var(--text); }
 
 /* ===== REDESIGN · iteration 4 (feedback) ===== */
-:root{ --chart-c1: var(--primary); --chart-c2: var(--primary-hover); }
+/* --chart-c1/-c2 standen hier als DRITTER :root-Block (Iteration 4). Sie sind
+   theme-unabhaengige Aliase auf --primary/--primary-hover; das Verschieben in den
+   Basis-Block oben aendert ihren Wert nicht. */
 
 /* Value charts + progress bars → brand teal→cyan gradient. Status-distribution
    bars keep their semantic colours (set inline), so this only tints un-coloured
@@ -1453,7 +1482,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 
 /* Backup: per-target cron schedule editor */
 .sched-grid{ display:grid; grid-template-columns:1fr 1fr; gap:.9rem; }
-@media (max-width:640px){ .sched-grid{ grid-template-columns:1fr; } }
+@media (max-width:639px){ .sched-grid{ grid-template-columns:1fr; } }
 .sched-col{ border:1px solid var(--border); border-radius:var(--radius-sm); padding:.7rem .8rem; background:var(--bg-elev); }
 .sched-col.is-off{ opacity:.85; }
 .sched-col-head{ display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.5rem; }
@@ -1655,11 +1684,11 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-wallpoly.sel{stroke:#ffffff;stroke-width:1.5}
 .gp-wnode{fill:#0b1620;stroke:#8fe0d4;stroke-width:2;cursor:grab}
 .gp-wnode.sel{fill:#8fe0d4}
-.gp-wnode.chain{fill:#2ee6cf;stroke:none}
+.gp-wnode.chain{fill:var(--gpteal);stroke:none}
 .gp-walllab{fill:#cfe4dd;font-size:11px;font-weight:600;paint-order:stroke;stroke:rgba(4,16,12,.78);stroke-width:3px;pointer-events:none}
 .gp-walllab.live{fill:#8ff0e0}
 .gp-wallpreview,.gp-openpreview{pointer-events:none}
-.gp-snaphint{fill:none;stroke:#2ee6cf;stroke-width:2;pointer-events:none}
+.gp-snaphint{fill:none;stroke:var(--gpteal);stroke-width:2;pointer-events:none}
 /* orthogonal snap guide-line + dynamic distance labels */
 .gp-guide{stroke:#5adcb4;stroke-width:1;stroke-dasharray:2 4;opacity:.75;pointer-events:none}
 .gp-distlab{fill:#ffd98a;font-size:11px;font-weight:700;paint-order:stroke;stroke:rgba(4,16,12,.82);stroke-width:3px;pointer-events:none}
@@ -1670,7 +1699,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-anchor{fill:#ffd98a;stroke:rgba(4,16,12,.7);stroke-width:1.5;pointer-events:none}
 /* opening elements: reveal jambs, glass line, resize handles; sub-segment clear lengths */
 .gp-walljoint{stroke:none}
-.gp-ohandle{fill:#fff;stroke:#2ee6cf;stroke-width:1.5}
+.gp-ohandle{fill:#fff;stroke:var(--gpteal);stroke-width:1.5}
 /* vehicle clearance (buffer) bands — only on sides facing another vehicle */
 .gp-bufg{pointer-events:none}
 .gp-bufband{fill:rgba(240,180,90,.14);stroke:#f0b45a;stroke-width:1;stroke-dasharray:4 3}
@@ -1702,9 +1731,9 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-calh-sw{left:-8px;bottom:-8px;cursor:nesw-resize}
 .gp-toggle.on{border-color:var(--gpteal2);background:var(--gpteal2);color:#06231d;font-weight:700;box-shadow:0 0 0 1px var(--gpteal2),0 2px 8px -2px rgba(46,230,207,.5)}
 .gp-toggle.on:hover{background:var(--gpteal);border-color:var(--gpteal)}
-.gp-vertex{fill:#eaf6ff;stroke:#0a141e;stroke-width:1.5;cursor:grab}
+.gp-vertex{fill:#eaf6ff;stroke:var(--gpbg2);stroke-width:1.5;cursor:grab}
 .gp-edge{stroke:rgba(46,230,207,.55);stroke-width:2}
-.gp-edge.sel{stroke:#2ee6cf;stroke-width:3.5}
+.gp-edge.sel{stroke:var(--gpteal);stroke-width:3.5}
 .gp-edgelab{fill:rgba(255,255,255,.5);font-size:10px}
 .gp-edgelab.sel{fill:#bff3ec}
 .gp-layer{position:absolute;inset:0;z-index:1;overflow:visible}
@@ -1751,7 +1780,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-block.invalid{outline:2px solid var(--gpbusy);outline-offset:-1px}
 /* 8 resize handles (4 corners + 4 edges); opposite side stays anchored. Shown on the
    selected block (which is overflow:visible), rotate with the block when it is turned. */
-.gp-rz{position:absolute;width:12px;height:12px;border-radius:3px;background:#eaf6ff;border:1px solid #0a141e;z-index:7;box-shadow:0 1px 4px rgba(0,0,0,.55)}
+.gp-rz{position:absolute;width:12px;height:12px;border-radius:3px;background:#eaf6ff;border:1px solid var(--gpbg2);z-index:7;box-shadow:0 1px 4px rgba(0,0,0,.55)}
 .gp-rz::before{content:"";position:absolute;inset:-8px} /* invisible, enlarges the grab target to ~28px so edge/corner handles are easy to hit even under a dimension label */
 .gp-rz-nw{left:-6px;top:-6px;cursor:nwse-resize}
 .gp-rz-ne{right:-6px;top:-6px;cursor:nesw-resize}
@@ -1825,11 +1854,11 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 
 .gp-preview{position:absolute;z-index:8;border-radius:7px;pointer-events:none;border:2px solid var(--gphall);background:rgba(38,165,107,.22)}
 .gp-preview.bad{border-color:var(--gpbusy);background:rgba(242,107,99,.22)}
-.gp-pl{position:absolute;left:50%;top:-10px;transform:translateX(-50%);font-size:.57rem;font-weight:700;white-space:nowrap;background:#0a141e;padding:0 5px;border-radius:5px;border:1px solid currentcolor}
+.gp-pl{position:absolute;left:50%;top:-10px;transform:translateX(-50%);font-size:.57rem;font-weight:700;white-space:nowrap;background:var(--gpbg2);padding:0 5px;border-radius:5px;border:1px solid currentcolor}
 .gp-ghost{position:fixed;z-index:9000;pointer-events:none;background:#12202d;border:1px solid var(--gpteal2);border-radius:10px;padding:.32rem .55rem;box-shadow:0 20px 40px -14px #000;font-size:.72rem;font-weight:700;color:var(--gpink)}
 
 .gp-lenbox{position:absolute;z-index:14;display:none;transform:translate(-50%,-50%);background:#0c1a26;border:1px solid var(--gpteal2);border-radius:9px;padding:.2rem .3rem;align-items:center;gap:3px}
-.gp-lenin{width:64px;background:#0a141e;border:1px solid var(--gpline2);color:var(--gpink);border-radius:6px;padding:.18rem .3rem;font:inherit;font-size:.8rem;text-align:right}
+.gp-lenin{width:64px;background:var(--gpbg2);border:1px solid var(--gpline2);color:var(--gpink);border-radius:6px;padding:.18rem .3rem;font:inherit;font-size:.8rem;text-align:right}
 .gp-lenbox .muted{font-size:.72rem}
 
 .gp-rail{display:flex;flex-direction:column;gap:.8rem}
@@ -1867,6 +1896,12 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-exitem{display:flex;align-items:center;gap:.5rem;padding:.36rem .5rem;border:1px solid var(--gpline);border-radius:10px;background:rgba(0,0,0,.18);cursor:pointer;font-size:.78rem;margin-top:.4rem}
 .gp-exitem.on{border-color:var(--gpteal2)}
 .gp-sw{width:12px;height:12px;border-radius:4px;flex:none;background:#2a3b4d}
+/* Die Farbtupfer der Legende bleiben bewusst literal: sie sind EINE geschlossene
+   Liste, ein Ton je Art. Zwei davon (exit #26a56b, window/gate #4ea8f5) teilen
+   zufaellig den Wert von --gphall bzw. --gpmove, aber nicht deren Bedeutung —
+   --gpmove faerbt ein Gefaehrt IN BEWEGUNG, nicht ein Fenster. Zwei von dreizehn
+   Eintraegen ueber die Wertgleichheit zu tokenisieren wuerde die Liste
+   aufbrechen und einen irrefuehrenden Namen festschreiben. */
 .gp-sw[data-kind="lane"]{background:#243547}
 .gp-sw[data-kind="maint"]{background:#8a6b2a}
 .gp-sw[data-kind="wall"]{background:#2a3b4d}
@@ -1900,12 +1935,12 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-shapeic{width:34px;height:22px;stroke:currentcolor;fill:rgba(46,230,207,.08);stroke-width:1.5}
 .gp-vedit{margin-left:auto;width:26px;height:26px;border-radius:7px;border:1px solid var(--gpline);background:var(--gpglass);color:var(--gpmuted);cursor:pointer;font-size:.82rem;flex:none;font-family:inherit}
 .gp-vedit:hover{border-color:var(--gpteal2);color:var(--gpink)}
-.gp-select{width:100%;background:#0a141e;border:1px solid var(--gpline2);color:var(--gpink);border-radius:9px;padding:.4rem .45rem;font:inherit;font-size:.83rem}
+.gp-select{width:100%;background:var(--gpbg2);border:1px solid var(--gpline2);color:var(--gpink);border-radius:9px;padding:.4rem .45rem;font:inherit;font-size:.83rem}
 .gp-hallrow{display:flex;gap:.45rem;align-items:center}
 /* rotate handle (free rotation, top-centre inside the block so overflow:hidden won't clip it) */
-.gp-rot{position:absolute;left:50%;top:-22px;transform:translateX(-50%);width:13px;height:13px;border-radius:50%;background:var(--gpteal);border:1.5px solid #0a141e;cursor:grab;z-index:8}
+.gp-rot{position:absolute;left:50%;top:-22px;transform:translateX(-50%);width:13px;height:13px;border-radius:50%;background:var(--gpteal);border:1.5px solid var(--gpbg2);cursor:grab;z-index:8}
 /* direct numeric inputs in the dim steppers + Tor zone styling */
-.gp-stepin{width:100%;min-width:0;background:#0a141e;border:1px solid var(--gpline2);color:var(--gpink);border-radius:8px;padding:.28rem .3rem;font:inherit;font-size:.82rem;text-align:center}
+.gp-stepin{width:100%;min-width:0;background:var(--gpbg2);border:1px solid var(--gpline2);color:var(--gpink);border-radius:8px;padding:.28rem .3rem;font:inherit;font-size:.82rem;text-align:center}
 .gp-inforo{width:100%;background:var(--gpglass);border:1px dashed var(--gpline2);color:var(--gpink);border-radius:8px;padding:.34rem .3rem;font-size:.82rem;font-weight:650;text-align:center;cursor:default}
 .gp-stepper .gp-stepin{flex:1}
 .gp-block.excl.gate{background:#0f2a3a;background-image:repeating-linear-gradient(90deg,rgba(78,168,245,.35) 0 6px,transparent 6px 12px);border:1px solid var(--gpmove)}
@@ -1923,12 +1958,12 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-dimopen:hover{color:#8ff3e7;text-decoration:underline}
 /* palette: search + bounded scroll + compact cards; edge "+" insert handle */
 .gp-pal{max-height:min(44vh,320px);overflow:auto;padding-right:3px}
-.gp-palsearch{width:100%;background:#0a141e;border:1px solid var(--gpline2);color:var(--gpink);border-radius:9px;padding:.36rem .5rem;font:inherit;font-size:.82rem;margin-bottom:.5rem}
+.gp-palsearch{width:100%;background:var(--gpbg2);border:1px solid var(--gpline2);color:var(--gpink);border-radius:9px;padding:.36rem .5rem;font:inherit;font-size:.82rem;margin-bottom:.5rem}
 .gp-vehc{padding:.34rem .45rem;gap:.45rem}
 .gp-vic{width:28px;height:28px;font-size:.85rem}
 .gp.maxed .gp-pal{max-height:min(38vh,300px)}
 .gp-edgeadd{cursor:copy}
-.gp-edgeadd circle{fill:var(--gpteal2);stroke:#0a141e;stroke-width:1.2}
+.gp-edgeadd circle{fill:var(--gpteal2);stroke:var(--gpbg2);stroke-width:1.2}
 .gp-edgeadd path{stroke:#fff;stroke-width:1.6;pointer-events:none}
 .gp-edgeadd:hover circle{fill:var(--gpteal)}
 /* zoom label */
@@ -2039,9 +2074,6 @@ a.portal-row.link { text-decoration: none; color: inherit; }
 a.portal-row.link:hover { color: var(--primary-ink); }
 .portal-foot { text-align: center; font-size: .8rem; padding-bottom: env(safe-area-inset-bottom); }
 
-@media (pointer: coarse) {
-    .btn-sm, .btn-icon, .btn-sect, .back-btn { min-height: 44px; min-width: 44px; }
-}
 @media (forced-colors: active) {
     .btn, .btn-icon, .seg-mini, .tab.active { border: 1px solid ButtonText; }
     .tab.active, .seg-mini button.active { outline: 2px solid Highlight; outline-offset: -2px; }
@@ -2286,7 +2318,7 @@ button.portal-row { width:100%; border:0; border-bottom:1px solid var(--border);
     .portal-head, .portal-balance, .portal-requests, .portal-foot { grid-column:1 / -1; }
     .portal-request-groups { grid-template-columns:repeat(2,minmax(0,1fr)); }
 }
-@media (max-width:640px) {
+@media (max-width:639px) {
     .route-view > .detail-head h2 { flex-basis:calc(100% - 4rem) !important; font-size:1.5rem; }
     .page-context { font-size:.875rem; margin-bottom:1rem; }
     .section-index { gap:.15rem 1rem; }
@@ -2304,10 +2336,6 @@ button.portal-row { width:100%; border:0; border-bottom:1px solid var(--border);
     .gp-appbar .gp-switch button { flex:1; }
     .screen-calendar .cal-cell { padding:.2rem; }
     .screen-audit .audit-filter-row { flex-direction:column; align-items:stretch; }
-}
-@media (pointer:coarse) {
-    .planner-guide summary, .portal-qr summary, .login-help summary { min-height:44px; }
-    .gp-toolbar button, .gp-switch button { min-height:44px; }
 }
 @media print {
     .page-context, .section-index, .form-savebar { display:none; }
@@ -2375,7 +2403,7 @@ button.portal-row { width:100%; border:0; border-bottom:1px solid var(--border);
 @media (min-width:1100px) {
     .storage-list { grid-template-columns:repeat(2,minmax(0,1fr)); }
 }
-@media (max-width:640px) {
+@media (max-width:639px) {
     .toolbar-primary { flex-wrap:wrap; gap:.5rem; }
     .modal.modal-wide { width:100%; }
     .toolbar-primary .search { flex-basis:100%; }
@@ -2392,6 +2420,25 @@ button.portal-row { width:100%; border:0; border-bottom:1px solid var(--border);
     .modal-wide .form-grid > * { grid-column:1 / -1; }
     .modal-wide .form-grid > .form-field-compact { grid-column:auto; }
 }
-@media (pointer:coarse) {
-    .date-shortcuts .btn, .modal .segments button { min-height:2.75rem; }
+/* ---------- Touch-Ziele: eine Stelle statt drei ----------
+   Die 44px-Zusage war bisher auf drei handgepflegte Selektorlisten verteilt (Basis-,
+   Planer- und Modal-Schicht). Jedes neue Bedienelement blieb damit so lange zu klein,
+   bis jemand daran dachte, es in eine der drei Listen nachzutragen — genau so lagen
+   .ord (34×22) und .bulk-cb (18×18) unter dem 24px-Minimum von WCAG 2.5.8.
+   Eine Liste, eine Stelle zum Erweitern. Die Gruppen bleiben getrennt, weil eine
+   Mindestbreite bei Segmenten und Datums-Kürzeln deren Raster sprengen würde. */
+@media (pointer: coarse) {
+    /* Quadratische Schaltflächen: volle 44×44. */
+    .btn-sm, .btn-icon, .btn-sect, .back-btn { min-height: 44px; min-width: 44px; }
+    /* Breite ergibt sich aus dem Inhalt — nur die Höhe anheben. */
+    .planner-guide summary, .portal-qr summary, .login-help summary,
+    .gp-toolbar button, .gp-switch button,
+    .date-shortcuts .btn, .modal .segments button { min-height: 44px; }
+    /* Blätterknopf maß 43px in der Breite — zwei Pixel unter dem Ziel. */
+    .pagination .btn { min-width: 44px; }
+    /* Overlay auf der Foto-Miniatur: 44px verdeckte das Bild, deshalb die kleinste
+       Größe, die das 24px-Minimum sicher überschreitet. */
+    .photo-order .ord { min-height: 32px; min-width: 32px; }
+    /* Auswahlkästchen der Mehrfachauswahl: 18px war auf dem Telefon kaum zu treffen. */
+    .bulk-wrap > .bulk-cb { width: 24px; height: 24px; }
 }
