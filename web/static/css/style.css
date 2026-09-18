@@ -19,6 +19,44 @@
     /* Diagramm-Serien: benannte Aliase, damit ein Chart nie direkt --primary greift. */
     --chart-c1: var(--primary);
     --chart-c2: var(--primary-hover);
+    /* BELEG-Tinte. Bewusst THEMENUNABHAENGIG und deshalb NUR hier, nicht in den
+       Theme-Bloecken: eine Rechnung ist ein Papier-Faksimile und bleibt in Hell,
+       Dunkel und im Druck weisses Blatt mit dunkler Tinte. Bis hierher standen
+       diese Werte als nackte Literale im .inv-*-Block, ohne ein Wort dazu, warum
+       sie das Theme ignorieren — in einem vierten, leicht blaeulichen Grau, das
+       sonst nichts im Haus benutzt. Die Werte kommen jetzt aus invoice_pdf.go,
+       damit Vorschau und geliefertes PDF DIESELBE Tinte tragen: der Betreiber
+       liest am Bildschirm, was beim Kunden ankommt. Die Linien liegen unter 3:1,
+       das sind reine Trenner ohne Zustand — 1.4.11 verlangt sie nicht. */
+    --doc-paper: #ffffff;       /* Blatt */
+    --doc-ink: #191919;         /* Flaechentinte — PDF 25,25,25    — 17,6:1 */
+    --doc-ink-strong: #141414;  /* Titel, Summen — PDF 20,20,20    — 18,4:1 */
+    --doc-ink-muted: #5a5a5a;   /* Nebentext     — PDF 90,90,90    —  6,9:1 */
+    --doc-rule: #dce0e4;        /* Haarlinien    — PDF 220,224,228 */
+    --doc-rule-strong: #b4b9be; /* Summenstrich  — PDF 180,185,190 */
+    --doc-fill: #ebeef2;        /* Tabellenkopf  — PDF 235,238,242 */
+
+    /* SCHRIFT- UND ABSTANDSLEITER — erster Schritt.
+       Gemessen standen hier 63 verschiedene rem-Schriftgroessen auf 249
+       Deklarationen, darunter .74/.75/.76/.77/.78rem: Unterschiede von einem
+       Drittel Pixel, die niemand entschieden haben kann. Sie sind der Rest von
+       sieben uebereinandergelegten REDESIGN-Runden, und sie sind der Grund,
+       warum sich nichts ausrichten laesst: jede Komponente hat ihre eigene Zahl.
+       Dieser Schritt legt die Leiter an und zieht NUR das engste Buendel darauf
+       (.74-.78 -> --text-sm). Der Rest folgt bewusst spaeter und in eigenen
+       Schritten: ein Umschreiben aller 249 Stellen auf einmal waere genau die
+       Art Grossumbau, die man nicht ueberblicken kann. */
+    --text-2xs: .625rem;  /* 10px */
+    --text-xs: .6875rem;  /* 11px */
+    --text-sm: .75rem;    /* 12px */
+    --text-base: .875rem; /* 14px */
+    --text-md: 1rem;      /* 16px */
+    --text-lg: 1.125rem;  /* 18px */
+    --text-xl: 1.375rem;  /* 22px */
+    --text-2xl: 1.75rem;  /* 28px */
+    --text-3xl: 2.25rem;  /* 36px */
+    --space-1: .25rem; --space-2: .5rem; --space-3: .75rem; --space-4: 1rem;
+    --space-5: 1.25rem; --space-6: 1.5rem; --space-7: 2rem; --space-8: 2.5rem;
     --primary: #2FB3A8;
     --primary-hover: #4CC9BE;
     --primary-ink: #5ED4C9;
@@ -370,7 +408,7 @@ textarea { resize: vertical; min-height: 72px; }
 }
 .u-namewrap { flex: 1; min-width: 0; }
 .u-name { margin: 0; font-size: 1rem; font-weight: 650; letter-spacing: -0.01em; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
-.u-sub { font-size: 0.78rem; color: var(--text-muted); margin-top: 0.1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.u-sub { font-size: var(--text-sm); color: var(--text-muted); margin-top: 0.1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .u-panel-inner { padding-top: 0.9rem; }
 .u-pw-label { margin-top: 0; }
 .u-pw-row { display: flex; gap: 0.5rem; align-items: stretch; }
@@ -385,12 +423,12 @@ textarea { resize: vertical; min-height: 72px; }
 .cfg-ic { width: 34px; height: 34px; border-radius: 9px; flex: none; display: flex; align-items: center; justify-content: center; background: var(--primary-soft); color: var(--primary-hover); }
 .cfg-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .cfg-title { font-weight: 650; font-size: 1rem; }
-.cfg-sub { font-size: 0.78rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.cfg-sub { font-size: var(--text-sm); color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .cfg-right { flex: none; font-weight: 700; font-variant-numeric: tabular-nums; font-size: 0.95rem; }
 /* Tarif price on the right: monthly prominent, yearly muted below (like Dienste). */
 .cfg-rate { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.12; text-align: right; }
 .cfg-rate-m { font-weight: 800; font-size: 0.98rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.cfg-rate-y { font-weight: 600; font-size: 0.78rem; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; margin-top: 1px; }
+.cfg-rate-y { font-weight: 600; font-size: var(--text-sm); color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; margin-top: 1px; }
 .cfg-rate .u { font-weight: 600; font-size: 0.72em; color: var(--text-muted); margin-left: 1px; }
 .cfg-panel-in { padding-top: 0.7rem; }
 .cfg-panel-in > label:first-child { margin-top: 0; }
@@ -545,7 +583,7 @@ textarea { resize: vertical; min-height: 72px; }
 .field-hint { font-size: 0.875rem; color: var(--text-muted); margin: 0.3rem 0 0; }
 
 /* "oder" divider between password login and the passkey alternative. */
-.or-divider { display: flex; align-items: center; gap: 0.6rem; margin: 0.9rem 0 0.5rem; color: var(--text-muted); font-size: 0.78rem; }
+.or-divider { display: flex; align-items: center; gap: 0.6rem; margin: 0.9rem 0 0.5rem; color: var(--text-muted); font-size: var(--text-sm); }
 .or-divider::before, .or-divider::after { content: ""; height: 1px; background: var(--border); flex: 1; }
 .or-divider + button { margin-top: 0; }
 
@@ -671,7 +709,7 @@ textarea { resize: vertical; min-height: 72px; }
 }
 .stat.stat-click:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); box-shadow: var(--shadow); }
 .stat .value { font-size: 1.7rem; font-weight: 700; letter-spacing: -0.025em; line-height: 1.1; font-variant-numeric: tabular-nums; }
-.stat .label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.07em; font-weight: 600; margin-top: 0.4rem; overflow-wrap: anywhere; }
+.stat .label { font-size: var(--text-sm); color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.07em; font-weight: 600; margin-top: 0.4rem; overflow-wrap: anywhere; }
 .stat .stat-ic { grid-row: 2; grid-column: 2; align-self: start; margin: 0.4rem 0 0 0.5rem; color: var(--text-muted); opacity: 0.75; }
 .stat .stat-ic svg { display: block; }
 .stat::after { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: transparent; }
@@ -902,6 +940,11 @@ div.empty .big svg { width: 30px; height: 30px; }
     font-size: 1rem; text-align: left; padding: 0.8rem 0.6rem; border-radius: var(--radius-sm); cursor: pointer;
 }
 .menu-item:hover { background: var(--bg-elev-2); }
+/* Gruppenkopf im Schubfach. Die Liste mischte Orte und Befehle; drei
+   Ueberschriften trennen sie, ohne eine Zeile zu verstecken. */
+.menu-sec { font-family: var(--font-mono); font-size: .66rem; font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--text-muted); padding: .85rem .2rem .25rem; }
+.menu-sec:first-of-type { padding-top: .35rem; }
 .menu-item .ic { width: 1.4rem; text-align: center; opacity: 0.85; }
 .menu-item.danger { color: var(--danger-hover); }
 
@@ -960,7 +1003,7 @@ div.empty .big svg { width: 30px; height: 30px; }
     position: relative; z-index: 1;
     border: none; background: none; color: var(--text-muted); font-family: inherit;
     padding: 0.32rem 0.7rem; border-radius: 999px; cursor: pointer; font-weight: 600;
-    font-size: 0.78rem; white-space: nowrap; transition: color 0.18s;
+    font-size: var(--text-sm); white-space: nowrap; transition: color 0.18s;
 }
 .seg-mini button:disabled { cursor: default; }
 /* The coloured pill lives on the sliding thumb (positioned from JS); the
@@ -1014,13 +1057,13 @@ div.empty .big svg { width: 30px; height: 30px; }
 }
 .bal-hero-num.is-owed { color: var(--accent-text); }
 .bal-hero-num.is-clear { color: var(--success-text); }
-.bal-hero-sub { font-size: 0.76rem; color: var(--text-muted); margin-top: 0.15rem; }
+.bal-hero-sub { font-size: var(--text-sm); color: var(--text-muted); margin-top: 0.15rem; }
 
 /* ---------- Pauschale card: status-forward header ---------- */
 .ag-status-row { display: flex; gap: 0.35rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.45rem; }
 .ag-accrued { font-weight: 800; font-size: 1.1rem; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
 .ag-accrued.is-open { color: var(--accent-text); }
-.ag-accrued .unit { font-size: 0.74rem; font-weight: 600; color: var(--text-muted); letter-spacing: 0; }
+.ag-accrued .unit { font-size: var(--text-sm); font-weight: 600; color: var(--text-muted); letter-spacing: 0; }
 
 /* ---------- Section rhythm: eyebrow section headers ---------- */
 .section-head { margin-top: 1.6rem; margin-bottom: 0.7rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--border); align-items: baseline; }
@@ -1046,7 +1089,7 @@ div.empty .big svg { width: 30px; height: 30px; }
 .c-tip {
     position: absolute; pointer-events: none; z-index: 5; background: var(--bg);
     color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm);
-    padding: 0.35rem 0.5rem; font-size: 0.76rem; line-height: 1.35; box-shadow: var(--shadow);
+    padding: 0.35rem 0.5rem; font-size: var(--text-sm); line-height: 1.35; box-shadow: var(--shadow);
     opacity: 0; transform: translate(-50%, -125%); transition: opacity 0.1s; white-space: nowrap;
 }
 .c-tip .k { color: var(--text-muted); display: block; font-size: 0.7rem; }
@@ -1077,7 +1120,7 @@ div.empty .big svg { width: 30px; height: 30px; }
 .timeline li { position: relative; padding: 0 0 0.9rem 1.3rem; border-left: 2px solid var(--border); }
 .timeline li::before { content: ""; position: absolute; left: -6px; top: 3px; width: 10px; height: 10px; border-radius: 50%; background: var(--primary); }
 .timeline li:last-child { border-left-color: transparent; }
-.timeline .t-time { font-size: 0.78rem; color: var(--text-muted); }
+.timeline .t-time { font-size: var(--text-sm); color: var(--text-muted); }
 
 /* ---------- Accessibility: respect reduced motion ---------- */
 /* Bewegung reduzieren heißt NICHT Rückmeldung entfernen. Der Pauschal-Reset deckelt
@@ -1119,7 +1162,7 @@ div.empty .big svg { width: 30px; height: 30px; }
 .cal-ev{display:block;font-size:.68rem;line-height:1.25;padding:1px 5px;border-radius:6px;color:#fff;
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-decoration:none}
 .cal-pickup{background:#0F7A73}.cal-reserve{background:#5B6DC8}.cal-due{background:#B4552F}.cal-wish{background:#8a6d1f}
-.cal-legend{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.6rem;font-size:.75rem;align-items:center}
+.cal-legend{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.6rem;font-size:var(--text-sm);align-items:center}
 .cal-legend .cal-ev{display:inline-block}
 @media (max-width:639px){.cal-cell{min-height:56px}.cal-ev{font-size:.6rem}}
 /* Datei-Anhaenge (Hundert 57) */
@@ -1127,7 +1170,7 @@ div.empty .big svg { width: 30px; height: 30px; }
 .att-row:last-of-type{border-bottom:0}
 .att-ic{flex:none;color:var(--text-muted)}
 .att-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.att-meta{flex:none;font-size:.78rem;color:var(--text-muted);font-variant-numeric:tabular-nums}
+.att-meta{flex:none;font-size:var(--text-sm);color:var(--text-muted);font-variant-numeric:tabular-nums}
 /* Portal-Anliegen-Formulare (Hundert 85/87) */
 .portal-form{display:flex;flex-wrap:wrap;gap:.45rem;margin:.35rem 0 .2rem}
 .portal-form input{flex:1 1 160px;min-width:0;padding:.5rem .6rem;border:1px solid var(--border);
@@ -1144,7 +1187,7 @@ div.empty .big svg { width: 30px; height: 30px; }
    trotzdem: die kompakte Hoehe gilt nur noch fuer Maus/Stift.
    Zusammengefuehrt mit der zweiten, 938 Zeilen entfernten Regel fuer denselben
    Selektor. */
-.portal-head .portal-lang{margin-left:auto;align-self:flex-start;flex-shrink:0;padding:.3rem .6rem;font-size:.8rem}
+.portal-head .portal-lang{margin-left:auto;align-self:flex-start;flex-shrink:0;padding:.3rem .6rem;font-size:.8rem;border-color:var(--text-muted)}
 @media (pointer: fine) {
     .portal-head .portal-lang{min-height:32px}
 }
@@ -1153,7 +1196,7 @@ div.empty .big svg { width: 30px; height: 30px; }
 .tl-row:last-of-type{border-bottom:0}
 .tl-ic{flex:none;color:var(--text-muted);transform:translateY(2px)}
 .tl-text{flex:1;font-size:.9rem}
-.tl-date{flex:none;font-size:.78rem;color:var(--text-muted);font-variant-numeric:tabular-nums}
+.tl-date{flex:none;font-size:var(--text-sm);color:var(--text-muted);font-variant-numeric:tabular-nums}
 /* Fotoreihenfolge + Titelbild (Hundert 58) */
 .photo-thumb{position:relative}
 .photo-thumb .title-badge{position:absolute;top:4px;left:4px;background:var(--primary);color:var(--on-primary);
@@ -1230,7 +1273,7 @@ div.empty .big svg { width: 30px; height: 30px; }
 .tf-item-ic { display: flex; color: var(--text-muted); flex: none; }
 .tf-item-txt { flex: 1; min-width: 0; }
 .tf-item-title { font-weight: 600; font-size: 0.9rem; }
-.tf-item-sub { color: var(--text-muted); font-size: 0.78rem; margin-top: 0.05rem; }
+.tf-item-sub { color: var(--text-muted); font-size: var(--text-sm); margin-top: 0.05rem; }
 .tf-item .badge { flex: none; margin-right: 0.1rem; }
 /* Recovery-codes row is a disclosure button that reveals the regenerate panel. */
 .tf-toggle { width: 100%; font: inherit; color: inherit; cursor: pointer; transition: border-color 0.15s ease, background 0.15s ease; }
@@ -1370,7 +1413,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .stat .label { grid-column: 1; grid-row: 2; }
 .stat .stat-note { grid-column: 1 / -1; }
 .stat.tone-teal .value,.stat.tone-green .value{ font-size:1.3rem; }
-.stat .value .yoy{ display:block; width:fit-content; font-size:.75rem; margin-top:.35rem; }
+.stat .value .yoy{ display:block; width:fit-content; font-size:var(--text-sm); margin-top:.35rem; }
 .dashboard-charts { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.75rem; margin-bottom: 0.75rem; }
 .dashboard-charts > .chart-card { min-width: 0; margin-bottom: 0; }
 @media (min-width: 640px) {
@@ -1467,7 +1510,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .ag-body .ag-status-row{ margin-bottom:0; }
 .ag-body .ag-progress{ margin:0; }
 /* Progress caption → quiet sentence, not a shouty uppercase mono label. */
-.ag-progress-cap{ font-family:inherit; font-weight:500; font-size:.75rem; letter-spacing:0; text-transform:none; color:var(--text-muted); margin-top:.35rem; }
+.ag-progress-cap{ font-family:inherit; font-weight:500; font-size:var(--text-sm); letter-spacing:0; text-transform:none; color:var(--text-muted); margin-top:.35rem; }
 
 /* ===== REDESIGN · iteration 6 (Pauschale: open rest, %-marker, one-tap, done) ===== */
 /* Progress bar + a % marker on the same row. */
@@ -1522,9 +1565,9 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .sched-controls input[type=text]{ min-width:11rem; flex:1; font-family:var(--font-mono); }
 .sched-lbl{ font-size:.72rem; color:var(--text-muted); margin:0; }
 .sched-preview{ margin:.55rem 0 .4rem; }
-.sched-cron{ display:inline-block; font-family:var(--font-mono); font-size:.78rem; background:var(--bg-elev-2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:.12rem .4rem; }
+.sched-cron{ display:inline-block; font-family:var(--font-mono); font-size:var(--text-sm); background:var(--bg-elev-2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:.12rem .4rem; }
 .sched-runs{ margin-top:.35rem; }
-.sched-run{ font-family:var(--font-mono); font-size:.75rem; color:var(--text); }
+.sched-run{ font-family:var(--font-mono); font-size:var(--text-sm); color:var(--text); }
 .sched-keep{ display:flex; align-items:center; gap:.5rem; margin-top:.5rem; }
 .sched-keep input{ width:5rem; }
 .sched-actions{ display:flex; flex-wrap:wrap; gap:.5rem; margin-top:.9rem; }
@@ -1540,7 +1583,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .pay-row.is-reversed .pay-amt{ text-decoration:line-through; }
 .pay-row .pay-main, .pay-head .pay-main{ flex:1; min-width:0; }
 .pay-row .pay-method, .pay-head .pay-method{ font-weight:650; font-size:.9rem; }
-.pay-row .pay-date, .pay-head .pay-date{ font-size:.75rem; color:var(--text-muted); overflow-wrap:anywhere; }
+.pay-row .pay-date, .pay-head .pay-date{ font-size:var(--text-sm); color:var(--text-muted); overflow-wrap:anywhere; }
 .pay-row .pay-amt, .pay-head .pay-amt{ font-weight:750; font-size:.98rem; font-variant-numeric:tabular-nums; color:var(--success-text, var(--success)); white-space:nowrap; }
 
 /* Payment card with a collapsible attribution breakdown (which Gefährt/Zeitraum). */
@@ -1548,7 +1591,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .pay-card.is-reversed{ opacity:.5; }
 .pay-card.is-reversed .pay-amt{ text-decoration:line-through; }
 .pay-head{ display:flex; align-items:center; gap:.6rem; } /* .pay-* shared with .pay-row above */
-.pay-attr1{ margin-top:.4rem; font-size:.78rem; color:var(--text-muted); overflow-wrap:anywhere; }
+.pay-attr1{ margin-top:.4rem; font-size:var(--text-sm); color:var(--text-muted); overflow-wrap:anywhere; }
 .pay-attr{ margin-top:.5rem; border-top:1px dashed var(--border); padding-top:.45rem; }
 .pay-attr > summary{ list-style:none; cursor:pointer; display:flex; align-items:center; gap:.4rem; font-size:.8rem; color:var(--text-muted); }
 .pay-attr > summary::-webkit-details-marker{ display:none; }
@@ -1557,9 +1600,9 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .pay-attr .attr-list{ margin-top:.45rem; display:flex; flex-direction:column; gap:.34rem; }
 .attr-row{ display:grid; grid-template-columns:1fr auto; gap:.6rem; align-items:baseline; font-size:.82rem; }
 .attr-lab{ color:var(--text); min-width:0; }
-.attr-per{ color:var(--text-muted); font-size:.76rem; font-variant-numeric:tabular-nums; margin-top:.1rem; }
+.attr-per{ color:var(--text-muted); font-size:var(--text-sm); font-variant-numeric:tabular-nums; margin-top:.1rem; }
 .attr-amt{ color:var(--text-muted); font-weight:600; white-space:nowrap; font-variant-numeric:tabular-nums; }
-.inv-bills{ font-size:.75rem; color:var(--text-muted); margin-top:.15rem; overflow-wrap:anywhere; }
+.inv-bills{ font-size:var(--text-sm); color:var(--text-muted); margin-top:.15rem; overflow-wrap:anywhere; }
 
 /* Rechnungs-Einstellungen + Rechnungsbeleg */
 .bill-field{ margin:.5rem 0; }
@@ -1567,30 +1610,36 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .bill-field textarea{ width:100%; resize:vertical; }
 .inv-link{ text-decoration:none; color:inherit; }
 
-.invoice-doc{ background:#fff; color:#14202f; border-radius:var(--radius); box-shadow:var(--card-shadow); padding:1.4rem 1.5rem; max-width:820px; margin:0 auto; }
+/* Der Rand ist neu: der Schatten ist schwarz, auf dunklem Grund war das weisse
+   Blatt dadurch kantenlos. */
+.invoice-doc{ background:var(--doc-paper); color:var(--doc-ink); border:1px solid var(--doc-rule); border-radius:var(--radius); box-shadow:var(--card-shadow); padding:1.4rem 1.5rem; max-width:820px; margin:0 auto; }
+/* Der Fokusring folgte var(--primary), also dem APP-Theme, auf festgenageltes
+   weisses Papier: in Dunkel gemessene 2,58:1 gegen die 3:1 aus WCAG 1.4.11. Die
+   Positionstabelle ist per role=region/tabindex=0 eine echte Fokusstation. */
+.invoice-doc :focus-visible{ outline-color: var(--doc-ink); }
 .invoice-doc .pre{ white-space:pre-line; }
-.inv-head{ display:flex; justify-content:space-between; align-items:flex-start; gap:1rem; border-bottom:2px solid #14202f; padding-bottom:.8rem; }
+.inv-head{ display:flex; justify-content:space-between; align-items:flex-start; gap:1rem; border-bottom:2px solid var(--doc-rule-strong); padding-bottom:.8rem; }
 .inv-seller-name{ font-weight:750; font-size:1.05rem; }
-.invoice-doc .inv-muted{ color:#56657c; font-size:.82rem; line-height:1.45; }
+.invoice-doc .inv-muted{ color:var(--doc-ink-muted); font-size:.82rem; line-height:1.45; }
 .inv-title{ text-align:right; }
-.inv-title .inv-h{ font-weight:800; letter-spacing:.12em; font-size:1.2rem; }
-.inv-title .inv-num{ color:#56657c; font-variant-numeric:tabular-nums; }
+.inv-title .inv-h{ font-weight:800; letter-spacing:.12em; font-size:1.2rem; color:var(--doc-ink-strong); }
+.inv-title .inv-num{ color:var(--doc-ink-muted); font-variant-numeric:tabular-nums; }
 .inv-parties{ display:flex; justify-content:space-between; gap:1rem; margin:1rem 0; flex-wrap:wrap; }
-.inv-label{ font-size:.66rem; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:#56657c; }
+.inv-label{ font-size:.66rem; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--doc-ink-muted); }
 .inv-strong{ font-weight:700; }
 .inv-meta{ min-width:200px; }
 .inv-metarow{ display:flex; justify-content:space-between; gap:1rem; font-size:.85rem; padding:.1rem 0; }
 .inv-table{ width:100%; border-collapse:collapse; margin:.6rem 0; font-size:.88rem; }
-.inv-table th, .inv-table td{ padding:.45rem .5rem; border-bottom:1px solid #e2e9f3; text-align:left; }
-.inv-table th{ font-size:.66rem; text-transform:uppercase; letter-spacing:.06em; color:#56657c; border-bottom:1.5px solid #14202f; }
+.inv-table th, .inv-table td{ padding:.45rem .5rem; border-bottom:1px solid var(--doc-rule); text-align:left; }
+.inv-table th{ font-size:.66rem; text-transform:uppercase; letter-spacing:.06em; color:var(--doc-ink-muted); background:var(--doc-fill); border-bottom:1.5px solid var(--doc-rule-strong); }
 .inv-table .r{ text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .inv-totals{ margin-left:auto; max-width:320px; margin-top:.4rem; }
 .inv-totrow{ display:flex; justify-content:space-between; padding:.25rem 0; font-size:.9rem; }
 .inv-totrow .num{ font-variant-numeric:tabular-nums; }
-.inv-totrow.strong{ font-weight:800; font-size:1.05rem; border-top:2px solid #14202f; margin-top:.2rem; padding-top:.45rem; }
-.inv-note{ margin-top:1rem; font-size:.82rem; color:#56657c; }
+.inv-totrow.strong{ font-weight:800; font-size:1.05rem; color:var(--doc-ink-strong); border-top:2px solid var(--doc-rule-strong); margin-top:.2rem; padding-top:.45rem; }
+.inv-note{ margin-top:1rem; font-size:.82rem; color:var(--doc-ink-muted); }
 .inv-pay{ margin-top:.7rem; font-size:.85rem; font-weight:600; }
-.inv-footer{ margin-top:1.4rem; padding-top:.6rem; border-top:1px solid #e2e9f3; font-size:.76rem; color:#56657c; white-space:pre-line; }
+.inv-footer{ margin-top:1.4rem; padding-top:.6rem; border-top:1px solid var(--doc-rule); font-size:var(--text-sm); color:var(--doc-ink-muted); white-space:pre-line; }
 
 @media print{
     html, body{ background:#fff !important; }
@@ -1629,7 +1678,18 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
   --gpink:#eef4fb; --gpmuted:#8ba0b6; --gpfaint:#5f7488;
   --gpline:rgba(255,255,255,.08); --gpline2:rgba(255,255,255,.14);
   --gpglass:rgba(255,255,255,.04); --gpglass2:rgba(255,255,255,.06);
-  --gpbusy:#f26b63; --gpresv:#eab452; --gpmove:#4ea8f5; --gphall:#26a56b; --gpexcl:#6b829a;
+  /* --gpbusy trug DREI unvereinbare Bedeutungen: belegtes Gefaehrt, ungueltige
+     Platzierung und Loeschen. Das hatte zwei Folgen. Erstens war der haeufigste,
+     ERWUENSCHTE Zustand eines Lagerbetriebs — "Belegt", also ein zahlender Kunde —
+     in der Fehlerfarbe gemalt, waehrend "frei" gruen leuchtete; die Halle alarmierte
+     bei Erfolg. Zweitens zeichnete .gp-warnb seinen Rand in derselben Farbe wie den
+     Block darunter, war also genau auf den fehlerhaften Bloecken unsichtbar.
+     Jetzt: Rot NUR fuer Fehler und Zerstoerung, Belegt gruen — damit stimmt es auch
+     mit badge-stored in App und Portal ueberein, wo dasselbe Gefaehrt gruen ist.
+     Weisse Blockschrift auf #2f9e63 misst 3,39:1 und damit MEHR als auf dem alten
+     Rot (2,98:1). */
+  --gpoccupied:#2f9e63; --gpinvalid:#f26b63;
+  --gpresv:#eab452; --gpmove:#4ea8f5; --gphall:#26a56b; --gpexcl:#6b829a;
   --gpbg:#070d14; --gpbg2:#0a141e; --gpr:16px;
   /* The planner cards carry the global `card` class, and `.card{background:var(--card-bg)
      !important}` would force them white in light mode. Pin --card-bg to the dark card colour
@@ -1660,7 +1720,9 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-occ{display:flex;align-items:center;gap:.5rem;font-size:.8rem;color:var(--gpmuted)}
 .gp-occ b{color:var(--gpink);font-size:.92rem}
 .gp-bar{width:92px;height:7px;border-radius:99px;background:rgba(255,255,255,.08);overflow:hidden;display:block}
-.gp-bar i{display:block;height:100%;background:linear-gradient(90deg,var(--gphall),var(--gpresv) 70%,var(--gpbusy))}
+/* Der Balken lief frueher gruen -> amber -> rot, je voller die Halle wurde. Fuer
+   ein Lager ist voll das Ziel; er laeuft jetzt von gedaempft nach gruen. */
+.gp-bar i{display:block;height:100%;background:linear-gradient(90deg,var(--gpfaint),var(--gpoccupied))}
 .gp-iconbtn{width:36px;height:36px;border-radius:10px;border:1px solid var(--gpline);background:var(--gpglass);color:var(--gpink);cursor:pointer;font-size:1rem}
 .gp-iconbtn:hover{border-color:var(--gpline2);background:var(--gpglass2)}
 
@@ -1672,20 +1734,24 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-canvas-top{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
 .gp-ctitle{font-size:.92rem;font-weight:650}
 .gp-toolbar{display:flex;align-items:center;gap:.35rem;flex-wrap:wrap}
-.gp-tbtn{border:1px solid var(--gpline);background:var(--gpglass);color:var(--gpink);font-size:.77rem;font-weight:600;padding:.38rem .6rem;border-radius:9px;cursor:pointer;font-family:inherit}
+.gp-tbtn{border:1px solid var(--gpline);background:var(--gpglass);color:var(--gpink);font-size:var(--text-sm);font-weight:600;padding:.38rem .6rem;border-radius:9px;cursor:pointer;font-family:inherit}
 .gp-tbtn:hover{border-color:var(--gpline2)}
 .gp-tbtn.on{border-color:var(--gpteal);color:var(--gpteal)}
 .gp-tbtn.btn-primary{background:var(--gpteal);color:var(--gpteal-ink);border-color:var(--gpteal)}
 .gp-tbtn:disabled{opacity:.4;cursor:not-allowed}
 .gp-seg{display:flex;align-items:center;gap:.3rem;background:rgba(0,0,0,.22);border:1px solid var(--gpline);border-radius:10px;padding:3px}
-.gp-seg button{border:0;background:transparent;color:var(--gpmuted);font-size:.76rem;font-weight:600;padding:.3rem .55rem;border-radius:8px;cursor:pointer;font-family:inherit}
+.gp-seg button{border:0;background:transparent;color:var(--gpmuted);font-size:var(--text-sm);font-weight:600;padding:.3rem .55rem;border-radius:8px;cursor:pointer;font-family:inherit}
 .gp-seg button.on{background:var(--gpteal);color:var(--gpteal-ink)}
 
 .gp-metrics{display:flex;gap:.45rem;flex-wrap:wrap}
-.gp-metric{flex:1;min-width:82px;background:rgba(0,0,0,.2);border:1px solid var(--gpline);border-radius:11px;padding:.42rem .55rem}
-.gp-mv{font-size:1.02rem;font-weight:750}
-.gp-mv.ok{color:#6fe0a6}.gp-mv.busy{color:#f4948e}.gp-mv.excl{color:#a8b8c8}
+.gp-metric{flex:1 1 auto;min-width:92px;background:rgba(0,0,0,.2);border:1px solid var(--gpline);border-radius:11px;padding:.42rem .55rem}
+.gp-mv{font-size:1.02rem;font-weight:750;white-space:nowrap}
+/* "Belegt" ist fuer einen Lagerbetrieb kein Alarm, sondern Umsatz. */
+.gp-mv.ok{color:#6fe0a6}.gp-mv.busy{color:#6fe0a6}.gp-mv.excl{color:#a8b8c8}
 .gp-ml{font-size:.6rem;letter-spacing:.05em;text-transform:uppercase;color:var(--gpmuted)}
+/* SI-Einheiten sind gross-/kleinschreibungsempfindlich: das uppercase der Zeile
+   machte aus "126 m²" ein "126 M²". Quadratmeter, nicht Mega-irgendwas. */
+.gp-ml .gp-unit{text-transform:none}
 
 .gp-planwrap{overflow:auto;scrollbar-gutter:stable;padding:40px;display:flex;justify-content:safe center;align-items:safe center;border-radius:12px;background:#060b11;border:1px solid var(--gpline);box-shadow:inset 0 0 60px -20px #000}
 .gp-plan{position:relative;margin:0;flex:none;touch-action:none}
@@ -1730,14 +1796,14 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-wallpop-btn{background:rgba(255,255,255,.06);border:1px solid var(--gpline,#2a3b4d);color:var(--gpink,#eaf1f8);border-radius:6px;cursor:pointer;font-size:.9rem;line-height:1;padding:2px 6px;display:inline-flex;align-items:center;justify-content:center}
 .gp-wallpop-btn:hover{border-color:var(--gpteal2);color:var(--gpteal2)}
 /* click-to-show room area badge (sits above vehicles/zones) */
-.gp-roombadge{position:absolute;z-index:9;transform:translate(-50%,-50%);background:rgba(4,20,16,.9);border:1px solid var(--gpteal2);color:#8ff0e0;font-size:.78rem;font-weight:700;padding:3px 9px;border-radius:9px;pointer-events:none;white-space:nowrap;box-shadow:0 4px 14px -4px rgba(0,0,0,.6)}
+.gp-roombadge{position:absolute;z-index:9;transform:translate(-50%,-50%);background:rgba(4,20,16,.9);border:1px solid var(--gpteal2);color:#8ff0e0;font-size:var(--text-sm);font-weight:700;padding:3px 9px;border-radius:9px;pointer-events:none;white-space:nowrap;box-shadow:0 4px 14px -4px rgba(0,0,0,.6)}
 .gp-walllab.sub{fill:#9fb2c4;font-size:9.5px;font-weight:600;stroke-width:2.4px}
 .gp-wallpop-lab{font-size:.7rem;color:var(--gpmuted,#9fb2c4);font-weight:600}
 /* inline wall quick-edit popover (length + delete) */
 .gp-wallpop{position:absolute;z-index:9;display:flex;align-items:center;gap:.3rem;background:var(--gpbg2,#0f1c26);border:1px solid var(--gpline,#2a3b4d);border-radius:9px;padding:.25rem .4rem;box-shadow:0 8px 22px -8px rgba(0,0,0,.65);transform:translate(-50%,-100%)}
 .gp-wallpop .gp-lenin{width:66px}
 .gp-wallpop .muted{font-size:.72rem}
-.gp-wallpop-del{background:none;border:0;color:var(--gpbusy,#e5484d);cursor:pointer;font-size:.95rem;line-height:1;padding:2px 3px;border-radius:6px;display:inline-flex;align-items:center;justify-content:center}
+.gp-wallpop-del{background:none;border:0;color:var(--gpinvalid,#e5484d);cursor:pointer;font-size:.95rem;line-height:1;padding:2px 3px;border-radius:6px;display:inline-flex;align-items:center;justify-content:center}
 .gp-wallpop-del:hover{background:rgba(229,72,77,.15)}
 /* transparent overlay that captures pointer input while a wall/opening tool or edit mode is active */
 .gp-drawoverlay{position:absolute;inset:0;z-index:8;touch-action:none;cursor:crosshair}
@@ -1767,9 +1833,11 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-block .gp-lab{position:absolute;left:6px;right:6px;bottom:4px;z-index:2;color:#fff;display:flex;flex-direction:column}
 .gp-block .gp-who{font-size:.68rem;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 2px rgba(0,0,0,.6)}
 .gp-block .gp-dim{font-size:.57rem;color:rgba(255,255,255,.8)}
-.gp-block .gp-warnb{position:absolute;top:3px;right:4px;z-index:2;font-size:.57rem;background:#2a1211;color:#ffb4ad;border:1px solid var(--gpbusy);border-radius:5px;padding:0 4px;font-weight:700}
+/* Rand in der Schriftfarbe, nicht in der Blockfarbe: sonst verschwindet die
+   Warnung genau auf den Bloecken, die sie meldet. */
+.gp-block .gp-warnb{position:absolute;top:3px;right:4px;z-index:2;font-size:.57rem;background:#2a1211;color:#ffb4ad;border:1px solid #ffb4ad;border-radius:5px;padding:0 4px;font-weight:700}
 .gp-block::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(255,255,255,.06),rgba(0,0,0,.05) 30%,rgba(0,0,0,.55));pointer-events:none}
-.gp-block.veh.busy{background:var(--gpbusy)}
+.gp-block.veh.busy{background:var(--gpoccupied)}
 .gp-block.veh.resv{background:var(--gpresv)}
 .gp-block.veh.move{background:var(--gpmove)}
 .gp-block.excl{cursor:grab}
@@ -1800,7 +1868,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-block.dimctx{opacity:.5;cursor:default}
 .gp-block.sel{box-shadow:0 0 0 2px #fff,0 0 0 4px var(--gpteal2),0 12px 24px -8px rgba(0,0,0,.6);z-index:6;overflow:visible}
 .gp-block.moving{opacity:.94;z-index:9;cursor:grabbing}
-.gp-block.invalid{outline:2px solid var(--gpbusy);outline-offset:-1px}
+.gp-block.invalid{outline:2px solid var(--gpinvalid);outline-offset:-1px}
 /* 8 resize handles (4 corners + 4 edges); opposite side stays anchored. Shown on the
    selected block (which is overflow:visible), rotate with the block when it is turned. */
 .gp-rz{position:absolute;width:12px;height:12px;border-radius:3px;background:#eaf6ff;border:1px solid var(--gpbg2);z-index:7;box-shadow:0 1px 4px rgba(0,0,0,.55)}
@@ -1823,7 +1891,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
    in the status colour. Labels keep the base white-on-dark styling. */
 .gp-block.veh.gp-symmode{background:transparent}
 .gp-block.veh.gp-symmode::after{background:none}
-.gp-block.veh.gp-symmode.busy{--sc:var(--gpbusy);--scg:rgba(242,107,99,.40)}
+.gp-block.veh.gp-symmode.busy{--sc:var(--gpoccupied);--scg:rgba(47,158,99,.40)}
 .gp-block.veh.gp-symmode.resv{--sc:var(--gpresv);--scg:rgba(234,180,82,.40)}
 .gp-block.veh.gp-symmode.move{--sc:var(--gpmove);--scg:rgba(78,168,245,.40)}
 /* :not(.sel) so the white/teal selection ring (also a box-shadow) still wins when selected */
@@ -1876,7 +1944,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-block.gp-tiny .gp-stbadge{top:1px;left:1px;font-size:.5rem;padding:0 2px;background:rgba(0,0,0,.55)}
 
 .gp-preview{position:absolute;z-index:8;border-radius:7px;pointer-events:none;border:2px solid var(--gphall);background:rgba(38,165,107,.22)}
-.gp-preview.bad{border-color:var(--gpbusy);background:rgba(242,107,99,.22)}
+.gp-preview.bad{border-color:var(--gpinvalid);background:rgba(242,107,99,.22)}
 .gp-pl{position:absolute;left:50%;top:-10px;transform:translateX(-50%);font-size:.57rem;font-weight:700;white-space:nowrap;background:var(--gpbg2);padding:0 5px;border-radius:5px;border:1px solid currentcolor}
 .gp-ghost{position:fixed;z-index:9000;pointer-events:none;background:#12202d;border:1px solid var(--gpteal2);border-radius:10px;padding:.32rem .55rem;box-shadow:0 20px 40px -14px #000;font-size:.72rem;font-weight:700;color:var(--gpink)}
 
@@ -1886,7 +1954,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 
 .gp-rail{display:flex;flex-direction:column;gap:.8rem}
 .gp-rcard{padding:.8rem .85rem;display:flex;flex-direction:column}
-.gp-rcard h3{margin:0 0 .55rem;font-size:.74rem;letter-spacing:.12em;text-transform:uppercase;color:var(--gpmuted);font-weight:600;display:flex;justify-content:space-between;align-items:center}
+.gp-rcard h3{margin:0 0 .55rem;font-size:var(--text-sm);letter-spacing:.12em;text-transform:uppercase;color:var(--gpmuted);font-weight:600;display:flex;justify-content:space-between;align-items:center}
 .gp-pal{display:flex;flex-direction:column;gap:.4rem}
 .gp-vehc{display:flex;align-items:center;gap:.5rem;background:rgba(0,0,0,.2);border:1px solid var(--gpline);border-radius:11px;padding:.4rem .5rem;cursor:grab;touch-action:none;user-select:none}
 .gp-vehc:hover{border-color:var(--gpteal2)}
@@ -1903,9 +1971,9 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-fit{background:rgba(0,0,0,.2);border:1px solid var(--gpline);border-radius:10px;padding:.5rem .6rem;margin-top:.5rem}
 .gp-fit h4{margin:0 0 .35rem;font-size:.6rem;letter-spacing:.1em;text-transform:uppercase;color:var(--gpmuted);display:flex;justify-content:space-between}
 .gp-line{display:flex;justify-content:space-between;font-size:.72rem;padding:.11rem 0}
-.gp .ok{color:#6fe0a6}.gp .bad{color:var(--gpbusy);font-weight:700}
+.gp .ok{color:#6fe0a6}.gp .bad{color:var(--gpinvalid);font-weight:700}
 .gp-shapegrid{display:grid;grid-template-columns:1fr 1fr;gap:.45rem;margin-bottom:.55rem}
-.gp-shapegrid button{border:1px solid var(--gpline);background:rgba(0,0,0,.2);color:var(--gpink);border-radius:10px;padding:.5rem;cursor:pointer;font-size:.75rem;font-weight:600;font-family:inherit}
+.gp-shapegrid button{border:1px solid var(--gpline);background:rgba(0,0,0,.2);color:var(--gpink);border-radius:10px;padding:.5rem;cursor:pointer;font-size:var(--text-sm);font-weight:600;font-family:inherit}
 .gp-shapegrid button.on{border-color:var(--gpteal);color:var(--gpteal)}
 .gp-grid2{display:grid;grid-template-columns:1fr 1fr;gap:.5rem .65rem}
 .gp-field{display:flex;flex-direction:column;gap:.22rem}
@@ -1914,9 +1982,9 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-stepper button{width:26px;height:26px;border-radius:8px;border:1px solid var(--gpline);background:var(--gpglass);color:var(--gpink);font-size:1rem;cursor:pointer;line-height:1;font-family:inherit}
 .gp-val{min-width:46px;text-align:center;font-weight:700}
 .gp-addrow{display:grid;grid-template-columns:1fr 1fr;gap:.42rem}
-.gp-addrow .btn{font-size:.76rem}
+.gp-addrow .btn{font-size:var(--text-sm)}
 .gp-exlist{display:flex;flex-direction:column}
-.gp-exitem{display:flex;align-items:center;gap:.5rem;padding:.36rem .5rem;border:1px solid var(--gpline);border-radius:10px;background:rgba(0,0,0,.18);cursor:pointer;font-size:.78rem;margin-top:.4rem}
+.gp-exitem{display:flex;align-items:center;gap:.5rem;padding:.36rem .5rem;border:1px solid var(--gpline);border-radius:10px;background:rgba(0,0,0,.18);cursor:pointer;font-size:var(--text-sm);margin-top:.4rem}
 .gp-exitem.on{border-color:var(--gpteal2)}
 .gp-sw{width:12px;height:12px;border-radius:4px;flex:none;background:#2a3b4d}
 /* Die Farbtupfer der Legende bleiben bewusst literal: sie sind EINE geschlossene
@@ -1962,6 +2030,9 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-hallrow{display:flex;gap:.45rem;align-items:center}
 /* rotate handle (free rotation, top-centre inside the block so overflow:hidden won't clip it) */
 .gp-rot{position:absolute;left:50%;top:-22px;transform:translateX(-50%);width:13px;height:13px;border-radius:50%;background:var(--gpteal);border:1.5px solid var(--gpbg2);cursor:grab;z-index:8}
+/* 13x13 ist als Ziehpunkt unter jeder Schwelle. Wie bei .gp-rz vergroessert ein
+   unsichtbares Pseudo-Element den Griff auf ~29px, ohne das Bild zu veraendern. */
+.gp-rot::before{content:"";position:absolute;inset:-8px}
 /* direct numeric inputs in the dim steppers + Tor zone styling */
 .gp-stepin{width:100%;min-width:0;background:var(--gpbg2);border:1px solid var(--gpline2);color:var(--gpink);border-radius:8px;padding:.28rem .3rem;font:inherit;font-size:.82rem;text-align:center}
 .gp-inforo{width:100%;background:var(--gpglass);border:1px dashed var(--gpline2);color:var(--gpink);border-radius:8px;padding:.34rem .3rem;font-size:.82rem;font-weight:650;text-align:center;cursor:default}
@@ -1997,7 +2068,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 /* vertex context menu (shown on click) */
 .gp-vertmenu{position:absolute;z-index:15;transform:translate(-50%,-100%);background:#0c1a26;border:1px solid var(--gpline2);border-radius:9px;padding:.3rem;display:flex;flex-direction:column;gap:.25rem;box-shadow:0 12px 26px -12px #000}
 .gp-vm-title{font-size:.6rem;color:var(--gpmuted);text-transform:uppercase;letter-spacing:.08em;padding:0 .2rem}
-.gp-vm-btn{background:var(--gpglass);border:1px solid var(--gpline);color:var(--gpink);border-radius:7px;padding:.3rem .5rem;font:inherit;font-size:.76rem;cursor:pointer;white-space:nowrap}
+.gp-vm-btn{background:var(--gpglass);border:1px solid var(--gpline);color:var(--gpink);border-radius:7px;padding:.3rem .5rem;font:inherit;font-size:var(--text-sm);cursor:pointer;white-space:nowrap}
 .gp-vm-btn.danger{color:#ffb4ad;border-color:rgba(242,107,99,.4)}
 .gp-vm-btn:hover{border-color:var(--gpline2)}
 .gp-vm-note{font-size:.72rem;color:var(--gpmuted);padding:0 .3rem;white-space:nowrap}
@@ -2006,7 +2077,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-rl-code{font-size:.56rem;font-weight:800;background:rgba(0,0,0,.36);padding:0 5px;border-radius:5px;white-space:nowrap;letter-spacing:.02em}
 .gp-rl-name{font-size:.68rem;font-weight:650;text-shadow:0 1px 2px rgba(0,0,0,.6);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px}
 .gp-rl-dim{font-size:.56rem;color:rgba(255,255,255,.8);white-space:nowrap}
-.gp-rl-warn{font-size:.55rem;background:#2a1211;color:#ffb4ad;border:1px solid var(--gpbusy);border-radius:5px;padding:0 4px;font-weight:700;white-space:nowrap}
+.gp-rl-warn{font-size:.55rem;background:#2a1211;color:#ffb4ad;border:1px solid #ffb4ad;border-radius:5px;padding:0 4px;font-weight:700;white-space:nowrap}
 .gp-block.excl .gp-rl-name{text-transform:uppercase;letter-spacing:.05em;font-size:.62rem;text-shadow:none}
 .gp-block.gp-small .gp-rl-code,.gp-block.gp-small .gp-rl-dim{display:none}
 .gp-block.gp-tiny .gp-rlabel{display:none}
@@ -2055,7 +2126,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .bk-drop:hover, .bk-drop.is-over, .bk-drop:focus-visible { border-color:var(--primary); color:var(--primary-ink); }
 .bk-drop:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
 .bk-drop b { color:var(--text); font-size:.92rem; }
-.bk-drop-sub { font-size:.78rem; }
+.bk-drop-sub { font-size:var(--text-sm); }
 .bk-drop-ic { display:flex; }
 .bk-filechip { display:inline-flex; align-items:center; gap:.5rem; margin-top:.45rem;
     font:500 .78rem var(--font-mono); background:var(--bg-elev); border:1px solid var(--border);
@@ -2079,7 +2150,9 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .cmdk-sub { color: var(--muted); font-size: .8rem; margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
 
 /* Customer self-service portal (public, read-only) */
-.portal-view { min-height: 100dvh; padding: max(1rem, env(safe-area-inset-top)) 1rem 2rem; background: var(--bg); display: flex; justify-content: center; }
+/* 100vh zuerst als Rueckfall — .login-view macht das laengst, und das Portal
+   ist die eine Flaeche, die auf fremden, oft aelteren Geraeten geoeffnet wird. */
+.portal-view { min-height: 100vh; min-height: 100dvh; padding: max(1rem, env(safe-area-inset-top)) 1rem 2rem; background: var(--bg); display: flex; justify-content: center; }
 .portal-wrap { width: 100%; max-width: 640px; display: flex; flex-direction: column; gap: 1rem; }
 .portal-head { display: flex; align-items: center; gap: .75rem; padding: .5rem .25rem; }
 .portal-head h1 { margin: 0; font-size: 1.3rem; }
@@ -2105,16 +2178,11 @@ a.portal-row.link:hover { color: var(--primary-ink); }
     .switch .track::after { background: ButtonText; }
 }
 
-/* QW4 — global reduced-motion safety net: neutralise any animation/transition not
-   already handled per-component, for vestibular-sensitive users (WCAG 2.3.3). */
-@media (prefers-reduced-motion: reduce) {
-    *, *::before, *::after {
-        animation-duration: .001ms !important;
-        animation-iteration-count: 1 !important;
-        transition-duration: .001ms !important;
-        scroll-behavior: auto !important;
-    }
-}
+/* Der QW4-Block stand hier: eine zweite, wortgleiche Kopie des globalen
+   reduced-motion-Resets aus dem Abschnitt "Accessibility: respect reduced
+   motion". Die .spin-Ausnahme dort gewinnt zwar ueber die Spezifitaet (gemessen),
+   aber zwei Kopien heissen, dass die naechste Aenderung an der wirkungslosen
+   landet. Eine Quelle. */
 
 /* QW3 — keyboard-shortcut help overlay (theme-aware via tokens) */
 .gp-help-backdrop{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(4,10,18,.6);-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}
@@ -2131,7 +2199,7 @@ a.portal-row.link:hover { color: var(--primary-ink); }
     background:color-mix(in srgb, var(--warning) 14%, transparent);color:var(--warning-text);
     border:1px solid color-mix(in srgb, var(--warning) 34%, transparent);font-size:.85rem}
 .gp-help-list{display:grid;grid-template-columns:auto 1fr;gap:.55rem .9rem;padding:16px 18px;align-items:baseline}
-.gp-help-k{justify-self:start;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.75rem;background:var(--bg-elev-2);border:1px solid var(--border);border-bottom-width:2px;border-radius:7px;padding:.2rem .45rem;color:var(--text);white-space:nowrap}
+.gp-help-k{justify-self:start;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:var(--text-sm);background:var(--bg-elev-2);border:1px solid var(--border);border-bottom-width:2px;border-radius:7px;padding:.2rem .45rem;color:var(--text);white-space:nowrap}
 .gp-help-d{font-size:.9rem;color:var(--text-muted)}
 .gp-help-foot{padding:12px 18px;border-top:1px solid var(--card-border);font-size:.8rem;color:var(--text-muted)}
 
@@ -2225,8 +2293,8 @@ a.portal-row.link:hover { color: var(--primary-ink); }
     color: var(--text); }
 .bkdot:hover .bkdot__pop, .bkdot:focus-within .bkdot__pop, .bkdot.is-open .bkdot__pop { display: flex; }
 .bkdot__pop-title { font-weight: 700; font-size: 0.85rem; }
-.bkdot__pop-meta { font-size: 0.78rem; color: var(--text-muted); }
-.bkdot__pop-link { font-size: 0.78rem; margin-top: 0.25rem; font-weight: 600;
+.bkdot__pop-meta { font-size: var(--text-sm); color: var(--text-muted); }
+.bkdot__pop-link { font-size: var(--text-sm); margin-top: 0.25rem; font-weight: 600;
     background: none; border: 0; padding: 0; cursor: pointer; color: var(--primary); text-align: left; }
 .bkdot__pop-link:hover { text-decoration: underline; }
 
@@ -2313,12 +2381,16 @@ a.portal-row.link:hover { color: var(--primary-ink); }
 .gp-toolbar { flex-wrap:wrap; }
 .gp-canvas-top { flex-wrap:wrap; gap:.5rem; }
 .gp-rail { min-width:0; }
+/* Der globale Fokusring nutzt var(--primary), also das APP-Theme — im hellen
+   Theme petrol auf dem dunklen Planer-Grund, gemessene 3,58:1 und der falsche
+   Farbton fuer jede andere Affordanz auf der Flaeche. */
+.gp :focus-visible{ outline-color: var(--gpteal); }
 .gp-canvas { min-width:0; }
 .gp-toolbar > .gp-seg { flex-wrap:wrap; }
 .gp-rcard h3 { flex-wrap:wrap; overflow-wrap:anywhere; gap:.5rem; }
 @media (max-width:900px) { .gp-stage, .gp.maxed .gp-stage { grid-template-columns:minmax(0,1fr); } }
-.login-heading { font-size:1.375rem; margin:0 0 .25rem; }
-.login-intro { font-size:.9375rem; color:var(--text-muted); margin:0 0 1.25rem; }
+/* .login-heading traegt jetzt .sr-only (Gliederung ja, Ballast nein), .login-intro
+   ist ersatzlos entfallen — beide Regeln waren damit tot. */
 .login-help { margin-top:1.25rem; border-top:1px solid var(--border); padding-top:1rem; font-size:.875rem; }
 .login-help summary { cursor:pointer; color:var(--text-muted); }
 .login-help p { margin:.75rem 0 0; color:var(--text-muted); }
@@ -2467,6 +2539,10 @@ button.portal-row { width:100%; border:0; border-bottom:1px solid var(--border);
        nicht in einer der drei alten Listen — genau der Fall, den der Kommentar
        oben beschreibt. Der Daumen ist top/bottom verankert und waechst mit. */
     .seg-mini button { min-height: 44px; }
+    /* Planer-Bedienleisten: diese sechs standen in keiner der alten Listen. .gp-rm
+       loescht eine Ausnahmeflaeche OHNE Rueckfrage und mass rund 18px — der
+       gefaehrlichste Knopf der Flaeche war der kleinste. */
+    .gp-iconbtn, .gp-stepper button, .gp-vedit, .gp-segd button, .gp-rm { min-height: 44px; min-width: 44px; }
     /* Auswahlkästchen der Mehrfachauswahl: 18px war auf dem Telefon kaum zu treffen. */
     .bulk-wrap > .bulk-cb { width: 24px; height: 24px; }
 }

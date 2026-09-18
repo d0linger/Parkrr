@@ -121,6 +121,15 @@
         box: '<path d="M3 8l9-5 9 5v8l-9 5-9-5V8Z"/><path d="M3 8l9 5 9-5M12 13v8"/>',
         car: '<path d="M4 16v-3.2c0-.6.2-1.2.6-1.7l2-2.6c.4-.5 1-.8 1.6-.8h6.4c.7 0 1.3.3 1.7.9l1.9 2.5c.4.5.6 1.1.6 1.7V16"/><circle cx="7.5" cy="17" r="1.8"/><circle cx="16.5" cy="17" r="1.8"/><path d="M3 16h18"/>',
         shield: '<path d="M12 3l7 3v6c0 4-3 6.5-7 8-4-1.5-7-4-7-8V6l7-3Z"/><path d="M9 12l2 2 4-4"/>',
+        // Planer-Werkzeuge. Die Leiste trug bis hierher Farb-Emoji (Magnet, Auto,
+        // Lineal, Bild) — genau das, was der Kommentar oben ausschliesst: sie
+        // rendern auf jedem Betriebssystem anders und waren die einzigen farbigen
+        // Glyphen in einer sonst einfarbigen Leiste.
+        magnet: '<path d="M6 4v7a6 6 0 0 0 12 0V4"/><path d="M6 4h4v7a2 2 0 0 0 4 0V4h4"/>',
+        ruler: '<path d="M3.8 14.2 14.2 3.8a1.2 1.2 0 0 1 1.7 0l4.3 4.3a1.2 1.2 0 0 1 0 1.7L9.8 20.2a1.2 1.2 0 0 1-1.7 0l-4.3-4.3a1.2 1.2 0 0 1 0-1.7Z"/><path d="M8 10l2 2M11 7l2 2M14 4.5l2 2"/>',
+        image: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.6"/><path d="M4 17l4.5-4.5L13 17M13 17l3-3 4 4"/>',
+        rotate: '<path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v5h-5"/>',
+        maximize: '<path d="M4 9V5a1 1 0 0 1 1-1h4M20 9V5a1 1 0 0 0-1-1h-4M4 15v4a1 1 0 0 0 1 1h4M20 15v4a1 1 0 0 1-1 1h-4"/>',
         unlock: '<rect x="4.5" y="10.5" width="15" height="9" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 7.5-1.5"/>',
         alert: '<path d="M12 3.5 22 20H2L12 3.5Z"/><path d="M12 10v4M12 17.3v.2"/>',
         key: '<circle cx="7.6" cy="15.4" r="4"/><path d="M10.4 12.6 20 3M16.5 6.5l2.5 2.5M14 9l2 2"/>',
@@ -1140,7 +1149,9 @@
         const [name, id] = raw.split('/');
         return { name: name || 'dashboard', id: id ? Number(id) : null };
     }
-    const TAB_FOR = { dashboard: 'dashboard', persons: 'persons', person: 'persons', vehicles: 'vehicles', vehicle: 'vehicles', finance: 'finance', tariffs: 'tariffs' };
+    // garage/hall sind Unteransichten des Planers und markieren denselben Reiter.
+    const TAB_FOR = { dashboard: 'dashboard', persons: 'persons', person: 'persons', vehicles: 'vehicles', vehicle: 'vehicles', finance: 'finance',
+        garages: 'garages', garage: 'garages', hall: 'garages' };
     function navigate(path) {
         if (('#/' + path) === location.hash) render();
         else location.hash = '#/' + path;
@@ -2484,7 +2495,7 @@
                 b.address ? el('div', { class: 'inv-muted pre' }, esc(b.address)) : null),
             el('div', { class: 'inv-meta' },
                 metaRow('Rechnungsdatum', new Date(iv.issued_on).toLocaleDateString('de-DE')),
-                iv.due_on ? metaRow('Fällig bis', new Date(iv.due_on).toLocaleDateString('de-DE')) : null,
+                iv.due_on ? metaRow('Fällig am', new Date(iv.due_on).toLocaleDateString('de-DE')) : null,
                 // § 11 Abs 1 Z 4: Leistungszeitraum (a period, or a single date if from==to).
                 iv.leistung_from ? metaRow('Leistungszeitraum', leistungLabel(iv.leistung_from, iv.leistung_to)) : null,
                 (iv.cancels_id && iv.cancels_number) ? metaRow('Storniert Rechnung', esc(iv.cancels_number)) : null,
@@ -2497,19 +2508,19 @@
             el('td', { class: 'r' }, eur(it.line_total)))));
         doc.append(el('div', { class: 'invoice-table-scroll', role: 'region', 'aria-label': 'Rechnungspositionen', tabindex: '0' }, el('table', { class: 'inv-table' },
             el('thead', {}, el('tr', {}, el('th', {}, 'Pos'), el('th', {}, 'Beschreibung'),
-                el('th', { class: 'r' }, 'Menge'), el('th', { class: 'r' }, iv.kleinunternehmer ? 'Betrag' : 'Netto'), el('th', { class: 'r' }, 'Summe'))),
+                el('th', { class: 'r' }, 'Menge'), el('th', { class: 'r' }, 'Einzel'), el('th', { class: 'r' }, 'Betrag'))),
             tb)));
         const tot = el('div', { class: 'inv-totals' });
         if (iv.kleinunternehmer) {
-            tot.append(totRow('Gesamt', eur(iv.total), true));
+            tot.append(totRow('Gesamtbetrag', eur(iv.total), true));
         } else {
-            tot.append(totRow('Netto', eur(iv.subtotal)));
-            tot.append(totRow('USt ' + fmtRate(iv.ust_rate) + ' %', eur(iv.tax_amount)));
-            tot.append(totRow('Gesamt (brutto)', eur(iv.total), true));
+            tot.append(totRow('Zwischensumme (netto)', eur(iv.subtotal)));
+            tot.append(totRow('USt ' + fmtRate(iv.ust_rate) + '%', eur(iv.tax_amount)));
+            tot.append(totRow('Gesamtbetrag', eur(iv.total), true));
         }
         doc.append(tot);
-        if (iv.kleinunternehmer) doc.append(el('div', { class: 'inv-note' }, 'Umsatzsteuerbefreit gemäß § 6 Abs. 1 Z 27 UStG (Kleinunternehmer).'));
-        if (s.iban && !invDocDead(iv)) doc.append(el('div', { class: 'inv-pay' }, 'Zahlbar auf: ' + esc(s.iban) + (s.bic ? ' · BIC ' + esc(s.bic) : '')));
+        if (iv.kleinunternehmer) doc.append(el('div', { class: 'inv-note' }, 'Kleinunternehmer gemäß § 6 Abs 1 Z 27 UStG — kein Ausweis von Umsatzsteuer.'));
+        if (s.iban && !invDocDead(iv)) doc.append(el('div', { class: 'inv-pay' }, 'Zahlbar auf IBAN ' + esc(s.iban) + (s.bic ? ' · BIC ' + esc(s.bic) : '') + (iv.due_on ? ' · bis ' + new Date(iv.due_on).toLocaleDateString('de-DE') : '') + ' · Zahlungsreferenz ' + esc(iv.number)));
         if (iv.note) doc.append(el('div', { class: 'inv-note' }, esc(iv.note)));
         if (s.footer) doc.append(el('div', { class: 'inv-footer' }, esc(s.footer)));
         return doc;
@@ -6032,7 +6043,7 @@
         const mkModeBtn = (m, label) => el('button', { type: 'button', 'data-mode': m, 'aria-pressed': String(P.mode === m), class: P.mode === m ? 'on' : '', onclick: () => setMode(m) }, label);
         const rebuildSwitch = () => { modeSwitch.innerHTML = ''; modeSwitch.append(mkModeBtn('plan', 'Garagenplaner'), mkModeBtn('manage', 'Stellplätze')); };
         const occN = el('b', { class: 'num' }, '–'); const occBar = el('i', {});
-        const maxBtn = el('button', { class: 'gp-iconbtn', title: 'Vollbild', 'aria-label': 'Vollbild', onclick: () => toggleMax() }, '⛶');
+        const maxBtn = el('button', { class: 'gp-iconbtn', title: 'Vollbild', 'aria-label': 'Vollbild', onclick: () => toggleMax() }, icon('maximize', 16));
         const appbar = el('div', { class: 'gp-appbar' },
             el('button', { class: 'back-btn', 'aria-label': 'Zurück', onclick: () => navigate(P.garageId ? 'garage/' + P.garageId : 'garages') }, '‹'),
             el('div', { class: 'gp-brand' }, el('h2', {}, P.hallName), el('span', { class: 'muted' }, P.garageName)),
@@ -6439,7 +6450,7 @@
             return close;
         }
         function openExportMenu() {
-            const opts = [['🖼 PNG', exportPlanPNG], ['📄 PDF (Drucken)', exportPlanPDF], ['⬔ SVG (Vektor)', exportPlanSVG], ['📐 DXF (CAD)', exportPlanDXF]];
+            const opts = [['PNG (Bild)', exportPlanPNG], ['PDF (Drucken)', exportPlanPDF], ['SVG (Vektor)', exportPlanSVG], ['DXF (CAD)', exportPlanDXF]];
             const modal = el('div', { class: 'gp-help-backdrop', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Exportieren' });
             const card = el('div', { class: 'gp-help-card', style: 'max-width:320px' });
             const list = el('div', { style: 'display:flex;flex-direction:column;gap:.4rem;padding:16px 18px' });
@@ -7462,7 +7473,7 @@
                 m(Math.round(Math.max(0, free)) + ' m²', 'Frei', 'ok'),
                 m(Math.round(ve) + ' m²', 'Belegt · ' + P.spots.length, 'busy'),
                 m(Math.round(zoneA + colA) + ' m²', 'Ausgenommen', 'excl'),
-                m(fw.toFixed(1).replace('.', ',') + '×' + fh.toFixed(1).replace('.', ',') + ' m', 'Halle · ' + Math.round(total) + ' m²'),
+                m(fw.toFixed(1).replace('.', ',') + '×' + fh.toFixed(1).replace('.', ',') + ' m', el('span', {}, 'Halle · ' + Math.round(total) + ' ', el('span', { class: 'gp-unit' }, 'm²'))),
                 m(polyPerim(P.floor).toFixed(1) + ' m', 'Umfang'));
             if (enc && enc.area > 0.3) { const nr = (enc.rooms || []).length; metrics.append(m(enc.area.toFixed(1).replace('.', ',') + ' m²', 'Parkfläche' + (nr > 1 ? ' · ' + nr + ' Räume' : ' · Wände'), 'ok')); } // 1 decimal, matching the plan label (S1-D)
         }
@@ -7489,10 +7500,10 @@
             [['0,1 m', 0.1], ['¼ m', 0.25], ['½ m', 0.5], ['1 m', 1]].forEach(([lab, step]) => seg.append(el('button', { class: (P.snap && P.gridStep === step) ? 'on' : '', onclick: () => { P.snap = true; P.gridStep = step; renderToolbar(); } }, lab)));
             toolbar.append(seg);
             // Auto-Snap: objects fang flush against each other (in addition to the floor line).
-            if (canManageNow) toolbar.append(tb('🧲', 'Auto-Snap: Objekte fangen aneinander', () => { P.autoSnap = !P.autoSnap; renderToolbar(); toast(P.autoSnap ? 'Auto-Snap an' : 'Auto-Snap aus'); }, P.autoSnap));
-            if (canManageNow) toolbar.append(tb('🛡', 'Pufferzonen zwischen Fahrzeugen (Taste P)', () => { P.buffer = !P.buffer; renderToolbar(); draw(); toast(P.buffer ? 'Pufferzonen an · ' + P.bufferM.toFixed(1).replace('.', ',') + ' m' : 'Pufferzonen aus'); }, P.buffer));
-            if (canManageNow) toolbar.append(tb('🚗↦', P.allowBlocking ? 'Zuparken erlaubt: Auto-Anordnen nutzt jeden m² (kein Auspark-Pfad-Check)' : 'Auspark-Pfad garantiert: kein Gefährt wird zugeparkt (Fahrstraße/Tor nötig)', () => { P.allowBlocking = !P.allowBlocking; renderToolbar(); toast(P.allowBlocking ? 'Zuparken erlaubt (max. Auslastung)' : 'Auspark-Pfad garantiert'); }, P.allowBlocking));
-            if (canManageNow && P.mode === 'plan') toolbar.append(tb('📏', 'Messen: Punkt A klicken, Punkt B klicken (Distanz + Winkel). Fängt an Wand-Ecken und -Kanten (Rand); ⇧ oder achsennah = waagrecht/senkrecht. Nochmal klicken = neu.', () => setTool(P.tool === 'measure' ? null : 'measure'), P.tool === 'measure'));
+            if (canManageNow) toolbar.append(tb(icon('magnet', 15), 'Auto-Snap: Objekte fangen aneinander', () => { P.autoSnap = !P.autoSnap; renderToolbar(); toast(P.autoSnap ? 'Auto-Snap an' : 'Auto-Snap aus'); }, P.autoSnap));
+            if (canManageNow) toolbar.append(tb(icon('shield', 15), 'Pufferzonen zwischen Fahrzeugen (Taste P)', () => { P.buffer = !P.buffer; renderToolbar(); draw(); toast(P.buffer ? 'Pufferzonen an · ' + P.bufferM.toFixed(1).replace('.', ',') + ' m' : 'Pufferzonen aus'); }, P.buffer));
+            if (canManageNow) toolbar.append(tb(icon('car', 15), P.allowBlocking ? 'Zuparken erlaubt: Auto-Anordnen nutzt jeden m² (kein Auspark-Pfad-Check)' : 'Auspark-Pfad garantiert: kein Gefährt wird zugeparkt (Fahrstraße/Tor nötig)', () => { P.allowBlocking = !P.allowBlocking; renderToolbar(); toast(P.allowBlocking ? 'Zuparken erlaubt (max. Auslastung)' : 'Auspark-Pfad garantiert'); }, P.allowBlocking));
+            if (canManageNow && P.mode === 'plan') toolbar.append(tb(icon('ruler', 15), 'Messen: Punkt A klicken, Punkt B klicken (Distanz + Winkel). Fängt an Wand-Ecken und -Kanten (Rand); ⇧ oder achsennah = waagrecht/senkrecht. Nochmal klicken = neu.', () => setTool(P.tool === 'measure' ? null : 'measure'), P.tool === 'measure'));
             // Adjustable buffer distance (vehicle↔vehicle), shown only while buffers are on. 0.5 m steps,
             // 0–5 m. draw() re-runs the bands + collision uses P.bufferM live. Session-only, like the toggle.
             if (canManageNow && P.buffer) { const bseg = el('div', { class: 'gp-seg', title: 'Pufferdistanz zwischen Fahrzeugen' });
@@ -7510,8 +7521,8 @@
                 toolbar.append(dseg); }
             // Manage custom planner icons (upload / rename / replace / delete) — placed on
             // the toolbar so it's reachable without first selecting a vehicle.
-            if (canManageNow && P.mode === 'manage') toolbar.append(tb('🖼 Icons', 'Eigene Planer-Icons verwalten', async () => { await plannerIconsDialog(); try { P.plannerIcons = await api.get('/planner-icons'); } catch (e) { /* keep old */ } draw(); if (P.sel) renderRail(); }));
-            if (canManageNow && P.mode === 'manage') { const rb = tb('⟳ Drehen', 'Auswahl drehen', rotateSel); rb.disabled = !(P.sel && P.spots.find((s) => s._id === P.sel)); toolbar.append(rb); }
+            if (canManageNow && P.mode === 'manage') toolbar.append(tb(el('span', {}, icon('image', 15), ' Icons'), 'Eigene Planer-Icons verwalten', async () => { await plannerIconsDialog(); try { P.plannerIcons = await api.get('/planner-icons'); } catch (e) { /* keep old */ } draw(); if (P.sel) renderRail(); }));
+            if (canManageNow && P.mode === 'manage') { const rb = tb(el('span', {}, icon('rotate', 15), ' Drehen'), 'Auswahl drehen', rotateSel); rb.disabled = !(P.sel && P.spots.find((s) => s._id === P.sel)); toolbar.append(rb); }
             toolbar.append(tb('−', 'Verkleinern', () => { P.zoom = Math.max(0.5, +(P.zoom - 0.15).toFixed(2)); layout(); }));
             toolbar.append(el('span', { class: 'gp-zoomlbl' }, Math.round((P.zoom || 1) * 100) + '%'));
             toolbar.append(tb('+', 'Vergrößern', () => { P.zoom = Math.min(8, +(P.zoom + 0.15).toFixed(2)); layout(); }));
@@ -7642,7 +7653,7 @@
             if (hasDims) dimNode = el('div', { class: 'gp-vdm num' }, p.length_m.toFixed(1) + ' × ' + p.width_m.toFixed(1) + ' × ' + p.height_m.toFixed(1) + ' m' + (p.weight_t != null ? ' · ' + p.weight_t.toFixed(2).replace('.', ',') + ' t' : ''));
             else if (canManageNow) { dimNode = el('button', { class: 'gp-dimopen' }, 'Maße festlegen →'); dimNode.addEventListener('pointerdown', (e) => e.stopPropagation()); dimNode.addEventListener('click', (e) => { e.stopPropagation(); dimForm({ id: p.id, label: p.label, L: p.length_m, W: p.width_m, H: p.height_m, t: p.weight_t }); }); }
             else dimNode = el('div', { class: 'gp-vdm num' }, 'Maße offen');
-            c.append(el('span', { class: 'gp-vic' }, '🚗'),
+            c.append(el('span', { class: 'gp-vic' }, icon('car', 15)),
                 el('div', { style: 'min-width:0' }, el('div', { class: 'gp-vnm' }, p.label, p.type ? el('span', { class: 'gp-chip' }, p.type) : null), dimNode));
             if (canManageNow) {
                 const ed = el('button', { class: 'gp-vedit', title: 'Maße bearbeiten' }, '✎');
@@ -7829,7 +7840,7 @@
             el0.append(row('Fahrzeug', b.label));
             el0.append(row('Maße', b.L != null && b.W != null && b.H != null ? b.L.toFixed(1) + ' × ' + b.W.toFixed(1) + ' × ' + b.H.toFixed(1) + ' m' : 'offen'));
             el0.append(row('Position', b.x.toFixed(1) + ' / ' + b.y.toFixed(1) + ' m' + (b.rot ? ' · ' + Math.round(b.rot) + '°' : '')));
-            if (b.vehId) el0.append(el('button', { class: 'btn btn-ghost btn-sm btn-block', style: 'margin:.4rem 0 .2rem', onclick: () => navigate('vehicles/' + b.vehId) }, '🚗 Fahrzeug-Akte öffnen →'));
+            if (b.vehId) el0.append(el('button', { class: 'btn btn-ghost btn-sm btn-block', style: 'margin:.4rem 0 .2rem', onclick: () => navigate('vehicles/' + b.vehId) }, icon('car', 15), ' Fahrzeug-Akte öffnen →'));
             if (b.personId) el0.append(el('button', { class: 'btn btn-ghost btn-sm btn-block', style: 'margin:.2rem 0 .4rem', onclick: () => navigate('persons/' + b.personId) }, '👤 Mieterdaten öffnen →'));
             if (canManageNow) {
                 const seg = el('div', { class: 'gp-segd' });
@@ -7843,7 +7854,7 @@
                 fit.append(line('Gewicht ' + (b.t != null ? b.t.toFixed(2).replace('.', ',') : '?') + ' ≤ ' + P.load.toFixed(1) + ' t', weightOK(b)));
                 el0.append(fit);
                 // Per-vehicle buffer opt-out (only meaningful while global buffer is on).
-                el0.append(el('button', { class: 'btn btn-ghost btn-sm btn-block', style: 'margin:.15rem 0 .35rem' + (b.noBuf ? '' : ';border-color:var(--gpteal2);color:var(--gpteal2)'), onclick: () => { b.noBuf = !b.noBuf; b._dirty = true; markDirty(); pushUndo(); persistSpot(b); draw(); } }, b.noBuf ? '🛡 Pufferzone: aus' : '🛡 Pufferzone: an'));
+                el0.append(el('button', { class: 'btn btn-ghost btn-sm btn-block', style: 'margin:.15rem 0 .35rem' + (b.noBuf ? '' : ';border-color:var(--gpteal2);color:var(--gpteal2)'), onclick: () => { b.noBuf = !b.noBuf; b._dirty = true; markDirty(); pushUndo(); persistSpot(b); draw(); } }, el('span', {}, icon('shield', 15), b.noBuf ? ' Pufferzone: aus' : ' Pufferzone: an')));
                 // Planer-Darstellung: Ladebedarf + Symbol pro Fahrzeug — direkt hier (im Sync
                 // mit dem Fahrzeug-Formular, da dieselben Fahrzeug-Spalten geschrieben werden).
                 if (b.vehId) {
@@ -7855,7 +7866,7 @@
                         .concat((P.plannerIcons || []).map((ic) => ['custom:' + ic.id, 'Eigenes: ' + ic.name]));
                     symOpts.forEach(([v, l]) => { const o = el('option', { value: v }, l); if ((b.plannerSymbol || '') === v) o.selected = true; symSel.append(o); });
                     pcard.append(symSel);
-                    // Managing custom icons lives on the toolbar (🖼 Icons) so it's reachable
+                    // Managing custom icons lives on the toolbar (Icons) so it's reachable
                     // without selecting a vehicle; here we only pick per-vehicle.
                     el0.append(pcard);
                 }
@@ -8040,7 +8051,7 @@
         function setMode(m) { P.mode = m; root.dataset.mode = m; P.sel = null; selSet = []; P.calib = false; P.tool = null; P.chain = null; P.openStart = null; P.preview = null; P.structSel = null; P.chainAnchor = null; P.guide = null; P.attach = null; measure = null; measurePre = null; hideLen(); hideVertMenu(); ctitle.textContent = m === 'plan' ? 'Garagenplaner' : 'Digitaler Zwilling'; rebuildSwitch(); draw(); }
         // Re-fit on enter AND exit so the plan fills whichever viewport we land in (entering
         // fullscreen used to keep the small windowed scale → a tiny plan marooned in a huge canvas).
-        function toggleMax(force) { P.maxed = force == null ? !P.maxed : force; root.classList.toggle('maxed', P.maxed); maxBtn.textContent = P.maxed ? '⤢' : '⛶'; if (!P.maxed) { rail.style.left = ''; rail.style.top = ''; rail.style.right = ''; } setTimeout(() => { if (P.walls.edges.length) fitView(); else layout(); }, 20); }
+        function toggleMax(force) { P.maxed = force == null ? !P.maxed : force; root.classList.toggle('maxed', P.maxed); maxBtn.replaceChildren(icon(P.maxed ? 'close' : 'maximize', 16)); maxBtn.title = maxBtn.ariaLabel = P.maxed ? 'Vollbild beenden' : 'Vollbild'; if (!P.maxed) { rail.style.left = ''; rail.style.top = ''; rail.style.right = ''; } setTimeout(() => { if (P.walls.edges.length) fitView(); else layout(); }, 20); }
         // In fullscreen the rail floats over the canvas and can be dragged by any
         // card header ("dynamisch drüberliegend und verschiebbar").
         let railDrag = null;
@@ -8418,7 +8429,7 @@
             if (e.button !== 0 || P.mode !== 'manage' || !canManageNow) return;
             const c = e.target.closest('.gp-vehc'); if (!c) return;
             const p = P.palette.find((x) => x.id == c.dataset.pid); if (!p) return; e.preventDefault();
-            const g = el('div', { class: 'gp-ghost' }, '🚗 ' + p.label); document.body.append(g);
+            const g = el('div', { class: 'gp-ghost' }, icon('car', 14), ' ' + p.label); document.body.append(g);
             prev = el('div', { class: 'gp-preview' }, el('span', { class: 'gp-pl' })); layer.append(prev);
             drag = { p, g }; moveDrag(e); c.setPointerCapture(e.pointerId);
         });
@@ -8498,13 +8509,20 @@
             b.addEventListener('click', () => { dlg.close(); fn(); });
             return b;
         };
-        body.append(item('box', 'Stellplätze', () => navigate('garages')));
+        // Neun flache Eintraege mischten ORTE (Rechnungen, Audit-Log) mit BEFEHLEN
+        // (Design wechseln, Abmelden). Drei Gruppen, jede mit einer Ueberschrift.
+        const group = (title) => body.append(el('div', { class: 'menu-sec' }, title));
+        group('Betrieb');
+        if (isAdmin()) body.append(item('receipt', 'Rechnungen', () => navigate('billing')));
+        body.append(item('tag', 'Tarife', () => navigate('tariffs')));
+        group('Verwaltung');
         body.append(item('settings', 'Einstellungen', () => navigate('settings')));
         if (isAdmin()) body.append(item('users', 'Benutzer', () => navigate('users')));
         if (isAdmin()) body.append(item('log', 'Audit-Log', () => navigate('audit')));
-        if (isAdmin()) body.append(item('receipt', 'Rechnungen', () => navigate('billing')));
         if (isAdmin()) body.append(item('archive', 'Backup', () => navigate('backup')));
-        body.append(item('theme', 'Design wechseln', () => toggleTheme()));
+        group('Sitzung');
+        // 'Design wechseln' ist raus: der Mond-Knopf in der Kopfzeile tut dasselbe
+        // und traegt bereits aria-label='Design wechseln'.
         // Nur zeigen, solange der Browser die Installation tatsächlich anbietet.
         if (canInstall()) body.append(item('download', 'App installieren', runInstallPrompt));
         body.append(item('logout', 'Abmelden', () => logout(), 'danger'));
@@ -9310,7 +9328,7 @@
             // hat den Blob dann geladen) — vorher leckte jede geöffnete Rechnung eine
             // Objekt-URL pro Sitzung (Hundert PORTAL-91; dlBlob macht es vor).
             setTimeout(() => URL.revokeObjectURL(url), 60000);
-        } catch { if (win) win.close(); toast('PDF konnte nicht geladen werden', 'error'); }
+        } catch { if (win) win.close(); toast(PORTAL_STR[portalLang()].pdf_err, 'error'); }
     }
 
     // #/portal/<token>. Read-only view of one person's vehicles + invoices.
@@ -9324,7 +9342,8 @@
             open_total: 'Offener Betrag', your_vehicles: 'Ihre Gefährte', no_vehicles: 'Keine aktiven Gefährte.',
             handovers: 'Übergabeprotokolle', signed: 'unterschrieben: ', storein: 'Einlagerung', storeout: 'Auslagerung',
             invoices: 'Rechnungen', no_invoices: 'Keine Rechnungen.', invoice: 'Rechnung ', open_part: 'offen ',
-            scan_pay: 'Scan zum Bezahlen (SEPA)', qr_alt: 'SEPA-Zahlungs-QR', foot: 'Read-only Ansicht · Parkrr',
+            pdf_err: 'Die Rechnung konnte nicht geladen werden.',
+            scan_pay: 'Scan zum Bezahlen (SEPA)', qr_alt: 'SEPA-Zahlungs-QR', foot: 'Ihre Übersicht · bereitgestellt mit Parkrr',
             requests: 'Anliegen', req_contact: 'Kontaktdaten ändern', req_pickup: 'Abholung anmelden',
             req_email: 'Neue E-Mail', req_phone: 'Neue Telefonnummer', req_address: 'Neue Adresse',
             req_date: 'Wunschtermin', req_note: 'Anmerkung (optional)', req_send: 'Absenden',
@@ -9341,7 +9360,8 @@
             open_total: 'Open balance', your_vehicles: 'Your vehicles', no_vehicles: 'No active vehicles.',
             handovers: 'Handover protocols', signed: 'signed by ', storein: 'Check-in', storeout: 'Check-out',
             invoices: 'Invoices', no_invoices: 'No invoices.', invoice: 'Invoice ', open_part: 'open ',
-            scan_pay: 'Scan to pay (SEPA)', qr_alt: 'SEPA payment QR', foot: 'Read-only view · Parkrr',
+            pdf_err: 'The invoice could not be loaded.',
+            scan_pay: 'Scan to pay (SEPA)', qr_alt: 'SEPA payment QR', foot: 'Your overview · powered by Parkrr',
             requests: 'Requests', req_contact: 'Update contact details', req_pickup: 'Request pickup',
             req_email: 'New e-mail', req_phone: 'New phone number', req_address: 'New address',
             req_date: 'Preferred date', req_note: 'Note (optional)', req_send: 'Send',
@@ -9372,7 +9392,13 @@
         // ein englisches Portal wurde also mit deutscher Aussprache vorgelesen.
         document.documentElement.lang = lang;
         const P9 = PORTAL_STR[lang];
-        const locale = lang === 'de' ? 'de-DE' : 'en-GB';
+        // Zahlen und Datum bleiben oesterreichisch, auch auf Englisch: der Betrag
+        // hier MUSS zu der Rechnung passen, die der Kunde auf derselben Seite
+        // herunterlaedt, und zu dem SEPA-QR, mit dem er zahlt. euroFormat ist
+        // app-weit auf de-DE festgelegt; mit en-GB-Datum stand vorher
+        // '18/09/2026 · 1.234,56 €' in einer Zeile — zwei Konventionen nebeneinander.
+        // Uebersetzt werden die WORTE, nicht die Zahlenschreibweise.
+        const locale = 'de-DE';
         let sum;
         try { sum = await portalFetch(token, '/summary', 'json'); }
         catch (e) {
@@ -9395,7 +9421,13 @@
             // Direkt gefüllt: init() lief mit applyBrand(), bevor dieser Kopf
             // existierte — ein zweiter Voll-Lauf würde nur das Favicon neu bauen.
             el('span', { class: 'brand-veh', 'data-veh': '34', 'aria-hidden': 'true', html: brandGlyph(34) }),
-            el('div', {}, el('h1', {}, 'Parkrr'), el('p', { class: 'muted' }, esc(sum.person_name))),
+            // Der Kunde hat bei einem BETRIEB eingelagert, nicht bei einer Software.
+            // Stand hier 'Parkrr', las die Seite wie Phishing: ein blanker Token-Link,
+            // eine unsignierte Mail und ein Produktname, den der Kunde nie gehoert hat.
+            // Ist seller_name auf einer frischen Instanz noch leer, bleibt der
+            // Produktname als Rueckfall stehen.
+            el('div', {}, el('h1', {}, esc(sum.operator_name || 'Parkrr')),
+                el('p', { class: 'muted' }, esc(sum.person_name))),
             // Sprachumschalter: die Wahl bleibt im Browser (localStorage) und gilt
             // beim nächsten Öffnen wieder.
             // WCAG 2.5.3 (Label in Name): der sichtbare Text ('EN'/'DE') MUSS im
@@ -9428,7 +9460,13 @@
         if (!sum.invoices.length) icard.append(el('p', { class: 'muted' }, P9.no_invoices));
         else sum.invoices.forEach((iv) => {
             icard.append(
-                el('button', { class: 'portal-row link', type: 'button', 'aria-label': P9.invoice + iv.number + ' PDF',
+                // Der Name MUSS den Betrag enthalten. aria-label ersetzt den ganzen
+                // Teilbaum: vorher hoerte ein Screenreader nur 'Rechnung 2026-001 PDF'
+                // und nie, worum es geht — auf der einen Seite, die dem Kunden sagt,
+                // was er schuldet.
+                el('button', { class: 'portal-row link', type: 'button',
+                    'aria-label': P9.invoice + iv.number + ' · ' + eur(iv.total)
+                        + (iv.open > 0.005 ? ' · ' + P9.open_part + eur(iv.open) : '') + ' · PDF',
                     onclick: () => portalOpenPdf(token, iv.id) },
                     el('span', {}, P9.invoice + esc(iv.number),
                         el('span', { class: 'muted', style: 'display:block;font-size:.78rem' }, new Date(iv.issued_on).toLocaleDateString(locale) + (iv.status ? ' · ' + (P9.inv_status[iv.status] || esc(iv.status)) : ''))),
@@ -9438,7 +9476,7 @@
             if (iv.open > 0.005) {
                 const qr = el('img', { alt: P9.qr_alt, width: 150, height: 150, style: 'max-width:150px;height:auto' });
                 const message = el('p', { class: 'muted', role: 'status' });
-                const details = el('details', { class: 'portal-qr' }, el('summary', {}, P9.scan_pay), message);
+                const details = el('details', { class: 'portal-qr' }, el('summary', {}, P9.scan_pay + ' · ' + esc(iv.number)), message);
                 let loaded = false, loading = false;
                 details.addEventListener('toggle', async () => {
                     if (!details.open || loaded || loading) return;
