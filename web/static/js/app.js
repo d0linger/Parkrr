@@ -9342,7 +9342,7 @@
             open_total: 'Offener Betrag', your_vehicles: 'Ihre Gefährte', no_vehicles: 'Keine aktiven Gefährte.',
             handovers: 'Übergabeprotokolle', signed: 'unterschrieben: ', storein: 'Einlagerung', storeout: 'Auslagerung',
             invoices: 'Rechnungen', no_invoices: 'Keine Rechnungen.', invoice: 'Rechnung ', open_part: 'offen ',
-            pdf_err: 'Die Rechnung konnte nicht geladen werden.',
+            pdf_err: 'Die Rechnung konnte nicht geladen werden.', skip: 'Zum Inhalt springen', title: 'Übersicht',
             scan_pay: 'Scan zum Bezahlen (SEPA)', qr_alt: 'SEPA-Zahlungs-QR', foot: 'Ihre Übersicht · bereitgestellt mit Parkrr',
             requests: 'Anliegen', req_contact: 'Kontaktdaten ändern', req_pickup: 'Abholung anmelden',
             req_email: 'Neue E-Mail', req_phone: 'Neue Telefonnummer', req_address: 'Neue Adresse',
@@ -9360,7 +9360,7 @@
             open_total: 'Open balance', your_vehicles: 'Your vehicles', no_vehicles: 'No active vehicles.',
             handovers: 'Handover protocols', signed: 'signed by ', storein: 'Check-in', storeout: 'Check-out',
             invoices: 'Invoices', no_invoices: 'No invoices.', invoice: 'Invoice ', open_part: 'open ',
-            pdf_err: 'The invoice could not be loaded.',
+            pdf_err: 'The invoice could not be loaded.', skip: 'Skip to content', title: 'Overview',
             scan_pay: 'Scan to pay (SEPA)', qr_alt: 'SEPA payment QR', foot: 'Your overview · powered by Parkrr',
             requests: 'Requests', req_contact: 'Update contact details', req_pickup: 'Request pickup',
             req_email: 'New e-mail', req_phone: 'New phone number', req_address: 'New address',
@@ -9391,6 +9391,12 @@
         // lang="de" festgenagelt, und der Umschalter tauschte bisher nur die Texte —
         // ein englisches Portal wurde also mit deutscher Aussprache vorgelesen.
         document.documentElement.lang = lang;
+        // Der Reiter hiess immer 'Parkrr' — die einzige document.title-Zuweisung
+        // sitzt im Betreiber-Router, den das Portal nie erreicht. Und der Sprunglink
+        // ist das erste fokussierbare Element der Seite: auf Englisch stand dort
+        // trotzdem Deutsch.
+        const skipEl = $('.skip-link');
+        if (skipEl) skipEl.textContent = PORTAL_STR[lang].skip;
         const P9 = PORTAL_STR[lang];
         // Zahlen und Datum bleiben oesterreichisch, auch auf Englisch: der Betrag
         // hier MUSS zu der Rechnung passen, die der Kunde auf derselben Seite
@@ -9416,6 +9422,9 @@
         sum.vehicles = sum.vehicles || []; sum.invoices = sum.invoices || [];
         pv.setAttribute('aria-busy', 'false');
         pv.innerHTML = '';
+        // Der Reiter hiess immer 'Parkrr': die einzige document.title-Zuweisung sitzt
+        // im Betreiber-Router, den das Portal nie erreicht.
+        document.title = (sum.operator_name || 'Parkrr') + ' · ' + P9.title;
         const wrap = el('div', { class: 'portal-wrap' });
         wrap.append(el('div', { class: 'portal-head' },
             // Direkt gefüllt: init() lief mit applyBrand(), bevor dieser Kopf

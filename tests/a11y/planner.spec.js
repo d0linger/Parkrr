@@ -113,6 +113,13 @@ test('measure tool: arm + two canvas clicks render a ruler with no errors (UX2 +
   await measureBtn.click();
   await expect(measureBtn).toHaveClass(/\bon\b/); // tool is armed
 
+  // page.mouse klickt VIEWPORT-Koordinaten und scrollt — anders als locator.click() —
+  // nichts von selbst. Die Planer-Chrome (Werkzeugleiste + Kennzahlen) schiebt die
+  // Zeichenflaeche so weit nach unten, dass ihre Mitte bei 1280x720 gemessene 718,5px
+  // lag: anderthalb Pixel INNERHALB des Fensters. Jede Layout-Aenderung von zwei
+  // Pixeln kippte den Klick ins Nichts (elementFromPoint -> null), und der Test
+  // meldete dann einen fehlenden Lineal-Strich statt des wahren Grundes.
+  await page.locator('svg.gp-floor').scrollIntoViewIfNeeded();
   const box = await page.locator('svg.gp-floor').boundingBox();
   const ax = box.x + box.width * 0.35, ay = box.y + box.height * 0.5;
   const bx = box.x + box.width * 0.65, by = box.y + box.height * 0.5;
