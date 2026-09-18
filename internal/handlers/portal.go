@@ -158,8 +158,18 @@ func (h *Handler) CreatePortalLink(w http.ResponseWriter, r *http.Request) {
 	if req.Send && h.Mail != nil && h.Mail.Enabled() && email != "" && base != "" {
 		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 		defer cancel()
-		if err := h.Mail.Send(ctx, []string{email}, "Ihr Parkrr-Zugang",
-			portalMailBody(trim(first+" "+last), link, expires)); err == nil {
+		operator := ""
+		if bs, err := h.loadBillingSettings(ctx); err == nil {
+			operator = strings.TrimSpace(bs.SellerName)
+		}
+		// Betreff und Signatur nennen den BETRIEB, nicht das Produkt — der Kunde
+		// erkennt den Absender sonst nicht wieder und der Link wirkt wie Phishing.
+		subject := "Ihr Zugang zu Ihren Unterlagen"
+		if operator != "" {
+			subject = "Ihr Zugang – " + operator
+		}
+		if err := h.Mail.Send(ctx, []string{email}, subject,
+			portalMailBody(trim(first+" "+last), operator, link, expires)); err == nil {
 			emailed = true
 		} else {
 			slog.Warn("portal link e-mail failed", "person", id, "err", err)
@@ -179,7 +189,7 @@ func (h *Handler) CreatePortalLink(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func portalMailBody(name, link string, expires time.Time) string {
+func portalMailBody(name, operator, link string, expires time.Time) string {
 	var b strings.Builder
 	if name != "" {
 		fmt.Fprintf(&b, "Guten Tag %s,\n\n", name)
@@ -189,7 +199,13 @@ func portalMailBody(name, link string, expires time.Time) string {
 	b.WriteString("über den folgenden Link können Sie jederzeit Ihre Gefährte, offenen Beträge und Rechnungen einsehen:\n\n")
 	b.WriteString(link + "\n\n")
 	fmt.Fprintf(&b, "Der Link ist bis %s gültig. Bitte geben Sie ihn nicht weiter.\n\n", expires.Format("02.01.2006"))
+	// Ohne Absendernamen war die Mail unsigniert: ein blanker Token-Link von
+	// niemandem. Zusammen mit dem Betriebsnamen im Portal-Kopf schliesst das die
+	// Vertrauensluecke auf dem einzigen Weg, den der Kunde je zu sehen bekommt.
 	b.WriteString("Mit freundlichen Grüßen\n")
+	if operator != "" {
+		b.WriteString(operator + "\n")
+	}
 	return b.String()
 }
 
@@ -306,10 +322,15 @@ type portalInvoice struct {
 }
 
 type portalSummary struct {
-	PersonName string          `json:"person_name"`
-	OpenTotal  float64         `json:"open_total"`
-	Vehicles   []portalVehicle `json:"vehicles"`
-	Invoices   []portalInvoice `json:"invoices"`
+	// Der BETRIEB, nicht die Software. Das Portal ist ein Bearer-Link, der einen
+	// Kunden um Geld bittet — ohne den Namen des Betriebs, bei dem er eingelagert hat,
+	// liest die Seite wie ein Phishing-Versuch. Die Rechnung, die er auf derselben
+	// Seite herunterlädt, nennt den Betrieb längst korrekt.
+	OperatorName string          `json:"operator_name"`
+	PersonName   string          `json:"person_name"`
+	OpenTotal    float64         `json:"open_total"`
+	Vehicles     []portalVehicle `json:"vehicles"`
+	Invoices     []portalInvoice `json:"invoices"`
 	// Übergabeprotokolle (Hundert 84): der Kunde sieht, was er unterschrieben hat —
 	// Richtung, Datum, Zustandsnotizen. BEWUSST ohne das Unterschriftsbild: das
 	// Portal ist ein Bearer-Link, und die gezeichnete Unterschrift ist der
@@ -336,6 +357,13 @@ func (h *Handler) PortalSummary(w http.ResponseWriter, r *http.Request) {
 	var out portalSummary
 	out.Vehicles = []portalVehicle{}
 	out.Invoices = []portalInvoice{}
+	// seller_name ist ein freies Feld ohne Pflichtangabe: auf einer frisch
+	// aufgesetzten Instanz ist es leer. Dann bleibt das Feld leer und die
+	// Oberfläche fällt auf den Produktnamen zurück — wer Rechnungen stellt,
+	// muss den Namen ohnehin setzen, die Lücke schliesst sich also von selbst.
+	if bs, err := h.loadBillingSettings(r.Context()); err == nil {
+		out.OperatorName = strings.TrimSpace(bs.SellerName)
+	}
 
 	if err := h.Pool.QueryRow(r.Context(),
 		`SELECT trim(first_name || ' ' || last_name) FROM persons WHERE id=$1`, pid).Scan(&out.PersonName); err != nil {
