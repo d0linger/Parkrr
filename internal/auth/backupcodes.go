@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -30,6 +32,28 @@ func hashCode(code string) (string, error) {
 // (formatted like ABCD-EFGH-IJKL) and stores their hashes, replacing any
 // existing codes for the user. The plaintext codes are returned once for display.
 func (m *Manager) GenerateBackupCodes(ctx context.Context, userID int64) ([]string, error) {
+	tx, err := m.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	codes, err := m.GenerateBackupCodesTx(ctx, tx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return codes, nil
+}
+
+// GenerateBackupCodesTx is GenerateBackupCodes inside a transaction the CALLER
+// owns and commits. Enabling 2FA has to persist the codes and flip totp_enabled
+// together: separate transactions let a second, concurrent enablement DELETE the
+// codes the first one had already shown the user, leaving them holding recovery
+// codes that no longer exist. The caller returns the codes only after its commit
+// succeeds, so nothing is displayed that is not durably stored.
+func (m *Manager) GenerateBackupCodesTx(ctx context.Context, tx pgx.Tx, userID int64) ([]string, error) {
 	codes := make([]string, 0, backupCodeCount)
 	for i := 0; i < backupCodeCount; i++ {
 		c, err := randomCode()
@@ -48,12 +72,6 @@ func (m *Manager) GenerateBackupCodes(ctx context.Context, userID int64) ([]stri
 		batch = append(batch, []any{userID, h})
 	}
 
-	tx, err := m.pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
 	if _, err := tx.Exec(ctx, `DELETE FROM totp_backup_codes WHERE user_id=$1`, userID); err != nil {
 		return nil, err
 	}
@@ -63,9 +81,6 @@ func (m *Manager) GenerateBackupCodes(ctx context.Context, userID int64) ([]stri
 			row[0], row[1]); err != nil {
 			return nil, err
 		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
 	}
 	return codes, nil
 }

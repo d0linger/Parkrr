@@ -8945,8 +8945,14 @@
         if (!link) return;
         link.addEventListener('click', (e) => {
             e.preventDefault();
-            const target = ['#page', '#portal-view', '#login-view']
-                .map((sel) => $(sel)).find((n) => n && !n.hidden);
+            // Sichtbarkeit am BESITZER pruefen, nicht am Ziel: #page liegt in
+            // #app-view, und nur die Huelle traegt `hidden`. Ein Test auf
+            // !page.hidden war deshalb IMMER wahr — im Portal gewann #page und der
+            // Sprunglink setzte den Fokus in einen verborgenen Teilbaum.
+            const target = [['#page', '#app-view'], ['#portal-view', '#portal-view'], ['#login-view', '#login-view']]
+                .map(([sel, ownerSel]) => [$(sel), $(ownerSel)])
+                .filter(([n, owner]) => n && owner && !owner.hidden)
+                .map(([n]) => n)[0];
             if (!target) return;
             if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
             target.focus({ preventScroll: true });

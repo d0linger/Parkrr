@@ -99,16 +99,36 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid code")
 		return
 	}
-	// Issue one-time backup codes (shown once) before enabling TOTP in DB.
-	// Generating backup codes first ensures that a failure during code generation
-	// does not leave 2FA enabled without recovery codes generated and returned.
-	codes, err := h.Auth.GenerateBackupCodes(r.Context(), u.ID)
+	// Recovery codes and totp_enabled belong to ONE transaction. Two separate
+	// ones let a second, concurrent enablement DELETE the codes the first had
+	// already displayed — GenerateBackupCodes replaces the whole set — so a user
+	// could end up holding recovery codes that no longer exist. A double-tap on
+	// "enable" is enough: the same 6-digit code validates twice inside its window.
+	// The row lock serialises those attempts; the codes are returned only after
+	// the commit, so nothing is shown that is not durably stored.
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not enable two-factor")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	var lockedID int64
+	if err := tx.QueryRow(r.Context(),
+		`SELECT id FROM users WHERE id=$1 FOR UPDATE`, u.ID).Scan(&lockedID); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not enable two-factor")
+		return
+	}
+	codes, err := h.Auth.GenerateBackupCodesTx(r.Context(), tx, u.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not generate backup codes")
 		return
 	}
-	if _, err := h.Pool.Exec(r.Context(),
+	if _, err := tx.Exec(r.Context(),
 		`UPDATE users SET totp_enabled=TRUE, updated_at=now() WHERE id=$1`, u.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not enable two-factor")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not enable two-factor")
 		return
 	}
