@@ -104,7 +104,7 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 	// already displayed — GenerateBackupCodes replaces the whole set — so a user
 	// could end up holding recovery codes that no longer exist. A double-tap on
 	// "enable" is enough: the same 6-digit code validates twice inside its window.
-	// The row lock serialises those attempts; the codes are returned only after
+	// The row lock serializes those attempts; the codes are returned only after
 	// the commit, so nothing is shown that is not durably stored.
 	tx, err := h.Pool.Begin(r.Context())
 	if err != nil {
