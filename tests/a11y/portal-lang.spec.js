@@ -37,11 +37,16 @@ test('Portal: Sprachumschalter DE/EN mit Gedaechtnis', async ({ page }) => {
   // (Ein deutscher Browser bekaeme Deutsch; genau das ist das Feature.)
   await expect(page.locator('#portal-view')).toContainText('Open balance', { timeout: 15000 });
   await expect(page.locator('#portal-view')).toContainText('Your vehicles');
+  // WCAG 3.1.1: der Umschalter tauschte frueher nur die Texte. index.html ist auf
+  // lang="de" festgenagelt, also las ein Screenreader das englische Portal mit
+  // deutscher Aussprache vor. Ohne die Zuweisung in renderPortal faellt das hier auf.
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en');
 
   // Umschalten auf Deutsch.
   await page.locator('.portal-lang').click();
   await expect(page.locator('#portal-view')).toContainText('Offener Betrag', { timeout: 15000 });
   await expect(page.locator('#portal-view')).toContainText('Ihre Gefährte');
+  await expect(page.locator('html')).toHaveAttribute('lang', 'de');
 
   // Die Wahl ueberlebt einen Reload.
   await page.reload();

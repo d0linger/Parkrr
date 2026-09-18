@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // createPortalLink issues a link for pid and returns the raw token.
@@ -220,5 +221,24 @@ func TestAnonymizeRevokesPortalTokens(t *testing.T) {
 
 	if w := getPortalSummary(t, h, token); w.Code != http.StatusNotFound {
 		t.Errorf("portal token still works after anonymize: got %d, want 404", w.Code)
+	}
+}
+
+// Der Portal-Link ist ein Bearer-Link, der einen Kunden um Geld bittet. Ohne den
+// Namen des Betriebs war die Mail unsigniert — ein blanker Token von niemandem,
+// und der Kunde kennt "Parkrr" nicht. Ist kein Betriebsname gesetzt (frische
+// Instanz, seller_name ist ein freies Feld), bleibt die Mail wie zuvor.
+func TestPortalMailBodySignsWithOperator(t *testing.T) {
+	exp := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	signed := portalMailBody("Anna Gruber", "Stellplatz Gruber GmbH", "https://example.invalid/#/portal/tok", exp)
+	if !strings.Contains(signed, "Stellplatz Gruber GmbH") {
+		t.Errorf("Betriebsname fehlt in der signierten Mail:\n%s", signed)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(signed), "Stellplatz Gruber GmbH") {
+		t.Errorf("Betriebsname steht nicht als Signatur am Ende:\n%s", signed)
+	}
+	unsigned := portalMailBody("Anna Gruber", "", "https://example.invalid/#/portal/tok", exp)
+	if !strings.HasSuffix(strings.TrimSpace(unsigned), "Mit freundlichen Grüßen") {
+		t.Errorf("ohne Betriebsname darf nichts angehängt werden:\n%s", unsigned)
 	}
 }
