@@ -2454,15 +2454,30 @@
         const t = to ? new Date(to).toLocaleDateString('de-DE') : f;
         return f === t ? f : (f + ' – ' + t);
     }
+    // Titel und Zahlbarkeit eines Belegs — identisch zu invoice_pdf.go, damit
+    // Vorschau, Ausdruck und PDF nicht auseinanderlaufen.
+    function invDocTitle(iv) {
+        let t = iv.cancels_id ? 'STORNO-RECHNUNG' : 'RECHNUNG';
+        if (iv.canceled) t += ' (STORNIERT)';
+        return t;
+    }
+    // Ein Storno und eine stornierte Rechnung fordern kein Geld mehr.
+    function invDocDead(iv) { return Boolean(iv.canceled || iv.cancels_id); }
     function invoiceDocument(iv) {
         const s = iv.seller || {}, b = iv.buyer || {};
+        // Der gedruckte Beleg MUSS eine Stornierung zeigen. Die Kopfzeile mit dem
+        // Status-Abzeichen traegt `no-print`, und das Dokument selbst las weder
+        // `canceled` noch `cancels_id` — `Drucken` lieferte fuer eine stornierte
+        // Rechnung also sauberes Papier, das eine gueltige Rechnung behauptet.
+        // Der PDF-Weg (invoice_pdf.go:147-167, 244-246) macht es richtig; die
+        // Vorschau folgt jetzt genau derselben Logik, damit beide dasselbe sagen.
         const doc = el('div', { class: 'invoice-doc' });
         doc.append(el('div', { class: 'inv-head' },
             el('div', { class: 'inv-seller' },
                 el('div', { class: 'inv-seller-name' }, esc(s.name || 'Aussteller')),
                 s.address ? el('div', { class: 'inv-muted pre' }, esc(s.address)) : null,
                 s.uid ? el('div', { class: 'inv-muted' }, 'UID: ' + esc(s.uid)) : null),
-            el('div', { class: 'inv-title' }, el('div', { class: 'inv-h' }, 'RECHNUNG'), el('div', { class: 'inv-num' }, esc(iv.number)))));
+            el('div', { class: 'inv-title' }, el('div', { class: 'inv-h' }, invDocTitle(iv)), el('div', { class: 'inv-num' }, esc(iv.number)))));
         doc.append(el('div', { class: 'inv-parties' },
             el('div', {}, el('div', { class: 'inv-label' }, 'Rechnung an'),
                 el('div', { class: 'inv-strong' }, esc(b.name || '')),
@@ -2472,6 +2487,7 @@
                 iv.due_on ? metaRow('Fällig bis', new Date(iv.due_on).toLocaleDateString('de-DE')) : null,
                 // § 11 Abs 1 Z 4: Leistungszeitraum (a period, or a single date if from==to).
                 iv.leistung_from ? metaRow('Leistungszeitraum', leistungLabel(iv.leistung_from, iv.leistung_to)) : null,
+                (iv.cancels_id && iv.cancels_number) ? metaRow('Storniert Rechnung', esc(iv.cancels_number)) : null,
                 metaRow('Rechnungsnr.', esc(iv.number)))));
         const tb = el('tbody', {});
         (iv.items || []).forEach((it) => tb.append(el('tr', {},
@@ -2493,7 +2509,7 @@
         }
         doc.append(tot);
         if (iv.kleinunternehmer) doc.append(el('div', { class: 'inv-note' }, 'Umsatzsteuerbefreit gemäß § 6 Abs. 1 Z 27 UStG (Kleinunternehmer).'));
-        if (s.iban) doc.append(el('div', { class: 'inv-pay' }, 'Zahlbar auf: ' + esc(s.iban) + (s.bic ? ' · BIC ' + esc(s.bic) : '')));
+        if (s.iban && !invDocDead(iv)) doc.append(el('div', { class: 'inv-pay' }, 'Zahlbar auf: ' + esc(s.iban) + (s.bic ? ' · BIC ' + esc(s.bic) : '')));
         if (iv.note) doc.append(el('div', { class: 'inv-note' }, esc(iv.note)));
         if (s.footer) doc.append(el('div', { class: 'inv-footer' }, esc(s.footer)));
         return doc;
@@ -8898,12 +8914,28 @@
         catch (e) { toast(e.message, 'error'); }
     }
 
-    function bindStatic() {
-        $('.skip-link').addEventListener('click', (e) => {
+    // Der Sprunglink wird IMMER gebunden — auch auf dem Kundenportal, das den
+    // Rest von init() ueberspringt. Fehlte die Bindung dort, lief die normale
+    // Anker-Navigation: der ERSTE Tastendruck (Tab, Enter) ersetzte
+    // `#/portal/<token>` durch `#page` und warf damit den Zugangs-Token aus der
+    // Adresszeile. Neuladen, Zurueck oder ein Lesezeichen landeten danach ohne
+    // Token — gemessen, nicht vermutet.
+    // Das Ziel wird beim Klick aufgeloest, weil je nach Ansicht eine andere Region
+    // sichtbar ist; `#page` liegt im verborgenen App-Shell, solange das Portal laeuft.
+    function bindSkipLink() {
+        const link = $('.skip-link');
+        if (!link) return;
+        link.addEventListener('click', (e) => {
             e.preventDefault();
-            $('#page').focus({ preventScroll: true });
-            $('#page').scrollIntoView({ block: 'start' });
+            const target = ['#page', '#portal-view', '#login-view']
+                .map((sel) => $(sel)).find((n) => n && !n.hidden);
+            if (!target) return;
+            if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+            target.focus({ preventScroll: true });
+            target.scrollIntoView({ block: 'start' });
         });
+    }
+    function bindStatic() {
         $('#login-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const submit = $('#login-form button[type="submit"]');
@@ -9335,6 +9367,10 @@
         pv.innerHTML = '';
         pv.append(skeleton(4));
         const lang = portalLang();
+        // WCAG 3.1.1: die Sprache der Seite MUSS im Markup stehen. index.html ist auf
+        // lang="de" festgenagelt, und der Umschalter tauschte bisher nur die Texte —
+        // ein englisches Portal wurde also mit deutscher Aussprache vorgelesen.
+        document.documentElement.lang = lang;
         const P9 = PORTAL_STR[lang];
         const locale = lang === 'de' ? 'de-DE' : 'en-GB';
         let sum;
@@ -9362,7 +9398,10 @@
             el('div', {}, el('h1', {}, 'Parkrr'), el('p', { class: 'muted' }, esc(sum.person_name))),
             // Sprachumschalter: die Wahl bleibt im Browser (localStorage) und gilt
             // beim nächsten Öffnen wieder.
-            el('button', { class: 'btn btn-ghost btn-sm portal-lang', 'aria-label': lang === 'de' ? 'Switch to English' : 'Auf Deutsch umschalten',
+            // WCAG 2.5.3 (Label in Name): der sichtbare Text ('EN'/'DE') MUSS im
+            // barrierefreien Namen vorkommen, sonst findet Sprachsteuerung den Knopf
+            // nicht — "klick EN" traf einen Knopf, der "Switch to English" hiess.
+            el('button', { class: 'btn btn-ghost btn-sm portal-lang', 'aria-label': lang === 'de' ? 'EN – Switch to English' : 'DE – Auf Deutsch umschalten',
                 onclick: () => { try { localStorage.setItem('parkrr_portal_lang', lang === 'de' ? 'en' : 'de'); } catch (e2) { /* egal */ } renderPortal(token); } },
                 lang === 'de' ? 'EN' : 'DE')));
         wrap.append(el('div', { class: 'portal-card portal-balance' },
@@ -9484,6 +9523,7 @@
         window.addEventListener('resize', () => { const lv = $('#login-view'); if (lv && !lv.hidden) paintLoginBays(); });
         initTheme();
         applyBrand();
+        bindSkipLink();
         // Public portal short-circuits the whole app shell / auth flow.
         const pm = (location.hash || '').match(/^#\/portal\/([A-Za-z0-9_-]+)$/);
         if (pm) { await renderPortal(pm[1]); document.documentElement.classList.remove('preboot'); syncThemeColor(); return; }
