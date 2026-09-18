@@ -68,14 +68,14 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	if !validTOTPCodeLength(trim(req.Code)) {
+		writeError(w, http.StatusBadRequest, "invalid code")
+		return
+	}
 	var encSecret string
 	if err := h.Pool.QueryRow(r.Context(),
 		`SELECT totp_secret FROM users WHERE id=$1`, u.ID).Scan(&encSecret); err != nil || encSecret == "" {
 		writeError(w, http.StatusBadRequest, "start setup first")
-		return
-	}
-	if !validTOTPCodeLength(trim(req.Code)) {
-		writeError(w, http.StatusBadRequest, "invalid code")
 		return
 	}
 	// Step-up: enabling a second factor requires a recent primary-factor login,
@@ -93,15 +93,17 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid code")
 		return
 	}
-	if _, err := h.Pool.Exec(r.Context(),
-		`UPDATE users SET totp_enabled=TRUE, updated_at=now() WHERE id=$1`, u.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not enable two-factor")
-		return
-	}
-	// Issue one-time backup codes (shown once).
+	// Issue one-time backup codes (shown once) before enabling 2FA in the database.
+	// If code generation fails, 2FA remains disabled to avoid an inconsistent state
+	// where 2FA is active without the user receiving recovery codes.
 	codes, err := h.Auth.GenerateBackupCodes(r.Context(), u.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not generate backup codes")
+		return
+	}
+	if _, err := h.Pool.Exec(r.Context(),
+		`UPDATE users SET totp_enabled=TRUE, updated_at=now() WHERE id=$1`, u.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not enable two-factor")
 		return
 	}
 	// Reset the throttle only after the enable has FULLY succeeded (code valid,
