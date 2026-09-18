@@ -47,3 +47,8 @@
 *Vulnerability:* In `TOTPEnable`, `UPDATE users SET totp_enabled=TRUE` was executed prior to `GenerateBackupCodes`. A failure during backup code generation (such as DB or PRNG errors) left 2FA marked enabled on the user's account without recovery codes ever being generated or returned, leaving the user vulnerable to lockout.
 *Learning:* MFA enrolment operations must ensure all secondary credential artifacts (like recovery codes) are generated successfully before flipping the account's 2FA status flag to enabled.
 *Prevention:* Always generate and persist recovery artifacts prior to enabling the second-factor status flag on the user record.
+
+## 2026-07-19 - [Audit Log Query Parameter Length Validation for DoS Mitigation]
+*Vulnerability:* The audit log endpoint (`ListAudit`) accepted search query parameters (`q`, `action`, `entity`, `from`, `to`) without length checks. Large string payloads in `q` passed directly into complex `ILIKE` pattern evaluation in PostgreSQL, creating resource exhaustion and CPU/memory pressure risks.
+*Learning:* Query string parameters used in database search filters must be bounded at the API boundary, just like JSON body inputs, to prevent resource exhaustion and SQL processing overhead.
+*Prevention:* Enforce early length validation helpers (`validSearchQueryLength`, `validNameLength`, `validDateLength`) on all URL query parameters before building SQL query clauses.
