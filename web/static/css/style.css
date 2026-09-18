@@ -26,6 +26,7 @@
     --on-primary: #06211E;
     --accent: #E07A3F;      /* Kupfer (Geld) */
     --accent-text: #F0A171;
+    --on-accent: #241800;  /* Tinte auf Kupfer — 5.83:1 (WCAG AA) */
     --danger: #E4606E;
     --danger-hover: #F2909B;
     --on-danger: #2A090D;
@@ -78,6 +79,7 @@
         --on-primary: #FFFFFF;
         --accent: #B4531F;
         --accent-text: #9C4416;
+        --on-accent: #FFFFFF;  /* Tinte auf Kupfer — 5.00:1 (WCAG AA) */
         --danger: #B42331;
         --danger-hover: #9C1F2B;
         --on-danger: #FFFFFF;
@@ -115,6 +117,7 @@
     --on-primary: #FFFFFF;
     --accent: #B4531F;
     --accent-text: #9C4416;
+    --on-accent: #FFFFFF;  /* Tinte auf Kupfer — 5.00:1 (WCAG AA) */
     --danger: #B42331;
     --danger-hover: #9C1F2B;
     --on-danger: #FFFFFF;
@@ -149,6 +152,7 @@
     --on-primary: #06211E;
     --accent: #E07A3F;
     --accent-text: #F0A171;
+    --on-accent: #241800;  /* Tinte auf Kupfer — 5.83:1 (WCAG AA) */
     --danger: #E4606E;
     --danger-hover: #F2909B;
     --on-danger: #2A090D;
@@ -971,13 +975,17 @@ div.empty .big svg { width: 30px; height: 30px; }
 .seg-mini .seg-thumb.st-stored    { background: var(--success); }
 .seg-mini .seg-thumb.st-collected { background: var(--text-muted); }
 .seg-mini .seg-thumb.st-cancelled { background: var(--danger); }
-.seg-mini .seg-thumb.open { background: var(--warning); }
+/* Geld traegt Kupfer, Zustand traegt Amber — das ist der FAHRWERK-Vertrag ganz
+   oben. Bis hierher war `open` ebenfalls --warning, also exakt die Farbe von
+   st-reserved: auf derselben Karte sagten die Zustands- und die Zahlungs-Pille
+   dasselbe Amber fuer zwei voellig verschiedene Dinge. */
+.seg-mini .seg-thumb.open { background: var(--accent); }
 .seg-mini .seg-thumb.done { background: var(--success); }
 .seg-mini button.st-reserved.active  { color: var(--on-warning); }
 .seg-mini button.st-stored.active    { color: var(--on-success); }
 .seg-mini button.st-collected.active { color: var(--bg-elev); }
 .seg-mini button.st-cancelled.active { color: var(--on-danger); }
-.seg-mini.pay button.active.open { color: var(--on-warning); }
+.seg-mini.pay button.active.open { color: var(--on-accent); }
 .seg-mini.pay button.active.done { color: var(--on-success); }
 
 /* ---------- Role / status badges ---------- */
@@ -1308,7 +1316,12 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .card:has(.controls-row)::before{ content:""; position:absolute; left:11px; top:12px; bottom:12px; width:3px; border-radius:3px; background:var(--text-muted); opacity:.55; }
 .card:has(.badge-active)::before,.card:has(.seg-mini .active.done)::before{ background:var(--success); opacity:.9; }
 .card:has(.badge-ended)::before{ background:var(--warning); opacity:.9; }
-.card:has(.seg-mini .active.open)::before{ background:var(--accent); opacity:.9; }
+/* Hier stand eine Kupfer-Schiene fuer "unbezahlt". Sie war toter Code: die vier
+   Zustandsregeln weiter unten decken mit !important JEDEN Lebenszyklus-Zustand
+   ab (st-stored/-reserved/-collected/-cancelled), und app.js vergibt immer genau
+   einen davon — die Schiene konnte also nie kupfern werden.
+   Aufgeloest wird das ueber ZWEI Kanaele statt einem: die Schiene gehoert dem
+   Lebenszyklus, die Zahlungs-Pille dem Geld (jetzt kupfern, siehe oben). */
 
 /* Dialog modal + login card → 20px + gradient top rule */
 .modal,.login-card{ border-radius:20px; }
@@ -2439,6 +2452,11 @@ button.portal-row { width:100%; border:0; border-bottom:1px solid var(--border);
     /* Overlay auf der Foto-Miniatur: 44px verdeckte das Bild, deshalb die kleinste
        Größe, die das 24px-Minimum sicher überschreitet. */
     .photo-order .ord { min-height: 32px; min-width: 32px; }
+    /* Der Status-/Zahlungs-Schieber ist das meistbenutzte Bedienelement des
+       Produkts (PRODUCT.md, Prinzip 1) und war mit gemessenen 64×26 trotzdem
+       nicht in einer der drei alten Listen — genau der Fall, den der Kommentar
+       oben beschreibt. Der Daumen ist top/bottom verankert und waechst mit. */
+    .seg-mini button { min-height: 44px; }
     /* Auswahlkästchen der Mehrfachauswahl: 18px war auf dem Telefon kaum zu treffen. */
     .bulk-wrap > .bulk-cb { width: 24px; height: 24px; }
 }

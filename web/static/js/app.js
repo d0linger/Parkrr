@@ -3554,10 +3554,23 @@
         moveThumb(btn.parentElement);
         segRoving(btn.parentElement); // keep the single tab stop on the new selection
     }
+    // Ein Fehlgriff auf der Zahlungs-Pille war bisher endgueltig: ein Ein-Tipp-Schreib-
+    // vorgang, eine 3-Sekunden-Meldung, kein Weg zurueck — waehrend DIESELBE Geste auf
+    // einer Pauschale (agreementMarkAllPaid) ein Rueckgaengig bekam. Beide landen im
+    // fortschreibenden Pruefpfad, also bekommen beide dasselbe Netz.
     async function markPaid(v, paid) {
         if (v.paid === paid) return;
-        try { await api.post('/vehicles/' + v.id + '/paid', { paid }); toast(paid ? 'Als bezahlt markiert' : 'Als offen markiert', 'success'); render(); }
-        catch (e) { toast(e.message, 'error'); render(); }
+        const prev = v.paid;
+        try {
+            await api.post('/vehicles/' + v.id + '/paid', { paid });
+            // Erst neu zeichnen, dann die Meldung: so kann das Neuzeichnen ihr nicht
+            // die Aufmerksamkeit stehlen (gleiche Reihenfolge wie bei der Pauschale).
+            await render();
+            toastAction(paid ? 'Als bezahlt markiert' : 'Als offen markiert', 'Rückgängig', async () => {
+                try { await api.post('/vehicles/' + v.id + '/paid', { paid: prev }); render(); }
+                catch (e) { toast(e.message, 'error'); }
+            }, 8000);
+        } catch (e) { toast(e.message, 'error'); render(); }
     }
     async function duplicateVehicle(v) {
         // save statt "sammeln, schliessen, absenden": scheitert der Aufruf, bleibt der
@@ -3832,6 +3845,11 @@
 
     async function changeStatus(v, s, opts = {}) {
         let note = '', date;
+        // Hat ein Dialog den Schreibvorgang schon bestaetigt, braucht es danach kein
+        // Rueckgaengig; die stillen Schieber-Tipps (reserviert <-> eingelagert) sind
+        // dagegen genau die ungesicherten Ein-Tipp-Schreibvorgaenge und bekommen eins.
+        let asked = false;
+        const prev = v.status;
         if (s === 'collected') {
             // Always ask for the pickup date (default today, editable) so older
             // pickups can be back-dated instead of always using the current date.
@@ -3842,15 +3860,19 @@
                 ],
             });
             if (!d) { render(); return; } // reset optimistic slider state
-            note = d.note; date = d.date;
+            note = d.note; date = d.date; asked = true;
         } else if (!opts.silent && s === 'cancelled') {
             const d = await formModal({ title: STATUS_LABEL[s], submitLabel: 'Bestätigen', fields: [{ name: 'note', label: 'Notiz (optional)', type: 'textarea' }] });
-            if (!d) { render(); return; } note = d.note;
+            if (!d) { render(); return; } note = d.note; asked = true;
         }
         try {
             await api.post('/vehicles/' + v.id + '/status', { status: s, note, date });
-            toast('Status: ' + STATUS_LABEL[s], 'success');
-            render();
+            await render();
+            if (asked) { toast('Status: ' + STATUS_LABEL[s], 'success'); return; }
+            toastAction('Status: ' + STATUS_LABEL[s], 'Rückgängig', async () => {
+                try { await api.post('/vehicles/' + v.id + '/status', { status: prev }); render(); }
+                catch (e) { toast(e.message, 'error'); }
+            }, 8000);
         } catch (e) { toast(e.message, 'error'); render(); } // roll back the optimistic slider on a rejected write
     }
     // Client-seitiges Verkleinern vor dem Hochladen (Hundert 50): ein 12-MP-Handyfoto
