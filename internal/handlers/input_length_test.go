@@ -356,3 +356,50 @@ func TestInputLengthValidation(t *testing.T) {
 func floatPtr(f float64) *float64 {
 	return &f
 }
+
+func TestListAuditQueryLengthValidation(t *testing.T) {
+	h := &Handler{}
+	longSearch := strings.Repeat("x", maxSearchQueryLen+1)
+	longName := strings.Repeat("a", maxNameLen+1)
+
+	tests := []struct {
+		name   string
+		query  string
+		errMsg string
+	}{
+		{
+			name:   "q parameter too long",
+			query:  "?q=" + longSearch,
+			errMsg: "search query is too long",
+		},
+		{
+			name:   "action parameter too long",
+			query:  "?action=" + longName,
+			errMsg: "action is too long",
+		},
+		{
+			name:   "entity parameter too long",
+			query:  "?entity=" + longName,
+			errMsg: "entity is too long",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/api/audit"+tt.query, nil)
+			w := httptest.NewRecorder()
+			h.ListAudit(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("got status %d, want %d", w.Code, http.StatusBadRequest)
+			}
+			var resp map[string]string
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("failed to unmarshal response: %v", err)
+			}
+			if !strings.Contains(resp["error"], tt.errMsg) {
+				t.Errorf("got error %q, want it to contain %q", resp["error"], tt.errMsg)
+			}
+		})
+	}
+}

@@ -18,6 +18,10 @@ func (h *Handler) ListAudit(w http.ResponseWriter, r *http.Request) {
 	var where []string
 	var args []any
 	if q := trim(r.URL.Query().Get("q")); q != "" {
+		if !validSearchQueryLength(q) {
+			writeError(w, http.StatusBadRequest, "search query is too long")
+			return
+		}
 		// Platzhalter der Eingabe entschärfen, wie es die Suche (search.go) tut: ohne
 		// das wirken % und _ als Jokerzeichen. Eine Suche nach dem Wort
 		// "wall_template" träfe damit auch "wallXtemplate", und die Eingabe eines
@@ -32,10 +36,18 @@ func (h *Handler) ListAudit(w http.ResponseWriter, r *http.Request) {
 		where = append(where, fmt.Sprintf(`(username ILIKE %s ESCAPE '\' OR summary ILIKE %s ESCAPE '\')`, pat, pat))
 	}
 	if a := trim(r.URL.Query().Get("action")); a != "" {
+		if !validNameLength(a) {
+			writeError(w, http.StatusBadRequest, "action is too long")
+			return
+		}
 		args = append(args, a)
 		where = append(where, fmt.Sprintf("action = $%d", len(args)))
 	}
 	if e := trim(r.URL.Query().Get("entity")); e != "" {
+		if !validNameLength(e) {
+			writeError(w, http.StatusBadRequest, "entity is too long")
+			return
+		}
 		args = append(args, e)
 		where = append(where, fmt.Sprintf("entity = $%d", len(args)))
 	}
