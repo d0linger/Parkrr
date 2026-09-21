@@ -19,7 +19,7 @@ func (h *Handler) ListAudit(w http.ResponseWriter, r *http.Request) {
 	var args []any
 	if q := trim(r.URL.Query().Get("q")); q != "" {
 		if !validSearchQueryLength(q) {
-			writeError(w, http.StatusBadRequest, "q is too long")
+			writeError(w, http.StatusBadRequest, "search query is too long")
 			return
 		}
 		// Platzhalter der Eingabe entschärfen, wie es die Suche (search.go) tut: ohne

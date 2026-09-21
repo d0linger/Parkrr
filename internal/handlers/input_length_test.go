@@ -292,7 +292,7 @@ func TestInputLengthValidation(t *testing.T) {
 			method:     "GET",
 			body:       nil,
 			wantStatus: http.StatusBadRequest,
-			errMsg:     "q is too long",
+			errMsg:     "search query is too long",
 		},
 		{
 			name:       "ListAudit: Action parameter too long",
