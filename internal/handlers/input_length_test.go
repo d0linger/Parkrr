@@ -11,6 +11,19 @@ import (
 	"github.com/preining/parkrr/internal/backup"
 )
 
+// TestInputLengthValidation pins the shared length caps from validation.go against
+// the 15 handlers listed below. Each case feeds one field exactly one byte over its
+// cap and expects 400 plus the caller-facing message, so a cap that goes missing, or
+// a message that drifts, fails here rather than reaching the database.
+//
+// It is NOT exhaustive: the package has far more mutating handlers than the 15
+// covered here, so a new endpoint is not protected by this table until someone adds
+// it. Adding a case is the cheap part.
+//
+// The audit log is the odd one out and the reason the table grew: its filters arrive
+// as QUERY parameters rather than a JSON body, so decodeJSON's 1 MiB request-body
+// limit never sees them and q, action, entity and the from/to dates need caps of
+// their own.
 func TestInputLengthValidation(t *testing.T) {
 	h := &Handler{}
 
