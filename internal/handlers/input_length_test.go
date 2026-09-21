@@ -11,6 +11,19 @@ import (
 	"github.com/preining/parkrr/internal/backup"
 )
 
+// TestInputLengthValidation pins the shared length caps from validation.go against
+// the 15 handlers listed below. Each case feeds one field exactly one byte over its
+// cap and expects 400 plus the caller-facing message, so a cap that goes missing, or
+// a message that drifts, fails here rather than reaching the database.
+//
+// It is NOT exhaustive: the package has far more mutating handlers than the 15
+// covered here, so a new endpoint is not protected by this table until someone adds
+// it. Adding a case is the cheap part.
+//
+// The audit log is the odd one out and the reason the table grew: its filters arrive
+// as QUERY parameters rather than a JSON body, so decodeJSON's 1 MiB request-body
+// limit never sees them and q, action, entity and the from/to dates need caps of
+// their own.
 func TestInputLengthValidation(t *testing.T) {
 	h := &Handler{}
 
@@ -286,6 +299,46 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "note is too long",
 		},
+		{
+			name:       "ListAudit: Search query q too long",
+			path:       "/api/audit?q=" + strings.Repeat("q", maxSearchQueryLen+1),
+			method:     "GET",
+			body:       nil,
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "search query is too long",
+		},
+		{
+			name:       "ListAudit: Action parameter too long",
+			path:       "/api/audit?action=" + longName,
+			method:     "GET",
+			body:       nil,
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "action is too long",
+		},
+		{
+			name:       "ListAudit: Entity parameter too long",
+			path:       "/api/audit?entity=" + longName,
+			method:     "GET",
+			body:       nil,
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "entity is too long",
+		},
+		{
+			name:       "ListAudit: From date parameter too long",
+			path:       "/api/audit?from=" + longDate,
+			method:     "GET",
+			body:       nil,
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "from is too long",
+		},
+		{
+			name:       "ListAudit: To date parameter too long",
+			path:       "/api/audit?to=" + longDate,
+			method:     "GET",
+			body:       nil,
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "to is too long",
+		},
 	}
 
 	for _, tt := range tests {
@@ -337,6 +390,8 @@ func TestInputLengthValidation(t *testing.T) {
 			case "CreateInvoice: Note too long":
 				req.SetPathValue("id", "1")
 				h.CreateInvoice(w, req)
+			case "ListAudit: Search query q too long", "ListAudit: Action parameter too long", "ListAudit: Entity parameter too long", "ListAudit: From date parameter too long", "ListAudit: To date parameter too long":
+				h.ListAudit(w, req)
 			}
 
 			if w.Code != tt.wantStatus {

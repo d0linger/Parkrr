@@ -18,6 +18,10 @@ func (h *Handler) ListAudit(w http.ResponseWriter, r *http.Request) {
 	var where []string
 	var args []any
 	if q := trim(r.URL.Query().Get("q")); q != "" {
+		if !validSearchQueryLength(q) {
+			writeError(w, http.StatusBadRequest, "search query is too long")
+			return
+		}
 		// Platzhalter der Eingabe entschärfen, wie es die Suche (search.go) tut: ohne
 		// das wirken % und _ als Jokerzeichen. Eine Suche nach dem Wort
 		// "wall_template" träfe damit auch "wallXtemplate", und die Eingabe eines
@@ -32,10 +36,18 @@ func (h *Handler) ListAudit(w http.ResponseWriter, r *http.Request) {
 		where = append(where, fmt.Sprintf(`(username ILIKE %s ESCAPE '\' OR summary ILIKE %s ESCAPE '\')`, pat, pat))
 	}
 	if a := trim(r.URL.Query().Get("action")); a != "" {
+		if !validNameLength(a) {
+			writeError(w, http.StatusBadRequest, "action is too long")
+			return
+		}
 		args = append(args, a)
 		where = append(where, fmt.Sprintf("action = $%d", len(args)))
 	}
 	if e := trim(r.URL.Query().Get("entity")); e != "" {
+		if !validNameLength(e) {
+			writeError(w, http.StatusBadRequest, "entity is too long")
+			return
+		}
 		args = append(args, e)
 		where = append(where, fmt.Sprintf("entity = $%d", len(args)))
 	}
@@ -43,12 +55,20 @@ func (h *Handler) ListAudit(w http.ResponseWriter, r *http.Request) {
 	// so a picked day matches the operator's calendar day at its boundaries; a
 	// malformed value is simply ignored (no filter) rather than reaching the query.
 	if f := trim(r.URL.Query().Get("from")); f != "" {
+		if !validDateLength(f) {
+			writeError(w, http.StatusBadRequest, "from is too long")
+			return
+		}
 		if d, perr := time.ParseInLocation("2006-01-02", f, time.Local); perr == nil {
 			args = append(args, d)
 			where = append(where, fmt.Sprintf("created_at >= $%d", len(args)))
 		}
 	}
 	if to := trim(r.URL.Query().Get("to")); to != "" {
+		if !validDateLength(to) {
+			writeError(w, http.StatusBadRequest, "to is too long")
+			return
+		}
 		if d, perr := time.ParseInLocation("2006-01-02", to, time.Local); perr == nil {
 			args = append(args, d.AddDate(0, 0, 1)) // inclusive of the whole "to" day
 			where = append(where, fmt.Sprintf("created_at < $%d", len(args)))
