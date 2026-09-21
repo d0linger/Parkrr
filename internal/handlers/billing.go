@@ -1155,6 +1155,10 @@ func (h *Handler) OverdueInvoices(w http.ResponseWriter, r *http.Request) {
 	cutoff := trim(r.URL.Query().Get("due_until"))
 	var cutoffArg *string
 	if cutoff != "" {
+		if !validDateLength(cutoff) {
+			writeError(w, http.StatusBadRequest, "due_until is too long")
+			return
+		}
 		if _, perr := time.Parse(dateLayout, cutoff); perr != nil {
 			writeError(w, http.StatusBadRequest, "due_until must be YYYY-MM-DD")
 			return
