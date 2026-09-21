@@ -286,6 +286,46 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "note is too long",
 		},
+		{
+			name:       "ListAudit: Search query q too long",
+			path:       "/api/audit?q=" + strings.Repeat("q", maxSearchQueryLen+1),
+			method:     "GET",
+			body:       nil,
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "search query is too long",
+		},
+		{
+			name:       "ListAudit: Action parameter too long",
+			path:       "/api/audit?action=" + longName,
+			method:     "GET",
+			body:       nil,
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "action is too long",
+		},
+		{
+			name:       "ListAudit: Entity parameter too long",
+			path:       "/api/audit?entity=" + longName,
+			method:     "GET",
+			body:       nil,
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "entity is too long",
+		},
+		{
+			name:       "ListAudit: From date parameter too long",
+			path:       "/api/audit?from=" + longDate,
+			method:     "GET",
+			body:       nil,
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "from is too long",
+		},
+		{
+			name:       "ListAudit: To date parameter too long",
+			path:       "/api/audit?to=" + longDate,
+			method:     "GET",
+			body:       nil,
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "to is too long",
+		},
 	}
 
 	for _, tt := range tests {
@@ -337,6 +377,8 @@ func TestInputLengthValidation(t *testing.T) {
 			case "CreateInvoice: Note too long":
 				req.SetPathValue("id", "1")
 				h.CreateInvoice(w, req)
+			case "ListAudit: Search query q too long", "ListAudit: Action parameter too long", "ListAudit: Entity parameter too long", "ListAudit: From date parameter too long", "ListAudit: To date parameter too long":
+				h.ListAudit(w, req)
 			}
 
 			if w.Code != tt.wantStatus {
