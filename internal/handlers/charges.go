@@ -510,6 +510,8 @@ func (h *Handler) UpdateCharge(w http.ResponseWriter, r *http.Request) {
 		           WHERE s.kind='charge' AND s.ref_id=c.id AND NOT i.canceled)
 		   OR EXISTS(SELECT 1 FROM payment_allocations a JOIN payments p ON p.id=a.payment_id
 		             WHERE a.kind='charge' AND a.ref_id=c.id AND NOT p.reversed)
+		   OR EXISTS(SELECT 1 FROM payments p
+		             WHERE p.settles_kind='charge' AND p.settles_ref=c.id AND NOT p.reversed)
 		 FROM charges c WHERE c.id=$1
 		 FOR UPDATE OF c`,
 		id, req.PersonID, req.VehicleID, req.Amount, req.Quantity).Scan(&billingChanged, &chargeLocked); err != nil {

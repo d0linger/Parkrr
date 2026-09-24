@@ -432,6 +432,7 @@ function filtered() {
   return rows;
 }
 
+let selectionClearedByFilter = false;
 function renderList() {
   visible = filtered();
   const host = $("#finding-list");
@@ -439,12 +440,17 @@ function renderList() {
   $("#result-count").textContent = `${visible.length} of ${findings.length} visible`;
   $("#empty-state").hidden = visible.length !== 0;
   if (visible.length && !visible.some((f) => f.id === state.selected)) {
-    const hadSelection = state.selected !== null;
+    // A selection hidden by filtering, or cleared by an empty result, moves the
+    // deep link to what is shown. The initial no-hash load keeps a bare URL.
+    const hadSelection = state.selected !== null || selectionClearedByFilter;
     state.selected = visible[0].id;
-    // Filtering hid the linked finding: keep the deep link on what is shown.
+    selectionClearedByFilter = false;
     if (hadSelection) history.replaceState(null, "", `#${state.selected}`);
   }
-  if (!visible.length) state.selected = null;
+  if (!visible.length) {
+    if (state.selected !== null) selectionClearedByFilter = true;
+    state.selected = null;
+  }
   visible.forEach((f) => {
     const status = statusOf(f.id);
     const button = make("button", { class: "finding-row", type: "button", "aria-current": f.id === state.selected ? "true" : "false", "data-id": f.id, style: `--severity:${severityVar(f.severity)}`, onclick: () => selectFinding(f.id, true) },
@@ -593,4 +599,4 @@ document.addEventListener("keydown", (event) => {
 });
 
 render();
-if (hashID && mobileLayout.matches) openMobileDossier();
+if (findings.some((f) => f.id === hashID) && mobileLayout.matches) openMobileDossier();
