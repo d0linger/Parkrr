@@ -103,7 +103,7 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 	}
 	// Step-up: enabling a second factor requires a recent primary-factor login,
 	// or the account password if that window has closed (finding SH-02).
-	if !h.requireStepUp(w, r, u.Username, req.Password) {
+	if !h.requireStepUp(w, r, u, req.Password) {
 		return
 	}
 	// Throttle: a 6-digit code is otherwise brute-forceable during enrolment.
@@ -156,6 +156,7 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 		`UPDATE users
 		    SET totp_secret=pending_totp_secret, totp_enabled=TRUE,
 		        pending_totp_secret='', pending_totp_nonce='', pending_totp_expires_at=NULL,
+		        totp_failures=0, totp_locked_until=NULL,
 		        updated_at=now()
 		  WHERE id=$1`, u.ID); err != nil {
 		h.refundReauth(key, ip)
@@ -201,7 +202,7 @@ func (h *AuthHandler) TOTPDisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.Auth.Authenticate(r.Context(), u.Username, req.Password); err != nil {
+	if _, err := h.Auth.AuthenticateUserID(r.Context(), u.ID, req.Password); err != nil {
 		h.recordReauthFailure(key, ip)
 		writeError(w, http.StatusForbidden, "Passwort ist falsch")
 		return
@@ -258,7 +259,7 @@ func (h *AuthHandler) TOTPRegenerateBackup(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if _, err := h.Auth.Authenticate(r.Context(), u.Username, req.Password); err != nil {
+	if _, err := h.Auth.AuthenticateUserID(r.Context(), u.ID, req.Password); err != nil {
 		h.recordReauthFailure(key, ip)
 		writeError(w, http.StatusForbidden, "Passwort ist falsch")
 		return

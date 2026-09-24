@@ -354,10 +354,18 @@ func (h *Handler) ResetUserTOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
+	// Auch eine halb begonnene TOTP-Einrichtung verwerfen (AUTH-04): sonst fände
+	// ein TOTPEnable, das vor dem Reset lief und auf die Zeilensperre wartet, nach
+	// dem Commit noch ein gültiges pending_totp_secret und schaltete 2FA mit dem
+	// Geheimnis des Angreifers wieder ein. Der Fehlversuchszähler (AUTH-03) wird
+	// mit zurückgesetzt — der Admin-Reset ist der vorgesehene Weg aus der Sperre.
 	var prevTOTP bool
 	if err := tx.QueryRow(r.Context(),
 		`WITH prev AS (SELECT totp_enabled FROM users WHERE id=$1)
-		 UPDATE users SET totp_enabled=FALSE, totp_secret='', updated_at=now() WHERE id=$1
+		 UPDATE users SET totp_enabled=FALSE, totp_secret='',
+		        pending_totp_secret='', pending_totp_nonce='', pending_totp_expires_at=NULL,
+		        totp_failures=0, totp_locked_until=NULL, updated_at=now()
+		  WHERE id=$1
 		 RETURNING (SELECT totp_enabled FROM prev)`,
 		id).Scan(&prevTOTP); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not reset two-factor")
