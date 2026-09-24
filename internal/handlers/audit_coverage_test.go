@@ -272,7 +272,9 @@ var auditIgnoredPerFunc = map[string]map[string]bool{
 	// die Loeschung greift bis in jede Nebentabelle mit Personenbezug durch, und der Sinn
 	// der Sache ist, dass die alten Werte VERSCHWINDEN. Ein Vorher/Nachher-Diff schriebe
 	// die geloeschte Adresse ins Aenderungsprotokoll und hoebe die Loeschung damit auf.
-	"AnonymizePerson": {"revoked": true, "payload": true, "recipients": true, "sent_to": true},
+	// error (mail_log) ebenso: der SMTP-Fehlertext zitiert die abgewiesene Adresse
+	// (PRT-03), geschwärzt wird genau sie.
+	"AnonymizePerson": {"revoked": true, "payload": true, "recipients": true, "sent_to": true, "error": true},
 }
 
 // TestAuditDiffsCoverEveryWrittenColumn fails when a handler records field changes

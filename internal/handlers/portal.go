@@ -429,14 +429,16 @@ func (h *Handler) PortalSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Übergabeprotokolle der eigenen Gefährte (Hundert 84) — Metadaten und
-	// Zustandsnotizen, ohne Unterschriftsbild (Begründung am Struct).
+	// Zustandsnotizen, ohne Unterschriftsbild (Begründung am Struct). Gefiltert nach
+	// dem beim Anlegen festgeschriebenen Halter (PRT-01), nicht nach dem heutigen:
+	// ein umgehängtes Gefährt zeigt dem neuen Halter nicht die Belege des alten.
 	out.Handovers = []portalHandover{}
 	hrows, err := h.Pool.Query(r.Context(),
 		`SELECT COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), 'Gefährt'),
 		        ho.direction, ho.notes, ho.signer_name, ho.created_at
 		   FROM handover_protocols ho
 		   JOIN vehicles v ON v.id = ho.vehicle_id
-		  WHERE v.person_id = $1
+		  WHERE ho.person_id = $1
 		  ORDER BY ho.created_at DESC LIMIT 50`, pid)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")

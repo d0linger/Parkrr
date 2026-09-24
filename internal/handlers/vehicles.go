@@ -358,7 +358,9 @@ func (h *Handler) refFinanciallyLocked(ctx context.Context, q rowQuerier, kind s
 }
 
 // vehicleOwnerReferenced prevents a direct owner rewrite from splitting related
-// charges or agreement membership across two customers.
+// charges or agreement membership across two customers. Handover protocols and
+// vehicle attachments count too (PRT-01): they carry the owner snapshotted at
+// creation, and a reassigned vehicle would otherwise hold records of two people.
 func (h *Handler) vehicleOwnerReferenced(ctx context.Context, q rowQuerier, vehicleID int64) (bool, error) {
 	var referenced bool
 	err := q.QueryRow(ctx,
@@ -366,7 +368,9 @@ func (h *Handler) vehicleOwnerReferenced(ctx context.Context, q rowQuerier, vehi
 		     OR EXISTS(SELECT 1 FROM recurring_charges WHERE vehicle_id=$1)
 		     OR EXISTS(SELECT 1 FROM flat_rate_period_vehicles WHERE vehicle_id=$1)
 		     OR EXISTS(SELECT 1 FROM invoice_source WHERE kind='vehicle' AND ref_id=$1)
-		     OR EXISTS(SELECT 1 FROM payment_allocations WHERE kind='vehicle' AND ref_id=$1)`,
+		     OR EXISTS(SELECT 1 FROM payment_allocations WHERE kind='vehicle' AND ref_id=$1)
+		     OR EXISTS(SELECT 1 FROM handover_protocols WHERE vehicle_id=$1)
+		     OR EXISTS(SELECT 1 FROM attachments WHERE vehicle_id=$1)`,
 		vehicleID).Scan(&referenced)
 	return referenced, err
 }

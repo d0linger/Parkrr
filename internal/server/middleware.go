@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -117,14 +118,52 @@ func newIPLimiter(perMin int) *ipLimiter {
 	}
 }
 
+// maxRateBuckets deckelt die Bucket-Tabelle (PRT-04). Ein Eintrag lebt nach
+// seiner letzten Anfrage noch mindestens zehn Minuten (cleanup); ohne Deckel
+// wächst die Tabelle mit jeder neuen Quelladresse, bis der Speicher ausgeht.
+const maxRateBuckets = 50000
+
+// overflowBucketKey ist der gemeinsame Bucket aller NEUEN Schlüssel, solange die
+// Tabelle voll ist. Bestehende Clients behalten ihren eigenen Bucket; wer während
+// einer Flut mit zehntausenden Präfixen neu dazukommt, teilt sich ein Budget — das
+// begrenzt den Angreifer, statt ihm mit jedem neuen Präfix ein volles zu schenken.
+const overflowBucketKey = "overflow"
+
+// rateLimitKey bildet die Client-Adresse auf ihren Bucket ab. IPv4 (auch als
+// ::ffff:a.b.c.d) bleibt die volle Adresse; IPv6 wird auf das /64 gekürzt, weil
+// ein einzelner Anschluss üblicherweise ein ganzes /64 bekommt und daraus beliebig
+// viele Quelladressen wählen kann — pro Adresse ein eigener, voller Bucket hob die
+// Grenze für jeden IPv6-Client auf (PRT-04). Nicht parsbare Werte bleiben
+// unverändert.
+func rateLimitKey(ip string) string {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	addr = addr.WithZone("").Unmap()
+	if addr.Is4() {
+		return addr.String()
+	}
+	pfx, err := addr.Prefix(64)
+	if err != nil {
+		return ip
+	}
+	return pfx.String()
+}
+
 func (l *ipLimiter) allow(ip string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
-	b := l.buckets[ip]
+	key := rateLimitKey(ip)
+	b := l.buckets[key]
+	if b == nil && len(l.buckets) >= maxRateBuckets {
+		key = overflowBucketKey
+		b = l.buckets[key]
+	}
 	if b == nil {
 		b = &bucket{tokens: l.capacity, last: now}
-		l.buckets[ip] = b
+		l.buckets[key] = b
 	}
 	b.tokens += now.Sub(b.last).Seconds() * l.refill
 	if b.tokens > l.capacity {

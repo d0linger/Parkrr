@@ -131,14 +131,19 @@ func (h *Handler) CreateHandover(w http.ResponseWriter, r *http.Request) {
 		createdBy = &u.ID
 	}
 
+	// Der Halter wird beim Anlegen festgeschrieben (PRT-01): Portal, Zeitleiste,
+	// PDF und Anonymisierung lesen ihn aus person_id, nie über den HEUTIGEN Halter
+	// des Gefährts. FOR SHARE serialisiert gegen UpdateVehicle (FOR UPDATE), damit
+	// ein gleichzeitiger Halterwechsel das neue Protokoll sieht und abgelehnt wird.
 	var meta handoverMeta
 	if err := h.Pool.QueryRow(r.Context(),
-		`INSERT INTO handover_protocols (vehicle_id, direction, notes, signer_name, signature, created_by)
-		 VALUES ($1,$2,$3,$4,$5,$6)
+		`INSERT INTO handover_protocols (vehicle_id, person_id, direction, notes, signer_name, signature, created_by)
+		 SELECT v.id, v.person_id, $2, $3, $4, $5, $6
+		   FROM vehicles v WHERE v.id = $1 FOR SHARE
 		 RETURNING id, vehicle_id, direction, notes, signer_name, (signature IS NOT NULL), created_at`,
 		id, direction, notes, signerName, sig, createdBy,
 	).Scan(&meta.ID, &meta.VehicleID, &meta.Direction, &meta.Notes, &meta.SignerName, &meta.HasSignature, &meta.CreatedAt); err != nil {
-		if isForeignKeyViolation(err) {
+		if errors.Is(err, pgx.ErrNoRows) || isForeignKeyViolation(err) {
 			writeError(w, http.StatusNotFound, "vehicle not found")
 			return
 		}
@@ -264,7 +269,7 @@ func (h *Handler) HandoverPDF(w http.ResponseWriter, r *http.Request) {
 		   FROM handover_protocols hp
 		   JOIN vehicles v ON v.id = hp.vehicle_id
 		   JOIN categories cat ON cat.id = v.category_id
-		   JOIN persons p ON p.id = v.person_id
+		   JOIN persons p ON p.id = hp.person_id
 		  WHERE hp.id = $1`, id,
 	).Scan(&direction, &notes, &signer, &createdAt, &sig, &label, &plate, &person); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

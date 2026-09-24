@@ -6,6 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -51,6 +54,72 @@ func auditChainStep(prevHex string, rowWithoutChain []byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// Grenzen des Exports (PRT-02). Der Export ist unbegrenzt in der ZEILENZAHL, aber
+// nicht in der Zeit: der allgemeine WriteTimeout des Servers (30 s) würde eine
+// große Datei still abschneiden, und eine Abfrage ohne statement_timeout hielte
+// eine der zehn Poolverbindungen beliebig lange fest. Deshalb ein eigenes,
+// großzügiges, aber endliches Fenster für Socket UND Abfrage — und höchstens ein
+// Export gleichzeitig, wie backupDownloadSlots bei den Sicherungen.
+const (
+	auditExportDeadline = 30 * time.Minute
+	// Etwas UNTER dem Schreibfenster, damit PostgreSQL sauber abbricht, bevor der
+	// Kontext die Verbindung hart kappt.
+	auditExportStatementTimeout = `SET statement_timeout = '29min'`
+	auditExportBufSize          = 64 << 10
+)
+
+var auditExportSlots = make(chan struct{}, 1)
+
+// errAuditExportWrite markiert einen Schreibfehler zum Abrufer (Verbindung weg,
+// Schreibfenster abgelaufen) — im Unterschied zu einem Fehler der Datenbank.
+var errAuditExportWrite = errors.New("audit export: write failed")
+
+// auditRowSource ist der Teil von pgx.Rows, den die Schleife braucht — als
+// Schnittstelle, damit sich der Abbruch beim ersten Schreibfehler ohne
+// Datenbank prüfen lässt.
+type auditRowSource interface {
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
+}
+
+// writeAuditExportRows schreibt alle Zeilen samt Kette nach bw und bricht beim
+// ERSTEN Schreibfehler ab: der Abrufer ist dann weg, und jede weitere Zeile wäre
+// nur noch ein sinnloser Scan über das ganze Protokoll auf einer Poolverbindung.
+func writeAuditExportRows(rows auditRowSource, bw *bufio.Writer) (count int64, chain string, err error) {
+	for rows.Next() {
+		var row auditExportRow
+		row.Type = "entry"
+		if err := rows.Scan(&row.ID, &row.UserID, &row.Username, &row.Action, &row.Entity,
+			&row.EntityID, &row.Summary, &row.Changes, &row.CreatedAt); err != nil {
+			return count, chain, fmt.Errorf("scan: %w", err)
+		}
+		// Erst ohne Chain serialisieren (das ist die gehashte Form), dann mit.
+		row.Chain = ""
+		bare, merr := json.Marshal(row)
+		if merr != nil {
+			return count, chain, fmt.Errorf("encode: %w", merr)
+		}
+		chain = auditChainStep(chain, bare)
+		row.Chain = chain
+		line, merr := json.Marshal(row)
+		if merr != nil {
+			return count, chain, fmt.Errorf("encode: %w", merr)
+		}
+		if _, werr := bw.Write(line); werr != nil {
+			return count, chain, fmt.Errorf("%w: %w", errAuditExportWrite, werr)
+		}
+		if werr := bw.WriteByte('\n'); werr != nil {
+			return count, chain, fmt.Errorf("%w: %w", errAuditExportWrite, werr)
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return count, chain, fmt.Errorf("query: %w", err)
+	}
+	return count, chain, nil
+}
+
 // ExportAudit streamt das GESAMTE Änderungsprotokoll als JSON-Zeilen (JSONL) mit
 // SHA-256-Hashkette (Hundert 43). Die Tabelle selbst ist per Trigger unveränderlich
 // — aber ein Export davon war bisher nur eine Textdatei, der man jede Nachbearbeitung
@@ -60,21 +129,38 @@ func auditChainStep(prevHex string, rowWithoutChain []byte) string {
 // Admin-only wie die Audit-Ansicht selbst. Ohne Limit: ein Revisionsexport, der
 // still abschneidet, wäre schlimmer als keiner — deshalb gestreamt statt gepuffert.
 func (h *Handler) ExportAudit(w http.ResponseWriter, r *http.Request) {
+	select {
+	case auditExportSlots <- struct{}{}:
+	case <-r.Context().Done():
+		return
+	default:
+		writeError(w, http.StatusTooManyRequests, "Es läuft bereits ein Protokollexport – bitte später erneut versuchen")
+		return
+	}
+	defer func() { <-auditExportSlots }()
+	// Der WriteTimeout des Servers bricht NICHT den Request-Kontext ab — ohne das
+	// eigene Fenster schlügen nach 30 s alle Schreibvorgänge fehl, während die
+	// Abfrage weiterläuft.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(auditExportDeadline))
+	ctx, cancel := context.WithTimeout(r.Context(), auditExportDeadline)
+	defer cancel()
+
 	// Der Export ist bewusst unbegrenzt — genau deshalb braucht er eine EIGENE
 	// Verbindung ohne die 10-Sekunden-Bremse, unter der jede Poolverbindung läuft.
 	// Sonst bricht PostgreSQL die Abfrage nach zehn Sekunden ab, NACHDEM Status 200
 	// und ein Teil der Datei schon draußen sind: der Prüfer bekommt eine
 	// abgeschnittene Datei, deren einziges Erkennungsmerkmal die fehlende
 	// Manifest-Zeile ist. Bei einem Protokoll mit sieben Jahren Aufbewahrung ist das
-	// nicht der Ausnahme-, sondern der Normalfall. Muster wie in database.go: Bremse
-	// lösen, vor der Rückgabe wieder setzen, sonst die Verbindung verwerfen.
-	conn, cerr := h.Pool.Acquire(r.Context())
+	// nicht der Ausnahme-, sondern der Normalfall. Die Bremse wird gelockert, nicht
+	// gelöst (PRT-02): ein endlicher Wert passend zum Schreibfenster. Muster wie in
+	// database.go: vor der Rückgabe wieder setzen, sonst die Verbindung verwerfen.
+	conn, cerr := h.Pool.Acquire(ctx)
 	if cerr != nil {
 		serverError(w, r, "query failed", cerr)
 		return
 	}
 	defer conn.Release()
-	if _, terr := conn.Exec(r.Context(), `SET statement_timeout = 0`); terr != nil {
+	if _, terr := conn.Exec(ctx, auditExportStatementTimeout); terr != nil {
 		serverError(w, r, "query failed", terr)
 		return
 	}
@@ -86,7 +172,7 @@ func (h *Handler) ExportAudit(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	rows, err := conn.Query(r.Context(),
+	rows, err := conn.Query(ctx,
 		`SELECT id, user_id, username, action, entity, entity_id, summary, changes, created_at
 		   FROM audit_log ORDER BY id ASC`)
 	if err != nil {
@@ -98,43 +184,19 @@ func (h *Handler) ExportAudit(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
 	w.Header().Set("Content-Disposition",
 		`attachment; filename="parkrr-audit-export-`+h.now().Format("2006-01-02")+`.jsonl"`)
-	bw := bufio.NewWriterSize(w, 64<<10)
+	bw := bufio.NewWriterSize(w, auditExportBufSize)
 
-	chain := "" // Genesis: leere vorige Kette
-	var count int64
-	for rows.Next() {
-		var row auditExportRow
-		row.Type = "entry"
-		if err := rows.Scan(&row.ID, &row.UserID, &row.Username, &row.Action, &row.Entity,
-			&row.EntityID, &row.Summary, &row.Changes, &row.CreatedAt); err != nil {
-			// Header sind raus; ein sauberer Abbruch mitten im Strom ist nicht mehr
-			// möglich. Die Datei endet dann OHNE Manifest — genau daran erkennt ein
-			// Prüfer den unvollständigen Export.
-			serverError(w, r, "scan failed", err)
+	count, chain, err := writeAuditExportRows(rows, bw)
+	if err != nil {
+		// Header sind raus; ein sauberer Abbruch mitten im Strom ist nicht mehr
+		// möglich. Die Datei endet dann OHNE Manifest — genau daran erkennt ein
+		// Prüfer den unvollständigen Export. cancel() (per defer) bricht die
+		// Abfrage ab, statt sie für einen verschwundenen Abrufer zu Ende zu lesen.
+		if errors.Is(err, errAuditExportWrite) {
+			slog.Warn("audit export aborted: client write failed", "rows", count, "err", err)
 			return
 		}
-		// Erst ohne Chain serialisieren (das ist die gehashte Form), dann mit.
-		row.Chain = ""
-		bare, merr := json.Marshal(row)
-		if merr != nil {
-			serverError(w, r, "encode failed", merr)
-			return
-		}
-		chain = auditChainStep(chain, bare)
-		row.Chain = chain
-		line, merr := json.Marshal(row)
-		if merr != nil {
-			serverError(w, r, "encode failed", merr)
-			return
-		}
-		// Schreibfehler heisst hier: der Abrufer ist weg. Bewusst verworfen — und
-		// SICHTBAR verworfen, wie das _ = bw.Flush() am Ende es schon tat.
-		_, _ = bw.Write(line)
-		_ = bw.WriteByte('\n')
-		count++
-	}
-	if err := rows.Err(); err != nil {
-		serverError(w, r, "query failed", err)
+		serverError(w, r, "audit export failed", err)
 		return
 	}
 	manifest, _ := json.Marshal(auditExportManifest{
@@ -142,5 +204,7 @@ func (h *Handler) ExportAudit(w http.ResponseWriter, r *http.Request) {
 	})
 	_, _ = bw.Write(manifest)
 	_ = bw.WriteByte('\n')
-	_ = bw.Flush()
+	if ferr := bw.Flush(); ferr != nil {
+		slog.Warn("audit export aborted: final flush failed", "rows", count, "err", ferr)
+	}
 }

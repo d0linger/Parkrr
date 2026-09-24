@@ -12,6 +12,7 @@ import (
 	"net"
 	netmail "net/mail"
 	"net/smtp"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -235,6 +236,103 @@ func (l *loggingSender) Send(ctx context.Context, to []string, subject, body str
 	// Rohliste behauptete das Protokoll eine Zustellung an eine Adresse, die nie
 	// angesprochen wurde, und der Betreiber las in der Versandübersicht ein "ja"
 	// auf die Frage, ob der Kunde die Mahnung bekommen hat.
-	l.log(cleanAddrs(to), subject, err == nil, err)
+	rcpts := cleanAddrs(to)
+	l.log(rcpts, subject, err == nil, redactErr(err, append(rcpts, to...)))
 	return err
+}
+
+// AddrPlaceholder ersetzt eine E-Mail-Adresse in protokollierten Fehlertexten.
+const AddrPlaceholder = "[Adresse entfernt]"
+
+// redactedError trägt den bereinigten Text für das Protokoll; Unwrap liefert den
+// Originalfehler, damit errors.Is/As weiter greifen.
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.err }
+
+// redactErr entfernt Empfängeradressen aus einem Versandfehler, bevor er ins
+// Versandprotokoll geht (PRT-03). Der SMTP-Fehlertext nennt die Adresse gleich
+// doppelt — in "mail: RCPT <addr>" und meist noch einmal in der Antwort des Relays
+// ("550 5.1.1 <addr>: Recipient address rejected"). mail_log unterliegt keiner
+// Aufräumfrist; eine Adresse darin überlebt sonst jede Löschung der Person, weil
+// die Anonymisierung nur die Empfängerspalte kennt. Der Statuscode bleibt stehen —
+// er ist die eigentliche Diagnose. Über die bekannten Empfänger hinaus wird jedes
+// adressförmige Wort ersetzt: ein Relay kann die Adresse umgeschrieben zurückmelden.
+func redactErr(err error, addrs []string) error {
+	if err == nil {
+		return nil
+	}
+	msg := RedactAddrs(err.Error(), addrs)
+	msg = addrLike.ReplaceAllString(msg, AddrPlaceholder)
+	if msg == err.Error() {
+		return err
+	}
+	return &redactedError{msg: msg, err: err}
+}
+
+// addrLike trifft ein adressförmiges Wort: Nicht-Trennzeichen, @, Nicht-Trennzeichen.
+var addrLike = regexp.MustCompile(`[^\s<>"'(),;:\[\]]+@[^\s<>"'(),;:\[\]]+`)
+
+// RedactAddrs ersetzt jedes Vorkommen der angegebenen Adressen in s durch
+// AddrPlaceholder — ohne Rücksicht auf Groß-/Kleinschreibung (Domains sind
+// es nicht, und Relays schreiben gern um) und NUR an Wortgrenzen einer Adresse:
+// "an@x.at" darf in "susan@x.at" nicht treffen, sonst stünde dort eine fremde,
+// halb verstümmelte Adresse.
+func RedactAddrs(s string, addrs []string) string {
+	for _, a := range addrs {
+		a = strings.TrimSpace(a)
+		if a == "" || !strings.Contains(a, "@") {
+			continue
+		}
+		s = redactOne(s, a)
+	}
+	return s
+}
+
+func redactOne(s, addr string) string {
+	lower, needle := strings.ToLower(s), strings.ToLower(addr)
+	// ToLower kann in exotischen Fällen die Bytelänge ändern; dann sind die Indizes
+	// nicht mehr übertragbar. Konservativ: den ganzen Text ersetzen, statt eine
+	// Adresse stehen zu lassen.
+	if len(lower) != len(s) {
+		if strings.Contains(lower, needle) {
+			return AddrPlaceholder
+		}
+		return s
+	}
+	var b strings.Builder
+	i := 0
+	for {
+		j := strings.Index(lower[i:], needle)
+		if j < 0 {
+			break
+		}
+		start, end := i+j, i+j+len(needle)
+		if (start > 0 && isAddrByte(s[start-1])) || (end < len(s) && isAddrByte(s[end])) {
+			b.WriteString(s[i : start+1])
+			i = start + 1
+			continue
+		}
+		b.WriteString(s[i:start])
+		b.WriteString(AddrPlaceholder)
+		i = end
+	}
+	b.WriteString(s[i:])
+	return b.String()
+}
+
+// isAddrByte meldet Zeichen, die innerhalb einer Adresse stehen dürfen (RFC 5322
+// atext plus Punkt und @) — grenzt eines davon an den Treffer, ist er nur ein Teil
+// einer längeren, fremden Adresse. Bytes >= 0x80 zählen mit (internationalisierte
+// Adressen).
+func isAddrByte(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c >= 0x80:
+		return true
+	}
+	return strings.IndexByte(".!#$%&'*+/=?^_`{|}~-@", c) >= 0
 }
