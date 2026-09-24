@@ -20,6 +20,10 @@ type endingVehicle struct {
 func (h *Handler) EndingSoon(w http.ResponseWriter, r *http.Request) {
 	days := 30
 	if d := r.URL.Query().Get("days"); d != "" {
+		if !validDateLength(d) {
+			writeError(w, http.StatusBadRequest, "days is too long")
+			return
+		}
 		if n, err := strconv.Atoi(d); err == nil && n >= 1 && n <= 365 {
 			days = n
 		}
