@@ -32,6 +32,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.MetricsToken != "" {
 		t.Errorf("MetricsToken default should be empty, got %q", cfg.MetricsToken)
 	}
+	if cfg.BrowserRestore {
+		t.Error("BrowserRestore must default to false")
+	}
 }
 
 func TestLoadRejectsShortSecret(t *testing.T) {
@@ -103,5 +106,17 @@ func TestGetenvBoolOverride(t *testing.T) {
 	}
 	if cfg.SecureCookies {
 		t.Error("explicit PARKRR_SECURE_COOKIES=false should override the default")
+	}
+}
+
+func TestBrowserRestoreOptIn(t *testing.T) {
+	setRequired(t)
+	t.Setenv("PARKRR_BROWSER_RESTORE", "true")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.BrowserRestore {
+		t.Error("PARKRR_BROWSER_RESTORE=true should enable browser restore")
 	}
 }

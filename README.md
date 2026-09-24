@@ -163,8 +163,8 @@ compose network). Schema migrations run automatically at startup.
 | `PARKRR_RATE_LIMIT_PER_MIN` | general per-IP request budget/minute (`0` = off) | `600` |
 | `PARKRR_AUDIT_RETENTION_DAYS` | long window: prune audit entries older than N days (`0` = disables **this** window only, see below). Records of account (`invoice`, `payment`, `billing`, `flatrate`, `recurring_charge`) are never pruned at any age | `2555` (7 y, BAO §132) |
 | `PARKRR_AUDIT_RETENTION_SHORT_DAYS` | short window for auth/ops noise only (`login`, `logout`, `backup`, `remind`, `import`); `0` disables the short tier | `365` |
-| `PARKRR_METRICS_TOKEN` | Bearer token for `/metrics` (empty = open on an internal network) | – |
-| `PARKRR_METRICS_REQUIRE_AUTH` | refuse to serve `/metrics` unless a token is set | `false` |
+| `PARKRR_METRICS_TOKEN` | Bearer token for `/metrics`. Empty = `/metrics` is open (internal network only) — unless `PARKRR_METRICS_REQUIRE_AUTH=true`, then it is disabled | – |
+| `PARKRR_METRICS_REQUIRE_AUTH` | with no token set, disable `/metrics` instead of serving it openly. GHCR deployments (`docker-compose.ghcr.yml`) default to `true`, so they must set `PARKRR_METRICS_TOKEN` to enable metrics | `false` in the app; `true` in `docker-compose.ghcr.yml` |
 | `PARKRR_CHECK_BREACHED_PASSWORDS` | check new passwords against the HIBP range API (fail-open) | `true` |
 | `PARKRR_BREACH_CHECK_FAIL_CLOSED` | reject a new password if the HIBP check itself fails (instead of the default fail-open) | `false` |
 | `PARKRR_LOG_FORMAT` / `PARKRR_LOG_LEVEL` | `json`\|`text` / `debug`..`error` | `json` / `info` |
@@ -178,6 +178,7 @@ compose network). Schema migrations run automatically at startup.
 | --- | --- | --- |
 | `PARKRR_BACKUP_KEY` | passphrase enabling scheduled **encrypted** DB backups (AES-256-GCM); empty = backups off | – |
 | `PARKRR_BACKUP_DIR` | directory for local dumps (a mounted volume) | `/backups` (compose) |
+| `PARKRR_BROWSER_RESTORE` | opt in to coordinated browser restore; drains all replicas, restores under an exclusive DB lease, migrates, verifies, and revokes sessions | `false` |
 | `PARKRR_S3_ENDPOINT` / `PARKRR_S3_REGION` | off-site target: S3-compatible endpoint / region | – |
 | `PARKRR_S3_BUCKET` / `PARKRR_S3_PREFIX` | bucket and key prefix for uploaded backups | – |
 | `PARKRR_S3_ACCESS_KEY` / `PARKRR_S3_SECRET_KEY` | S3 credentials | – |

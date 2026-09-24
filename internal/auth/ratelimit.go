@@ -21,6 +21,13 @@ type attemptState struct {
 	fails      int
 	firstFail  time.Time
 	lockedTill time.Time
+	// thresholdReset marks a non-sticky state whose budget was just cleared by
+	// the attempt that reached maxFails. priorFails/priorFirstFail hold the
+	// failures before that attempt so Refund can restore them instead of
+	// erasing them along with the refunded reservation.
+	thresholdReset bool
+	priorFails     int
+	priorFirstFail time.Time
 }
 
 // NewLoginLimiter creates a limiter allowing maxFails within failWindow before
@@ -87,6 +94,35 @@ func (l *LoginLimiter) Consume(key string) (bool, time.Duration) {
 	return true, 0
 }
 
+// Refund removes exactly one previously consumed reservation while preserving
+// older failures for the key. Call it when the protected operation succeeds or
+// aborts before credential verification; failed attempts remain consumed.
+func (l *LoginLimiter) Refund(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	st := l.attempts[key]
+	if st == nil {
+		return
+	}
+	if st.thresholdReset {
+		// The refunded reservation is the one that tripped the non-sticky reset:
+		// undo the reset, not the earlier failures.
+		st.fails = st.priorFails
+		st.firstFail = st.priorFirstFail
+		st.thresholdReset = false
+	} else if st.fails > 0 {
+		st.fails--
+	}
+	// A reservation that reached the threshold installed the cooldown. Once that
+	// reservation is refunded, the remaining attempts are below the threshold.
+	if st.fails < l.maxFails {
+		st.lockedTill = time.Time{}
+	}
+	if st.fails == 0 {
+		delete(l.attempts, key)
+	}
+}
+
 // RecordFailure registers a failed attempt for key and locks it if over the
 // threshold within the failure window.
 func (l *LoginLimiter) RecordFailure(key string) {
@@ -102,11 +138,15 @@ func (l *LoginLimiter) recordLocked(key string, now time.Time) {
 		st = &attemptState{firstFail: now}
 		l.attempts[key] = st
 	}
+	st.thresholdReset = false
 	st.fails++
 	if st.fails >= l.maxFails {
 		st.lockedTill = now.Add(l.lockFor)
 		if !l.sticky {
 			// Fixed-window: each cooldown starts a fresh budget.
+			st.thresholdReset = true
+			st.priorFails = st.fails - 1
+			st.priorFirstFail = st.firstFail
 			st.fails = 0
 			st.firstFail = now
 		}

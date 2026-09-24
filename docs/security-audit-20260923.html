@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Interactive static-audit workbench for Parkrr at commit 6c7adf9.">
+  <meta name="theme-color" content="#0c1312">
+  <title>Parkrr · Security audit workbench</title>
+  <link rel="stylesheet" href="./security-audit-20260923.css">
+</head>
+<body>
+  <a class="skip-link" href="#findings">Skip to findings</a>
+
+  <header class="topbar">
+    <a class="brand" href="../README.md" aria-label="Parkrr repository overview">
+      <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M5 20.5h30M8 20.5v10m24-10v10M11 30.5h18v-7H11zM8 20.5 20 10l12 10.5M15 16h10"/></svg>
+      <span>Parkrr</span><span class="brand-context">audit workbench</span>
+    </a>
+    <div class="top-actions">
+      <button class="icon-button" id="copy-report" type="button" aria-label="Copy filtered report" title="Copy filtered report"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg></button>
+      <button class="icon-button" id="export-json" type="button" aria-label="Export triage as JSON" title="Export triage as JSON"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg></button>
+      <button class="icon-button" id="theme-toggle" type="button" aria-label="Switch to light theme" title="Switch theme">
+        <svg class="theme-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 15.2A8.5 8.5 0 0 1 8.8 4 8.5 8.5 0 1 0 20 15.2Z"/></svg>
+        <svg class="theme-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.5"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main>
+    <section class="intro" aria-labelledby="audit-title">
+      <div class="intro-copy">
+        <h1 id="audit-title">Thirty ways the system can lose the truth.</h1>
+        <p>A navigable risk register for the whole Parkrr codebase. Trace each failure from trigger to impact, reproduce it, and turn remediation into a local working queue.</p>
+      </div>
+      <dl class="audit-meta" aria-label="Audit metadata">
+        <div><dt>Snapshot</dt><dd><code>6c7adf9</code></dd></div>
+        <div><dt>Reviewed</dt><dd>23 Sep 2026</dd></div>
+        <div><dt>Method</dt><dd>4-pass static audit</dd></div>
+        <div><dt>Scope</dt><dd>Whole repository</dd></div>
+      </dl>
+    </section>
+
+    <section class="risk-strip" id="summary" aria-label="Severity summary"></section>
+
+    <section class="workspace" aria-label="Audit findings workbench">
+      <aside class="controls" aria-label="Finding filters">
+        <div class="search-wrap">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.2 4.2"/></svg>
+          <label class="sr-only" for="search">Search findings</label>
+          <input id="search" type="search" autocomplete="off" placeholder="Search ID, impact, target…" aria-keyshortcuts="/"><kbd>/</kbd>
+        </div>
+        <fieldset class="filter-group"><legend>Severity</legend><div class="filter-options" id="severity-filters"></div></fieldset>
+        <fieldset class="filter-group"><legend>Domain</legend><label class="select-wrap"><span class="sr-only">Filter by domain</span><select id="category-filter"><option value="all">All domains</option></select></label></fieldset>
+        <fieldset class="filter-group">
+          <legend>Local triage</legend>
+          <label class="select-wrap"><span class="sr-only">Filter by triage status</span><select id="status-filter"><option value="all">All statuses</option><option value="unreviewed">Unreviewed</option><option value="accepted">Accepted</option><option value="progress">In progress</option><option value="resolved">Resolved</option></select></label>
+          <p class="local-note">Status changes stay in this browser only.</p>
+        </fieldset>
+        <button class="reset-button" id="reset-filters" type="button">Reset filters</button>
+        <div class="key-guide" aria-label="Keyboard shortcuts"><span><kbd>J</kbd><kbd>K</kbd> move</span><span><kbd>Enter</kbd> open</span><span><kbd>Esc</kbd> reset search</span></div>
+      </aside>
+
+      <div class="register" id="findings">
+        <header class="register-head">
+          <div><h2>Findings</h2><p id="result-count" aria-live="polite"></p></div>
+          <label class="sort-control">Sort<select id="sort-findings"><option value="severity">Risk first</option><option value="id">Finding ID</option><option value="category">Domain</option><option value="status">Triage status</option></select></label>
+        </header>
+        <div class="finding-list" id="finding-list" role="group" aria-label="Audit findings"></div>
+        <div class="empty-state" id="empty-state" hidden>
+          <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M9 49V22l23-13 23 13v27M17 49V27h30v22M24 49V36h16v13M7 49h50"/></svg><h3>No findings on this bay.</h3><p>Try removing a filter or searching for a broader term.</p><button type="button" class="reset-button">Clear filters</button>
+        </div>
+      </div>
+
+      <article class="dossier" id="dossier" aria-live="polite" aria-label="Selected finding"></article>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <script src="./security-audit-20260923.js" defer></script>
+</body>
+</html>

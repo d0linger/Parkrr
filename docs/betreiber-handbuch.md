@@ -45,18 +45,45 @@ Trotzdem gilt: einmal im Quartal eine echte Wiederherstellung in eine
 Wegwerf-Datenbank fahren — ein Backup, das nie restauriert wurde, ist eine
 Hoffnung, kein Backup.
 
-**Wiederherstellen:**
+**Wiederherstellen im Browser (optional):** Mit
+`PARKRR_BROWSER_RESTORE=true` erscheint im Backup-Reiter der Restore-Bereich.
+Die Sicherung zuerst validieren und anschließend die angezeigte, an ihre
+SHA-256-Prüfsumme gebundene Bestätigung eingeben. Die Anmeldung des Admins darf
+dabei höchstens zehn Minuten alt sein. Parkrr schließt neue Anfragen, wartet auf
+laufende Anfragen und Hintergrundjobs, hält alle Replikate über eine gemeinsame
+Datenbank-Lease an und stellt atomar wieder her. Danach laufen Migrationen und
+Konsistenzprüfungen; sämtliche Sitzungen werden widerrufen.
+
+Währenddessen bleibt `/healthz` erreichbar, `/readyz` liefert 503 und der Browser
+zeigt den dauerhaften Restore-Status. Bei einem Prozessabbruch wiederholt keine
+andere Instanz blind den destruktiven Schritt: sie übernimmt nur die idempotente
+Reparatur und Prüfung. Ein abgebrochener Vorgang endet deshalb sichtbar als
+fehlgeschlagen und verlangt eine Kontrolle des Datenstands.
+
+Der Browser nimmt Archive bis 1 GiB an. Der Archivschlüssel wird nur im Speicher
+der koordinierenden Instanz gehalten und nie in der Datenbank gespeichert. Die
+Funktion ist standardmäßig aus; beim bloßen Update wird sie nicht aktiviert.
+Bei mehreren App-Replikaten muss die Variable auf allen Replikaten denselben Wert
+haben; eine nicht aktivierte Replik hält den exklusiven Restore sonst sicher an.
+
+**CLI-Fallback / bewusst offline:**
 
 ```bash
+# Zuerst ALLE Parkrr-App-Instanzen stoppen. Der Befehl verweigert den Restore,
+# solange auch nur eine Instanz ihre Datenbank-Lease hält.
+
 # Aus einer Archivdatei (destruktiv — überschreibt die Datenbank, atomar):
 parkrr restore /backups/parkrr-2026-09-07-030000.dump.enc
 
-# Aus S3: Backup-Reiter → „Aus S3 wiederherstellen" (verlangt den Schlüssel
-# und das getippte Wort RESTORE).
+# Aus S3: Archiv im Backup-Reiter herunterladen, dann ebenfalls offline mit
+# `parkrr restore <datei>` einspielen.
 ```
 
-Nach einer Wiederherstellung melden sich alle Benutzer neu an (Sitzungen leben
-in der Datenbank).
+Danach Parkrr wieder starten. Fehlende Migrationen werden vom Restore-Befehl
+eingespielt; alle Sitzungen werden verworfen, daher melden sich alle Benutzer neu
+an. Neue Sicherungen verwenden ein stückweise authentifiziertes Format und bleiben
+dadurch auch bei großen Datenbanken speicherbegrenzt; ältere Sicherungen bleiben
+lesbar.
 
 ## 3. Updates einspielen
 

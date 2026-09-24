@@ -332,6 +332,52 @@ type rowQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+// dbQuerier is the read surface shared by a pool and a transaction. Billing
+// snapshots use it to ensure every source row is read on the same connection and
+// transaction that later claims the rows in invoice_source.
+type dbQuerier interface {
+	rowQuerier
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// refFinanciallyLocked reports whether a source currently participates in an
+// issued invoice or a non-reversed payment. Corrections must first reverse that
+// document/payment instead of rewriting the referenced principal in place.
+func (h *Handler) refFinanciallyLocked(ctx context.Context, q rowQuerier, kind string, refID int64) (bool, error) {
+	var locked bool
+	err := q.QueryRow(ctx,
+		`SELECT
+		   EXISTS(SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+		           WHERE s.kind=$1 AND s.ref_id=$2 AND NOT i.canceled)
+		   OR EXISTS(SELECT 1 FROM payment_allocations a JOIN payments p ON p.id=a.payment_id
+		             WHERE a.kind=$1 AND a.ref_id=$2 AND NOT p.reversed)
+		   OR EXISTS(SELECT 1 FROM payments p
+		             WHERE p.settles_kind=$1 AND p.settles_ref=$2 AND NOT p.reversed)`,
+		kind, refID).Scan(&locked)
+	return locked, err
+}
+
+// vehicleOwnerReferenced prevents a direct owner rewrite from splitting related
+// charges or agreement membership across two customers.
+func (h *Handler) vehicleOwnerReferenced(ctx context.Context, q rowQuerier, vehicleID int64) (bool, error) {
+	var referenced bool
+	err := q.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM charges WHERE vehicle_id=$1)
+		     OR EXISTS(SELECT 1 FROM recurring_charges WHERE vehicle_id=$1)
+		     OR EXISTS(SELECT 1 FROM flat_rate_period_vehicles WHERE vehicle_id=$1)
+		     OR EXISTS(SELECT 1 FROM invoice_source WHERE kind='vehicle' AND ref_id=$1)
+		     OR EXISTS(SELECT 1 FROM payment_allocations WHERE kind='vehicle' AND ref_id=$1)`,
+		vehicleID).Scan(&referenced)
+	return referenced, err
+}
+
+func sameOptionalDate(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Equal(*b)
+}
+
 // categoryDefaultRate returns the current Tarif default for the billing period.
 func categoryDefaultRate(ctx context.Context, q rowQuerier, categoryID int64, period string) (float64, error) {
 	var monthly, yearly float64
@@ -353,9 +399,15 @@ func (h *Handler) CreateVehicle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create vehicle")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
 	var fallback float64
 	if pv.req.Rate == nil && pv.req.CostOverride == nil {
-		def, derr := categoryDefaultRate(r.Context(), h.Pool, pv.req.CategoryID, pv.req.BillingPeriod)
+		def, derr := categoryDefaultRate(r.Context(), tx, pv.req.CategoryID, pv.req.BillingPeriod)
 		if derr != nil {
 			if errors.Is(derr, pgx.ErrNoRows) {
 				writeError(w, http.StatusBadRequest, "category does not exist")
@@ -368,7 +420,7 @@ func (h *Handler) CreateVehicle(w http.ResponseWriter, r *http.Request) {
 	}
 	rate := effectiveRate(pv.req, fallback)
 	var id int64
-	err = h.Pool.QueryRow(r.Context(),
+	err = tx.QueryRow(r.Context(),
 		`INSERT INTO vehicles (person_id, category_id, label, license_plate, notes,
 		        billing_period, rate, cost_override, start_date, end_date, status,
 		        reserved_from, reserved_until, needs_power, planner_symbol)
@@ -385,12 +437,22 @@ func (h *Handler) CreateVehicle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create vehicle")
 		return
 	}
-	h.recordStatus(r, id, "", pv.req.Status, "angelegt")
-	h.auditCreated(r, "vehicle", id, "created vehicle "+vehicleLabel(pv.req.Label, pv.req.LicensePlate),
+	if err := h.recordStatusTx(r, tx, id, "", pv.req.Status, "angelegt"); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create vehicle")
+		return
+	}
+	if err := h.auditCreatedTx(r.Context(), tx, r, "vehicle", id, "created vehicle "+vehicleLabel(pv.req.Label, pv.req.LicensePlate),
 		map[string]any{"label": pv.req.Label, "license_plate": pv.req.LicensePlate,
 			"person_id": pv.req.PersonID, "category_id": pv.req.CategoryID,
 			"status": pv.req.Status, "billing_period": pv.req.BillingPeriod,
-			"start_date": pv.req.StartDate})
+			"start_date": pv.req.StartDate}); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create vehicle")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create vehicle")
+		return
+	}
 	h.writeVehicle(w, r.Context(), id, http.StatusCreated)
 }
 
@@ -406,6 +468,12 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update vehicle")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
 	var oldStatus, oldPeriod string
 	var oldRate float64
 	var oldStart time.Time
@@ -420,11 +488,11 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 	var oldEnd, oldResFrom, oldResUntil *time.Time
 	var oldNeedsPower bool
 	var oldSymbol *string
-	scanErr := h.Pool.QueryRow(r.Context(),
+	scanErr := tx.QueryRow(r.Context(),
 		`SELECT status, rate, billing_period, start_date, person_id, archived,
 		        label, license_plate, notes, category_id, cost_override,
 		        end_date, reserved_from, reserved_until, needs_power, planner_symbol
-		   FROM vehicles WHERE id=$1`, id).
+		   FROM vehicles WHERE id=$1 FOR UPDATE`, id).
 		Scan(&oldStatus, &oldRate, &oldPeriod, &oldStart, &oldPersonID, &archived,
 			&oldLabel, &oldPlate, &oldNotes, &oldCategoryID, &oldCostOverride,
 			&oldEnd, &oldResFrom, &oldResUntil, &oldNeedsPower, &oldSymbol)
@@ -441,22 +509,31 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 	billingChanged := rate != oldRate || pv.req.BillingPeriod != oldPeriod ||
 		!pv.startDate.Equal(oldStart) || pv.req.PersonID != oldPersonID
 	if billingChanged {
-		if inv, ierr := h.refInvoiced(r.Context(), h.Pool, "vehicle", id); ierr != nil {
+		if locked, ierr := h.refFinanciallyLocked(r.Context(), tx, "vehicle", id); ierr != nil {
 			writeError(w, http.StatusInternalServerError, "could not check invoices")
 			return
-		} else if inv {
+		} else if locked {
 			writeError(w, http.StatusConflict, "Gefährt ist fakturiert – Preis/Zeitraum nicht änderbar (Storno über die Rechnung)")
 			return
 		}
 	}
-	if retract, ierr := h.endDateRetractsBelowInvoiced(r.Context(), h.Pool, "vehicle", id, pv.endDate); ierr != nil {
+	if pv.req.PersonID != oldPersonID {
+		if referenced, rerr := h.vehicleOwnerReferenced(r.Context(), tx, id); rerr != nil {
+			writeError(w, http.StatusInternalServerError, "could not check vehicle references")
+			return
+		} else if referenced {
+			writeError(w, http.StatusConflict, "Fahrzeug mit Finanz- oder Pauschalenbezug kann nicht direkt einer anderen Person zugeordnet werden")
+			return
+		}
+	}
+	if retract, ierr := h.endDateRetractsBelowInvoiced(r.Context(), tx, "vehicle", id, pv.endDate); ierr != nil {
 		writeError(w, http.StatusInternalServerError, "could not check invoices")
 		return
 	} else if retract {
 		writeError(w, http.StatusConflict, "Enddatum liegt vor einer fakturierten Periode – Storno über die Rechnung")
 		return
 	}
-	ct, err := h.Pool.Exec(r.Context(),
+	ct, err := tx.Exec(r.Context(),
 		`UPDATE vehicles SET person_id=$1, category_id=$2, label=$3, license_plate=$4,
 		        notes=$5, billing_period=$6, rate=$7, cost_override=$8, start_date=$9,
 		        end_date=$10, status=$11, reserved_from=$12, reserved_until=$13, needs_power=$14,
@@ -478,11 +555,14 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if oldStatus != pv.req.Status {
-		h.recordStatus(r, id, oldStatus, pv.req.Status, "über Bearbeitung geändert")
+		if err := h.recordStatusTx(r, tx, id, oldStatus, pv.req.Status, "über Bearbeitung geändert"); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not update vehicle")
+			return
+		}
 	}
 	// status/rate/period/start/person were read above for the writability checks,
 	// so the before/after of the billing-relevant fields costs no extra query.
-	h.auditChange(r, "update", "vehicle", id,
+	if err := h.auditChangeTx(r.Context(), tx, r, "update", "vehicle", id,
 		"updated vehicle "+vehicleLabel(pv.req.Label, pv.req.LicensePlate), diffFields(
 			map[string]any{"status": oldStatus, "rate": oldRate, "billing_period": oldPeriod,
 				"start_date": oldStart.Format("2006-01-02"), "person_id": oldPersonID,
@@ -497,7 +577,14 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 				"category_id": pv.req.CategoryID, "cost_override": pv.req.CostOverride,
 				"end_date": strPtr(pv.req.EndDate), "reserved_from": strPtr(pv.req.ReservedFrom),
 				"reserved_until": strPtr(pv.req.ReservedUntil), "needs_power": pv.req.NeedsPower,
-				"planner_symbol": pv.req.PlannerSymbol}))
+				"planner_symbol": pv.req.PlannerSymbol})); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update vehicle")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update vehicle")
+		return
+	}
 	// An edit can change status/paid-relevant state too — keep archival behavior
 	// consistent with the status-slider endpoint.
 	h.autoArchiveIfClosed(r, id)
@@ -564,7 +651,22 @@ func (h *Handler) DeleteVehicle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	if inv, ierr := h.refInvoiced(r.Context(), h.Pool, "vehicle", id); ierr != nil {
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete vehicle")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	var lockedID int64
+	if err := tx.QueryRow(r.Context(), `SELECT id FROM vehicles WHERE id=$1 FOR UPDATE`, id).Scan(&lockedID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "vehicle not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "could not delete vehicle")
+		return
+	}
+	if inv, ierr := h.refFinanciallyLocked(r.Context(), tx, "vehicle", id); ierr != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete vehicle")
 		return
 	} else if inv {
@@ -574,7 +676,7 @@ func (h *Handler) DeleteVehicle(w http.ResponseWriter, r *http.Request) {
 	// A Gefährt is master data: keep enough to identify it after the row is gone.
 	var delLabel, delPlate, delStatus string
 	var delPerson int64
-	err := h.Pool.QueryRow(r.Context(),
+	err = tx.QueryRow(r.Context(),
 		`DELETE FROM vehicles WHERE id = $1 RETURNING label, license_plate, status, person_id`, id).
 		Scan(&delLabel, &delPlate, &delStatus, &delPerson)
 	if err != nil {
@@ -594,9 +696,16 @@ func (h *Handler) DeleteVehicle(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = delPlate
 	}
-	h.auditDeleted(r, "vehicle", id, "deleted vehicle "+name, map[string]any{
+	if err := h.auditDeletedTx(r.Context(), tx, r, "vehicle", id, "deleted vehicle "+name, map[string]any{
 		"label": delLabel, "license_plate": delPlate, "status": delStatus, "person_id": delPerson,
-	})
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete vehicle")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete vehicle")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -670,8 +779,8 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 			req.Status, end, id)
 	case req.Status == models.StatusCollected || req.Status == models.StatusCancelled:
 		ct, uerr = h.Pool.Exec(r.Context(),
-			`UPDATE vehicles SET status=$1, end_date=COALESCE(end_date, CURRENT_DATE), updated_at=now() WHERE id=$2`,
-			req.Status, id)
+			`UPDATE vehicles SET status=$1, end_date=COALESCE(end_date, $2::date), updated_at=now() WHERE id=$3`,
+			req.Status, h.now().Format(dateLayout), id)
 	default:
 		// stored / reserved re-open storage: clear any end_date left by a prior
 		// collected/cancelled, otherwise CostInRange stays capped at the stale date
@@ -735,13 +844,18 @@ func (h *Handler) VehicleHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) recordStatus(r *http.Request, vehicleID int64, oldStatus, newStatus, note string) {
+	_ = h.recordStatusTx(r, h.Pool, vehicleID, oldStatus, newStatus, note)
+}
+
+func (h *Handler) recordStatusTx(r *http.Request, q execer, vehicleID int64, oldStatus, newStatus, note string) error {
 	by := ""
 	if u, ok := auth.UserFrom(r.Context()); ok {
 		by = u.Username
 	}
-	_, _ = h.Pool.Exec(r.Context(),
+	_, err := q.Exec(r.Context(),
 		`INSERT INTO vehicle_status_history (vehicle_id, old_status, new_status, note, changed_by)
 		 VALUES ($1,$2,$3,$4,$5)`, vehicleID, oldStatus, newStatus, note, by)
+	return err
 }
 
 type paidRequest struct {
@@ -1019,6 +1133,10 @@ func (h *Handler) archiveInvoiceSettledCollected(ctx context.Context, personID i
 // InvoiceOpen when at least one covering invoice is not fully paid. One batched
 // query for the whole slice.
 func (h *Handler) setVehicleInvoiceStatus(ctx context.Context, vehicles []models.Vehicle) error {
+	return h.setVehicleInvoiceStatusFrom(ctx, h.Pool, vehicles)
+}
+
+func (h *Handler) setVehicleInvoiceStatusFrom(ctx context.Context, q dbQuerier, vehicles []models.Vehicle) error {
 	if len(vehicles) == 0 {
 		return nil
 	}
@@ -1026,7 +1144,7 @@ func (h *Handler) setVehicleInvoiceStatus(ctx context.Context, vehicles []models
 	for i := range vehicles {
 		ids = append(ids, vehicles[i].ID)
 	}
-	rows, err := h.Pool.Query(ctx,
+	rows, err := q.Query(ctx,
 		`SELECT s.ref_id, count(*) FILTER (WHERE (i.total - i.paid_amount) > 0.005) AS open_n
 		   FROM invoice_source s JOIN invoices i ON i.id = s.invoice_id
 		  WHERE s.kind='vehicle' AND NOT i.canceled AND s.ref_id = ANY($1)

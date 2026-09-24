@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/preining/parkrr/internal/backup"
 	"github.com/preining/parkrr/internal/config"
+	"github.com/preining/parkrr/internal/database"
 )
 
 // runRestore implements "parkrr restore <file.dump.enc> [--force]": decrypt and
@@ -39,14 +41,15 @@ func runRestore(args []string) int {
 		fmt.Fprintln(os.Stderr, "PARKRR_BACKUP_KEY is not set — cannot decrypt the backup")
 		return 1
 	}
-	// #nosec G304 G703 -- `file` is a path an operator passes on the command line
-	// to a manually-run, intentionally destructive restore; there is no fixed root
-	// to confine it to.
-	enc, err := os.ReadFile(file)
+	// Open once before confirmation so a missing/unreadable operator path fails
+	// early. RestoreFile re-opens it after the exclusive safety lease is held.
+	// #nosec G304 G703 -- this is an operator-supplied CLI restore path.
+	f, err := os.Open(file)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "read backup:", err)
 		return 1
 	}
+	_ = f.Close()
 	if !force {
 		fmt.Printf("This will OVERWRITE the database with %q.\nType RESTORE to confirm: ", file)
 		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
@@ -57,8 +60,32 @@ func runRestore(args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	if err := backup.Restore(ctx, cfg.DatabaseURL, enc, cfg.BackupKey); err != nil {
+	lease, err := database.TryAcquireRestoreLease(ctx, cfg.DatabaseURL)
+	if errors.Is(err, database.ErrApplicationActive) {
+		fmt.Fprintln(os.Stderr, "restore refused: stop every running Parkrr application instance first")
+		return 1
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "restore safety check failed:", err)
+		return 1
+	}
+	defer func() { _ = lease.Release() }()
+	if err := backup.RestoreFile(ctx, cfg.DatabaseURL, file, cfg.BackupKey); err != nil {
 		fmt.Fprintln(os.Stderr, "restore failed:", err)
+		return 1
+	}
+	pool, err := database.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "restored, but could not reconnect to purge sessions:", err)
+		return 1
+	}
+	defer pool.Close()
+	if err := database.Migrate(ctx, pool); err != nil {
+		fmt.Fprintln(os.Stderr, "restored, but schema migration failed:", err)
+		return 1
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM sessions`); err != nil {
+		fmt.Fprintln(os.Stderr, "restored, but could not purge sessions:", err)
 		return 1
 	}
 	fmt.Println("restore complete.")

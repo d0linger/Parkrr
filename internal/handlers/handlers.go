@@ -12,15 +12,18 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/preining/parkrr/internal/backup"
 
 	"github.com/preining/parkrr/internal/auth"
 	"github.com/preining/parkrr/internal/mail"
+	"github.com/preining/parkrr/internal/restorectl"
 )
 
 // Handler holds shared dependencies for all HTTP handlers.
@@ -49,7 +52,10 @@ type Handler struct {
 	DatabaseURL string
 	BackupDir   string
 	S3          backup.S3Config
-	hibpClient  *http.Client
+	// Restore coordinates opt-in browser restores with the process lifecycle.
+	// Nil or disabled keeps the compatibility routes fail-closed.
+	Restore    *restorectl.Controller
+	hibpClient *http.Client
 	// Mail sends transactional e-mail (payment reminders). Defaults to a disabled
 	// sender when SMTP is not configured, so it is never nil.
 	Mail mail.Sender
@@ -60,14 +66,23 @@ type Handler struct {
 	// detection (e.g. in the QR label) honors the trusted-proxy CIDR gate. May be
 	// nil in tests that construct a bare Handler.
 	Auth *auth.Manager
+
+	// Overview is expensive billing math over the complete operational data set.
+	// A database revision trigger makes this cache commit-aware across replicas;
+	// singleflight coalesces simultaneous misses without serving stale results.
+	overviewMu            sync.RWMutex
+	overviewCacheRevision int64
+	overviewCache         map[int]overviewCachedResponse
+	overviewGroup         singleflight.Group
 }
 
 // New constructs a Handler.
 func New(pool *pgxpool.Pool) *Handler {
 	return &Handler{
-		Pool:       pool,
-		hibpClient: &http.Client{Timeout: 5 * time.Second},
-		Mail:       mail.New(mail.Config{}), // disabled until configured
+		Pool:          pool,
+		hibpClient:    &http.Client{Timeout: 5 * time.Second},
+		Mail:          mail.New(mail.Config{}), // disabled until configured
+		overviewCache: make(map[int]overviewCachedResponse),
 	}
 }
 
@@ -374,6 +389,10 @@ func (h *Handler) auditCreated(r *http.Request, entity string, id int64, summary
 	h.auditChange(r, "create", entity, id, summary, auditSnapshot(snapshot))
 }
 
+func (h *Handler) auditCreatedTx(ctx context.Context, tx execer, r *http.Request, entity string, id int64, summary string, snapshot map[string]any) error {
+	return h.auditChangeTx(ctx, tx, r, "create", entity, id, summary, auditSnapshot(snapshot))
+}
+
 // auditDeleted records a deletion together with the identifying values of the row
 // that was removed. This matters more than any other audit case: once the row is
 // gone, an entry that carries only an id can never be resolved back to WHAT was
@@ -388,6 +407,17 @@ func (h *Handler) auditDeleted(r *http.Request, entity string, id int64, summary
 		}
 	}
 	h.auditChange(r, "delete", entity, id, summary, changes)
+}
+
+func (h *Handler) auditDeletedTx(ctx context.Context, tx execer, r *http.Request, entity string, id int64, summary string, snapshot map[string]any) error {
+	var changes map[string]any
+	if len(snapshot) > 0 {
+		changes = make(map[string]any, len(snapshot))
+		for k, v := range snapshot {
+			changes[k] = map[string]any{"old": v, "new": nil}
+		}
+	}
+	return h.auditChangeTx(ctx, tx, r, "delete", entity, id, summary, changes)
 }
 
 // auditAs writes an audit entry with an explicit acting user. Use this where the

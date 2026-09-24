@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-webauthn/webauthn/webauthn"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/preining/parkrr/internal/auth"
 	"github.com/preining/parkrr/internal/models"
@@ -88,6 +89,10 @@ func (h *AuthHandler) storeCeremony(ctx context.Context, w http.ResponseWriter, 
 	return nil
 }
 
+// errNoCeremony reports a missing, unknown, expired, consumed or unreadable
+// ceremony — a client-side condition, unlike a transient database error.
+var errNoCeremony = errors.New("no ceremony in progress")
+
 // loadCeremony atomically claims the ceremony named by the cookie: it locks the
 // row, verifies it is unconsumed and unexpired, and marks it consumed — so a
 // captured cookie can be used at most once, and a concurrent finish loses the
@@ -96,7 +101,7 @@ func (h *AuthHandler) loadCeremony(ctx context.Context, r *http.Request) (waCere
 	var cer waCeremony
 	c, err := r.Cookie(waCookie)
 	if err != nil || c.Value == "" {
-		return cer, errors.New("no ceremony in progress")
+		return cer, errNoCeremony
 	}
 	tx, err := h.Pool.Begin(ctx)
 	if err != nil {
@@ -108,7 +113,10 @@ func (h *AuthHandler) loadCeremony(ctx context.Context, r *http.Request) (waCere
 		`SELECT data FROM webauthn_ceremonies
 		 WHERE id=$1 AND consumed_at IS NULL AND expires_at > now()
 		 FOR UPDATE`, c.Value).Scan(&data); err != nil {
-		return cer, errors.New("no ceremony in progress")
+		if errors.Is(err, pgx.ErrNoRows) {
+			return cer, errNoCeremony
+		}
+		return cer, err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE webauthn_ceremonies SET consumed_at=now() WHERE id=$1`, c.Value); err != nil {
 		return cer, err
@@ -116,7 +124,10 @@ func (h *AuthHandler) loadCeremony(ctx context.Context, r *http.Request) (waCere
 	if err := tx.Commit(ctx); err != nil {
 		return cer, err
 	}
-	return cer, json.Unmarshal(data, &cer)
+	if err := json.Unmarshal(data, &cer); err != nil {
+		return cer, errNoCeremony
+	}
+	return cer, nil
 }
 
 // clearCeremony deletes the ceremony row (by cookie id) and expires the cookie.
@@ -166,9 +177,13 @@ func (h *AuthHandler) PasskeyRegisterBegin(w http.ResponseWriter, r *http.Reques
 	// dieser Stelle bereits — Begin zieht nach. Das ist eine reine PRUEFUNG: sie
 	// zaehlt nichts und greift nur, wenn anderswo (Login, Re-Auth, Finish) bereits
 	// genug Fehlversuche aufgelaufen sind.
-	if _, _, ok := h.checkRateLimit(w, r, u.Username); !ok {
+	key, ip, ok := h.checkRateLimit(w, r, u.Username)
+	if !ok {
 		return
 	}
+	// This endpoint has a dedicated ceremony-start budget below; the shared
+	// credential budget is only consulted as a gate and is not spent on success.
+	h.refundReauth(key, ip)
 	// Deshalb zusaetzlich der eigene Zaehler: Begin verbucht selbst nie einen
 	// Fehlversuch, also wuerde die Pruefung oben eine frisch angemeldete Sitzung
 	// niemals stoppen — sie koennte BeginRegistration + storeCeremony beliebig oft
@@ -212,6 +227,7 @@ func (h *AuthHandler) PasskeyRegisterFinish(w http.ResponseWriter, r *http.Reque
 	}
 	cer, err := h.loadCeremony(r.Context(), r)
 	if err != nil {
+		h.refundReauth(key, ip)
 		writeError(w, http.StatusBadRequest, "passkey registration expired, please retry")
 		return
 	}
@@ -220,6 +236,7 @@ func (h *AuthHandler) PasskeyRegisterFinish(w http.ResponseWriter, r *http.Reque
 		// Only a real verification failure counts toward the throttle; a backend
 		// error is transient and must not lock the user out.
 		if errors.Is(err, auth.ErrWebAuthnInternal) {
+			h.refundReauth(key, ip)
 			slog.Error("passkey registration backend error", "user", u.Username, "err", err)
 			writeError(w, http.StatusInternalServerError, "could not register passkey")
 			return
@@ -262,9 +279,13 @@ func (h *AuthHandler) DeletePasskey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	n, err := h.WebAuthn.DeleteCredential(r.Context(), u.ID, id)
+	n, lastCredential, err := h.WebAuthn.DeleteCredentialSafely(r.Context(), u.ID, id, h.PasskeyOnly)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete passkey")
+		return
+	}
+	if lastCredential {
+		writeError(w, http.StatusConflict, "Im Passkey-only-Modus muss mindestens ein Passkey erhalten bleiben")
 		return
 	}
 	if n == 0 {
@@ -289,7 +310,20 @@ func (h *AuthHandler) DeletePasskey(w http.ResponseWriter, r *http.Request) {
 func (h *AuthHandler) throttlePasskeyLogin(w http.ResponseWriter, r *http.Request) (string, bool) {
 	ip := h.Auth.ClientIP(r)
 	key := "passkey|" + ip
-	if ok, wait := h.Limiter.Allowed(key); !ok {
+	allowed, wait := h.Limiter.Allowed(key)
+	if !allowed {
+		w.Header().Set("Retry-After", formatSeconds(wait))
+		slog.Warn("passkey throttle active", "ip", ip, "path", r.URL.Path)
+		writeError(w, http.StatusTooManyRequests, "Zu viele Versuche – bitte in "+formatMinutes(wait)+" erneut versuchen")
+		return key, false
+	}
+	return key, true
+}
+
+func (h *AuthHandler) consumePasskeyLogin(w http.ResponseWriter, r *http.Request) (string, bool) {
+	ip := h.Auth.ClientIP(r)
+	key := "passkey|" + ip
+	if ok, wait := h.Limiter.Consume(key); !ok {
 		w.Header().Set("Retry-After", formatSeconds(wait))
 		slog.Warn("passkey throttle active", "ip", ip, "path", r.URL.Path)
 		writeError(w, http.StatusTooManyRequests, "Zu viele Versuche – bitte in "+formatMinutes(wait)+" erneut versuchen")
@@ -304,6 +338,13 @@ func (h *AuthHandler) PasskeyLoginBegin(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if _, ok := h.throttlePasskeyLogin(w, r); !ok {
+		return
+	}
+	ceremonyKey := "passkey-login|" + h.Auth.ClientIP(r)
+	if ok, wait := h.CeremonyLimiter.Consume(ceremonyKey); !ok {
+		w.Header().Set("Retry-After", formatSeconds(wait))
+		slog.Warn("passkey login begin throttle active")
+		writeError(w, http.StatusTooManyRequests, "Zu viele Versuche – bitte in "+formatMinutes(wait)+" erneut versuchen")
 		return
 	}
 	opts, sd, err := h.WebAuthn.BeginLogin()
@@ -323,12 +364,17 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 	if !h.passkeysEnabled(w) {
 		return
 	}
-	key, ok := h.throttlePasskeyLogin(w, r)
+	key, ok := h.consumePasskeyLogin(w, r)
 	if !ok {
 		return
 	}
 	cer, err := h.loadCeremony(r.Context(), r)
 	if err != nil {
+		// Only a transient database error is refunded. An unknown or expired
+		// ceremony id keeps its attempt, so forged cookies spend the login budget.
+		if !errors.Is(err, errNoCeremony) {
+			h.Limiter.Refund(key)
+		}
 		writeError(w, http.StatusBadRequest, "passkey login expired, please retry")
 		return
 	}
@@ -344,11 +390,11 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 		// A backend error is not a brute-force signal; don't spend the throttle
 		// budget on it and surface it as a server error.
 		if errors.Is(err, auth.ErrWebAuthnInternal) {
+			h.Limiter.Refund(key)
 			slog.Error("passkey login backend error", "ip", h.Auth.ClientIP(r), "err", err)
 			writeError(w, http.StatusInternalServerError, "passkey login failed")
 			return
 		}
-		h.Limiter.RecordFailure(key)
 		slog.Warn("passkey login failed", "ip", h.Auth.ClientIP(r), "err", err)
 		writeError(w, http.StatusUnauthorized, "passkey login failed")
 		return
@@ -359,6 +405,7 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 		// DB/stale-credential issue, not a brute-force attempt, so it must not
 		// spend the IP's throttle budget — just log it.
 		slog.Warn("passkey login: user lookup failed after verification", "user_id", uid, "err", err)
+		h.Limiter.Refund(key)
 		writeError(w, http.StatusUnauthorized, "passkey login failed")
 		return
 	}
@@ -370,6 +417,7 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 	// Anmeldeversuch ausplaudern soll.
 	if u.Disabled {
 		slog.Warn("passkey login rejected: account disabled", "user_id", uid)
+		h.Limiter.Refund(key)
 		writeError(w, http.StatusUnauthorized, "passkey login failed")
 		return
 	}

@@ -110,7 +110,9 @@ func TestSuccessfulLoginDoesNotResetIPThrottle(t *testing.T) {
 	ip := "7.7.7.7"
 	key := "someuser|" + ip
 	for i := 0; i < 3; i++ {
-		ah.recordLoginFailure(key, ip)
+		if ok, _ := ah.IPLimiter.Consume(ip); !ok {
+			t.Fatalf("attempt %d should still enter before the cooldown applies", i)
+		}
 	}
 	if allowed, _ := ah.IPLimiter.Allowed(ip); allowed {
 		t.Fatal("IP should be locked after 3 failures")

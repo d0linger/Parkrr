@@ -6,32 +6,78 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/preining/parkrr/internal/auth"
 	"github.com/preining/parkrr/internal/backup"
 	"github.com/preining/parkrr/internal/database"
+	"github.com/preining/parkrr/internal/restorectl"
 )
 
-// clearWriteDeadline lifts the server's WriteTimeout for a long-running response
-// (a large encrypted backup stream, an S3 upload, or a multi-minute pg_restore)
-// so the write isn't aborted mid-flight — which would truncate a download into a
-// corrupt archive or drop a restore's connection before its status is returned.
-// The per-handler context still bounds the work; only the socket write deadline
-// is cleared. Best-effort: a no-op if the writer doesn't support it.
-func clearWriteDeadline(w http.ResponseWriter) {
-	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+const backupResponseDeadline = 30 * time.Minute
+
+const (
+	MaxBrowserRestoreBytes       = int64(1 << 30)
+	MaxBrowserRestoreRequestBody = MaxBrowserRestoreBytes + (1 << 20)
+	restoreStepUpWindow          = 10 * time.Minute
+)
+
+var backupDownloadSlots = make(chan struct{}, 2)
+var browserRestoreSlots = make(chan struct{}, 1)
+
+// setBackupWriteDeadline replaces the short general WriteTimeout with a bounded
+// backup-specific window. It is long enough for operational archives but cannot
+// leave a stalled client holding a connection forever.
+func setBackupWriteDeadline(w http.ResponseWriter) {
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(backupResponseDeadline))
+}
+
+func setBrowserRestoreDeadlines(w http.ResponseWriter) {
+	deadline := time.Now().Add(backupResponseDeadline)
+	controller := http.NewResponseController(w)
+	_ = controller.SetReadDeadline(deadline)
+	_ = controller.SetWriteDeadline(deadline)
+}
+
+func acquireBackupDownload(w http.ResponseWriter, r *http.Request) bool {
+	select {
+	case backupDownloadSlots <- struct{}{}:
+		return true
+	case <-r.Context().Done():
+		return false
+	default:
+		writeError(w, http.StatusTooManyRequests, "Zu viele Sicherungsdownloads – bitte später erneut versuchen")
+		return false
+	}
+}
+
+func acquireBrowserRestoreSlot(w http.ResponseWriter, r *http.Request) bool {
+	select {
+	case browserRestoreSlots <- struct{}{}:
+		return true
+	case <-r.Context().Done():
+		return false
+	default:
+		writeError(w, http.StatusTooManyRequests,
+			"Eine Sicherung wird bereits für die Wiederherstellung verarbeitet")
+		return false
+	}
 }
 
 // CreateBackup runs an encrypted pg_dump and streams it to the operator as a
 // download (admin-only). Encrypted with PARKRR_BACKUP_KEY (AES-256-GCM).
 func (h *Handler) CreateBackup(w http.ResponseWriter, r *http.Request) {
-	clearWriteDeadline(w)
+	setBackupWriteDeadline(w)
+	if !acquireBackupDownload(w, r) {
+		return
+	}
+	defer func() { <-backupDownloadSlots }()
 	if h.BackupKey == "" {
 		writeError(w, http.StatusServiceUnavailable, "backup is not configured (set PARKRR_BACKUP_KEY)")
 		return
@@ -39,21 +85,34 @@ func (h *Handler) CreateBackup(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 	defer cancel()
 
-	dump, err := backup.Dump(ctx, h.DatabaseURL)
+	tmp, err := os.CreateTemp("", "parkrr-download-*.dump.enc")
 	if err != nil {
-		slog.Error("backup: pg_dump failed", "err", err)
+		slog.Error("backup: create temporary archive failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "backup failed")
 		return
 	}
-	enc, err := backup.Encrypt(dump, h.BackupKey)
-	if err != nil {
-		slog.Error("backup: encrypt failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "backup encryption failed")
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := backup.DumpEncrypted(ctx, h.DatabaseURL, h.BackupKey, tmp); err != nil {
+		_ = tmp.Close()
+		slog.Error("backup: streamed pg_dump failed", "err", err)
+		writeError(w, http.StatusInternalServerError, "backup failed")
+		return
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		writeError(w, http.StatusInternalServerError, "backup failed")
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		writeError(w, http.StatusInternalServerError, "backup failed")
 		return
 	}
 	name := "parkrr-" + time.Now().Format("2006-01-02-150405") + ".dump.enc"
 	h.audit(r, "backup", "system", 0, "created encrypted database backup ("+name+")")
-	streamBackup(w, name, enc)
+	if err := streamBackupFile(w, r, name, tmpPath); err != nil {
+		slog.Error("backup: stream temporary archive failed", "err", err)
+	}
 }
 
 // BackupStatus reports the full Backup-tab state: what's configured, the
@@ -66,20 +125,22 @@ func (h *Handler) BackupStatus(w http.ResponseWriter, r *http.Request) {
 		Modified time.Time `json:"modified"`
 	}
 	resp := struct {
-		Enabled       bool            `json:"enabled"`   // PARKRR_BACKUP_KEY is set
-		Scheduled     bool            `json:"scheduled"` // a backup directory is configured
-		Dir           string          `json:"dir"`
-		SchemaVersion string          `json:"schema_version"`
-		Settings      backup.Settings `json:"settings"`
-		Status        backup.Status   `json:"status"`
-		Files         []file          `json:"files"`
-		S3            bool            `json:"s3"` // an S3 target is configured
-		S3Bucket      string          `json:"s3_bucket"`
-		S3Files       []file          `json:"s3_files"`
-		Health        backup.Health   `json:"health"`
+		Enabled        bool            `json:"enabled"`   // PARKRR_BACKUP_KEY is set
+		Scheduled      bool            `json:"scheduled"` // a backup directory is configured
+		Dir            string          `json:"dir"`
+		SchemaVersion  string          `json:"schema_version"`
+		Settings       backup.Settings `json:"settings"`
+		Status         backup.Status   `json:"status"`
+		Files          []file          `json:"files"`
+		S3             bool            `json:"s3"` // an S3 target is configured
+		S3Bucket       string          `json:"s3_bucket"`
+		S3Files        []file          `json:"s3_files"`
+		Health         backup.Health   `json:"health"`
+		BrowserRestore bool            `json:"browser_restore"`
 	}{Enabled: h.BackupKey != "", Scheduled: h.BackupDir != "", Dir: h.BackupDir, Files: []file{},
 		S3: h.S3.Enabled(), S3Bucket: h.S3.Bucket, S3Files: []file{},
-		SchemaVersion: backup.SchemaVersion(r.Context(), h.Pool)}
+		SchemaVersion:  backup.SchemaVersion(r.Context(), h.Pool),
+		BrowserRestore: h.Restore != nil && h.Restore.Enabled()}
 
 	if s, err := backup.LoadSettings(r.Context(), h.Pool); err == nil {
 		resp.Settings = s
@@ -263,7 +324,11 @@ func safeBackupName(name string) bool {
 
 // BackupDownloadFile serves one scheduled backup from the backup directory.
 func (h *Handler) BackupDownloadFile(w http.ResponseWriter, r *http.Request) {
-	clearWriteDeadline(w)
+	setBackupWriteDeadline(w)
+	if !acquireBackupDownload(w, r) {
+		return
+	}
+	defer func() { <-backupDownloadSlots }()
 	if h.BackupDir == "" {
 		writeError(w, http.StatusNotFound, "no scheduled backup directory configured")
 		return
@@ -288,34 +353,54 @@ func (h *Handler) BackupDownloadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
-	data, err := io.ReadAll(f)
+	info, err := f.Stat()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not read backup")
 		return
 	}
-	streamBackup(w, name, data)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	http.ServeContent(w, r, name, info.ModTime(), f)
 }
 
 // BackupValidate decrypts + inspects an uploaded backup (no DB change), so the
 // operator can confirm the key is right and the archive is intact before a restore.
 func (h *Handler) BackupValidate(w http.ResponseWriter, r *http.Request) {
-	enc, key, err := readBackupUpload(r)
+	if h.Restore == nil || !h.Restore.Enabled() {
+		writeError(w, http.StatusConflict,
+			"Browser-Wiederherstellung ist nicht aktiviert. PARKRR_BROWSER_RESTORE=true setzen oder die CLI verwenden.")
+		return
+	}
+	setBrowserRestoreDeadlines(w)
+	if !acquireBrowserRestoreSlot(w, r) {
+		return
+	}
+	defer func() { <-browserRestoreSlots }()
+	path, key, _, _, err := h.stageBackupUpload(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer os.Remove(path)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
-	info, err := backup.Validate(ctx, enc, key)
+	info, err := backup.ValidateFile(ctx, path, key)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, info)
+	checksum, _, err := backup.ChecksumFile(path)
+	if err != nil {
+		serverError(w, r, "checksum uploaded backup", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"created": info.Created, "entries": info.Entries,
+		"checksum_sha256": checksum, "confirmation": restoreConfirmation(checksum),
+	})
 }
 
-// BackupRestore restores an uploaded backup into the live database. DESTRUCTIVE:
-// requires confirm=RESTORE and validates the archive first. The restore itself is
 // reconcileSchemaAfterRestore brings the database back in step with THIS binary
 // after a restore, so no manual restart is needed. A restored backup can be a
 // schema version behind the running code (its schema_migrations, and thus the
@@ -334,6 +419,12 @@ func (h *Handler) reconcileSchemaAfterRestore(ctx context.Context) error {
 	if err := database.Migrate(ctx, h.Pool); err != nil {
 		return err
 	}
+	// Backups intentionally omit session data, and older archives may still
+	// contain it. Purge after every restore so logout/password revocation can
+	// never be rolled back by restoring an earlier database snapshot.
+	if _, err := h.Pool.Exec(ctx, `DELETE FROM sessions`); err != nil {
+		return fmt.Errorf("purge restored sessions: %w", err)
+	}
 	// The restored data may carry period settlements as off-book flags only (an older
 	// backup, pre-migration 036). Book their real Zahlungseingänge now — idempotent,
 	// exactly as at startup — so a legacy paid Pauschale/Nebenkosten shows its payment
@@ -341,79 +432,206 @@ func (h *Handler) reconcileSchemaAfterRestore(ctx context.Context) error {
 	return h.BackfillPeriodPayments(ctx)
 }
 
-// atomic (pg_restore --single-transaction): a failure rolls back with no change.
+// BackupRestore validates and queues an uploaded archive for the process-level
+// restore coordinator. Confirmation is bound to the validated archive checksum.
 func (h *Handler) BackupRestore(w http.ResponseWriter, r *http.Request) {
-	clearWriteDeadline(w)
-	enc, key, err := readBackupUpload(r)
+	setBrowserRestoreDeadlines(w)
+	if h.Restore == nil || !h.Restore.Enabled() {
+		writeError(w, http.StatusConflict,
+			"Browser-Wiederherstellung ist nicht aktiviert. PARKRR_BROWSER_RESTORE=true setzen oder die CLI verwenden.")
+		return
+	}
+	if !h.restoreStepUpOK(w, r) {
+		return
+	}
+	if !acquireBrowserRestoreSlot(w, r) {
+		return
+	}
+	defer func() { <-browserRestoreSlots }()
+	path, key, confirm, name, err := h.stageBackupUpload(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if r.FormValue("confirm") != "RESTORE" {
-		writeError(w, http.StatusBadRequest, "type RESTORE to confirm the (destructive) restore")
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
+	keep := false
+	defer func() {
+		if !keep {
+			_ = os.Remove(path) // #nosec G703 -- path comes from os.CreateTemp in the server staging dir, not from the request
+		}
+	}()
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
-	if _, err := backup.Validate(ctx, enc, key); err != nil {
+	info, err := backup.ValidateFile(ctx, path, key)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := backup.Restore(ctx, h.DatabaseURL, enc, key); err != nil {
-		slog.Error("backup restore failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "restore failed")
+	checksum, _, err := backup.ChecksumFile(path)
+	if err != nil {
+		serverError(w, r, "checksum uploaded backup", err)
 		return
 	}
-	if err := h.reconcileSchemaAfterRestore(ctx); err != nil {
-		slog.Error("post-restore migration failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "restored, but the schema upgrade failed — restart the app to complete it")
+	if confirm != restoreConfirmation(checksum) {
+		writeError(w, http.StatusBadRequest, "Bestätigung stimmt nicht mit der geprüften Sicherung überein")
 		return
 	}
-	h.audit(r, "restore", "system", 0, "restored the database from an uploaded backup")
-	writeJSON(w, http.StatusOK, map[string]string{"status": "restored"})
+	u, _ := auth.UserFrom(r.Context())
+	requestedBy := "admin"
+	if u != nil {
+		requestedBy = u.Username
+	}
+	job, err := h.Restore.Submit(r.Context(), restorectl.SubmitRequest{
+		SourcePath: path, SourceName: name, BackupCreated: info.Created,
+		ArchiveEntries: info.Entries, ChecksumSHA256: checksum,
+		RequestedBy: requestedBy, Key: key,
+	})
+	if err != nil {
+		if errors.Is(err, restorectl.ErrBusy) {
+			writeError(w, http.StatusConflict, "Eine Wiederherstellung läuft bereits")
+			return
+		}
+		serverError(w, r, "queue browser restore", err)
+		return
+	}
+	keep = true
+	h.audit(r, "restore", "system", 0, "queued browser database restore ("+name+", sha256 "+checksum[:12]+")")
+	writeJSON(w, http.StatusAccepted, job)
 }
 
-// readBackupUpload pulls the encrypted file + the entered key out of a multipart
-// request. The key is entered per-restore (it must match the file, which may have
-// been made under an older PARKRR_BACKUP_KEY).
-func readBackupUpload(r *http.Request) (enc []byte, key string, err error) {
-	// Unter dem Rumpf-Deckel (server.maxRequestBody = 9 MiB), nicht gleichauf.
-	//
-	// Gleichauf war die hier zugesagte Grenze gar nicht erreichbar: der Rumpf trägt
-	// neben der Datei noch den Schlüssel, die Feldnamen und die Multipart-Trenner, ist
-	// also stets GRÖSSER als sie. Eine 9-MiB-Sicherung scheiterte damit schon an der
-	// Middleware — und der Prüfsatz unten samt seiner einzigen brauchbaren Auskunft
-	// ("dafür die Kommandozeile, parkrr restore") wurde nie erreicht. Derselbe Fehler
-	// wie beim Anhang-Handler, nur an der anderen Grenze.
-	const maxUpload = 8 << 20 // 8 MiB Datei + Umschlag bleibt unter den 9 MiB des Rumpfs
-	// #nosec G120 -- the request body is already bounded by limitRequestBody
-	// (MaxBytesReader at maxRequestBody), so this in-memory parse limit cannot be
-	// exceeded; it just sizes the buffer.
-	if err := r.ParseMultipartForm(maxUpload); err != nil {
-		return nil, "", errors.New("upload too large or malformed (max 8 MiB via the browser; use the CLI for larger)")
+func restoreConfirmation(checksum string) string {
+	const suffixLength = 12
+	if len(checksum) < suffixLength {
+		return "RESTORE"
 	}
-	key = strings.TrimSpace(r.FormValue("key"))
+	return "RESTORE " + strings.ToUpper(checksum[len(checksum)-suffixLength:])
+}
+
+func (h *Handler) restoreStepUpOK(w http.ResponseWriter, r *http.Request) bool {
+	if h.Auth == nil {
+		writeError(w, http.StatusForbidden, "reauth_required")
+		return false
+	}
+	created, ok := h.Auth.SessionCreatedAt(r.Context(), r)
+	age := time.Since(created)
+	if !ok || age < 0 || age >= restoreStepUpWindow {
+		writeError(w, http.StatusForbidden, "reauth_required")
+		return false
+	}
+	return true
+}
+
+func readSmallUploadPart(part *multipart.Part) (string, error) {
+	const maxField = 4096
+	b, err := io.ReadAll(io.LimitReader(part, maxField+1))
+	if err != nil {
+		return "", err
+	}
+	if len(b) > maxField {
+		return "", errors.New("restore form field is too long")
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
+// stageBackupUpload streams multipart input into a private file. The request body
+// and the file are both bounded; no client-controlled filename reaches the disk.
+func (h *Handler) stageBackupUpload(r *http.Request) (path, key, confirm, sourceName string, err error) {
+	mr, err := r.MultipartReader()
+	if err != nil {
+		return "", "", "", "", errors.New("invalid multipart upload")
+	}
+	base := h.BackupDir
+	if base == "" {
+		base = os.TempDir()
+	}
+	stagingDir := filepath.Join(base, ".restore-staging")
+	if err := os.MkdirAll(stagingDir, 0o700); err != nil {
+		return "", "", "", "", errors.New("restore staging directory is unavailable")
+	}
+
+	cleanup := func() {
+		if path != "" {
+			_ = os.Remove(path)
+		}
+	}
+	for {
+		part, nextErr := mr.NextPart()
+		if errors.Is(nextErr, io.EOF) {
+			break
+		}
+		if nextErr != nil {
+			cleanup()
+			return "", "", "", "", errors.New("malformed multipart upload")
+		}
+		name := part.FormName()
+		switch name {
+		case "file":
+			if path != "" {
+				_ = part.Close()
+				cleanup()
+				return "", "", "", "", errors.New("only one backup file is allowed")
+			}
+			sourceName = filepath.Base(part.FileName())
+			if sourceName == "." || sourceName == "" || len(sourceName) > 255 || !strings.HasSuffix(strings.ToLower(sourceName), ".enc") {
+				_ = part.Close()
+				cleanup()
+				return "", "", "", "", errors.New("backup file must have an .enc filename")
+			}
+			f, createErr := os.CreateTemp(stagingDir, "restore-*.dump.enc")
+			if createErr != nil {
+				_ = part.Close()
+				cleanup()
+				return "", "", "", "", errors.New("could not create restore staging file")
+			}
+			path = f.Name()
+			if chmodErr := f.Chmod(0o600); chmodErr != nil {
+				_ = f.Close()
+				_ = part.Close()
+				cleanup()
+				return "", "", "", "", errors.New("could not secure restore staging file")
+			}
+			n, copyErr := io.Copy(f, io.LimitReader(part, MaxBrowserRestoreBytes+1))
+			syncErr := f.Sync()
+			closeErr := f.Close()
+			partErr := part.Close()
+			if copyErr != nil || syncErr != nil || closeErr != nil || partErr != nil {
+				cleanup()
+				return "", "", "", "", errors.New("could not write uploaded backup")
+			}
+			if n > MaxBrowserRestoreBytes {
+				cleanup()
+				return "", "", "", "", errors.New("backup file exceeds the 1 GiB browser limit")
+			}
+		case "key", "confirm":
+			value, readErr := readSmallUploadPart(part)
+			closeErr := part.Close()
+			if readErr != nil || closeErr != nil {
+				cleanup()
+				return "", "", "", "", errors.New("could not read restore form")
+			}
+			if name == "key" {
+				key = value
+			} else {
+				confirm = value
+			}
+		default:
+			if closeErr := part.Close(); closeErr != nil {
+				cleanup()
+				return "", "", "", "", errors.New("could not read restore form")
+			}
+		}
+	}
+	if path == "" {
+		return "", "", "", "", errors.New("missing backup file")
+	}
 	if key == "" {
-		return nil, "", errors.New("the backup key is required to decrypt the file")
+		cleanup()
+		return "", "", "", "", errors.New("the backup key is required to decrypt the file")
 	}
 	if !validBackupKeyLength(key) {
-		return nil, "", errors.New("the backup key is too long")
+		cleanup()
+		return "", "", "", "", errors.New("the backup key is too long")
 	}
-	f, _, err := r.FormFile("file")
-	if err != nil {
-		return nil, "", errors.New("missing backup file")
-	}
-	defer f.Close()
-	// Read one byte past the limit so an over-large file is rejected explicitly
-	// rather than silently truncated.
-	enc, err = io.ReadAll(io.LimitReader(f, maxUpload+1))
-	if err != nil {
-		return nil, "", errors.New("could not read the uploaded file")
-	}
-	if len(enc) > maxUpload {
-		return nil, "", errors.New("backup file exceeds the 8 MiB browser limit; use the CLI (parkrr restore) for larger files")
-	}
-	return enc, key, nil
+	return path, key, confirm, sourceName, nil
 }
 
 // BackupS3Test checks the configured bucket is reachable (read-only BucketExists) —
@@ -438,7 +656,7 @@ func (h *Handler) BackupS3Test(w http.ResponseWriter, r *http.Request) {
 // CreateBackupS3 makes an encrypted backup and uploads it to the S3 bucket
 // (no download). keep=0 here so a manual upload never prunes.
 func (h *Handler) CreateBackupS3(w http.ResponseWriter, r *http.Request) {
-	clearWriteDeadline(w)
+	setBackupWriteDeadline(w)
 	if h.BackupKey == "" || !h.S3.Enabled() {
 		writeError(w, http.StatusServiceUnavailable, "S3 backup is not configured")
 		return
@@ -458,7 +676,11 @@ func (h *Handler) CreateBackupS3(w http.ResponseWriter, r *http.Request) {
 
 // BackupS3Download streams one backup object from the bucket.
 func (h *Handler) BackupS3Download(w http.ResponseWriter, r *http.Request) {
-	clearWriteDeadline(w)
+	setBackupWriteDeadline(w)
+	if !acquireBackupDownload(w, r) {
+		return
+	}
+	defer func() { <-backupDownloadSlots }()
 	if !h.S3.Enabled() {
 		writeError(w, http.StatusNotFound, "S3 is not configured")
 		return
@@ -468,77 +690,171 @@ func (h *Handler) BackupS3Download(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid backup name")
 		return
 	}
-	data, err := backup.DownloadS3(r.Context(), h.S3, name)
+	path, _, err := backup.DownloadS3File(r.Context(), h.S3, name)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "backup not found")
 		return
 	}
-	streamBackup(w, name, data)
+	defer os.Remove(path)
+	if err := streamBackupFile(w, r, name, path); err != nil {
+		slog.Error("backup: stream S3 archive failed", "err", err)
+	}
 }
 
-// BackupRestoreS3 restores directly from an S3 object — no browser upload, so it
-// handles any size. Requires the matching key and confirm=RESTORE; atomic.
-func (h *Handler) BackupRestoreS3(w http.ResponseWriter, r *http.Request) {
-	clearWriteDeadline(w)
+// BackupValidateS3 downloads and validates an S3 archive without modifying the
+// database. Its checksum-bound confirmation must be repeated to BackupRestoreS3.
+func (h *Handler) BackupValidateS3(w http.ResponseWriter, r *http.Request) {
+	setBackupWriteDeadline(w)
+	if h.Restore == nil || !h.Restore.Enabled() {
+		writeError(w, http.StatusConflict,
+			"Browser-Wiederherstellung ist nicht aktiviert. PARKRR_BROWSER_RESTORE=true setzen oder die CLI verwenden.")
+		return
+	}
 	if !h.S3.Enabled() {
 		writeError(w, http.StatusServiceUnavailable, "S3 is not configured")
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid form")
+	if !acquireBrowserRestoreSlot(w, r) {
 		return
 	}
-	name := r.FormValue("name")
-	key := strings.TrimSpace(r.FormValue("key"))
-	if !safeBackupName(name) {
-		writeError(w, http.StatusBadRequest, "invalid backup name")
+	defer func() { <-browserRestoreSlots }()
+	var in struct {
+		Name string `json:"name"`
+		Key  string `json:"key"`
+	}
+	if err := decodeJSON(r, &in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if key == "" {
-		writeError(w, http.StatusBadRequest, "the backup key is required to decrypt the file")
+	if !safeBackupName(in.Name) || in.Key == "" || !validBackupKeyLength(in.Key) {
+		writeError(w, http.StatusBadRequest, "invalid restore request")
 		return
 	}
-	if !validBackupKeyLength(key) {
-		writeError(w, http.StatusBadRequest, "the backup key is too long")
-		return
-	}
-	if r.FormValue("confirm") != "RESTORE" {
-		writeError(w, http.StatusBadRequest, "type RESTORE to confirm the (destructive) restore")
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
 	defer cancel()
-	enc, err := backup.DownloadS3(ctx, h.S3, name)
+	path, _, err := backup.DownloadS3File(ctx, h.S3, in.Name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "backup not found in S3")
+		writeError(w, http.StatusBadGateway, "S3 backup could not be downloaded")
 		return
 	}
-	if _, err := backup.Validate(ctx, enc, key); err != nil {
+	defer os.Remove(path)
+	info, err := backup.ValidateFile(ctx, path, in.Key)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := backup.Restore(ctx, h.DatabaseURL, enc, key); err != nil {
-		slog.Error("backup restore (S3) failed", "err", err)
-		writeError(w, http.StatusInternalServerError, "restore failed")
+	checksum, _, err := backup.ChecksumFile(path)
+	if err != nil {
+		serverError(w, r, "checksum S3 backup", err)
 		return
 	}
-	if err := h.reconcileSchemaAfterRestore(ctx); err != nil {
-		slog.Error("post-restore migration failed (S3)", "err", err)
-		writeError(w, http.StatusInternalServerError, "restored, but the schema upgrade failed — restart the app to complete it")
-		return
-	}
-	h.audit(r, "restore", "system", 0, "restored the database from S3 backup "+name)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "restored"})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"created": info.Created, "entries": info.Entries,
+		"checksum_sha256": checksum, "confirmation": restoreConfirmation(checksum),
+	})
 }
 
-func streamBackup(w http.ResponseWriter, name string, data []byte) {
+// BackupRestoreS3 validates and queues an S3 archive. The process-level
+// coordinator stops all application generations before it changes the database.
+func (h *Handler) BackupRestoreS3(w http.ResponseWriter, r *http.Request) {
+	setBackupWriteDeadline(w)
+	if h.Restore == nil || !h.Restore.Enabled() {
+		writeError(w, http.StatusConflict,
+			"Browser-Wiederherstellung ist nicht aktiviert. PARKRR_BROWSER_RESTORE=true setzen oder die CLI verwenden.")
+		return
+	}
+	if !h.restoreStepUpOK(w, r) {
+		return
+	}
+	if !h.S3.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "S3 is not configured")
+		return
+	}
+	if !acquireBrowserRestoreSlot(w, r) {
+		return
+	}
+	defer func() { <-browserRestoreSlots }()
+	var in struct {
+		Name    string `json:"name"`
+		Key     string `json:"key"`
+		Confirm string `json:"confirm"`
+	}
+	if err := decodeJSON(r, &in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if !safeBackupName(in.Name) || in.Key == "" || !validBackupKeyLength(in.Key) {
+		writeError(w, http.StatusBadRequest, "invalid restore request")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
+	defer cancel()
+	path, _, err := backup.DownloadS3File(ctx, h.S3, in.Name)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "S3 backup could not be downloaded")
+		return
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			_ = os.Remove(path)
+		}
+	}()
+	info, err := backup.ValidateFile(ctx, path, in.Key)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	checksum, _, err := backup.ChecksumFile(path)
+	if err != nil {
+		serverError(w, r, "checksum S3 backup", err)
+		return
+	}
+	if in.Confirm != restoreConfirmation(checksum) {
+		writeError(w, http.StatusBadRequest, "Bestätigung stimmt nicht mit der geprüften Sicherung überein")
+		return
+	}
+	u, _ := auth.UserFrom(r.Context())
+	requestedBy := "admin"
+	if u != nil {
+		requestedBy = u.Username
+	}
+	job, err := h.Restore.Submit(r.Context(), restorectl.SubmitRequest{
+		SourcePath: path, SourceName: in.Name, BackupCreated: info.Created,
+		ArchiveEntries: info.Entries, ChecksumSHA256: checksum,
+		RequestedBy: requestedBy, Key: in.Key,
+	})
+	if err != nil {
+		if errors.Is(err, restorectl.ErrBusy) {
+			writeError(w, http.StatusConflict, "Eine Wiederherstellung läuft bereits")
+			return
+		}
+		serverError(w, r, "queue S3 restore", err)
+		return
+	}
+	keep = true
+	h.audit(r, "restore", "system", 0, "queued browser S3 restore ("+in.Name+", sha256 "+checksum[:12]+")")
+	writeJSON(w, http.StatusAccepted, job)
+}
+
+func streamBackupFile(w http.ResponseWriter, r *http.Request, name, path string) error {
+	// path is either this request's os.CreateTemp result or DownloadS3File's own
+	// os.CreateTemp result. name is generated by Parkrr or passed through
+	// safeBackupName before this helper is called.
+	f, err := os.Open(path) // #nosec G304,G703 -- application-created temporary path; no request path reaches this sink
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
-	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	// #nosec G705 -- data is an encrypted backup blob streamed as an octet-stream
-	// attachment (Content-Disposition + nosniff), never interpreted as HTML.
-	_, _ = w.Write(data)
+	http.ServeContent(w, r, name, info.ModTime(), f)
+	return nil
 }
 
 // backupHealthView is the compact header indicator: enough for an editor to see

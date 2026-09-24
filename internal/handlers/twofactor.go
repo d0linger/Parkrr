@@ -1,8 +1,12 @@
 package handlers
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/preining/parkrr/internal/auth"
 )
@@ -31,10 +35,23 @@ func (h *AuthHandler) TOTPSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not encrypt secret")
 		return
 	}
-	if _, err := h.Pool.Exec(r.Context(),
-		`UPDATE users SET totp_secret=$1, totp_enabled=FALSE, updated_at=now() WHERE id=$2`,
-		encSecret, u.ID); err != nil {
+	nonceBytes := make([]byte, 24)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not start setup")
+		return
+	}
+	setupID := base64.RawURLEncoding.EncodeToString(nonceBytes)
+	ct, err := h.Pool.Exec(r.Context(),
+		`UPDATE users
+		    SET pending_totp_secret=$1, pending_totp_nonce=$2,
+		        pending_totp_expires_at=now() + interval '10 minutes', updated_at=now()
+		  WHERE id=$3 AND NOT totp_enabled`, encSecret, setupID, u.ID)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not store secret")
+		return
+	}
+	if ct.RowsAffected() != 1 {
+		writeError(w, http.StatusConflict, "two-factor is already enabled")
 		return
 	}
 	// A pending TOTP secret is security-relevant state, so the attempt is recorded —
@@ -56,11 +73,13 @@ func (h *AuthHandler) TOTPSetup(w http.ResponseWriter, r *http.Request) {
 		"secret":      key.Secret(),
 		"qr":          qr,
 		"otpauth_url": key.URL(),
+		"setup_id":    setupID,
 	})
 }
 
 type totpVerifyRequest struct {
-	Code string `json:"code"`
+	Code    string `json:"code"`
+	SetupID string `json:"setup_id"`
 	// Password re-authenticates when the login is no longer recent (step-up,
 	// finding SH-02). Ignored while the recent-auth window is still open.
 	Password string `json:"password"`
@@ -78,9 +97,7 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid code")
 		return
 	}
-	var encSecret string
-	if err := h.Pool.QueryRow(r.Context(),
-		`SELECT totp_secret FROM users WHERE id=$1`, u.ID).Scan(&encSecret); err != nil || encSecret == "" {
+	if len(req.SetupID) != 32 {
 		writeError(w, http.StatusBadRequest, "start setup first")
 		return
 	}
@@ -92,11 +109,6 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 	// Throttle: a 6-digit code is otherwise brute-forceable during enrolment.
 	key, ip, ok := h.checkRateLimit(w, r, u.Username)
 	if !ok {
-		return
-	}
-	if !h.Auth.ValidateEncryptedTOTP(encSecret, trim(req.Code)) {
-		h.recordReauthFailure(key, ip)
-		writeError(w, http.StatusBadRequest, "invalid code")
 		return
 	}
 	// Recovery codes and totp_enabled belong to ONE transaction. Two separate
@@ -112,23 +124,46 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
-	var lockedID int64
+	var encSecret, setupID string
+	var expiresAt *time.Time
+	var enabled bool
 	if err := tx.QueryRow(r.Context(),
-		`SELECT id FROM users WHERE id=$1 FOR UPDATE`, u.ID).Scan(&lockedID); err != nil {
+		`SELECT pending_totp_secret, pending_totp_nonce, pending_totp_expires_at, totp_enabled
+		   FROM users WHERE id=$1 FOR UPDATE`, u.ID).
+		Scan(&encSecret, &setupID, &expiresAt, &enabled); err != nil {
+		h.refundReauth(key, ip)
 		writeError(w, http.StatusInternalServerError, "could not enable two-factor")
+		return
+	}
+	if enabled || encSecret == "" || expiresAt == nil || time.Now().After(*expiresAt) ||
+		subtle.ConstantTimeCompare([]byte(setupID), []byte(req.SetupID)) != 1 {
+		h.refundReauth(key, ip)
+		writeError(w, http.StatusConflict, "two-factor setup expired or was replaced")
+		return
+	}
+	if !h.Auth.ValidateEncryptedTOTP(encSecret, trim(req.Code)) {
+		h.recordReauthFailure(key, ip)
+		writeError(w, http.StatusBadRequest, "invalid code")
 		return
 	}
 	codes, err := h.Auth.GenerateBackupCodesTx(r.Context(), tx, u.ID)
 	if err != nil {
+		h.refundReauth(key, ip)
 		writeError(w, http.StatusInternalServerError, "could not generate backup codes")
 		return
 	}
 	if _, err := tx.Exec(r.Context(),
-		`UPDATE users SET totp_enabled=TRUE, updated_at=now() WHERE id=$1`, u.ID); err != nil {
+		`UPDATE users
+		    SET totp_secret=pending_totp_secret, totp_enabled=TRUE,
+		        pending_totp_secret='', pending_totp_nonce='', pending_totp_expires_at=NULL,
+		        updated_at=now()
+		  WHERE id=$1`, u.ID); err != nil {
+		h.refundReauth(key, ip)
 		writeError(w, http.StatusInternalServerError, "could not enable two-factor")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
+		h.refundReauth(key, ip)
 		writeError(w, http.StatusInternalServerError, "could not enable two-factor")
 		return
 	}
@@ -174,7 +209,8 @@ func (h *AuthHandler) TOTPDisable(w http.ResponseWriter, r *http.Request) {
 	h.resetReauth(key, ip)
 
 	if _, err := h.Pool.Exec(r.Context(),
-		`UPDATE users SET totp_enabled=FALSE, totp_secret='', updated_at=now() WHERE id=$1`,
+		`UPDATE users SET totp_enabled=FALSE, totp_secret='', pending_totp_secret='',
+		        pending_totp_nonce='', pending_totp_expires_at=NULL, updated_at=now() WHERE id=$1`,
 		u.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "Zwei-Faktor konnte nicht deaktiviert werden")
 		return

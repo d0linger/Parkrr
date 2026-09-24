@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 )
@@ -112,6 +113,42 @@ func VerifyArchive(ctx context.Context, enc []byte, key string) (VerifyReport, e
 	return rep, nil
 }
 
+// VerifyArchiveFile performs the same four-stage verification without retaining
+// encrypted and decrypted copies in memory.
+func VerifyArchiveFile(ctx context.Context, encryptedPath, key string) (VerifyReport, error) {
+	sha, size, err := ChecksumFile(encryptedPath)
+	rep := VerifyReport{Stage: "checksum", SHA256: sha, Bytes: size}
+	if err != nil {
+		return rep, err
+	}
+	if size == 0 {
+		return rep, errors.New("archive is empty")
+	}
+	plainPath, err := decryptArchiveFile(ctx, encryptedPath, key)
+	if err != nil {
+		return rep, fmt.Errorf("archive check failed: %w", err)
+	}
+	defer os.Remove(plainPath)
+	rep.Stage = "archive"
+	toc, err := plainArchiveTOCFile(ctx, plainPath)
+	if err != nil {
+		return rep, fmt.Errorf("archive check failed: %w", err)
+	}
+	info := parseTOC(toc)
+	rep.Entries, rep.Created = info.Entries, info.Created
+	if info.Entries < minArchiveObjects {
+		return rep, fmt.Errorf("archive holds only %d objects (< %d) — looks truncated, empty or foreign",
+			info.Entries, minArchiveObjects)
+	}
+	rep.Stage = "content"
+	rep.Tables, rep.Missing = tablesInTOC(toc)
+	if len(rep.Missing) > 0 {
+		return rep, fmt.Errorf("archive is missing core tables: %s", strings.Join(rep.Missing, ", "))
+	}
+	rep.Stage = "ok"
+	return rep, nil
+}
+
 // archiveTables liest das Inhaltsverzeichnis und meldet, welche Kerntabellen darin
 // vorkommen. pg_restore --list gibt Zeilen der Form
 // "216; 1259 16igt TABLE public persons parkrr" aus.
@@ -141,23 +178,10 @@ func tablesInTOC(toc string) (found, missing []string) {
 	return found, missing
 }
 
-// VerifyS3Object ist Stufe 2: prüft, dass im Bucket wirklich das liegt, was
-// hochgeladen wurde.
-//
-// Zwei Schritte mit steigenden Kosten, damit der häufigste Fehler — ein
-// abgebrochener Upload — schon am billigsten auffällt:
-//
-//	a) Größe über einen HEAD-Aufruf: erkennt Abbruch und Nullbytes sofort.
-//	b) Vollständiges Lesen und Prüfsummenvergleich: der abschließende Beweis.
-//
-// Hier stand einmal eine Zwischenstufe "Kopf- und Fußbytes über Byte-Bereiche".
-// Sie war nie geschrieben, und ein Kommentar, der eine nicht vorhandene Prüfung
-// beschreibt, ist schlimmer als gar keiner: er lässt eine Lücke geprüft aussehen.
-// Zwischen a) und b) läge sie ohnehin nur bei sehr großen Archiven dazwischen.
-//
-// wantSHA und wantBytes stammen aus dem Upload, nicht aus dem Objekt selbst —
-// sonst würde man das Ergebnis mit sich selbst vergleichen.
-func VerifyS3Object(ctx context.Context, c S3Config, name, key, wantSHA string, wantBytes int64) error {
+// VerifyS3ObjectFile reads the uploaded object back into a bounded temporary file,
+// compares it with the locally generated checksum/size, then validates its archive
+// structure and core tables.
+func VerifyS3ObjectFile(ctx context.Context, c S3Config, name, key, wantSHA string, wantBytes int64) error {
 	size, err := StatS3(ctx, c, name)
 	if err != nil {
 		if errors.Is(err, ErrS3ObjectMissing) {
@@ -168,23 +192,23 @@ func VerifyS3Object(ctx context.Context, c S3Config, name, key, wantSHA string, 
 	if size != wantBytes {
 		return fmt.Errorf("object %q is %d bytes, expected %d (incomplete upload?)", name, size, wantBytes)
 	}
-
-	got, err := DownloadS3(ctx, c, name)
+	path, gotBytes, err := DownloadS3File(ctx, c, name)
 	if err != nil {
 		return fmt.Errorf("s3 read-back failed: %w", err)
 	}
-	if int64(len(got)) != wantBytes {
-		return fmt.Errorf("read back %d bytes, expected %d", len(got), wantBytes)
+	defer os.Remove(path)
+	if gotBytes != wantBytes {
+		return fmt.Errorf("read back %d bytes, expected %d", gotBytes, wantBytes)
 	}
-	if sum := Checksum(got); sum != wantSHA {
-		return fmt.Errorf("checksum mismatch: bucket has %s, expected %s", short(sum), short(wantSHA))
+	gotSHA, _, err := ChecksumFile(path)
+	if err != nil {
+		return err
 	}
-	// Und auf den GESPEICHERTEN Bytes noch die Stufen 3+4. Die Prüfsumme beweist nur,
-	// dass im Bucket dasselbe liegt wie lokal erzeugt — nicht, dass das Erzeugte ein
-	// brauchbarer Dump war. Beim S3-Ziel gibt es keinen zweiten Prüfpfad: ohne dies
-	// bliebe eine reine S3-Installation inhaltlich völlig ungeprüft.
-	if _, verr := VerifyArchive(ctx, got, key); verr != nil {
-		return fmt.Errorf("stored object failed the archive check: %w", verr)
+	if gotSHA != wantSHA {
+		return fmt.Errorf("checksum mismatch: bucket has %s, expected %s", short(gotSHA), short(wantSHA))
+	}
+	if _, err := VerifyArchiveFile(ctx, path, key); err != nil {
+		return fmt.Errorf("stored object failed the archive check: %w", err)
 	}
 	return nil
 }

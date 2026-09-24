@@ -309,6 +309,44 @@ func (m *Manager) CreateVerifiedSession(ctx context.Context, w http.ResponseWrit
 	return m.createSession(ctx, w, r, userID, true)
 }
 
+// ErrCredentialChanged reports that the password a login verified was replaced
+// before its session could be created.
+var ErrCredentialChanged = errors.New("credential changed during login")
+
+// CreatePasswordSession issues a session only while the user's stored password
+// hash still equals passwordHash, the hash the login verified. The insert
+// share-locks the user row, so it serializes with a concurrent password change:
+// either the change commits first and the login gets ErrCredentialChanged, or
+// the session commits first and the change's session revocation removes it.
+func (m *Manager) CreatePasswordSession(
+	ctx context.Context, w http.ResponseWriter, r *http.Request, userID int64, passwordHash string, factorVerified bool,
+) error {
+	token, err := randomToken(32)
+	if err != nil {
+		return err
+	}
+	csrf := m.csrfToken(token)
+	expires := time.Now().Add(m.sessionMaxAge)
+	ua := r.UserAgent()
+	if len(ua) > 300 {
+		ua = ua[:300]
+	}
+	ct, err := m.pool.Exec(ctx,
+		`INSERT INTO sessions (token, user_id, expires_at, user_agent, ip, last_seen, factor_verified)
+		 SELECT $1, u.id, $3, $4, $5, now(), $6
+		 FROM users u WHERE u.id = $2 AND u.password_hash = $7
+		 FOR SHARE`,
+		hashToken(token), userID, expires, ua, m.ClientIP(r), factorVerified, passwordHash)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() != 1 {
+		return ErrCredentialChanged
+	}
+	m.writeSessionCookies(w, r, token, csrf, expires)
+	return nil
+}
+
 // Keep the existing session API shape; assurance is an internal, explicit input.
 func (m *Manager) createSession(
 	ctx context.Context, w http.ResponseWriter, r *http.Request, userID int64, factorVerified bool,

@@ -152,7 +152,7 @@ const migrationLockKey int64 = 0x70726b72
 // Migrate applies all embedded SQL migrations that have not yet run. It holds a
 // Postgres advisory lock for the duration so only one instance migrates at a
 // time; others block until it finishes, then find every migration applied.
-func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
+func Migrate(ctx context.Context, pool *pgxpool.Pool) (retErr error) {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire migration connection: %w", err)
@@ -184,7 +184,26 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		// Release on a fresh context so a cancelled ctx still unlocks.
 		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_, _ = conn.Exec(unlockCtx, `SELECT pg_advisory_unlock($1)`, migrationLockKey)
+		var unlocked bool
+		unlockErr := conn.QueryRow(unlockCtx,
+			`SELECT pg_advisory_unlock($1)`, migrationLockKey).Scan(&unlocked)
+		if unlockErr == nil && unlocked {
+			return
+		}
+		// Never return a session that may still own the global migration lock to
+		// the pool. Surface the unlock failure and evict the physical connection.
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer closeCancel()
+		_ = conn.Conn().Close(closeCtx)
+		if unlockErr == nil {
+			unlockErr = errors.New("advisory lock was not owned by migration connection")
+		}
+		unlockErr = fmt.Errorf("release migration advisory lock %d: %w", migrationLockKey, unlockErr)
+		if retErr == nil {
+			retErr = unlockErr
+		} else {
+			retErr = errors.Join(retErr, unlockErr)
+		}
 	}()
 
 	_, err = conn.Exec(ctx, `

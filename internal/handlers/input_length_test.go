@@ -347,6 +347,14 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "due_until is too long",
 		},
+		{
+			name:       "EndingSoon: days parameter too long",
+			path:       "/api/vehicles/ending-soon?days=" + longDate,
+			method:     "GET",
+			body:       nil,
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "days is too long",
+		},
 	}
 
 	for _, tt := range tests {
@@ -402,6 +410,8 @@ func TestInputLengthValidation(t *testing.T) {
 				h.ListAudit(w, req)
 			case "OverdueInvoices: due_until date parameter too long":
 				h.OverdueInvoices(w, req)
+			case "EndingSoon: days parameter too long":
+				h.EndingSoon(w, req)
 			}
 
 			if w.Code != tt.wantStatus {

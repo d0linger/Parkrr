@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -28,6 +29,12 @@ func writeJSONStatus(w http.ResponseWriter, status int, v any) {
 // Build-time version, injected via -ldflags "-X ...Version=...". Surfaced at
 // /healthz so a deployment can confirm exactly what is running.
 var Version = "dev"
+
+var (
+	auditRetentionLastAttempt atomic.Int64
+	auditRetentionLastSuccess atomic.Int64
+	auditRetentionFailed      atomic.Bool
+)
 
 var (
 	httpRequests = prometheus.NewCounterVec(
@@ -54,6 +61,21 @@ func registerMetrics(pool *pgxpool.Pool) *prometheus.Registry {
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(httpRequests, httpDuration)
 	reg.MustRegister(collectors(pool)...)
+	reg.MustRegister(
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "parkrr_audit_retention_last_success_timestamp_seconds",
+			Help: "Unix timestamp of the last successful audit-retention run.",
+		}, func() float64 { return float64(auditRetentionLastSuccess.Load()) }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "parkrr_audit_retention_failed",
+			Help: "Whether the most recent audit-retention run failed (1) or succeeded (0).",
+		}, func() float64 {
+			if auditRetentionFailed.Load() {
+				return 1
+			}
+			return 0
+		}),
+	)
 	// Prozess- und Laufzeitmetriken des Go-Clients. Bei der eigenen Registry (statt
 	// der globalen Standardregistry) kommen sie NICHT von selbst mit — und
 	// ops/prometheus-alerts.yml wertet genau sie aus: die Neustartschleifen-Regel
@@ -144,7 +166,13 @@ func registerObservability(mux *http.ServeMux, pool *pgxpool.Pool, metricsToken 
 				map[string]string{"status": "unavailable", "reason": "database unreachable"})
 			return
 		}
-		writeJSONStatus(w, http.StatusOK, map[string]string{"status": "ready"})
+		state := "ok"
+		lastAttempt := auditRetentionLastAttempt.Load()
+		lastSuccess := auditRetentionLastSuccess.Load()
+		if auditRetentionFailed.Load() || (lastAttempt > 0 && lastSuccess > 0 && time.Since(time.Unix(lastSuccess, 0)) > 24*time.Hour) {
+			state = "degraded"
+		}
+		writeJSONStatus(w, http.StatusOK, map[string]string{"status": "ready", "audit_retention": state})
 	})
 
 	if metricsToken == "" && requireAuth {
@@ -243,6 +271,7 @@ func StartAuditRetention(pool *pgxpool.Pool, keep, shortKeep time.Duration, stop
 	ticker := time.NewTicker(6 * time.Hour)
 	defer ticker.Stop()
 	prune := func() {
+		auditRetentionLastAttempt.Store(time.Now().Unix())
 		// Generous budget: PruneAuditLog commits per batch, so a run that does not
 		// finish inside it keeps everything it already removed and simply resumes on
 		// the next tick. The deadline bounds one run, it does not discard its work.
@@ -252,10 +281,17 @@ func StartAuditRetention(pool *pgxpool.Pool, keep, shortKeep time.Duration, stop
 		// Never silent: retention failing is how an audit table grows without bound,
 		// and the previous `_, _ =` meant a permanently failing prune looked exactly
 		// like a working one.
-		if err != nil {
+		switch {
+		case err != nil:
+			auditRetentionFailed.Store(true)
 			slog.Warn("audit retention: prune failed", "pruned", n, "err", err)
-		} else if n > 0 {
+		case n > 0:
+			auditRetentionFailed.Store(false)
+			auditRetentionLastSuccess.Store(time.Now().Unix())
 			slog.Info("audit retention: pruned expired entries", "pruned", n)
+		default:
+			auditRetentionFailed.Store(false)
+			auditRetentionLastSuccess.Store(time.Now().Unix())
 		}
 		// The sweep is the ONLY path allowed to remove rows from an append-only table,
 		// so its own entry is what keeps a shrinking trail explainable. Keyed on rows

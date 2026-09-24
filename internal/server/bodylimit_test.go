@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/preining/parkrr/internal/auth"
+	"github.com/preining/parkrr/internal/handlers"
 )
 
 // TestBuildChainEnforcesBodyLimit checks the wiring, not just the middleware in
@@ -44,6 +45,31 @@ func TestBuildChainEnforcesBodyLimit(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !reached {
 		t.Fatalf("normal: want 200 reaching handler, got %d (reached=%v)", rec.Code, reached)
+	}
+}
+
+func TestLimitRequestBodyAllowsBoundedRestoreUpload(t *testing.T) {
+	reached := false
+	h := limitRequestBody(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/backup/restore", bytes.NewReader(nil))
+	req.ContentLength = handlers.MaxBrowserRestoreRequestBody
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent || !reached {
+		t.Fatalf("restore boundary: status=%d reached=%v, want 204/true", rec.Code, reached)
+	}
+
+	reached = false
+	req = httptest.NewRequest(http.MethodPost, "/api/backup/restore", bytes.NewReader(nil))
+	req.ContentLength = handlers.MaxBrowserRestoreRequestBody + 1
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge || reached {
+		t.Fatalf("restore over boundary: status=%d reached=%v, want 413/false", rec.Code, reached)
 	}
 }
 

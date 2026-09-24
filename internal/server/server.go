@@ -30,7 +30,11 @@ import (
 // New builds the top-level HTTP handler with all routes registered. Background
 // goroutines started here (rate-limiter cleanup, login-throttle cleanup) run
 // until stop is closed.
-func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, metricsRequireAuth, checkBreachedPasswords, failClosedOnBreach bool, backupKey, dbURL, backupDir string, s3 backup.S3Config, mailer mail.Sender, publicBaseURL string, stop <-chan struct{}) (http.Handler, *handlers.Handler, error) {
+func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, metricsRequireAuth, checkBreachedPasswords, failClosedOnBreach bool, backupKey, dbURL, backupDir string, s3 backup.S3Config, mailer mail.Sender, publicBaseURL string, stop <-chan struct{}, starters ...func(func())) (http.Handler, *handlers.Handler, error) {
+	startWorker := func(fn func()) { go fn() }
+	if len(starters) > 0 && starters[0] != nil {
+		startWorker = starters[0]
+	}
 	h := handlers.New(pool)
 	h.Auth = authMgr
 	h.CheckBreachedPasswords = checkBreachedPasswords
@@ -43,20 +47,20 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 		h.Mail = mailer
 	}
 	h.PublicBaseURL = publicBaseURL
-	ah := handlers.NewAuthHandler(h, authMgr, wa, stop)
+	ah := handlers.NewAuthHandler(h, authMgr, wa, stop, startWorker)
 
 	// Archive vehicles of finished-and-settled Pauschalen in the background.
-	go startFlatRateArchival(h, stop)
+	startWorker(func() { startFlatRateArchival(h, stop) })
 
 	// Record daily occupancy snapshots off the dashboard GET (finding L-02).
-	go startOccupancySnapshot(h, stop)
+	startWorker(func() { startOccupancySnapshot(h, stop) })
 
 	// Idempotent one-shot: book real Zahlungseingänge for Pauschale/Nebenkosten
 	// period settlements made before migration 036 (they only flipped an off-book
 	// flag). Runs in the background so a large dataset never delays serving — und
 	// hinter einem Done-Marker, damit der Vollscan über sämtliche Vereinbarungen
 	// nicht bei JEDEM Start erneut anfällt (Hundert 08).
-	go func() {
+	startWorker(func() {
 		switch err := h.RunPeriodPaymentBackfillOnce(context.Background()); {
 		case err == nil:
 		case errors.Is(err, handlers.ErrTaskBusy):
@@ -64,7 +68,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 		default:
 			slog.Error("period-payment backfill failed", "err", err)
 		}
-	}()
+	})
 
 	mux := http.NewServeMux()
 
@@ -304,6 +308,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/backup/s3/test", admin(hf(h.BackupS3Test)))
 	mux.Handle("POST /api/backup/s3", admin(hf(h.CreateBackupS3)))
 	mux.Handle("GET /api/backup/s3/file/{name}", admin(hf(h.BackupS3Download)))
+	mux.Handle("POST /api/backup/validate-s3", admin(hf(h.BackupValidateS3)))
 	mux.Handle("POST /api/backup/restore-s3", admin(hf(h.BackupRestoreS3)))
 
 	// Client-side error telemetry (SPA window.onerror → server log).
@@ -437,7 +442,7 @@ func (w *panicResponseWriter) Write(b []byte) (int, error) {
 // Unwrap lets http.ResponseController find optional interfaces on the wrapped writer.
 func (w *panicResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// maxRequestBody caps every request body as a DoS backstop. It sits ABOVE the
+// maxRequestBody caps ordinary request bodies as a DoS backstop. It sits ABOVE the
 // 8 MiB photo-upload cap (handlers.maxPhotoBytes) so legitimate uploads still
 // pass, while JSON bodies stay further limited to 1 MiB in decodeJSON. A request
 // that declares more is rejected with 413 before any read; MaxBytesReader caps
@@ -458,9 +463,17 @@ var tooLargeMessage = fmt.Sprintf("Die Anfrage ist zu groß (höchstens %d MB). 
 	"Große Sicherungen bitte über die Kommandozeile einspielen.", maxRequestBody>>20)
 
 // limitRequestBody rejects over-large request bodies with 413 and caps the read.
+// Restore upload endpoints stream directly to a private file and therefore get a
+// separate 1 GiB cap; every other endpoint retains the small global boundary.
 func limitRequestBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.ContentLength > maxRequestBody {
+		limit := int64(maxRequestBody)
+		message := tooLargeMessage
+		if r.URL.Path == "/api/backup/validate" || r.URL.Path == "/api/backup/restore" {
+			limit = handlers.MaxBrowserRestoreRequestBody
+			message = "Die Sicherungsdatei ist zu groß (Browser-Limit 1 GiB). Bitte die CLI verwenden."
+		}
+		if r.ContentLength > limit {
 			// Als JSON und auf Deutsch, wie jede andere Absage der Anwendung: die
 			// Oberfläche liest `error` aus dem Rumpf und zeigt sonst die nackte
 			// Zeichenfolge "HTTP 413". Diese Schranke greift VOR jedem Handler, also
@@ -473,11 +486,11 @@ func limitRequestBody(next http.Handler) http.Handler {
 			// nosniff — der Header gehört an die eine Stelle, nicht an eine von vieren.
 			w.Header().Set("X-Content-Type-Options", "nosniff")
 			writeJSONStatus(w, http.StatusRequestEntityTooLarge,
-				map[string]string{"error": tooLargeMessage})
+				map[string]string{"error": message})
 			return
 		}
 		if r.Body != nil {
-			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
 		}
 		next.ServeHTTP(w, r)
 	})

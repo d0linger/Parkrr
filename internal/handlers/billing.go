@@ -44,6 +44,11 @@ type complianceError struct {
 
 func (e *complianceError) Error() string { return e.msg }
 
+var (
+	errInvoicePersonNotFound = errors.New("invoice person not found")
+	errNoOpenInvoiceItems    = errors.New("no open invoice items")
+)
+
 // billingSettings is the GUI-editable invoicing configuration (one row, id=1).
 // Austria: kleinunternehmer => § 6 Abs 1 Z 27 UStG (no USt); otherwise ust_rate
 // (20 / 13 / 10) is shown. next_invoice_no drives the gapless invoice number.
@@ -298,14 +303,18 @@ type createInvoiceRequest struct {
 // Pauschalen, and the open recurring total. The line totals sum to the person's
 // open balance.
 func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, error) {
+	return h.invoiceLinesFrom(r, h.Pool, personID)
+}
+
+func (h *Handler) invoiceLinesFrom(r *http.Request, q dbQuerier, personID int64) ([]owedItem, error) {
 	ctx := r.Context()
 	now := h.now()
 
-	vehicles, _, err := h.loadVehiclesWithCategories(r, personID)
+	vehicles, _, err := h.loadVehiclesWithCategoriesFrom(r, q, personID)
 	if err != nil {
 		return nil, err
 	}
-	ags, err := h.loadAgreements(ctx, personID, now)
+	ags, err := h.loadAgreementsFrom(ctx, q, personID, now)
 	if err != nil {
 		return nil, err
 	}
@@ -329,14 +338,14 @@ func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, err
 	// Positions already billed by an active (non-canceled) invoice are locked so
 	// nothing is invoiced twice — discrete kinds wholesale, periodic kinds per
 	// completed sub-period.
-	locked, err := h.lockedPositions(ctx, personID)
+	locked, err := h.lockedPositionsFrom(ctx, q, personID)
 	if err != nil {
 		return nil, err
 	}
 
 	// Standalone one-off charges (the vehicle rent is rebuilt per period below, so
 	// drop openOwedItems' wholesale vehicle lines here).
-	owed, err := h.openOwedItems(r, personID)
+	owed, err := h.openOwedItemsFrom(r, q, personID)
 	if err != nil {
 		return nil, err
 	}
@@ -374,7 +383,7 @@ func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, err
 	}
 
 	// Vehicle-bound one-off charges not settled via their vehicle/Pauschale.
-	crows, err := h.Pool.Query(ctx,
+	crows, err := q.Query(ctx,
 		`SELECT id, description, quantity, amount, charged_on, vehicle_id
 		   FROM charges WHERE person_id=$1 AND vehicle_id IS NOT NULL AND NOT paid`, personID)
 	if err != nil {
@@ -439,7 +448,7 @@ func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, err
 	// Recurring extra costs ("Wiederkehrende Nebenkosten"): likewise per completed
 	// sub-period, per charge. A bound charge settles via its vehicle's Pauschale /
 	// paid flag; a person-level one via its own per-period flags.
-	recurs, err := h.loadRecurringCharges(ctx, personID, now)
+	recurs, err := h.loadRecurringChargesFrom(ctx, q, personID, now)
 	if err != nil {
 		return nil, err
 	}
@@ -516,7 +525,11 @@ func periodOwedLines(p models.FlatRatePeriod, now time.Time, kind string, refID 
 // lockedPositions returns the set "kind:ref_id" of positions already billed by a
 // non-canceled invoice of the person.
 func (h *Handler) lockedPositions(ctx context.Context, personID int64) (map[string]bool, error) {
-	rows, err := h.Pool.Query(ctx,
+	return h.lockedPositionsFrom(ctx, h.Pool, personID)
+}
+
+func (h *Handler) lockedPositionsFrom(ctx context.Context, q dbQuerier, personID int64) (map[string]bool, error) {
+	rows, err := q.Query(ctx,
 		`SELECT s.kind, s.ref_id, s.period_key FROM invoice_source s
 		    JOIN invoices i ON i.id = s.invoice_id
 		   WHERE i.person_id = $1 AND NOT i.canceled`, personID)
@@ -658,57 +671,57 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items, err := h.invoiceLines(r, pid)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not read open positions")
-		return
-	}
-	if len(items) == 0 {
-		w.Header().Set(InvoiceOutcomeHeader, OutcomeNoOpenItems)
-		writeError(w, http.StatusBadRequest, "keine offenen Positionen zum Abrechnen")
-		return
-	}
-
-	var person struct{ First, Last, Address string }
-	if err := h.Pool.QueryRow(r.Context(),
-		`SELECT first_name, last_name, COALESCE(address,'') FROM persons WHERE id=$1`, pid,
-	).Scan(&person.First, &person.Last, &person.Address); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "person not found")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-
-	// §11 UStG mandatory-field check BEFORE burning a number.
-	settings, err := h.loadBillingSettings(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not load billing settings")
-		return
-	}
-	buyerName := trim(person.First + " " + person.Last)
-	if msg, sellerSide := invoiceComplianceDetail(settings, buyerName, person.Address, 0); msg != "" {
-		w.Header().Set(InvoiceOutcomeHeader, complianceOutcome(sellerSide))
-		writeError(w, http.StatusUnprocessableEntity, msg)
-		return
-	}
-
 	var createdBy *int64
 	if u, ok := auth.UserFrom(r.Context()); ok {
 		createdBy = &u.ID
 	}
+	// Remember the person's payment watermark only to distinguish a genuinely
+	// empty invoice request (400) from one whose last open position was paid while
+	// this request waited for the global invoice-number lock (409).
+	var paymentWatermark int64
+	if err := h.Pool.QueryRow(r.Context(),
+		`SELECT COALESCE(max(id), 0) FROM payments WHERE person_id=$1`, pid).Scan(&paymentWatermark); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create invoice")
+		return
+	}
 
 	var out invoice
 	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		// The gapless-number row is the global invoice lock. Acquire it before
+		// reading or locking any person/source rows so invoice, payment, and Storno
+		// paths have one deterministic lock order. In particular, an invoice that
+		// waits here must not pin a charge that a concurrent payment needs.
 		s, err := loadBillingSettingsTx(r.Context(), tx)
 		if err != nil {
 			return err
 		}
-		number := s.InvoicePrefix + fmt.Sprintf("%0*d", s.NumberPad, s.NextInvoiceNo)
+		// Use READ COMMITTED deliberately. Each invoice_source insert is protected
+		// by the shared charge-claim advisory lock/trigger and must see a payment
+		// that committed while this request waited above. A SERIALIZABLE snapshot
+		// can legally order this transaction before that read-committed payment and
+		// therefore hide the opposing claim.
 		if _, err := tx.Exec(r.Context(),
-			`UPDATE billing_settings SET next_invoice_no = next_invoice_no + 1 WHERE id=1`); err != nil {
+			`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, fmt.Sprintf("parkrr.invoice-person:%d", pid)); err != nil {
 			return err
+		}
+
+		var person struct{ First, Last, Address string }
+		if err := tx.QueryRow(r.Context(),
+			`SELECT first_name, last_name, COALESCE(address,'') FROM persons WHERE id=$1`, pid,
+		).Scan(&person.First, &person.Last, &person.Address); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errInvoicePersonNotFound
+			}
+			return err
+		}
+		buyerName := trim(person.First + " " + person.Last)
+
+		items, err := h.invoiceLinesFrom(r, tx, pid)
+		if err != nil {
+			return err
+		}
+		if len(items) == 0 {
+			return errNoOpenInvoiceItems
 		}
 
 		var subtotal float64
@@ -726,10 +739,16 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 
 		// Re-run the §11 gate INSIDE the tx against the FOR UPDATE snapshot (settings
 		// can't change under us) and now with the real gross total (the > 400 €
-		// recipient-address rule). A failure rolls the whole tx back, so the number
-		// bumped above is restored — no burned number, no non-compliant document.
+		// recipient-address rule). The number is allocated only after this gate, and
+		// any later failure still rolls the transaction back without burning it.
 		if msg, sellerSide := invoiceComplianceDetail(s, buyerName, person.Address, total); msg != "" {
 			return &complianceError{msg: msg, sellerSide: sellerSide}
+		}
+
+		number := s.InvoicePrefix + fmt.Sprintf("%0*d", s.NumberPad, s.NextInvoiceNo)
+		if _, err := tx.Exec(r.Context(),
+			`UPDATE billing_settings SET next_invoice_no = next_invoice_no + 1 WHERE id=1`); err != nil {
+			return err
 		}
 
 		seller := map[string]any{"name": s.SellerName, "address": s.SellerAddress, "uid": s.SellerUID,
@@ -799,6 +818,22 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 			})
 	})
 	if txErr != nil {
+		if errors.Is(txErr, errInvoicePersonNotFound) {
+			writeError(w, http.StatusNotFound, "person not found")
+			return
+		}
+		if errors.Is(txErr, errNoOpenInvoiceItems) {
+			var currentPaymentID int64
+			if err := h.Pool.QueryRow(r.Context(),
+				`SELECT COALESCE(max(id), 0) FROM payments WHERE person_id=$1`, pid).Scan(&currentPaymentID); err == nil && currentPaymentID > paymentWatermark {
+				w.Header().Set(InvoiceOutcomeHeader, OutcomeRaced)
+				writeError(w, http.StatusConflict, "Positionen wurden soeben beglichen – bitte neu laden")
+				return
+			}
+			w.Header().Set(InvoiceOutcomeHeader, OutcomeNoOpenItems)
+			writeError(w, http.StatusBadRequest, "keine offenen Positionen zum Abrechnen")
+			return
+		}
 		var ce *complianceError
 		if errors.As(txErr, &ce) {
 			w.Header().Set(InvoiceOutcomeHeader, complianceOutcome(ce.sellerSide))
@@ -808,7 +843,10 @@ func (h *Handler) CreateInvoice(w http.ResponseWriter, r *http.Request) {
 		// A concurrent CreateInvoice for the same person raced us and already billed
 		// one of these positions (uq_invoice_source_ref_period). The tx rolled back —
 		// no double-bill, no burned number — so ask the caller to reload and retry.
-		if isUniqueViolation(txErr) {
+		if isUniqueViolation(txErr) || writeSettlementConflict(w, txErr) {
+			if !isUniqueViolation(txErr) {
+				return
+			}
 			w.Header().Set(InvoiceOutcomeHeader, OutcomeRaced)
 			writeError(w, http.StatusConflict, "Positionen wurden soeben abgerechnet – bitte neu laden")
 			return

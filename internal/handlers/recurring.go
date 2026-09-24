@@ -98,7 +98,11 @@ func (h *Handler) getRecurring(ctx context.Context, id int64) (models.RecurringC
 }
 
 func (h *Handler) loadRecurringCharges(ctx context.Context, personID int64, now time.Time) ([]models.RecurringCharge, error) {
-	rows, err := h.Pool.Query(ctx,
+	return h.loadRecurringChargesFrom(ctx, h.Pool, personID, now)
+}
+
+func (h *Handler) loadRecurringChargesFrom(ctx context.Context, q dbQuerier, personID int64, now time.Time) ([]models.RecurringCharge, error) {
+	rows, err := q.Query(ctx,
 		recurringSelect+` WHERE rc.person_id=$1 ORDER BY rc.start_date DESC, rc.id DESC`, personID)
 	if err != nil {
 		return nil, err

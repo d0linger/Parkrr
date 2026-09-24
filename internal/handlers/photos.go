@@ -93,20 +93,6 @@ func (h *Handler) UploadPhoto(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	// Count is for the per-vehicle cap; a nonexistent vehicle is caught by the FK
-	// violation on INSERT below. A scan error here is a real DB failure (500), not
-	// a missing vehicle.
-	var count int
-	if err := h.Pool.QueryRow(r.Context(),
-		`SELECT count(*) FROM vehicle_photos WHERE vehicle_id=$1`, id).Scan(&count); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	if count >= maxPhotosPerVehicle {
-		writeError(w, http.StatusConflict, "photo limit reached for this vehicle")
-		return
-	}
-
 	r.Body = http.MaxBytesReader(w, r.Body, maxPhotoBytes+1024)
 	// #nosec G120 -- the request body is capped by MaxBytesReader above, so the
 	// multipart parse is bounded and cannot exhaust memory.
@@ -138,8 +124,8 @@ func (h *Handler) UploadPhoto(w http.ResponseWriter, r *http.Request) {
 	}
 
 	filename := trim(header.Filename)
-	if len(filename) > 200 {
-		filename = filename[:200]
+	if rs := []rune(filename); len(rs) > 200 {
+		filename = string(rs[:200])
 	}
 	// sort_order EXPLIZIT ans Ende setzen, statt den Spaltenstandard 0 zu nehmen.
 	// Mit 0 landete jedes neue Foto auf demselben Platz wie das bewusst gewählte
@@ -147,8 +133,33 @@ func (h *Handler) UploadPhoto(w http.ResponseWriter, r *http.Request) {
 	// der Titelbild-Unterabfrage des Planers) entschied für das neuere — das
 	// Titelbild sprang nach jedem Upload zurück auf den letzten Schnappschuss,
 	// also genau auf das Verhalten, das Migration 059 beseitigen sollte.
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not store photo")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	var ownerID int64
+	if err := tx.QueryRow(r.Context(), `SELECT id FROM vehicles WHERE id=$1 FOR UPDATE`, id).Scan(&ownerID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "vehicle not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "could not store photo")
+		return
+	}
+	var count int
+	if err := tx.QueryRow(r.Context(),
+		`SELECT count(*) FROM vehicle_photos WHERE vehicle_id=$1`, id).Scan(&count); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if count >= maxPhotosPerVehicle {
+		writeError(w, http.StatusConflict, "photo limit reached for this vehicle")
+		return
+	}
 	var photoID int64
-	if err := h.Pool.QueryRow(r.Context(),
+	if err := tx.QueryRow(r.Context(),
 		`INSERT INTO vehicle_photos (vehicle_id, filename, content_type, byte_size, data, sort_order)
 		 VALUES ($1,$2,$3,$4,$5,
 		         COALESCE((SELECT max(sort_order) + 1 FROM vehicle_photos WHERE vehicle_id = $1), 0))
@@ -162,8 +173,15 @@ func (h *Handler) UploadPhoto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Metadata only — image bytes must never enter the audit log.
-	h.auditCreated(r, "photo", photoID, "uploaded photo for vehicle",
-		map[string]any{"vehicle_id": id, "filename": filename, "content_type": contentType, "byte_size": len(data)})
+	if err := h.auditCreatedTx(r.Context(), tx, r, "photo", photoID, "uploaded photo for vehicle",
+		map[string]any{"vehicle_id": id, "filename": filename, "content_type": contentType, "byte_size": len(data)}); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not store photo")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not store photo")
+		return
+	}
 	writeJSON(w, http.StatusCreated, photoMeta{
 		ID: photoID, VehicleID: id, Filename: filename,
 		ContentType: contentType, ByteSize: len(data), CreatedAt: time.Now(),

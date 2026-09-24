@@ -43,7 +43,7 @@ func TestAuditDeletesCarryASnapshot(t *testing.T) {
 	for _, hf := range handlerFuncs(t) {
 		// auditDeleted is the sanctioned wrapper; its own body naturally contains the
 		// delete-audit call this test forbids everywhere else.
-		if hf.Name == "auditDeleted" {
+		if hf.Name == "auditDeleted" || hf.Name == "auditDeletedTx" {
 			continue
 		}
 		if reBareDelete.MatchString(hf.Body) {
@@ -241,6 +241,12 @@ var auditIgnoredPerFunc = map[string]map[string]bool{
 	// gap; everywhere else `totp_enabled` must still appear in the diff (TOTPEnable and
 	// TOTPDisable audit it directly, and both pass).
 	"TOTPSetup": {"totp_enabled": true},
+	// Pending enrollment material is intentionally never copied into the trail.
+	// The setup/enable audit events record the ceremony outcome; the nonce, encrypted
+	// secret, and expiry are short-lived authentication internals.
+	"TOTPDisable": {
+		"pending_totp_secret": true, "pending_totp_nonce": true, "pending_totp_expires_at": true,
+	},
 	// AnonymizePerson revokes the person's self-service portal tokens as a mechanical
 	// side-effect of anonymizing them — a live magic link must not survive the erasure.
 	// That is the consequence of the anonymize action, whose own audit entry is the
@@ -333,7 +339,8 @@ var reSecretWord = regexp.MustCompile(`(?i)(password|passwort|secret|token|apike
 var auditCallNames = map[string]bool{
 	"audit": true, "auditTx": true, "auditAs": true, "auditInsert": true,
 	"auditChange": true, "auditChangeTx": true,
-	"auditCreated": true, "auditDeleted": true, "auditSystem": true,
+	"auditCreated": true, "auditCreatedTx": true,
+	"auditDeleted": true, "auditDeletedTx": true, "auditSystem": true,
 }
 
 // auditSummaryDirs are the trees this guard walks. cmd/parkrr is included on
@@ -451,6 +458,7 @@ var auditExemptHandlers = map[string]string{
 	"PasskeyRegisterBegin": "WebAuthn ceremony start; stores only an ephemeral challenge, the finish step is audited",
 	"PasskeyLoginBegin":    "WebAuthn ceremony start; stores only an ephemeral challenge, the finish step is audited",
 	"BackupValidate":       "read-only (decrypt + pg_restore --list), changes nothing",
+	"BackupValidateS3":     "read-only S3 download plus decrypt and pg_restore --list, changes nothing",
 	"BackupS3Test":         "read-only connection test, changes nothing",
 	"ClientError":          "forwards a browser error to slog, touches no domain data",
 	"ReorderPhotos":        "reine Darstellungsreihenfolge derselben Fotos — kein Inhalt entsteht, ändert sich oder verschwindet; Upload und Löschen der Fotos selbst sind auditiert",
@@ -474,7 +482,7 @@ func TestEveryMutatingRouteIsAudited(t *testing.T) {
 		byName[hf.Name] = hf
 	}
 	reRoute := regexp.MustCompile(`"(?:POST|PUT|PATCH|DELETE) (/api[^"]*)"[^\n]*?(?:h|ah)\.([A-Za-z0-9_]+)`)
-	reAudit := regexp.MustCompile(`\.(?:audit|auditAs|auditChange|auditChangeTx|auditInsert|auditCreated|auditDeleted|AuditSystem)\(`)
+	reAudit := regexp.MustCompile(`\.(?:audit|auditAs|auditChange|auditChangeTx|auditInsert|auditCreated|auditCreatedTx|auditDeleted|auditDeletedTx|AuditSystem)\(`)
 	reDelegates := regexp.MustCompile(`\b(?:saveAgreement|persistAgreement)\s*\(`)
 
 	// A guard that silently skips what it cannot parse is worse than no guard: the one

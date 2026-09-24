@@ -80,6 +80,7 @@ services:
       # schedule (cron) and retention are edited in the Backup tab, not via env.
       PARKRR_BACKUP_KEY: ${PARKRR_BACKUP_KEY:-}
       PARKRR_BACKUP_DIR: ${PARKRR_BACKUP_DIR:-/backups}
+      PARKRR_BROWSER_RESTORE: ${PARKRR_BROWSER_RESTORE:-false}
       # Optional off-site S3-compatible target (AWS S3 / Backblaze B2 / Wasabi / MinIO).
       PARKRR_S3_ENDPOINT: ${PARKRR_S3_ENDPOINT:-}
       PARKRR_S3_BUCKET: ${PARKRR_S3_BUCKET:-}
@@ -89,8 +90,9 @@ services:
       PARKRR_S3_PREFIX: ${PARKRR_S3_PREFIX:-parkrr/}
       PARKRR_S3_USE_SSL: ${PARKRR_S3_USE_SSL:-true}
       PARKRR_METRICS_TOKEN: ${PARKRR_METRICS_TOKEN:-}
-      # true = /metrics is disabled unless a token is set (fail closed); default off.
-      PARKRR_METRICS_REQUIRE_AUTH: ${PARKRR_METRICS_REQUIRE_AUTH:-false}
+      # Fail closed by default: set a token, or explicitly opt out only on an
+      # isolated monitoring network.
+      PARKRR_METRICS_REQUIRE_AUTH: ${PARKRR_METRICS_REQUIRE_AUTH:-true}
       # --- E-mail (SMTP): set PARKRR_SMTP_HOST to enable payment reminders. ---
       PARKRR_SMTP_HOST: ${PARKRR_SMTP_HOST:-}
       PARKRR_SMTP_PORT: ${PARKRR_SMTP_PORT:-587}

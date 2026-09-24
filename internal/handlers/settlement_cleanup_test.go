@@ -87,15 +87,15 @@ func TestRecurringMasterSliderBooksPayment(t *testing.T) {
 	}
 }
 
-// TestDeleteAgreementClearsSettlementPayments: deleting a paid Pauschale must remove
-// its auto settle-payments too, else an orphan Zahlungseingang lingers as phantom
-// money-in.
-func TestDeleteAgreementClearsSettlementPayments(t *testing.T) {
+// TestDeleteSettledAgreementIsBlocked: a Pauschale with settlement history is an
+// accounting principal. It and its payment evidence must survive deletion attempts.
+func TestDeleteSettledAgreementIsBlocked(t *testing.T) {
 	h := testHandler(t)
 	pid := createIntegrationPerson(t, h)
 	vid := mkStoredVehicle(t, h, pid, 30, firstOfMonthMonthsAgo(3).Format("2006-01-02"))
 	agBody, _ := json.Marshal(map[string]any{
 		"amount": 30, "period": "monthly", "start_date": firstOfMonthMonthsAgo(3).Format("2006-01-02"),
+		"end_date":    firstOfMonthMonthsAgo(0).AddDate(0, 0, -1).Format("2006-01-02"),
 		"vehicle_ids": []int64{vid},
 	})
 	arec := httptest.NewRecorder()
@@ -125,15 +125,15 @@ func TestDeleteAgreementClearsSettlementPayments(t *testing.T) {
 	dreq.SetPathValue("id", strconv.FormatInt(aid, 10))
 	drec := httptest.NewRecorder()
 	h.DeleteAgreement(drec, dreq)
-	if drec.Code != http.StatusOK {
-		t.Fatalf("delete agreement: %d %s", drec.Code, drec.Body.String())
+	if drec.Code != http.StatusConflict {
+		t.Fatalf("delete settled agreement: %d %s", drec.Code, drec.Body.String())
 	}
 
 	var post int
 	_ = h.Pool.QueryRow(t.Context(),
 		`SELECT count(*) FROM payments WHERE settles_kind='agreement' AND settles_ref=$1`, aid).Scan(&post)
-	if post != 0 {
-		t.Errorf("deleting the Pauschale must remove its %d settle payment(s), %d remain", pre, post)
+	if post != pre {
+		t.Errorf("blocked delete must preserve all %d settlement payment(s), %d remain", pre, post)
 	}
 }
 

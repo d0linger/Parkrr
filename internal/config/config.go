@@ -61,6 +61,10 @@ type Config struct {
 	// the Backup tab, not via env.
 	BackupKey string // AES-256-GCM passphrase (separate from SessionSecret)
 	BackupDir string // if set, scheduled backups are written here
+	// BrowserRestore enables the coordinated maintenance workflow. It defaults to
+	// false so an upgrade cannot introduce a new destructive remote operation until
+	// the operator has explicitly accepted it.
+	BrowserRestore bool
 
 	// E-mail (SMTP). Disabled when SMTPHost is empty. Used for payment reminders.
 	SMTPHost     string
@@ -160,8 +164,9 @@ func Load() (*Config, error) {
 		CheckBreachedPasswords: getenvBool("PARKRR_CHECK_BREACHED_PASSWORDS", true),
 		FailClosedOnBreach:     getenvBool("PARKRR_BREACH_CHECK_FAIL_CLOSED", false),
 
-		BackupKey: os.Getenv("PARKRR_BACKUP_KEY"),
-		BackupDir: os.Getenv("PARKRR_BACKUP_DIR"),
+		BackupKey:      os.Getenv("PARKRR_BACKUP_KEY"),
+		BackupDir:      os.Getenv("PARKRR_BACKUP_DIR"),
+		BrowserRestore: getenvBool("PARKRR_BROWSER_RESTORE", false),
 
 		SMTPHost:        os.Getenv("PARKRR_SMTP_HOST"),
 		SMTPPort:        getenvInt("PARKRR_SMTP_PORT", 587),

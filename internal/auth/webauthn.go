@@ -317,12 +317,43 @@ func (s *WebAuthnService) ListCredentials(ctx context.Context, userID int64) ([]
 	return out, rows.Err()
 }
 
-// DeleteCredential removes one passkey belonging to the user.
-func (s *WebAuthnService) DeleteCredential(ctx context.Context, userID, id int64) (int64, error) {
-	ct, err := s.pool.Exec(ctx,
+// DeleteCredentialSafely optionally preserves at least one credential. The user
+// row lock serializes concurrent deletions, so passkey-only mode cannot be
+// bypassed by deleting the last two credentials in parallel.
+func (s *WebAuthnService) DeleteCredentialSafely(ctx context.Context, userID, id int64, keepOne bool) (deleted int64, lastCredential bool, err error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var lockedID int64
+	if err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&lockedID); err != nil {
+		return 0, false, err
+	}
+	if keepOne {
+		var count int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM webauthn_credentials WHERE user_id=$1`, userID).Scan(&count); err != nil {
+			return 0, false, err
+		}
+		if count <= 1 {
+			var owns bool
+			if err := tx.QueryRow(ctx,
+				`SELECT EXISTS(SELECT 1 FROM webauthn_credentials WHERE id=$1 AND user_id=$2)`, id, userID).Scan(&owns); err != nil {
+				return 0, false, err
+			}
+			if owns {
+				return 0, true, nil
+			}
+		}
+	}
+	ct, err := tx.Exec(ctx,
 		`DELETE FROM webauthn_credentials WHERE id=$1 AND user_id=$2`, id, userID)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	return ct.RowsAffected(), nil
+	if err := tx.Commit(ctx); err != nil {
+		return 0, false, err
+	}
+	return ct.RowsAffected(), false, nil
 }
