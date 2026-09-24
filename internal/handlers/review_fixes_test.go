@@ -42,20 +42,30 @@ func TestRecurringMasterSliderSkipsInvoicedPeriods(t *testing.T) {
 	full := getInvoiceT(t, h, iv.ID)
 	payInvoices(t, h, pid, map[string]any{"amount": full.Total, "auto": true})
 
-	setRecurringMasterPaid(t, h, rid, true)
+	// Every completed period is settled through the invoice, so the master slider
+	// has nothing to settle: it says so (409) instead of booking anything. The
+	// running month is never settled by it (BIL-01).
+	body, _ := json.Marshal(map[string]any{"paid": true})
+	req := httptest.NewRequest(http.MethodPost, "/api/recurring/"+strconv.FormatInt(rid, 10)+"/paid", bytes.NewReader(body))
+	req.SetPathValue("id", strconv.FormatInt(rid, 10))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.SetRecurringChargePaid(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("master slider over only invoiced periods must be 409, got %d %s", rec.Code, rec.Body.String())
+	}
 
-	// No real payment is booked for the invoiced periods, so the invoice payment isn't
-	// duplicated. (The running month is settled off-book by the master flag.)
 	var n int
 	_ = h.Pool.QueryRow(t.Context(),
 		`SELECT count(*) FROM payments WHERE settles_kind='recurring' AND settles_ref=$1`, rid).Scan(&n)
 	if n != 0 {
 		t.Errorf("invoiced recurring periods must not be booked again, got %d settle payments", n)
 	}
-	// Without the skip, the 3 invoiced months (60) would be paid twice → balance ~ -60
-	// (phantom Guthaben). It must net to ~0 instead.
-	if bal := personStatsT(t, h, pid).Balance; math.Abs(bal) > 0.05 {
-		t.Errorf("master toggle on an invoiced recurring must not double-count (balance ~0), got %.2f", bal)
+	// Without the skip, the 3 invoiced months (60) would be paid twice → phantom
+	// Guthaben. What stays owed is exactly the running month (accrued − 60).
+	s := personStatsT(t, h, pid)
+	if running := s.TotalCharges - 60; math.Abs(s.Balance-running) > 0.05 || s.Balance < -0.05 {
+		t.Errorf("invoiced recurring must not double-count: balance %.2f, want the running month %.2f", s.Balance, running)
 	}
 }
 

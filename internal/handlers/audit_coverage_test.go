@@ -196,7 +196,7 @@ var auditIgnoredPerFunc = map[string]map[string]bool{
 	// of those records — the payment's own entry is the trail. Everywhere else `paid` is
 	// the user's change (the agreement flag) and must stay audited, which is why this
 	// is scoped to the handler instead of living in auditIgnoredColumns.
-	"DeletePayment": {"paid": true},
+	"DeletePayment": {"paid": true, "paid_through": true},
 	// ApplyCredit ist dieselbe Sache in die andere Richtung: das Verrechnen eines
 	// vorhandenen Guthabens stempelt über settleItemTx `paid=true` auf die gedeckten
 	// Gefährte und Zusatzkosten. Auch das ist der mechanische Nachvollzug einer
@@ -207,7 +207,9 @@ var auditIgnoredPerFunc = map[string]map[string]bool{
 	// Sichtbar wurde das erst, als der Wächter den Hilfsfunktionen zu folgen begann
 	// (siehe handlerFunc.Reach): settleItemTx trägt selbst keinen auditChange und
 	// wurde darum bis dahin gar nicht geprüft. Die Lücke war also immer da.
-	"ApplyCredit": {"paid": true, "archived": true},
+	// paid_through (vehicles) ist die Grenze derselben Zuordnung — der Tag, bis zu
+	// dem der zugeordnete Betrag die Miete bezahlt; es folgt mechanisch aus `paid`.
+	"ApplyCredit": {"paid": true, "paid_through": true, "archived": true},
 	// archived (vehicles) ist ueberall dort ein mechanischer Nachvollzug, wo ein
 	// Gefaehrt durch Bezahlen/Abschliessen zu liegt: autoArchiveIfClosed (vehicles.go)
 	// und ArchiveSettledExpiredVehicles (agreements.go) setzen es, nicht der Bediener.
@@ -227,7 +229,7 @@ var auditIgnoredPerFunc = map[string]map[string]bool{
 	"UpdateVehicle":          {"archived": true},
 	// CreatePayment deckt ueber settleItemTx Posten ab und stempelt dabei paid; dazu
 	// archiviert es geschlossene Gefaehrte. Dieselbe Begruendung wie DeletePayment.
-	"CreatePayment": {"paid": true, "archived": true},
+	"CreatePayment": {"paid": true, "paid_through": true, "archived": true},
 	// ResolvePortalRequest stempelt beim Erledigen resolved_at/resolved_by — das
 	// "wer/wann", das die Audit-Zeile selbst trägt (Nutzer + Zeitpunkt stehen in
 	// ihr), plus der status, den der Eintrag als Text nennt. Kein eigener Diff
