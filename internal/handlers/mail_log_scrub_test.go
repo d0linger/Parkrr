@@ -9,7 +9,7 @@ import (
 )
 
 // PRT-03: die Löschung erreicht JEDE Adresse der Person im Versandprotokoll — auch
-// eine frühere (hier über das Audit-Protokoll einer Adressänderung bekannt) und
+// eine frühere (hier über das Audit-Protokoll eines E-Mail-Wechsels bekannt) und
 // auch im Fehlertext, in dem das Relay die abgewiesene Adresse zitiert. Eine
 // fremde Adresse, in der die eigene nur als Teilstring steckt, bleibt unberührt.
 func TestAnonymizeScrubsAllKnownAddressesFromMailLog(t *testing.T) {

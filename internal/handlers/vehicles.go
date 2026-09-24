@@ -529,7 +529,7 @@ func (h *Handler) UpdateVehicle(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "could not check vehicle references")
 			return
 		} else if referenced {
-			writeError(w, http.StatusConflict, "Fahrzeug mit Finanz- oder Pauschalenbezug kann nicht direkt einer anderen Person zugeordnet werden")
+			writeError(w, http.StatusConflict, "Fahrzeug mit Buchungen, Pauschale, Übergabeprotokoll oder Anhängen kann nicht direkt einer anderen Person zugeordnet werden")
 			return
 		}
 	}

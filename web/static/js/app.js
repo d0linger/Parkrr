@@ -3160,6 +3160,9 @@
     }
     const periodFixed = (a, key) => (a.paid_fixed && a.paid_fixed[key] != null) ? a.paid_fixed[key] : null;
     const periodPaid = (a, key) => !!a.paid || (a.paid_periods || []).includes(key) || periodFixed(a, key) != null;
+    // Nebenkosten: `paid` ist abgeleitet (alle ABGESCHLOSSENEN Perioden bezahlt) und
+    // gilt nie für die laufende Periode — pro Periode zählen nur die eigenen Schlüssel.
+    const recurringPeriodPaid = (rc, key) => (rc.paid_periods || []).includes(key) || periodFixed(rc, key) != null;
     // For a still-running period, ask whether "bezahlt" means the whole period was
     // prepaid or only a fixed Teilbetrag. Returns { amount } (null = whole) or null.
     async function periodPayDialog(label, defAmt, current) {
@@ -3296,7 +3299,7 @@
         return segThumb(seg);
     }
     function recurringPeriodSlider(rc, key, running, defAmt) {
-        const paid = periodPaid(rc, key);
+        const paid = recurringPeriodPaid(rc, key);
         const seg = el('div', { class: 'seg-mini pay', role: 'radiogroup', 'aria-label': 'Zahlstatus ' + key });
         const post = async (val, amount) => {
             try {

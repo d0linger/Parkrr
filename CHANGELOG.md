@@ -249,6 +249,66 @@ angefasst wurde.
   Rücksicherung über den Browser liegt jetzt bei **8 MB statt nominell 9** —
   größere Sicherungen gehen weiterhin über die Kommandozeile.
 
+### Behoben (Audit 24. 09. 2026)
+- **„Bezahlt" deckt keine Zukunft mehr ab:** Ein bezahltes Gefährt und eine
+  bezahlte Nebenkosten-Position wurden danach nie wieder abgerechnet. Jetzt gilt
+  „bezahlt" nur bis zum Buchungstag bzw. für abgeschlossene Perioden; spätere
+  Miete und Nebenkosten erscheinen wieder auf Rechnungen und im Rechnungslauf.
+- **Zusatzkosten-Schalter blockiert keine Rechnungen mehr:** Eine Position auf
+  einer offenen Rechnung oder mit echter Zahlung lässt sich nicht mehr umschalten
+  (Hinweis statt Fehler); der Rechnungslauf meldet solche Konflikte als Fehler.
+- **Keine Doppelbuchung bei Wackel-Netz:** „Rechnung bezahlen" und neue
+  Zusatzkosten/Nebenkosten werden bei erneutem Speichern nicht doppelt angelegt.
+- **Leistungszeitraum** auf Rechnungen endet am letzten tatsächlich abgerechneten
+  Tag (nicht mehr am Ausstellungsdatum).
+- **Gleichzeitiges Abrechnen und Bezahlen** derselben Periode ist ausgeschlossen;
+  Storno und Zahlungsumkehr zur selben Zeit liefern „bitte erneut versuchen"
+  statt eines Serverfehlers.
+- **Rücksicherung älterer Backups** legt die App nicht mehr lahm: die Datenbank
+  wird vollständig durch den Backup-Stand ersetzt.
+- **Backups mit mehreren Instanzen:** ein bereits laufendes Backup wird
+  übersprungen statt als Fehler gemeldet; Instanzen löschen sich keine
+  Zwischendateien mehr.
+- **Wiederherstellung wartet nicht mehr** bis zu 30 Minuten auf ein laufendes
+  Backup — es wird abgebrochen.
+- **Kein unverschlüsselter Datenbank-Dump bleibt nach einem Absturz liegen;**
+  die nächtliche Prüfung schreibt gar keinen mehr.
+- **2FA-Codes lassen sich nicht mehr durchprobieren:** Nach 5 Fehlversuchen
+  sperrt der zweite Faktor zunehmend länger (1 Min … 24 h); ein Admin-Reset hebt
+  die Sperre auf.
+- **Passwortwechsel und Admin-Reset** können sich nicht mehr gegenseitig
+  aushebeln; nach einem 2FA-Reset bleibt keine Sitzung eines Angreifers übrig.
+- **Übergabeprotokolle und Anhänge** gehören der Person, die sie beim Anlegen
+  besaß — nach einem Halterwechsel sieht der neue Halter im Portal nichts mehr
+  vom alten; Anonymisieren trifft die richtige Person.
+- **Anonymisieren entfernt alle bekannten E-Mail-Adressen** der Person auch aus
+  dem Mail-Protokoll; neue Fehlermeldungen enthalten keine Adressen mehr.
+- **Audit-Export** großer Protokolle bricht nicht mehr nach 30 s ab.
+- **Sitzung abgelaufen:** Speichern führt direkt zur Anmeldung („Sitzung
+  abgelaufen") statt in eine Fehlerschleife; der Garagenplaner hört dann auf,
+  im Hintergrund zu speichern, und verliert keine Verschiebung mehr.
+
+### Betrieb: Hinweise zum Deploy dieses Stands
+- **Migrationen 075–077 laufen beim Start einmalig:**
+  - 075: Benutzernamen, die sich nur in Groß-/Kleinschreibung unterscheiden,
+    werden umbenannt (`name-dup<ID>`, ältestes Konto behält den Namen; im
+    Audit-Log vermerkt). Betroffene melden sich mit dem neuen Namen an.
+  - 076: bestehende Übergabeprotokolle und Fahrzeug-Anhänge werden dem
+    *aktuellen* Halter zugeordnet. Halterwechsel sind danach gesperrt, sobald
+    ein Protokoll oder Anhang existiert.
+  - 077: bisher „bezahlte" Gefährte/Nebenkosten gelten bis zur letzten
+    abgeschlossenen Periode als bezahlt; alles danach wird wieder fällig. Der
+    **erste Rechnungslauf danach kann Monate nachholen**, die bisher still
+    übergangen wurden.
+- **Backup-Zwischendateien** liegen jetzt unter `<PARKRR_BACKUP_DIR>/.tmp`
+  (Default `/backups/.tmp`); dort etwa die doppelte Archivgröße frei halten.
+  `PARKRR_BACKUP_DIR` muss auch bei reinem S3-Betrieb auf ein beschreibbares
+  Volume zeigen.
+- **Volume-Backups** heißen jetzt `parkrr-<Zeitstempel>-<Zufall>.dump.enc`.
+- **Alte Backup-Formate** über 64 MiB lassen sich nur noch per `parkrr restore`
+  (CLI) wiederherstellen.
+- **IPv6-Rate-Limit** gilt pro /64-Netz; nur ein Audit-Export gleichzeitig.
+
 ### Entfernt
 - Die seit Migration 012 tote Alt-Tabelle `flatrate_paid_years`; noch vorhandene
   historische Zeilen werden beim Update automatisch ins Änderungsprotokoll
