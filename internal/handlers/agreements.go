@@ -130,16 +130,6 @@ func (h *Handler) loadAgreementsFrom(ctx context.Context, q dbQuerier, personID 
 	return out, nil
 }
 
-// setAgreementInvoiceStatus marks, per agreement, which sub-periods are settled
-// through a fully-paid Rechnung (invoice_source kind='agreement' × a non-canceled,
-// fully-paid invoice) — the Pauschale twin of setVehicleInvoiceStatus. A period
-// billed on a paid invoice is settled even though its per-period flag is unset, so
-// the progress bar must count it; otherwise an invoiced+paid Pauschale shows
-// "0 % bezahlt".
-func (h *Handler) setAgreementInvoiceStatus(ctx context.Context, agreements []models.FlatRatePeriod) error {
-	return h.setAgreementInvoiceStatusFrom(ctx, h.Pool, agreements)
-}
-
 func (h *Handler) setAgreementInvoiceStatusFrom(ctx context.Context, q dbQuerier, agreements []models.FlatRatePeriod) error {
 	if len(agreements) == 0 {
 		return nil

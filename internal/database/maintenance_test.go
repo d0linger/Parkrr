@@ -20,7 +20,7 @@ func TestRestoreLeaseRefusesWhileApplicationIsActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AcquireApplicationLease: %v", err)
 	}
-	defer app.Release()
+	defer func() { _ = app.Release() }()
 	if restore, err := TryAcquireRestoreLease(ctx, dbURL); !errors.Is(err, ErrApplicationActive) {
 		if restore != nil {
 			_ = restore.Release()

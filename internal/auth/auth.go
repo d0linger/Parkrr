@@ -315,7 +315,7 @@ var ErrCredentialChanged = errors.New("credential changed during login")
 
 // CreatePasswordSession issues a session only while the user's stored password
 // hash still equals passwordHash, the hash the login verified. The insert
-// share-locks the user row, so it serialises with a concurrent password change:
+// share-locks the user row, so it serializes with a concurrent password change:
 // either the change commits first and the login gets ErrCredentialChanged, or
 // the session commits first and the change's session revocation removes it.
 func (m *Manager) CreatePasswordSession(

@@ -178,54 +178,6 @@ func tablesInTOC(toc string) (found, missing []string) {
 	return found, missing
 }
 
-// VerifyS3Object ist Stufe 2: prüft, dass im Bucket wirklich das liegt, was
-// hochgeladen wurde.
-//
-// Zwei Schritte mit steigenden Kosten, damit der häufigste Fehler — ein
-// abgebrochener Upload — schon am billigsten auffällt:
-//
-//	a) Größe über einen HEAD-Aufruf: erkennt Abbruch und Nullbytes sofort.
-//	b) Vollständiges Lesen und Prüfsummenvergleich: der abschließende Beweis.
-//
-// Hier stand einmal eine Zwischenstufe "Kopf- und Fußbytes über Byte-Bereiche".
-// Sie war nie geschrieben, und ein Kommentar, der eine nicht vorhandene Prüfung
-// beschreibt, ist schlimmer als gar keiner: er lässt eine Lücke geprüft aussehen.
-// Zwischen a) und b) läge sie ohnehin nur bei sehr großen Archiven dazwischen.
-//
-// wantSHA und wantBytes stammen aus dem Upload, nicht aus dem Objekt selbst —
-// sonst würde man das Ergebnis mit sich selbst vergleichen.
-func VerifyS3Object(ctx context.Context, c S3Config, name, key, wantSHA string, wantBytes int64) error {
-	size, err := StatS3(ctx, c, name)
-	if err != nil {
-		if errors.Is(err, ErrS3ObjectMissing) {
-			return fmt.Errorf("uploaded object %q is not in the bucket", name)
-		}
-		return fmt.Errorf("s3 stat failed: %w", err)
-	}
-	if size != wantBytes {
-		return fmt.Errorf("object %q is %d bytes, expected %d (incomplete upload?)", name, size, wantBytes)
-	}
-
-	got, err := DownloadS3(ctx, c, name)
-	if err != nil {
-		return fmt.Errorf("s3 read-back failed: %w", err)
-	}
-	if int64(len(got)) != wantBytes {
-		return fmt.Errorf("read back %d bytes, expected %d", len(got), wantBytes)
-	}
-	if sum := Checksum(got); sum != wantSHA {
-		return fmt.Errorf("checksum mismatch: bucket has %s, expected %s", short(sum), short(wantSHA))
-	}
-	// Und auf den GESPEICHERTEN Bytes noch die Stufen 3+4. Die Prüfsumme beweist nur,
-	// dass im Bucket dasselbe liegt wie lokal erzeugt — nicht, dass das Erzeugte ein
-	// brauchbarer Dump war. Beim S3-Ziel gibt es keinen zweiten Prüfpfad: ohne dies
-	// bliebe eine reine S3-Installation inhaltlich völlig ungeprüft.
-	if _, verr := VerifyArchive(ctx, got, key); verr != nil {
-		return fmt.Errorf("stored object failed the archive check: %w", verr)
-	}
-	return nil
-}
-
 // VerifyS3ObjectFile reads the uploaded object back into a bounded temporary file,
 // compares it with the locally generated checksum/size, then validates its archive
 // structure and core tables.

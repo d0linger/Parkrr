@@ -181,25 +181,6 @@ func unquoteLibpq(s string) string {
 	return s
 }
 
-// Dump produces a PostgreSQL custom-format dump (pg_restore-compatible) of the
-// database at dbURL. Requires pg_dump on PATH (matching the server's major).
-func Dump(ctx context.Context, dbURL string) ([]byte, error) {
-	var out, errb bytes.Buffer
-	dsn, env := dbExecEnv(dbURL)
-	// #nosec G204 -- fixed command "pg_dump"; dbURL comes from operator config
-	// (PARKRR_DATABASE_URL/PARKRR_DB_*), never from a request. The password is
-	// passed via PGPASSWORD, not on the command line.
-	cmd := exec.CommandContext(ctx, "pg_dump", "--format=custom", "--no-owner", "--no-privileges",
-		"--exclude-table-data=sessions", "--exclude-schema=parkrr_control", "--dbname="+dsn)
-	cmd.Env = env // nil => inherit the parent environment
-	cmd.Stdout = &out
-	cmd.Stderr = &errb
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("pg_dump failed: %w: %s", err, errb.String())
-	}
-	return out.Bytes(), nil
-}
-
 // Encrypt seals a dump with AES-256-GCM, returning nonce||ciphertext||tag.
 func Encrypt(plain []byte, key string) ([]byte, error) {
 	salt := make([]byte, backupSaltSize)

@@ -281,14 +281,15 @@ func StartAuditRetention(pool *pgxpool.Pool, keep, shortKeep time.Duration, stop
 		// Never silent: retention failing is how an audit table grows without bound,
 		// and the previous `_, _ =` meant a permanently failing prune looked exactly
 		// like a working one.
-		if err != nil {
+		switch {
+		case err != nil:
 			auditRetentionFailed.Store(true)
 			slog.Warn("audit retention: prune failed", "pruned", n, "err", err)
-		} else if n > 0 {
+		case n > 0:
 			auditRetentionFailed.Store(false)
 			auditRetentionLastSuccess.Store(time.Now().Unix())
 			slog.Info("audit retention: pruned expired entries", "pruned", n)
-		} else {
+		default:
 			auditRetentionFailed.Store(false)
 			auditRetentionLastSuccess.Store(time.Now().Unix())
 		}

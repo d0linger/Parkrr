@@ -58,7 +58,8 @@ func TestRandomIDIsOpaque128BitValue(t *testing.T) {
 }
 
 func TestNewRejectsMissingDependencies(t *testing.T) {
-	if _, err := New(nil, nil, true); err == nil {
+	var nilCtx context.Context // deliberately nil: New must reject it
+	if _, err := New(nilCtx, nil, true); err == nil {
 		t.Fatal("nil context should be rejected")
 	}
 	if _, err := New(context.Background(), nil, true); err == nil {

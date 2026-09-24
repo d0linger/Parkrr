@@ -456,7 +456,7 @@ func (h *Handler) BackupRestore(w http.ResponseWriter, r *http.Request) {
 	keep := false
 	defer func() {
 		if !keep {
-			_ = os.Remove(path)
+			_ = os.Remove(path) // #nosec G703 -- path comes from os.CreateTemp in the server staging dir, not from the request
 		}
 	}()
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)

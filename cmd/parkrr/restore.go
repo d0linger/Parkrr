@@ -69,7 +69,7 @@ func runRestore(args []string) int {
 		fmt.Fprintln(os.Stderr, "restore safety check failed:", err)
 		return 1
 	}
-	defer lease.Release()
+	defer func() { _ = lease.Release() }()
 	if err := backup.RestoreFile(ctx, cfg.DatabaseURL, file, cfg.BackupKey); err != nil {
 		fmt.Fprintln(os.Stderr, "restore failed:", err)
 		return 1

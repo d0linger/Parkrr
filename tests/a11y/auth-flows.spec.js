@@ -78,7 +78,8 @@ test('2FA: Einrichtung, Login mit TOTP-Code und mit Recovery-Code', async ({ pag
   const setup = await apiCall(page, 'POST', '/auth/2fa/setup');
   expect(setup.status, JSON.stringify(setup.data)).toBe(200);
   const secret = setup.data.secret;
-  const enable = await apiCall(page, 'POST', '/auth/2fa/enable', { code: totp(secret) });
+  // setup_id bindet die Aktivierung an genau diese Einrichtung (sonst 400 "start setup first").
+  const enable = await apiCall(page, 'POST', '/auth/2fa/enable', { code: totp(secret), setup_id: setup.data.setup_id });
   expect(enable.status, JSON.stringify(enable.data)).toBe(200);
   const backupCodes = enable.data.backup_codes || [];
   expect(backupCodes.length).toBeGreaterThan(0);

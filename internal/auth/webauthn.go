@@ -317,12 +317,6 @@ func (s *WebAuthnService) ListCredentials(ctx context.Context, userID int64) ([]
 	return out, rows.Err()
 }
 
-// DeleteCredential removes one passkey belonging to the user.
-func (s *WebAuthnService) DeleteCredential(ctx context.Context, userID, id int64) (int64, error) {
-	n, _, err := s.DeleteCredentialSafely(ctx, userID, id, false)
-	return n, err
-}
-
 // DeleteCredentialSafely optionally preserves at least one credential. The user
 // row lock serializes concurrent deletions, so passkey-only mode cannot be
 // bypassed by deleting the last two credentials in parallel.
