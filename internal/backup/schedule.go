@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -88,10 +89,6 @@ func acquireRun(ctx context.Context) error {
 
 func releaseRun() { <-runGate }
 
-func backupName(t time.Time) string {
-	return "parkrr-" + t.Format("2006-01-02-150405") + ".dump.enc"
-}
-
 func uniqueBackupName(t time.Time) (string, error) {
 	id := make([]byte, 8)
 	if _, err := rand.Read(id); err != nil {
@@ -100,27 +97,44 @@ func uniqueBackupName(t time.Time) (string, error) {
 	return "parkrr-" + t.Format("2006-01-02-150405") + "-" + hex.EncodeToString(id) + ".dump.enc", nil
 }
 
-// acquireS3Lease serializes the complete remote run across application replicas.
+// ErrBackupBusy meldet, dass eine andere Replik denselben Lauf gerade ausführt.
+// Das ist kein Fehlschlag: der Lauf findet statt, nur nicht hier. Der Planer
+// überspringt ihn deshalb ohne Fehlerprotokoll und ohne Alarm-E-Mail.
+var ErrBackupBusy = errors.New("another Parkrr instance is running this backup right now")
+
+// tryAcquireLease serializes a complete backup run across application replicas.
 // Advisory locks are session-scoped because the lease spans external I/O; an
 // unconfirmed unlock evicts the physical connection rather than returning a
 // possibly lock-owning session to the pool.
-func acquireS3Lease(ctx context.Context, pool *pgxpool.Pool, bucket string) (func(), error) {
+//
+// BEWUSST pg_try_advisory_lock statt pg_advisory_lock (BAK-03): das blockierende
+// Warten lief auf einer Pool-Verbindung mit statement_timeout=10s und wurde nach
+// zehn Sekunden abgebrochen — jede zweite Replik meldete so bei jedem Lauf einen
+// Fehlschlag samt Alarm. Warten wäre ohnehin sinnlos: wer die Sperre hält, macht
+// genau diesen Lauf, und ein zweiter direkt danach wäre ein Duplikat. Der
+// Versuch kehrt sofort zurück, der statement_timeout spielt keine Rolle mehr.
+func tryAcquireLease(ctx context.Context, pool *pgxpool.Pool, name string) (func(), error) {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := conn.Exec(ctx,
-		`SELECT pg_advisory_lock(hashtextextended($1, 0))`, "parkrr.backup-s3:"+bucket); err != nil {
+	var acquired bool
+	if err := conn.QueryRow(ctx,
+		`SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, name).Scan(&acquired); err != nil {
 		conn.Release()
 		return nil, err
+	}
+	if !acquired {
+		conn.Release()
+		return nil, ErrBackupBusy
 	}
 	return func() {
 		uctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var unlocked bool
 		if err := conn.QueryRow(uctx,
-			`SELECT pg_advisory_unlock(hashtextextended($1, 0))`, "parkrr.backup-s3:"+bucket).Scan(&unlocked); err != nil || !unlocked {
-			slog.Error("backup: could not release S3 advisory lease; evicting connection", "bucket", bucket, "err", err)
+			`SELECT pg_advisory_unlock(hashtextextended($1, 0))`, name).Scan(&unlocked); err != nil || !unlocked {
+			slog.Error("backup: could not release advisory lease; evicting connection", "lease", name, "err", err)
 			raw := conn.Hijack()
 			_ = raw.Close(uctx)
 			return
@@ -128,6 +142,13 @@ func acquireS3Lease(ctx context.Context, pool *pgxpool.Pool, bucket string) (fun
 		conn.Release()
 	}, nil
 }
+
+func s3LeaseName(bucket string) string { return "parkrr.backup-s3:" + bucket }
+
+// volumeLeaseName: Repliken teilen sich das Backup-Verzeichnis (BAK-05). Ohne
+// gemeinsame Sperre starteten alle in derselben Minute, und sweepStaleParts der
+// einen löschte die halb geschriebene .part der anderen.
+func volumeLeaseName(dir string) string { return "parkrr.backup-volume:" + filepath.Clean(dir) }
 
 // RunVolume makes an encrypted backup, writes it to dir, verifies the archive
 // (decrypt + pg_restore --list), prunes to the newest `keep`, and records the
@@ -141,6 +162,11 @@ func RunVolume(ctx context.Context, pool *pgxpool.Pool, dbURL, key, dir string, 
 		return 0, false, err
 	}
 	defer releaseRun()
+	releaseLease, err := tryAcquireLease(ctx, pool, volumeLeaseName(dir))
+	if err != nil {
+		return 0, false, err
+	}
+	defer releaseLease()
 
 	_ = os.MkdirAll(dir, 0o700) // the create below surfaces the actionable error
 	// Erst prüfen, dann sichtbar machen. Geschrieben wird nach *.part; erst nach
@@ -149,11 +175,20 @@ func RunVolume(ctx context.Context, pool *pgxpool.Pool, dbURL, key, dir string, 
 	// Backup-Übersicht als wiederherstellbar und war als NEUESTE Datei sogar
 	// bevorzugt. Das Glob-Muster parkrr-*.dump.enc greift bei *.part nicht, die
 	// Zwischendatei taucht also weder in der Liste noch beim Aufräumen auf.
-	p := filepath.Join(dir, backupName(time.Now()))
+	//
+	// Der Name trägt ein Zufallssuffix (uniqueBackupName, wie beim S3-Ziel): zwei
+	// Läufe in derselben Sekunde öffneten vorher dieselbe Datei mit O_TRUNC und
+	// schrieben ineinander. O_EXCL macht eine Kollision zum Fehler statt zum Salat.
+	name, err := uniqueBackupName(time.Now())
+	if err != nil {
+		recordVolumeSafe(ctx, pool, 0, false, false)
+		return 0, false, err
+	}
+	p := filepath.Join(dir, name)
 	part := p + ".part"
-	// dir is an operator-owned configuration value and backupName is generated
+	// dir is an operator-owned configuration value and the name is generated
 	// locally from a fixed format; no request-controlled path component is used.
-	f, err := os.OpenFile(part, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600) // #nosec G304
+	f, err := os.OpenFile(part, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) // #nosec G304
 	if err != nil {
 		recordVolumeSafe(ctx, pool, 0, false, false)
 		return 0, false, err
@@ -240,13 +275,13 @@ func RunS3(ctx context.Context, pool *pgxpool.Pool, dbURL, key string, s3 S3Conf
 		return "", err
 	}
 	defer releaseRun()
-	releaseLease, err := acquireS3Lease(ctx, pool, s3.Bucket)
+	releaseLease, err := tryAcquireLease(ctx, pool, s3LeaseName(s3.Bucket))
 	if err != nil {
 		return "", err
 	}
 	defer releaseLease()
 
-	tmp, err := os.CreateTemp("", "parkrr-s3-upload-*.dump.enc")
+	tmp, err := createWorkFile("parkrr-s3-upload-", ".dump.enc")
 	if err != nil {
 		recordS3Safe(ctx, pool, false)
 		return "", err
@@ -378,6 +413,13 @@ func StartScheduler(stop <-chan struct{}, pool *pgxpool.Pool, dbURL, key, dir st
 	if key == "" || (dir == "" && !s3.Enabled()) {
 		return
 	}
+	// Der Lauf hängt am stop-Kanal (BAK-04). Vorher lief schedulerTick unter einem
+	// eigenen 30-Minuten-Context, der vom Anhalten nichts wusste: ein Drain für eine
+	// Browser-Wiederherstellung wartete dann bis zu einer halben Stunde auf einen
+	// pg_dump von Daten, die gleich ersetzt werden — mit geschlossenem Zugang für
+	// alle. Jetzt beendet das Schließen von stop pg_dump, Upload und Prüfung sofort.
+	runCtx, cancelRuns := contextUntil(stop)
+	defer cancelRuns()
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	// In-memory guards for the last fire of each target. They back-stop the DB
@@ -389,9 +431,23 @@ func StartScheduler(stop <-chan struct{}, pool *pgxpool.Pool, dbURL, key, dir st
 		case <-stop:
 			return
 		case <-ticker.C:
-			schedulerTick(pool, dbURL, key, dir, s3, &lastVol, &lastS3, alert)
+			schedulerTick(runCtx, pool, dbURL, key, dir, s3, &lastVol, &lastS3, alert)
 		}
 	}
+}
+
+// contextUntil returns a context that is cancelled as soon as stop closes (or
+// cancel is called, which also ends the watcher goroutine).
+func contextUntil(stop <-chan struct{}) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		select {
+		case <-stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
 }
 
 // EffectiveLast returns the later of the persisted last-run and the in-memory
@@ -414,9 +470,16 @@ func EffectiveLast(dbLast *time.Time, mem time.Time) *time.Time {
 	return dbLast
 }
 
-func schedulerTick(pool *pgxpool.Pool, dbURL, key, dir string, s3 S3Config, lastVol, lastS3 *time.Time, alert Alerter) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+func schedulerTick(parent context.Context, pool *pgxpool.Pool, dbURL, key, dir string, s3 S3Config, lastVol, lastS3 *time.Time, alert Alerter) {
+	if parent.Err() != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
 	defer cancel()
+	// stopped: der Lauf wurde abgebrochen, weil die Anwendung angehalten wird
+	// (Herunterfahren oder Wiederherstellung). Protokolliert wird das weiterhin,
+	// aber niemand bekommt dafür eine Alarm-E-Mail — es ist kein Defekt.
+	stopped := func() bool { return parent.Err() != nil }
 
 	settings, err := LoadSettings(ctx, pool)
 	if err != nil {
@@ -445,6 +508,12 @@ func schedulerTick(pool *pgxpool.Pool, dbURL, key, dir string, s3 S3Config, last
 	if dir != "" && fireDue(settings.VolumeCron, EffectiveLast(status.LastVolumeAt, *lastVol), now) {
 		*lastVol = now // advance the guard before running so a status-write failure can't re-fire
 		switch size, verified, err := RunVolume(ctx, pool, dbURL, key, dir, settings.VolumeRetention()); {
+		case errors.Is(err, ErrBackupBusy):
+			slog.Info("scheduled volume backup skipped: another instance is running it", "dir", dir)
+		case err != nil && stopped():
+			slog.Warn("scheduled volume backup cancelled: the application is stopping", "err", err)
+			audit(ctx, actionBackupFailed, "Geplantes Volume-Backup abgebrochen (Anwendung wird angehalten)",
+				map[string]any{"target": "volume", "ok": false, "cron": settings.VolumeCron, "error": err.Error()})
 		case err != nil:
 			slog.Error("scheduled volume backup failed", "err", err)
 			audit(ctx, actionBackupFailed, "Geplantes Volume-Backup FEHLGESCHLAGEN",
@@ -465,14 +534,34 @@ func schedulerTick(pool *pgxpool.Pool, dbURL, key, dir string, s3 S3Config, last
 				map[string]any{"target": "volume", "ok": true, "verified": true, "bytes": size, "cron": settings.VolumeCron, "keep": settings.VolumeKeep})
 		}
 	}
+	if stopped() {
+		return
+	}
+	if s3.Enabled() && dir != "" {
+		// Der Volume-Lauf kann eine halbe Stunde gedauert haben. In der Zeit hat eine
+		// andere Replik das fällige S3-Backup womöglich schon erledigt; mit dem Stand
+		// vom Anfang des Ticks liefe es hier ein zweites Mal.
+		if fresh, err := LoadStatus(ctx, pool); err == nil {
+			status = fresh
+		}
+		now = time.Now()
+	}
 	if s3.Enabled() && fireDue(settings.S3Cron, EffectiveLast(status.LastS3At, *lastS3), now) {
 		*lastS3 = now
-		if name, err := RunS3(ctx, pool, dbURL, key, s3, settings.S3Retention()); err != nil {
+		name, err := RunS3(ctx, pool, dbURL, key, s3, settings.S3Retention())
+		switch {
+		case errors.Is(err, ErrBackupBusy):
+			slog.Info("scheduled S3 backup skipped: another instance is running it", "bucket", s3.Bucket)
+		case err != nil && stopped():
+			slog.Warn("scheduled S3 backup cancelled: the application is stopping", "err", err)
+			audit(ctx, actionBackupFailed, "Geplantes S3-Backup abgebrochen (Anwendung wird angehalten)",
+				map[string]any{"target": "s3", "ok": false, "bucket": s3.Bucket, "cron": settings.S3Cron, "error": err.Error()})
+		case err != nil:
 			slog.Error("scheduled S3 backup failed", "err", err)
 			audit(ctx, actionBackupFailed, "Geplantes S3-Backup FEHLGESCHLAGEN",
 				map[string]any{"target": "s3", "ok": false, "bucket": s3.Bucket, "cron": settings.S3Cron, "error": err.Error()})
 			alertBackupFailure(ctx, alert, "S3", "Der Lauf in den Bucket "+s3.Bucket+" brach ab.", err.Error())
-		} else {
+		default:
 			slog.Info("scheduled S3 backup uploaded", "bucket", s3.Bucket, "name", name)
 			audit(ctx, "backup", "Geplantes S3-Backup hochgeladen",
 				map[string]any{"target": "s3", "ok": true, "bucket": s3.Bucket, "object": name, "cron": settings.S3Cron, "keep": settings.S3Keep})
@@ -513,6 +602,11 @@ func fireDue(cron string, last *time.Time, now time.Time) bool {
 // keep wird ausdrücklich übergeben und nicht als "der neueste Name" erraten: bei
 // einer rückwärts gestellten Uhr sortierte die gerade geschriebene Datei nicht mehr
 // zuletzt und würde unter den Händen des eigenen Laufs gelöscht.
+//
+// Mehrere Repliken auf einem Verzeichnis (BAK-05): RunVolume hält während des
+// ganzen Laufs die Sperre volumeLeaseName(dir), und jede .part trägt einen
+// eindeutigen Namen. Solange der Sweep läuft, schreibt deshalb niemand sonst eine
+// .part in dieses Verzeichnis — jede andere ist wirklich ein Rest.
 func sweepStaleParts(dir, keep string) {
 	parts, err := filepath.Glob(filepath.Join(dir, "parkrr-*.dump.enc.part"))
 	if err != nil {

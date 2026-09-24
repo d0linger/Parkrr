@@ -41,6 +41,11 @@ func runRestore(args []string) int {
 		fmt.Fprintln(os.Stderr, "PARKRR_BACKUP_KEY is not set — cannot decrypt the backup")
 		return 1
 	}
+	// The decrypted dump is as large as the database: keep it on the backup volume,
+	// not in a possibly tiny /tmp. The offline CLI is also the documented route for
+	// large legacy (v1/v2) archives, which the server refuses to buffer.
+	backup.ConfigureWorkDir(cfg.BackupDir)
+	backup.SetLegacyArchiveLimit(1 << 30)
 	// Open once before confirmation so a missing/unreadable operator path fails
 	// early. RestoreFile re-opens it after the exclusive safety lease is held.
 	// #nosec G304 G703 -- this is an operator-supplied CLI restore path.

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/aes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -13,15 +14,38 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sync/atomic"
 )
 
 const (
 	backupStreamMagic  = "PKRRBK03"
 	backupChunkSize    = 1 << 20 // 1 MiB bounded plaintext/ciphertext working set
 	streamNoncePrefix  = 8
-	maxLegacyBytes     = 1 << 30 // legacy v1/v2 still require one bounded buffer
 	maxStreamChunkSize = 16 << 20
+
+	// Legacy v1/v2 archives authenticate the whole file at once and therefore
+	// need one whole-file buffer (decrypted in place, so one copy, not two).
+	// The server keeps that buffer small enough for the hardened 256 MiB memory
+	// limit; the offline CLI may raise it up to maxLegacyBytes.
+	defaultLegacyBytes = 64 << 20
+	maxLegacyBytes     = 1 << 30
 )
+
+var legacyLimit atomic.Int64
+
+// SetLegacyArchiveLimit raises (or lowers) the in-memory limit for legacy v1/v2
+// archives. Only the offline `parkrr restore` CLI calls it; the server keeps the
+// memory-safe default.
+func SetLegacyArchiveLimit(n int64) {
+	legacyLimit.Store(min(max(n, 1), maxLegacyBytes))
+}
+
+func legacyArchiveLimit() int64 {
+	if n := legacyLimit.Load(); n > 0 {
+		return n
+	}
+	return defaultLegacyBytes
+}
 
 type contextReader struct {
 	ctx context.Context
@@ -187,25 +211,72 @@ func decryptV3(dst io.Writer, src io.Reader, key string) error {
 }
 
 // DecryptStream accepts the streaming v3 format and the existing v1/v2 formats.
-// Only legacy archives use a bounded whole-file compatibility buffer.
+// Only legacy archives use a bounded whole-file compatibility buffer, and only
+// after their format was recognized: anything else is rejected before a single
+// byte is buffered (BAK-07).
 func DecryptStream(dst io.Writer, src io.Reader, key string) error {
 	br := bufio.NewReader(src)
 	magic, err := br.Peek(len(backupStreamMagic))
 	if err == nil && bytes.Equal(magic, []byte(backupStreamMagic)) {
 		return decryptV3(dst, br, key)
 	}
-	legacy, err := io.ReadAll(io.LimitReader(br, maxLegacyBytes+1))
+	if key == "" {
+		return errors.New("backup key is not set")
+	}
+	if err != nil || !bytes.Equal(magic, []byte(backupMagic)) {
+		// v1 has no header. Recognize it by its content instead: the payload is
+		// always a pg_dump custom archive, and GCM is counter mode, so the first
+		// plaintext bytes can be derived without authenticating the whole file.
+		// The full GCM check still follows; this only decides whether buffering
+		// is worth it at all.
+		head, _ := br.Peek(v1NonceSize + len(pgDumpMagic))
+		if !looksLikeV1(head, key) {
+			return errors.New("not a Parkrr backup archive, or the backup key does not match")
+		}
+	}
+	limit := legacyArchiveLimit()
+	legacy, err := io.ReadAll(io.LimitReader(br, limit+1))
 	if err != nil {
 		return err
 	}
-	if len(legacy) > maxLegacyBytes {
-		return fmt.Errorf("legacy backup exceeds the %d-byte compatibility limit", maxLegacyBytes)
+	if int64(len(legacy)) > limit {
+		return fmt.Errorf("legacy (v1/v2) backup is larger than the %d MiB the server decrypts in memory; "+
+			"restore it offline with `parkrr restore`, then create a new backup", limit>>20)
 	}
-	plain, err := Decrypt(legacy, key)
+	plain, err := openLegacy(legacy, key, true)
 	if err != nil {
 		return err
 	}
 	return writeBackupBytes(dst, plain)
+}
+
+const (
+	v1NonceSize = 12 // cipher.NewGCM default
+	pgDumpMagic = "PGDMP"
+)
+
+// looksLikeV1 derives the first plaintext bytes of a v1 archive (nonce ||
+// AES-GCM ciphertext) and compares them with the pg_dump magic. GCM encrypts the
+// first block with counter nonce||2 (counter 1 masks the tag).
+func looksLikeV1(head []byte, key string) bool {
+	if len(head) < v1NonceSize+len(pgDumpMagic) {
+		return false
+	}
+	sum := sha256.Sum256([]byte(keyContext + key))
+	block, err := aes.NewCipher(sum[:])
+	if err != nil {
+		return false
+	}
+	var counter, stream [aes.BlockSize]byte
+	copy(counter[:], head[:v1NonceSize])
+	binary.BigEndian.PutUint32(counter[v1NonceSize:], 2)
+	block.Encrypt(stream[:], counter[:])
+	for i := range len(pgDumpMagic) {
+		if head[v1NonceSize+i]^stream[i] != pgDumpMagic[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // DumpEncrypted streams pg_dump through chunked encryption into dst.
@@ -246,7 +317,7 @@ func decryptArchiveFile(ctx context.Context, encryptedPath, key string) (string,
 		return "", err
 	}
 	defer in.Close()
-	out, err := os.CreateTemp("", "parkrr-restore-*.dump")
+	out, err := createWorkFile("parkrr-restore-", ".dump")
 	if err != nil {
 		return "", err
 	}
@@ -285,22 +356,73 @@ func plainArchiveTOCFile(ctx context.Context, path string) (string, error) {
 	return string(out), nil
 }
 
+// discardAfterError forwards to w until the first write error and then silently
+// drops the rest. pg_restore --list exits once it has read the table of contents;
+// the remaining frames must still be decrypted so that every chunk of the archive
+// is authenticated, not just its head.
+type discardAfterError struct {
+	w   io.Writer
+	err error
+}
+
+func (d *discardAfterError) Write(p []byte) (int, error) {
+	if d.err == nil {
+		if _, err := d.w.Write(p); err != nil {
+			d.err = err
+		}
+	}
+	return len(p), nil
+}
+
+// archiveTOCFile decrypts an encrypted archive straight into `pg_restore --list`
+// on stdin. No plaintext copy of the database touches the disk during validation
+// or the nightly verify (BAK-06), and no temporary space is needed for it.
+func archiveTOCFile(ctx context.Context, encryptedPath, key string) (string, error) {
+	in, err := os.Open(encryptedPath) // #nosec G304 -- operator/configured backup path
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	// #nosec G204 -- fixed executable and arguments; the archive arrives on stdin.
+	cmd := exec.CommandContext(ctx, "pg_restore", "--list")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return "", err
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("not a valid pg_dump archive: %w", err)
+	}
+	decErr := DecryptStream(&discardAfterError{w: stdin}, contextReader{ctx: ctx, r: in}, key)
+	_ = stdin.Close()
+	waitErr := cmd.Wait()
+	if decErr != nil {
+		return "", decErr
+	}
+	if waitErr != nil {
+		if stderr.Len() > 0 {
+			return "", fmt.Errorf("not a valid pg_dump archive: %w: %s", waitErr, tail(stderr.String()))
+		}
+		return "", fmt.Errorf("not a valid pg_dump archive: %w", waitErr)
+	}
+	return stdout.String(), nil
+}
+
 // ValidateFile validates an encrypted archive using bounded memory.
 func ValidateFile(ctx context.Context, encryptedPath, key string) (ArchiveInfo, error) {
-	plainPath, err := decryptArchiveFile(ctx, encryptedPath, key)
-	if err != nil {
-		return ArchiveInfo{}, err
-	}
-	defer os.Remove(plainPath)
-	toc, err := plainArchiveTOCFile(ctx, plainPath)
+	toc, err := archiveTOCFile(ctx, encryptedPath, key)
 	if err != nil {
 		return ArchiveInfo{}, err
 	}
 	return parseTOC(toc), nil
 }
 
-// RestoreFile decrypts, validates and restores an archive using temporary files
-// rather than retaining encrypted and plaintext copies in process memory.
+// RestoreFile decrypts, validates and restores an archive through a private file
+// in the work directory (pg_restore needs seekable input for a reliable restore)
+// rather than retaining encrypted and plaintext copies in process memory. The
+// public schema is replaced as a whole (see restoreArchive).
 func RestoreFile(ctx context.Context, dbURL, encryptedPath, key string) error {
 	if err := acquireRun(ctx); err != nil {
 		return err
@@ -311,21 +433,14 @@ func RestoreFile(ctx context.Context, dbURL, encryptedPath, key string) error {
 		return err
 	}
 	defer os.Remove(plainPath)
-	if _, err := plainArchiveTOCFile(ctx, plainPath); err != nil {
+	toc, err := plainArchiveTOCFile(ctx, plainPath)
+	if err != nil {
 		return err
 	}
-	dsn, env := dbExecEnv(dbURL)
-	// #nosec G204 -- fixed executable; DSN is operator configuration and the path
-	// is an application-created temporary file.
-	cmd := exec.CommandContext(ctx, "pg_restore", "--single-transaction", "--clean", "--if-exists",
-		"--no-owner", "--no-privileges", "--dbname="+dsn, plainPath)
-	cmd.Env = env
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("pg_restore failed: %w: %s", err, stderr.String())
+	if err := checkRestorableTOC(toc); err != nil {
+		return err
 	}
-	return nil
+	return restoreArchive(ctx, dbURL, plainPath, nil)
 }
 
 // ChecksumFile returns SHA-256 and size without loading the archive.

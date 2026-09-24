@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/preining/parkrr/internal/backup"
 )
 
 func TestJobTerminalPhases(t *testing.T) {
@@ -98,6 +100,26 @@ func TestRemoveRecoveredArchiveOnlyAcceptsStagingShape(t *testing.T) {
 	(&Controller{}).RemoveRecoveredArchive(Job{ID: "test", SourcePath: refused})
 	if _, err := os.Stat(refused); err != nil {
 		t.Fatalf("unrecognized path should remain: %v", err)
+	}
+}
+
+// S3 archives are now downloaded into the backup work directory (BAK-02); a crashed
+// owner's download there must still be cleaned up by recovery.
+func TestRemoveRecoveredArchiveAcceptsS3DownloadInWorkDir(t *testing.T) {
+	root := t.TempDir()
+	backup.ConfigureWorkDir(root)
+	t.Cleanup(func() { backup.ConfigureWorkDir("") })
+	work := filepath.Join(root, ".tmp")
+	if err := os.Mkdir(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	downloaded := filepath.Join(work, "parkrr-s3-abcd-123.dump.enc")
+	if err := os.WriteFile(downloaded, []byte("encrypted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	(&Controller{}).RemoveRecoveredArchive(Job{ID: "test", SourcePath: downloaded})
+	if _, err := os.Stat(downloaded); !os.IsNotExist(err) {
+		t.Fatalf("S3 download in the work directory was not removed: %v", err)
 	}
 }
 
