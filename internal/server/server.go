@@ -30,7 +30,11 @@ import (
 // New builds the top-level HTTP handler with all routes registered. Background
 // goroutines started here (rate-limiter cleanup, login-throttle cleanup) run
 // until stop is closed.
-func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, metricsRequireAuth, checkBreachedPasswords, failClosedOnBreach bool, backupKey, dbURL, backupDir string, s3 backup.S3Config, mailer mail.Sender, publicBaseURL string, stop <-chan struct{}) (http.Handler, *handlers.Handler, error) {
+func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, metricsRequireAuth, checkBreachedPasswords, failClosedOnBreach bool, backupKey, dbURL, backupDir string, s3 backup.S3Config, mailer mail.Sender, publicBaseURL string, stop <-chan struct{}, starters ...func(func())) (http.Handler, *handlers.Handler, error) {
+	startWorker := func(fn func()) { go fn() }
+	if len(starters) > 0 && starters[0] != nil {
+		startWorker = starters[0]
+	}
 	h := handlers.New(pool)
 	h.Auth = authMgr
 	h.CheckBreachedPasswords = checkBreachedPasswords
@@ -43,20 +47,20 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 		h.Mail = mailer
 	}
 	h.PublicBaseURL = publicBaseURL
-	ah := handlers.NewAuthHandler(h, authMgr, wa, stop)
+	ah := handlers.NewAuthHandler(h, authMgr, wa, stop, startWorker)
 
 	// Archive vehicles of finished-and-settled Pauschalen in the background.
-	go startFlatRateArchival(h, stop)
+	startWorker(func() { startFlatRateArchival(h, stop) })
 
 	// Record daily occupancy snapshots off the dashboard GET (finding L-02).
-	go startOccupancySnapshot(h, stop)
+	startWorker(func() { startOccupancySnapshot(h, stop) })
 
 	// Idempotent one-shot: book real Zahlungseingänge for Pauschale/Nebenkosten
 	// period settlements made before migration 036 (they only flipped an off-book
 	// flag). Runs in the background so a large dataset never delays serving — und
 	// hinter einem Done-Marker, damit der Vollscan über sämtliche Vereinbarungen
 	// nicht bei JEDEM Start erneut anfällt (Hundert 08).
-	go func() {
+	startWorker(func() {
 		switch err := h.RunPeriodPaymentBackfillOnce(context.Background()); {
 		case err == nil:
 		case errors.Is(err, handlers.ErrTaskBusy):
@@ -64,7 +68,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 		default:
 			slog.Error("period-payment backfill failed", "err", err)
 		}
-	}()
+	})
 
 	mux := http.NewServeMux()
 

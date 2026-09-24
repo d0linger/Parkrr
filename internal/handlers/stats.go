@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"net/http"
@@ -784,8 +786,125 @@ type personOutstanding struct {
 	Outstanding float64 `json:"outstanding"`
 }
 
+type overviewCachedResponse struct {
+	header http.Header
+	status int
+	body   []byte
+}
+
+type overviewResponseWriter struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (w *overviewResponseWriter) Header() http.Header { return w.header }
+
+func (w *overviewResponseWriter) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+	}
+}
+
+func (w *overviewResponseWriter) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.body.Write(p)
+}
+
+func (h *Handler) overviewRevision(ctx context.Context) (int64, error) {
+	var revision int64
+	err := h.Pool.QueryRow(ctx,
+		`SELECT last_value FROM overview_revision_seq`).Scan(&revision)
+	return revision, err
+}
+
+func (h *Handler) cachedOverview(year int, revision int64) (overviewCachedResponse, bool) {
+	h.overviewMu.RLock()
+	defer h.overviewMu.RUnlock()
+	if h.overviewCacheRevision != revision {
+		return overviewCachedResponse{}, false
+	}
+	resp, ok := h.overviewCache[year]
+	return resp, ok
+}
+
+func (h *Handler) storeOverview(year int, revision int64, resp overviewCachedResponse) {
+	h.overviewMu.Lock()
+	defer h.overviewMu.Unlock()
+	if h.overviewCacheRevision != revision {
+		h.overviewCacheRevision = revision
+		clear(h.overviewCache)
+	}
+	// parseYearParam bounds this to 101 possible keys, but a dashboard normally
+	// uses one or two. Keep the retained memory small even under deliberate year
+	// cycling by discarding old summaries once the tiny cache is full.
+	if len(h.overviewCache) >= 8 {
+		clear(h.overviewCache)
+	}
+	h.overviewCache[year] = resp
+}
+
+func writeCachedOverview(w http.ResponseWriter, resp overviewCachedResponse) {
+	for name, values := range resp.header {
+		for _, value := range values {
+			w.Header().Add(name, value)
+		}
+	}
+	w.WriteHeader(resp.status)
+	_, _ = w.Write(resp.body)
+}
+
 // Overview returns aggregate statistics for the dashboard. Accepts ?year=.
+// Results are cached only while the database's commit revision is unchanged;
+// simultaneous misses for the same year/revision share one full calculation.
 func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
+	revision, err := h.overviewRevision(r.Context())
+	if err != nil {
+		serverError(w, r, "query failed", err)
+		return
+	}
+	year := parseYearParam(r, h.now().Year())
+	if resp, ok := h.cachedOverview(year, revision); ok {
+		writeCachedOverview(w, resp)
+		return
+	}
+
+	key := fmt.Sprintf("%d:%d", year, revision)
+	result := h.overviewGroup.DoChan(key, func() (any, error) {
+		calcCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Second)
+		defer cancel()
+		capture := &overviewResponseWriter{header: make(http.Header)}
+		h.overviewUncached(capture, r.Clone(calcCtx))
+		status := capture.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		resp := overviewCachedResponse{
+			header: capture.header.Clone(), status: status,
+			body: append([]byte(nil), capture.body.Bytes()...),
+		}
+		// A write may have committed while the multi-query calculation ran. Only
+		// publish the result if it still describes the revision used as its key.
+		if current, rerr := h.overviewRevision(calcCtx); rerr == nil && current == revision && status == http.StatusOK {
+			h.storeOverview(year, revision, resp)
+		}
+		return resp, nil
+	})
+	select {
+	case <-r.Context().Done():
+		return
+	case res := <-result:
+		if res.Err != nil {
+			serverError(w, r, "query failed", res.Err)
+			return
+		}
+		writeCachedOverview(w, res.Val.(overviewCachedResponse))
+	}
+}
+
+func (h *Handler) overviewUncached(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	resp := overviewResponse{
 		StatusCounts: map[string]int{
@@ -1236,14 +1355,18 @@ func personYears(agreements []models.FlatRatePeriod, vehicles []models.Vehicle, 
 // loadVehiclesWithCategories loads vehicles (optionally for one person, when
 // personID > 0) enriched with derived cost fields, plus a category lookup map.
 func (h *Handler) loadVehiclesWithCategories(r *http.Request, personID int64) ([]models.Vehicle, map[int64]models.Category, error) {
+	return h.loadVehiclesWithCategoriesFrom(r, h.Pool, personID)
+}
+
+func (h *Handler) loadVehiclesWithCategoriesFrom(r *http.Request, q dbQuerier, personID int64) ([]models.Vehicle, map[int64]models.Category, error) {
 	var (
 		rows pgx.Rows
 		err  error
 	)
 	if personID > 0 {
-		rows, err = h.Pool.Query(r.Context(), vehicleSelect+` WHERE v.person_id = $1 ORDER BY v.start_date`, personID)
+		rows, err = q.Query(r.Context(), vehicleSelect+` WHERE v.person_id = $1 ORDER BY v.start_date`, personID)
 	} else {
-		rows, err = h.Pool.Query(r.Context(), vehicleSelect+` ORDER BY v.start_date`)
+		rows, err = q.Query(r.Context(), vehicleSelect+` ORDER BY v.start_date`)
 	}
 	if err != nil {
 		return nil, nil, err
@@ -1265,7 +1388,7 @@ func (h *Handler) loadVehiclesWithCategories(r *http.Request, personID int64) ([
 	if err := rows.Err(); err != nil {
 		return nil, nil, err
 	}
-	if err := h.setVehicleInvoiceStatus(r.Context(), vehicles); err != nil {
+	if err := h.setVehicleInvoiceStatusFrom(r.Context(), q, vehicles); err != nil {
 		return nil, nil, err
 	}
 	return vehicles, cats, nil

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"path"
 	"sort"
 	"strings"
@@ -76,6 +77,28 @@ func UploadS3(ctx context.Context, c S3Config, name string, data []byte, r Reten
 	return nil
 }
 
+// UploadS3File uploads an encrypted archive directly from disk, keeping memory
+// bounded for large databases.
+func UploadS3File(ctx context.Context, c S3Config, name, filePath string, size int64, r Retention) error {
+	cl, err := c.client()
+	if err != nil {
+		return err
+	}
+	f, err := os.Open(filePath) // #nosec G304 -- application-created backup path
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := cl.PutObject(ctx, c.Bucket, c.objectKey(name), f, size,
+		minio.PutObjectOptions{ContentType: "application/octet-stream"}); err != nil {
+		return err
+	}
+	if r.Keep > 0 {
+		pruneS3(ctx, cl, c, r)
+	}
+	return nil
+}
+
 // Memory guards for S3 (finding SH-06): the bucket is trusted no more than any
 // other external input, so a rogue writer or compromised endpoint must not be
 // able to exhaust process memory via a huge listing or an oversized object.
@@ -91,6 +114,9 @@ const (
 	// StatObject. 256 MiB comfortably covers a real dump while bounding the worst
 	// case (finding: reduce maxS3DownloadBytes).
 	maxS3DownloadBytes = 256 << 20 // 256 MiB
+	// Streaming downloads use disk rather than RAM, but still need an explicit
+	// resource budget for a compromised bucket or mistaken object selection.
+	maxS3ArchiveBytes = 16 << 30 // 16 GiB
 )
 
 // ListS3 returns the backup objects in the bucket, newest first.
@@ -198,6 +224,59 @@ func DownloadS3(ctx context.Context, c S3Config, name string) ([]byte, error) {
 		return nil, fmt.Errorf("backup: S3 object %q exceeds the %d-byte limit", name, maxS3DownloadBytes)
 	}
 	return data, nil
+}
+
+// DownloadS3File downloads one object to a mode-0600 temporary file with a hard
+// size cap. The caller owns and must remove the returned path.
+func DownloadS3File(ctx context.Context, c S3Config, name string) (string, int64, error) {
+	cl, err := c.client()
+	if err != nil {
+		return "", 0, err
+	}
+	key := c.objectKey(name)
+	st, err := cl.StatObject(ctx, c.Bucket, key, minio.StatObjectOptions{})
+	if err != nil {
+		return "", 0, err
+	}
+	if st.Size < 1 || st.Size > maxS3ArchiveBytes {
+		return "", 0, fmt.Errorf("backup: S3 object %q size %d is outside the 1..%d byte limit",
+			name, st.Size, maxS3ArchiveBytes)
+	}
+	obj, err := cl.GetObject(ctx, c.Bucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		return "", 0, err
+	}
+	defer obj.Close()
+	f, err := os.CreateTemp("", "parkrr-s3-*.dump.enc")
+	if err != nil {
+		return "", 0, err
+	}
+	path := f.Name()
+	ok := false
+	defer func() {
+		_ = f.Close()
+		if !ok {
+			_ = os.Remove(path)
+		}
+	}()
+	n, err := io.Copy(f, io.LimitReader(obj, maxS3ArchiveBytes+1))
+	if err != nil {
+		return "", 0, err
+	}
+	if n != st.Size {
+		return "", 0, fmt.Errorf("backup: read %d bytes for %q, expected %d", n, name, st.Size)
+	}
+	if n > maxS3ArchiveBytes {
+		return "", 0, fmt.Errorf("backup: S3 object %q exceeds the %d-byte limit", name, maxS3ArchiveBytes)
+	}
+	if err := f.Sync(); err != nil {
+		return "", 0, err
+	}
+	if err := f.Close(); err != nil {
+		return "", 0, err
+	}
+	ok = true
+	return path, n, nil
 }
 
 // DeleteS3 entfernt ein einzelnes Objekt. Gebraucht, um ein Archiv wieder

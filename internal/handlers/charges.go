@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -62,7 +63,13 @@ func (h *Handler) CreateServiceType(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var id int64
-	err := h.Pool.QueryRow(r.Context(),
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create charge")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	err = tx.QueryRow(r.Context(),
 		`INSERT INTO service_types (name, default_amount) VALUES ($1,$2) RETURNING id`,
 		req.Name, req.DefaultAmount).Scan(&id)
 	if err != nil {
@@ -300,8 +307,26 @@ type chargeRequest struct {
 	VehicleID   *int64  `json:"vehicle_id"`
 	Description string  `json:"description"`
 	Amount      float64 `json:"amount"`
-	Quantity    float64 `json:"quantity"`
+	Quantity    float64 `json:"quantity,omitempty"`
 	ChargedOn   string  `json:"charged_on"`
+	quantitySet bool
+}
+
+// UnmarshalJSON remembers whether quantity was omitted. An omitted quantity keeps
+// the convenient default of one; an explicit zero or negative value is invalid.
+func (req *chargeRequest) UnmarshalJSON(data []byte) error {
+	type wire chargeRequest
+	var decoded wire
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*req = chargeRequest(decoded)
+	_, req.quantitySet = fields["quantity"]
+	return nil
 }
 
 // chargeChartData returns a person's one-off charges (by charge date) both per
@@ -343,8 +368,10 @@ func (h *Handler) validateCharge(ctx context.Context, req *chargeRequest) (time.
 	if !validNameLength(req.Description) {
 		return time.Time{}, "description is too long", nil
 	}
-	if req.Quantity <= 0 {
+	if !req.quantitySet {
 		req.Quantity = 1
+	} else if req.Quantity <= 0 {
+		return time.Time{}, "quantity must be greater than 0", nil
 	}
 	// Bound amount and line total so out-of-range input is a clean 400 rather than a
 	// NUMERIC(12,2) overflow 500 on insert.
@@ -398,8 +425,14 @@ func (h *Handler) CreateCharge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, badMsg)
 		return
 	}
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create charge")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
 	var id int64
-	err := h.Pool.QueryRow(r.Context(),
+	err = tx.QueryRow(r.Context(),
 		`INSERT INTO charges (person_id, vehicle_id, description, amount, quantity, charged_on)
 		 VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
 		req.PersonID, req.VehicleID, req.Description, req.Amount, req.Quantity, chargedOn,
@@ -412,10 +445,17 @@ func (h *Handler) CreateCharge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create charge")
 		return
 	}
-	h.auditCreated(r, "charge", id, "added charge "+req.Description, map[string]any{
+	if err := h.auditCreatedTx(r.Context(), tx, r, "charge", id, "added charge "+req.Description, map[string]any{
 		"description": req.Description, "amount": req.Amount, "quantity": req.Quantity,
 		"person_id": req.PersonID, "charged_on": req.ChargedOn,
-	})
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create charge")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create charge")
+		return
+	}
 	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
 }
 
@@ -440,14 +480,20 @@ func (h *Handler) UpdateCharge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, badMsg)
 		return
 	}
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update charge")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
 	// A charge on an issued invoice is part of an immutable document (BAO): its money
 	// (amount/quantity), owner (person) or binding (vehicle) must not change out from
 	// under the invoice — otherwise the live balance disagrees with what was billed and
 	// paid, or the charge is re-billed under a new owner. Freeze exactly those fields
 	// once invoiced (mirrors UpdateVehicle and DeleteCharge, finding H-02); cosmetic
 	// edits (description/date) stay allowed. One null-safe query decides both.
-	var billingChanged, chargeInvoiced bool
-	if err := h.Pool.QueryRow(r.Context(),
+	var billingChanged, chargeLocked bool
+	if err := tx.QueryRow(r.Context(),
 		`SELECT
 		   (c.person_id IS DISTINCT FROM $2
 		    OR c.vehicle_id IS DISTINCT FROM $3
@@ -455,8 +501,10 @@ func (h *Handler) UpdateCharge(w http.ResponseWriter, r *http.Request) {
 		    OR c.quantity IS DISTINCT FROM $5::numeric(10,2)),
 		   EXISTS(SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
 		           WHERE s.kind='charge' AND s.ref_id=c.id AND NOT i.canceled)
+		   OR EXISTS(SELECT 1 FROM payment_allocations a JOIN payments p ON p.id=a.payment_id
+		             WHERE a.kind='charge' AND a.ref_id=c.id AND NOT p.reversed)
 		 FROM charges c WHERE c.id=$1`,
-		id, req.PersonID, req.VehicleID, req.Amount, req.Quantity).Scan(&billingChanged, &chargeInvoiced); err != nil {
+		id, req.PersonID, req.VehicleID, req.Amount, req.Quantity).Scan(&billingChanged, &chargeLocked); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "charge not found")
 			return
@@ -464,7 +512,7 @@ func (h *Handler) UpdateCharge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not update charge")
 		return
 	}
-	if billingChanged && chargeInvoiced {
+	if billingChanged && chargeLocked {
 		writeError(w, http.StatusConflict, "Zusatzkosten sind Teil einer ausgestellten Rechnung – Betrag/Menge/Person/Bindung nicht änderbar (Storno über die Rechnung).")
 		return
 	}
@@ -476,7 +524,7 @@ func (h *Handler) UpdateCharge(w http.ResponseWriter, r *http.Request) {
 	// atomic with the change (amounts must be provable after the fact).
 	var prev chargeRequest
 	var prevChargedOn time.Time
-	err := h.Pool.QueryRow(r.Context(),
+	err = tx.QueryRow(r.Context(),
 		`WITH prev AS (SELECT person_id, vehicle_id, description, amount, quantity, charged_on
 		                 FROM charges WHERE id=$7)
 		 UPDATE charges SET person_id=$1, vehicle_id=$2, description=$3, amount=$4,
@@ -507,7 +555,15 @@ func (h *Handler) UpdateCharge(w http.ResponseWriter, r *http.Request) {
 	audited := req
 	audited.Amount = round2(req.Amount)
 	audited.Quantity = round2(req.Quantity)
-	h.auditChange(r, "update", "charge", id, "updated charge "+req.Description, diffFields(prev, audited))
+	if err := h.auditChangeTx(r.Context(), tx, r, "update", "charge", id,
+		"updated charge "+req.Description, diffFields(prev, audited)); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update charge")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update charge")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -518,7 +574,22 @@ func (h *Handler) DeleteCharge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	if inv, ierr := h.refInvoiced(r.Context(), h.Pool, "charge", id); ierr != nil {
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete charge")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	var lockedID int64
+	if err := tx.QueryRow(r.Context(), `SELECT id FROM charges WHERE id=$1 FOR UPDATE`, id).Scan(&lockedID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "charge not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "could not delete charge")
+		return
+	}
+	if inv, ierr := h.refFinanciallyLocked(r.Context(), tx, "charge", id); ierr != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete charge")
 		return
 	} else if inv {
@@ -530,7 +601,7 @@ func (h *Handler) DeleteCharge(w http.ResponseWriter, r *http.Request) {
 	var dAmount, dQty float64
 	var dPerson int64
 	var dOn time.Time
-	err := h.Pool.QueryRow(r.Context(),
+	err = tx.QueryRow(r.Context(),
 		`DELETE FROM charges WHERE id=$1 RETURNING description, amount, quantity, person_id, charged_on`, id).
 		Scan(&dDesc, &dAmount, &dQty, &dPerson, &dOn)
 	if err != nil {
@@ -541,10 +612,17 @@ func (h *Handler) DeleteCharge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not delete charge")
 		return
 	}
-	h.auditDeleted(r, "charge", id, "deleted charge "+dDesc, map[string]any{
+	if err := h.auditDeletedTx(r.Context(), tx, r, "charge", id, "deleted charge "+dDesc, map[string]any{
 		"description": dDesc, "amount": dAmount, "quantity": dQty,
 		"person_id": dPerson, "charged_on": dOn.Format("2006-01-02"),
-	})
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete charge")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete charge")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 

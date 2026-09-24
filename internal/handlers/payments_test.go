@@ -72,6 +72,60 @@ func postPayment(t *testing.T, h *Handler, pid int64, payload map[string]any) *h
 	return rec
 }
 
+func postPaymentWithKey(t *testing.T, h *Handler, pid int64, key string, payload map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/persons/"+strconv.FormatInt(pid, 10)+"/payments", bytes.NewReader(body))
+	req.SetPathValue("id", strconv.FormatInt(pid, 10))
+	req.Header.Set("Idempotency-Key", key)
+	rec := httptest.NewRecorder()
+	h.CreatePayment(rec, req)
+	return rec
+}
+
+func TestCreatePaymentIdempotency(t *testing.T) {
+	h := testHandler(t)
+	pid := createIntegrationPerson(t, h)
+	payload := map[string]any{
+		"amount": 49.99, "method": "ueberweisung", "paid_on": "2026-08-02", "note": "idempotent",
+	}
+	key := "payment-test-idempotency-20260924"
+	first := postPaymentWithKey(t, h, pid, key, payload)
+	if first.Code != http.StatusCreated {
+		t.Fatalf("first request: %d %s", first.Code, first.Body.String())
+	}
+	second := postPaymentWithKey(t, h, pid, key, payload)
+	if second.Code != http.StatusCreated {
+		t.Fatalf("replay: %d %s", second.Code, second.Body.String())
+	}
+	if second.Header().Get("Idempotent-Replayed") != "true" {
+		t.Error("replay response is missing Idempotent-Replayed: true")
+	}
+	var a, b struct {
+		ID int64 `json:"id"`
+	}
+	_ = json.Unmarshal(first.Body.Bytes(), &a)
+	_ = json.Unmarshal(second.Body.Bytes(), &b)
+	if a.ID == 0 || b.ID != a.ID {
+		t.Fatalf("replay IDs differ: first=%d second=%d", a.ID, b.ID)
+	}
+	var count int
+	if err := h.Pool.QueryRow(t.Context(),
+		`SELECT count(*) FROM payments WHERE person_id=$1 AND idempotency_key=$2`, pid, key).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("idempotent replay created %d payment rows, want 1", count)
+	}
+
+	different := map[string]any{
+		"amount": 50.00, "method": "ueberweisung", "paid_on": "2026-08-02", "note": "idempotent",
+	}
+	if rec := postPaymentWithKey(t, h, pid, key, different); rec.Code != http.StatusConflict {
+		t.Fatalf("key reuse with different body: got %d %s, want 409", rec.Code, rec.Body.String())
+	}
+}
+
 // TestCreateAndListPayment exercises the full money-in path against a real DB —
 // the case that was missing when the 023 migration collided with the reserved
 // payments table and dropped created_by.

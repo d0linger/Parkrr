@@ -88,3 +88,38 @@ func TestOverviewTopOutstanding(t *testing.T) {
 		}
 	}
 }
+
+func TestOverviewCacheInvalidatesOnCommittedWrite(t *testing.T) {
+	h := testHandler(t)
+	request := func() overviewResponse {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		h.Overview(rec, httptest.NewRequest(http.MethodGet, "/api/overview?year=2026", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("overview: %d %s", rec.Code, rec.Body.String())
+		}
+		var got overviewResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	before := request()
+	var personID int64
+	if err := h.Pool.QueryRow(t.Context(),
+		`INSERT INTO persons (first_name,last_name) VALUES ('Cache','Integration') RETURNING id`).Scan(&personID); err != nil {
+		t.Fatal(err)
+	}
+	after := request()
+	if after.TotalPersons != before.TotalPersons+1 {
+		t.Fatalf("cached overview stayed stale after commit: before=%d after=%d",
+			before.TotalPersons, after.TotalPersons)
+	}
+	h.overviewMu.RLock()
+	_, cached := h.overviewCache[2026]
+	h.overviewMu.RUnlock()
+	if !cached {
+		t.Fatal("successful overview was not retained in the revision-aware cache")
+	}
+}

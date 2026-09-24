@@ -1,0 +1,48 @@
+package auth
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestDeleteCredentialSafelyPreservesOneUnderConcurrency(t *testing.T) {
+	_, pool := testAuthManager(t)
+	userID := mkAuthUser(t, pool, "editor", false)
+	service := &WebAuthnService{pool: pool}
+	ids := make([]int64, 2)
+	for i := range ids {
+		if err := pool.QueryRow(t.Context(),
+			`INSERT INTO webauthn_credentials (user_id,credential_id,public_key,name)
+			 VALUES ($1,$2,$3,$4) RETURNING id`, userID,
+			[]byte(fmt.Sprintf("delete-safe-%d-%d", time.Now().UnixNano(), i)), []byte{1}, "key").Scan(&ids[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		id := id
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, _, _ = service.DeleteCredentialSafely(ctx, userID, id, true)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	var remaining int
+	if err := pool.QueryRow(t.Context(),
+		`SELECT count(*) FROM webauthn_credentials WHERE user_id=$1`, userID).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 1 {
+		t.Fatalf("concurrent passkey deletion left %d credentials, want 1", remaining)
+	}
+}

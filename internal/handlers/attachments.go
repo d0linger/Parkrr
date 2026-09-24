@@ -91,16 +91,6 @@ func (h *Handler) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	var count int
-	if err := h.Pool.QueryRow(r.Context(),
-		`SELECT count(*) FROM attachments WHERE `+col+`=$1`, id).Scan(&count); err != nil {
-		serverError(w, r, "query failed", err)
-		return
-	}
-	if count >= maxAttachmentsPerOwner {
-		writeError(w, http.StatusConflict, "Anhang-Limit erreicht")
-		return
-	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxAttachmentBytes+1024)
 	// #nosec G120 -- der Body ist durch MaxBytesReader gedeckelt.
 	if err := r.ParseMultipartForm(maxAttachmentBytes + 1024); err != nil {
@@ -150,8 +140,37 @@ func (h *Handler) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 	if rs := []rune(filename); len(rs) > 200 {
 		filename = string(rs[:200])
 	}
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		serverError(w, r, "could not store attachment", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	ownerTable := "persons"
+	if col == "vehicle_id" {
+		ownerTable = "vehicles"
+	}
+	var ownerID int64
+	if err := tx.QueryRow(r.Context(), `SELECT id FROM `+ownerTable+` WHERE id=$1 FOR UPDATE`, id).Scan(&ownerID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "owner not found")
+			return
+		}
+		serverError(w, r, "could not store attachment", err)
+		return
+	}
+	var count int
+	if err := tx.QueryRow(r.Context(),
+		`SELECT count(*) FROM attachments WHERE `+col+`=$1`, id).Scan(&count); err != nil {
+		serverError(w, r, "query failed", err)
+		return
+	}
+	if count >= maxAttachmentsPerOwner {
+		writeError(w, http.StatusConflict, "Anhang-Limit erreicht")
+		return
+	}
 	var attID int64
-	if err := h.Pool.QueryRow(r.Context(),
+	if err := tx.QueryRow(r.Context(),
 		`INSERT INTO attachments (`+col+`, filename, content_type, byte_size, data)
 		 VALUES ($1,$2,$3,$4,$5) RETURNING id`,
 		id, filename, contentType, len(data), data).Scan(&attID); err != nil {
@@ -159,6 +178,10 @@ func (h *Handler) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "owner not found")
 			return
 		}
+		serverError(w, r, "could not store attachment", err)
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		serverError(w, r, "could not store attachment", err)
 		return
 	}

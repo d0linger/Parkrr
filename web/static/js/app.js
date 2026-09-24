@@ -182,13 +182,13 @@
 
     // ---------- API ----------
     const api = {
-        async request(method, path, body) {
+        async request(method, path, body, headers = {}) {
             // Fail fast on write attempts while offline with a friendly message
             // rather than a confusing network error.
             if (method !== 'GET' && typeof navigator !== 'undefined' && navigator.onLine === false) {
                 throw new Error(t('offline.action'));
             }
-            const opts = { method, headers: { Accept: 'application/json' }, credentials: 'same-origin' };
+            const opts = { method, headers: { Accept: 'application/json', ...headers }, credentials: 'same-origin' };
             if (body !== undefined) {
                 opts.headers['Content-Type'] = 'application/json';
                 opts.body = JSON.stringify(body);
@@ -204,7 +204,7 @@
             return handle(res, path);
         },
         get: (p) => api.request('GET', p),
-        post: (p, b) => api.request('POST', p, b),
+        post: (p, b, headers) => api.request('POST', p, b, headers),
         put: (p, b) => api.request('PUT', p, b),
         del: (p) => api.request('DELETE', p),
     };
@@ -1190,8 +1190,8 @@
     let renderSeq = 0;
     async function render() {
         const mySeq = ++renderSeq;
-        const portal = (location.hash || '').match(/^#\/portal\/([A-Za-z0-9_-]+)$/);
-        if (portal) { await renderPortal(portal[1]); return; }
+        const portalToken = consumePortalToken();
+        if (portalToken) { await renderPortal(portalToken); return; }
         if (state.user && !$('#portal-view').hidden) {
             ++portalRenderSeq; $('#portal-view').hidden = true; $('#app-view').hidden = false;
         }
@@ -2284,6 +2284,9 @@
         try { items = (await api.get('/persons/' + personId + '/open-items')) || []; } catch (e) { /* keep empty */ }
         // Selection state: default = automatic (oldest first), everything ticked.
         const sel = { auto: true, checked: new Set(items.map((i) => i.kind + ':' + i.id)) };
+        // Keep one key for the lifetime of this modal: a network retry can safely
+        // return the first result instead of recording the money twice.
+        const paymentKey = crypto.randomUUID();
 
         await formModal({
             title: 'Zahlung erfassen',
@@ -2339,7 +2342,7 @@
                 const payload = { amount: Number(data.amount), paid_on: data.paid_on, method: data.method, note: data.note || '' };
                 if (sel.auto) payload.allocate = true;
                 else payload.allocations = [...sel.checked].map((k) => { const [kind, id] = k.split(':'); return { kind, id: Number(id) }; });
-                const res = await api.post('/persons/' + personId + '/payments', payload);
+                const res = await api.post('/persons/' + personId + '/payments', payload, { 'Idempotency-Key': paymentKey });
                 const n = res && res.settled;
                 toast(n ? `Zahlung erfasst · ${n} Posten abgestempelt` : 'Zahlung erfasst', 'success'); render();
             },
@@ -4880,22 +4883,34 @@
                 el('button', { class: 'btn btn-ghost btn-sm', onclick: (e) => testS3Connection(e.currentTarget) }, 'Verbindung testen'),
                 el('button', { class: 'btn btn-primary btn-sm', onclick: (e) => uploadToS3(e.currentTarget) }, 'Jetzt in S3 sichern')));
             if (!st.s3_files.length) s3box.append(el('div', { class: 'card-meta' }, 'Noch keine Objekte im Bucket.'));
-            else s3box.append(collapsibleRows(st.s3_files, (f) => backupFileRow(f, '/api/backup/s3/file/', () => restoreFromS3(f.name))));
+            else s3box.append(collapsibleRows(st.s3_files, (f) => backupFileRow(f, '/api/backup/s3/file/')));
         }
         page.append(el('div', { class: 'card', style: 'margin-top:1rem' }, el('h3', {}, 'S3-Sicherung (extern)'), s3box));
 
-        // Restore (upload + key + validate + confirmed, atomic restore)
-        page.append(backupRestoreCard());
+        // Restore is deliberately offline: a live replica holds the shared
+        // database lease and the CLI refuses to proceed until every replica stops.
+        page.append(offlineRestoreCard());
 
         // Key & notes
         page.append(el('div', { class: 'card', style: 'margin-top:1rem' },
             el('h3', {}, 'Schlüssel & Hinweise'),
             el('ul', { class: 'card-meta', style: 'margin:.4rem 0 0;padding-left:1.1rem;line-height:1.6' },
                 el('li', {}, 'Der Verschlüsselungs-Schlüssel wird als Umgebungsvariable ', el('b', {}, 'PARKRR_BACKUP_KEY'), ' gesetzt (getrennt vom Session-Secret), nie in der App gespeichert.'),
-                el('li', {}, 'Beim Wiederherstellen gibst du den Schlüssel erneut ein, der zu der jeweiligen Datei passt.'),
+                el('li', {}, 'Zum Wiederherstellen alle Parkrr-Instanzen stoppen und den zur Datei passenden Schlüssel als PARKRR_BACKUP_KEY setzen.'),
                 el('li', {}, '„Archiv geprüft" heißt: das zuletzt geschriebene Volume-Backup wurde entschlüsselt und sein Inhaltsverzeichnis gelesen (pg_restore --list).'),
-                el('li', {}, 'Für beliebig große Backups: Restore per Kommandozeile ', el('code', {}, 'parkrr restore <datei.dump.enc>'), '.'))));
+                el('li', {}, 'Restore per Kommandozeile: ', el('code', {}, 'parkrr restore <datei.dump.enc>'), '. Alte und neue Archivformate bleiben lesbar.'))));
     };
+    function offlineRestoreCard() {
+        return el('div', { class: 'card', style: 'margin-top:1rem' },
+            el('h3', {}, 'Wiederherstellen · offline'),
+            el('div', { class: 'card-meta', style: 'margin:.3rem 0 .7rem;color:var(--accent-text);font-weight:600' },
+                'Eine laufende Anwendung darf nicht gegen ein Schema arbeiten, das gerade ersetzt wird. Online-Restore ist deshalb gesperrt.'),
+            el('ol', { class: 'card-meta', style: 'margin:.4rem 0;padding-left:1.2rem;line-height:1.65' },
+                el('li', {}, 'Gewünschte Volume- oder S3-Sicherung herunterladen.'),
+                el('li', {}, 'Alle Parkrr-App-Instanzen stoppen.'),
+                el('li', {}, el('code', {}, 'parkrr restore <datei.dump.enc>'), ' ausführen und RESTORE bestätigen.'),
+                el('li', {}, 'Parkrr wieder starten; alle Benutzer melden sich neu an.')));
+    }
     function backupRestoreCard() {
         const fileIn = el('input', { type: 'file', accept: '.enc', style: 'display:none' });
         const dropLabel = el('b', {}, 'Backup-Datei wählen oder hierher ziehen');
@@ -5479,7 +5494,9 @@
             const btn = el('button', { class: 'btn btn-primary btn-block', style: 'margin-top:.8rem' }, 'Aktivieren');
             btn.addEventListener('click', async () => {
                 try {
-                    const res = await withStepUp((pw) => api.post('/auth/2fa/enable', { code: inp.value, password: pw }));
+                    const res = await withStepUp((pw) => api.post('/auth/2fa/enable', {
+                        code: inp.value, password: pw, setup_id: info.setup_id,
+                    }));
                     toast('2FA aktiviert', 'success');
                     close();
                     state.user.totp_enabled = true;
@@ -9354,7 +9371,7 @@
             req_email: 'Neue E-Mail', req_phone: 'Neue Telefonnummer', req_address: 'Neue Adresse',
             req_date: 'Wunschtermin', req_note: 'Anmerkung (optional)', req_send: 'Absenden',
             req_sent: 'Übermittelt — der Betreiber meldet sich.', req_err: 'Senden fehlgeschlagen.',
-            req_hint: 'Änderungen werden vom Betreiber geprüft und übernommen.',
+            req_hint: 'Änderungen werden vom Betreiber geprüft und übernommen.', sign_out: 'Portal verlassen',
             // Dieselben Worte wie in der Betreiberansicht (STATUS_LABEL): der Kunde las
             // "eingestellt", wo am Telefon von "eingelagert" die Rede ist — derselbe
             // Zustand unter zwei Namen.
@@ -9372,7 +9389,7 @@
             req_email: 'New e-mail', req_phone: 'New phone number', req_address: 'New address',
             req_date: 'Preferred date', req_note: 'Note (optional)', req_send: 'Send',
             req_sent: 'Submitted — the operator will get back to you.', req_err: 'Sending failed.',
-            req_hint: 'Changes are reviewed and applied by the operator.',
+            req_hint: 'Changes are reviewed and applied by the operator.', sign_out: 'Leave portal',
             status: { reserved: 'reserved', stored: 'stored', collected: 'collected', cancelled: 'cancelled' },
             inv_status: { offen: 'open', teilbezahlt: 'partly paid', bezahlt: 'paid', storniert: 'cancelled', storno: 'credit note' },
         },
@@ -9380,6 +9397,31 @@
     function portalLang() {
         try { const v = localStorage.getItem('parkrr_portal_lang'); if (v === 'de' || v === 'en') return v; } catch (e) { /* egal */ }
         return String(navigator.language || 'de').toLowerCase().startsWith('de') ? 'de' : 'en';
+    }
+
+    const portalSessionKey = 'parkrr_portal_token';
+    let portalAccessToken = '';
+    function consumePortalToken() {
+        const match = (location.hash || '').match(/^#\/portal\/([A-Za-z0-9_-]+)$/);
+        if (match) {
+            portalAccessToken = match[1];
+            try { sessionStorage.setItem(portalSessionKey, portalAccessToken); } catch (e) { /* memory still works */ }
+            // Replace the current history entry immediately: the bearer must not
+            // survive in back/forward history, bookmarks, or synced history.
+            history.replaceState(null, '', location.pathname + location.search + '#/portal');
+            return portalAccessToken;
+        }
+        if ((location.hash || '') !== '#/portal') return '';
+        if (!portalAccessToken) {
+            try { portalAccessToken = sessionStorage.getItem(portalSessionKey) || ''; } catch (e) { /* no storage */ }
+        }
+        return portalAccessToken;
+    }
+    function leavePortal() {
+        portalAccessToken = '';
+        try { sessionStorage.removeItem(portalSessionKey); } catch (e) { /* no storage */ }
+        history.replaceState(null, '', location.pathname + location.search + '#/');
+        location.reload();
     }
 
     let portalRenderSeq = 0;
@@ -9450,7 +9492,8 @@
             // nicht — "klick EN" traf einen Knopf, der "Switch to English" hiess.
             el('button', { class: 'btn btn-ghost btn-sm portal-lang', 'aria-label': lang === 'de' ? 'EN – Switch to English' : 'DE – Auf Deutsch umschalten',
                 onclick: () => { try { localStorage.setItem('parkrr_portal_lang', lang === 'de' ? 'en' : 'de'); } catch (e2) { /* egal */ } renderPortal(token); } },
-                lang === 'de' ? 'EN' : 'DE')));
+                lang === 'de' ? 'EN' : 'DE'),
+            el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: leavePortal }, P9.sign_out)));
         wrap.append(el('div', { class: 'portal-card portal-balance' },
             el('div', { class: 'muted' }, P9.open_total),
             el('div', { class: 'portal-amt' + (sum.open_total > 0.005 ? ' owe' : '') }, eur(sum.open_total))));
@@ -9578,8 +9621,8 @@
         applyBrand();
         bindSkipLink();
         // Public portal short-circuits the whole app shell / auth flow.
-        const pm = (location.hash || '').match(/^#\/portal\/([A-Za-z0-9_-]+)$/);
-        if (pm) { await renderPortal(pm[1]); document.documentElement.classList.remove('preboot'); syncThemeColor(); return; }
+        const portalToken = consumePortalToken();
+        if (portalToken) { await renderPortal(portalToken); document.documentElement.classList.remove('preboot'); syncThemeColor(); return; }
         bindStatic();
         setupInstallPrompt();
         setupOfflineIndicator();

@@ -49,7 +49,7 @@ type AuthHandler struct {
 
 // NewAuthHandler constructs an AuthHandler. The background login-throttle
 // cleanup goroutine runs until stop is closed.
-func NewAuthHandler(h *Handler, mgr *auth.Manager, wa *auth.WebAuthnService, stop <-chan struct{}) *AuthHandler {
+func NewAuthHandler(h *Handler, mgr *auth.Manager, wa *auth.WebAuthnService, stop <-chan struct{}, starters ...func(func())) *AuthHandler {
 	ah := &AuthHandler{
 		Handler:     h,
 		Auth:        mgr,
@@ -66,7 +66,11 @@ func NewAuthHandler(h *Handler, mgr *auth.Manager, wa *auth.WebAuthnService, sto
 		// einen Nutzer bestrafen, der den Dialog ein paarmal neu oeffnet.
 		CeremonyLimiter: auth.NewStickyLoginLimiter(15, 5*time.Minute, 1*time.Minute),
 	}
-	go func() {
+	startWorker := func(fn func()) { go fn() }
+	if len(starters) > 0 && starters[0] != nil {
+		startWorker = starters[0]
+	}
+	startWorker(func() {
 		t := time.NewTicker(10 * time.Minute)
 		defer t.Stop()
 		for {
@@ -80,7 +84,7 @@ func NewAuthHandler(h *Handler, mgr *auth.Manager, wa *auth.WebAuthnService, sto
 				ah.CeremonyLimiter.Cleanup()
 			}
 		}
-	}()
+	})
 	return ah
 }
 
@@ -90,8 +94,9 @@ type loginRequest struct {
 	TOTPCode string `json:"totp_code"`
 }
 
-// checkRateLimit blocks if the username+IP key is currently throttled. It
-// returns the username+IP key and the client IP for recording the outcome.
+// checkRateLimit atomically reserves an attempt for both the username+IP and
+// username-wide budgets. It returns the keys for retaining the reservation on
+// failure or refunding/resetting it on success.
 // Usernames are lower-cased so casing variants can't bypass the lockout. The
 // per-IP spray throttle is applied only on the public login path (ipThrottled),
 // not on post-auth endpoints that also use this helper.
@@ -99,7 +104,7 @@ func (h *AuthHandler) checkRateLimit(w http.ResponseWriter, r *http.Request, use
 	ip = h.Auth.ClientIP(r)
 	uname := strings.ToLower(username)
 	key = uname + "|" + ip
-	if allowed, wait := h.Limiter.Allowed(key); !allowed {
+	if allowed, wait := h.Limiter.Consume(key); !allowed {
 		w.Header().Set("Retry-After", formatSeconds(wait))
 		// Don't log the request-supplied username (clear-text-logging / PII): a
 		// throttle event is identified by IP + path; the account isn't needed here.
@@ -108,7 +113,8 @@ func (h *AuthHandler) checkRateLimit(w http.ResponseWriter, r *http.Request, use
 		return key, ip, false
 	}
 	// Per-username (IP-independent) throttle — bounds distributed brute force.
-	if allowed, wait := h.UserLimiter.Allowed(uname); !allowed {
+	if allowed, wait := h.UserLimiter.Consume(uname); !allowed {
+		h.Limiter.Refund(key)
 		w.Header().Set("Retry-After", formatSeconds(wait))
 		slog.Warn("throttle active (user)", "ip", ip, "path", r.URL.Path)
 		writeError(w, http.StatusTooManyRequests, "Zu viele Versuche – bitte in "+formatMinutes(wait)+" erneut versuchen")
@@ -121,13 +127,13 @@ func (h *AuthHandler) checkRateLimit(w http.ResponseWriter, r *http.Request, use
 // combined "username|ip" key, by stripping the exact "|ip" suffix.
 func userKeyOf(key, ip string) string { return strings.TrimSuffix(key, "|"+ip) }
 
-// ipThrottled blocks (and 429s) when the client IP has tripped the per-IP
+// ipThrottled reserves (and 429s) one attempt on the per-IP
 // spray throttle. Used only on the public login endpoint so that one host
 // spraying one password across many usernames trips a lockout even though no
 // single username+IP key reaches its own threshold.
 func (h *AuthHandler) ipThrottled(w http.ResponseWriter, r *http.Request) bool {
 	ip := h.Auth.ClientIP(r)
-	if allowed, wait := h.IPLimiter.Allowed(ip); !allowed {
+	if allowed, wait := h.IPLimiter.Consume(ip); !allowed {
 		w.Header().Set("Retry-After", formatSeconds(wait))
 		slog.Warn("throttle active (ip)", "ip", ip, "path", r.URL.Path)
 		writeError(w, http.StatusTooManyRequests, "Zu viele Versuche – bitte in "+formatMinutes(wait)+" erneut versuchen")
@@ -139,9 +145,8 @@ func (h *AuthHandler) ipThrottled(w http.ResponseWriter, r *http.Request) bool {
 // recordLoginFailure counts a failed login against both the per-account and the
 // per-IP throttle. Called only from the public login path.
 func (h *AuthHandler) recordLoginFailure(key, ip string) {
-	h.Limiter.RecordFailure(key)
-	h.IPLimiter.RecordFailure(ip)
-	h.UserLimiter.RecordFailure(userKeyOf(key, ip))
+	// The attempt was already consumed atomically before verification. Retaining
+	// that reservation is the failure record.
 }
 
 // recordReauthFailure counts a failed re-authentication on an authenticated
@@ -151,8 +156,18 @@ func (h *AuthHandler) recordLoginFailure(key, ip string) {
 // counter let a distributed brute force rotate IPs and never trip the per-account
 // lockout (finding P-02). The per-IP spray limiter is login-only and not touched.
 func (h *AuthHandler) recordReauthFailure(key, ip string) {
-	h.Limiter.RecordFailure(key)
-	h.UserLimiter.RecordFailure(userKeyOf(key, ip))
+	// The attempt was already consumed atomically before verification. Retaining
+	// that reservation is the failure record.
+}
+
+func (h *AuthHandler) refundReauth(key, ip string) {
+	h.Limiter.Refund(key)
+	h.UserLimiter.Refund(userKeyOf(key, ip))
+}
+
+func (h *AuthHandler) refundLogin(key, ip string) {
+	h.refundReauth(key, ip)
+	h.IPLimiter.Refund(ip)
 }
 
 // resetReauth clears both counters after a successful re-authentication.
@@ -192,10 +207,10 @@ func (h *AuthHandler) requireStepUp(w http.ResponseWriter, r *http.Request, user
 		writeError(w, http.StatusForbidden, "Passwort ist falsch")
 		return false
 	}
-	// Do NOT reset the limiter here: TOTPEnable shares this key with its TOTP-code
-	// throttle, and clearing it on a successful step-up password would wipe the
-	// code-attempt budget before the code itself succeeds. The caller resets only
-	// after the whole operation succeeds (finding: twofactor step-up reset).
+	// This password attempt succeeded, so remove only its reservation. Do not reset
+	// older failures: the caller separately reserves the TOTP/passkey operation and
+	// resets the complete budget only once that whole operation succeeds.
+	h.refundReauth(key, ip)
 	return true
 }
 
@@ -228,6 +243,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	key, ip, ok := h.checkRateLimit(w, r, req.Username)
 	if !ok {
+		h.IPLimiter.Refund(h.Auth.ClientIP(r))
 		return
 	}
 
@@ -249,6 +265,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	if u.TOTPEnabled {
 		code := trim(req.TOTPCode)
 		if code == "" {
+			h.refundLogin(key, ip)
 			writeJSON(w, http.StatusUnauthorized, map[string]any{
 				"error":         "two-factor code required",
 				"totp_required": true,
@@ -264,6 +281,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 			if uerr != nil {
 				// Fail closed on a DB error rather than mislabelling a valid code as a
 				// replay and counting it toward the account lockout.
+				h.refundLogin(key, ip)
 				writeError(w, http.StatusInternalServerError, "Zwei-Faktor-Code konnte nicht geprüft werden")
 				return
 			}
@@ -287,12 +305,11 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Reset only the per-account key on success. The per-IP spray counter is
-	// deliberately NOT reset here: otherwise one legitimate login from a shared
-	// egress IP would hand a co-located sprayer a fresh budget. It decays on its
-	// own via the failure window.
+	// Successful authentication clears this account's history. Only the current
+	// IP reservation is refunded; older failures from a shared IP remain intact.
 	h.Limiter.Reset(key)
 	h.UserLimiter.Reset(userKeyOf(key, ip))
+	h.IPLimiter.Refund(ip)
 	createSession := h.Auth.CreateSession
 	if u.TOTPEnabled {
 		createSession = h.Auth.CreateVerifiedSession
@@ -387,17 +404,30 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not hash password")
 		return
 	}
-	if _, err := h.Pool.Exec(r.Context(),
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update password")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	if _, err := tx.Exec(r.Context(),
 		`UPDATE users SET password_hash=$1, updated_at=now() WHERE id=$2`, hash, u.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update password")
 		return
 	}
 	// Terminate every existing session and bind the new password to a fresh
-	// session + CSRF token (signs out other devices, defeats fixation).
-	if err := h.Auth.RotateSession(r.Context(), w, r, u.ID); err != nil {
+	// session + CSRF token in this same transaction. Cookies are emitted only
+	// after commit, so a failed session insert cannot leave a changed password.
+	writeSessionCookies, err := h.Auth.RotateSessionTx(r.Context(), tx, r, u.ID)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not refresh session")
 		return
 	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update password")
+		return
+	}
+	writeSessionCookies(w)
 	h.audit(r, "update", "user", u.ID, "changed own password")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

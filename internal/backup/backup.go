@@ -18,6 +18,8 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+
+	"golang.org/x/crypto/argon2"
 )
 
 // ArchiveInfo is the header metadata of a validated backup (no DB access needed).
@@ -82,15 +84,35 @@ func parseTOC(toc string) ArchiveInfo {
 	return info
 }
 
-// keyContext domain-separates the backup key from any other SHA-256-derived key.
+// keyContext domain-separates legacy backup keys. New archives use a salted,
+// memory-hard Argon2id derivation and carry an authenticated version header.
 const keyContext = "parkrr-backup-v1:"
 
-func aead(key string) (cipher.AEAD, error) {
+const backupMagic = "PKRRBK02"
+
+const backupSaltSize = 16
+
+func aeadV1(key string) (cipher.AEAD, error) {
 	if key == "" {
 		return nil, errors.New("backup key is not set")
 	}
 	sum := sha256.Sum256([]byte(keyContext + key))
 	block, err := aes.NewCipher(sum[:])
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
+
+func aeadV2(key string, salt []byte) (cipher.AEAD, error) {
+	if key == "" {
+		return nil, errors.New("backup key is not set")
+	}
+	if len(salt) != backupSaltSize {
+		return nil, errors.New("invalid backup salt")
+	}
+	derived := argon2.IDKey([]byte(key), salt, 3, 64*1024, 2, 32)
+	block, err := aes.NewCipher(derived)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +189,8 @@ func Dump(ctx context.Context, dbURL string) ([]byte, error) {
 	// #nosec G204 -- fixed command "pg_dump"; dbURL comes from operator config
 	// (PARKRR_DATABASE_URL/PARKRR_DB_*), never from a request. The password is
 	// passed via PGPASSWORD, not on the command line.
-	cmd := exec.CommandContext(ctx, "pg_dump", "--format=custom", "--no-owner", "--no-privileges", "--dbname="+dsn)
+	cmd := exec.CommandContext(ctx, "pg_dump", "--format=custom", "--no-owner", "--no-privileges",
+		"--exclude-table-data=sessions", "--dbname="+dsn)
 	cmd.Env = env // nil => inherit the parent environment
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
@@ -179,7 +202,11 @@ func Dump(ctx context.Context, dbURL string) ([]byte, error) {
 
 // Encrypt seals a dump with AES-256-GCM, returning nonce||ciphertext||tag.
 func Encrypt(plain []byte, key string) ([]byte, error) {
-	a, err := aead(key)
+	salt := make([]byte, backupSaltSize)
+	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
+		return nil, err
+	}
+	a, err := aeadV2(key, salt)
 	if err != nil {
 		return nil, err
 	}
@@ -187,12 +214,47 @@ func Encrypt(plain []byte, key string) ([]byte, error) {
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, err
 	}
-	return a.Seal(nonce, nonce, plain, nil), nil
+	header := append([]byte(backupMagic), salt...)
+	out := append(append([]byte(nil), header...), nonce...)
+	return a.Seal(out, nonce, plain, header), nil
 }
 
 // Decrypt reverses Encrypt; fails on a wrong key or any tampering (GCM auth).
 func Decrypt(enc []byte, key string) ([]byte, error) {
-	a, err := aead(key)
+	// V3 is chunk-authenticated so production can stream it, but the byte API is
+	// retained for compatibility with callers/tests that already hold an archive.
+	if bytes.HasPrefix(enc, []byte(backupStreamMagic)) {
+		var plain bytes.Buffer
+		if err := decryptV3(&plain, bytes.NewReader(enc), key); err != nil {
+			return nil, err
+		}
+		return plain.Bytes(), nil
+	}
+	if bytes.HasPrefix(enc, []byte(backupMagic)) {
+		if len(enc) < len(backupMagic)+backupSaltSize {
+			return nil, errors.New("backup file is too short or corrupt")
+		}
+		headerLen := len(backupMagic) + backupSaltSize
+		header := enc[:headerLen]
+		a, err := aeadV2(key, enc[len(backupMagic):headerLen])
+		if err != nil {
+			return nil, err
+		}
+		if len(enc) < headerLen+a.NonceSize()+a.Overhead() {
+			return nil, errors.New("backup file is too short or corrupt")
+		}
+		nonce := enc[headerLen : headerLen+a.NonceSize()]
+		ct := enc[headerLen+a.NonceSize():]
+		plain, err := a.Open(nil, nonce, ct, header)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt failed (wrong key or corrupt file): %w", err)
+		}
+		return plain, nil
+	}
+
+	// Legacy v1 archives remain restorable so key hardening does not strand an
+	// operator's existing disaster-recovery history.
+	a, err := aeadV1(key)
 	if err != nil {
 		return nil, err
 	}
@@ -212,8 +274,10 @@ func Decrypt(enc []byte, key string) ([]byte, error) {
 // validated (pg_restore --list) before the DB is touched.
 func Restore(ctx context.Context, dbURL string, enc []byte, key string) error {
 	// A scheduled dump must never observe a partially restored schema.
-	runMu.Lock()
-	defer runMu.Unlock()
+	if err := acquireRun(ctx); err != nil {
+		return err
+	}
+	defer releaseRun()
 	plain, err := Decrypt(enc, key)
 	if err != nil {
 		return err

@@ -2,6 +2,9 @@ package handlers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -27,6 +30,8 @@ const maxMoneyAmount = 1e9
 const maxQuantity = 1e6
 
 var errSettlementRace = errors.New("settlement raced")
+
+var errIdempotencyConflict = errors.New("idempotency key reused with a different payment")
 
 // writeSettlementConflict reports a stale/concurrent claim without committing
 // partial money state. Call only after the transaction has failed.
@@ -243,16 +248,20 @@ func deletePeriodPaymentTx(ctx context.Context, tx pgx.Tx, kind string, refID in
 // Pauschale-covered vehicles and per-period Pauschale/recurring costs are left to
 // their own settlement.
 func (h *Handler) openOwedItems(r *http.Request, personID int64) ([]owedItem, error) {
+	return h.openOwedItemsFrom(r, h.Pool, personID)
+}
+
+func (h *Handler) openOwedItemsFrom(r *http.Request, q dbQuerier, personID int64) ([]owedItem, error) {
 	ctx := r.Context()
 	now := h.now()
 
-	ags, err := h.loadAgreements(ctx, personID, now)
+	ags, err := h.loadAgreementsFrom(ctx, q, personID, now)
 	if err != nil {
 		return nil, err
 	}
 
 	var items []owedItem
-	vehicles, _, err := h.loadVehiclesWithCategories(r, personID)
+	vehicles, _, err := h.loadVehiclesWithCategoriesFrom(r, q, personID)
 	if err != nil {
 		return nil, err
 	}
@@ -278,7 +287,7 @@ func (h *Handler) openOwedItems(r *http.Request, personID int64) ([]owedItem, er
 		})
 	}
 
-	rows, err := h.Pool.Query(ctx,
+	rows, err := q.Query(ctx,
 		`SELECT id, description, quantity, amount, charged_on FROM charges
 		   WHERE person_id=$1 AND vehicle_id IS NULL AND NOT paid`, personID)
 	if err != nil {
@@ -305,7 +314,7 @@ func (h *Handler) openOwedItems(r *http.Request, personID int64) ([]owedItem, er
 	}
 	// A position already billed by an active invoice is settled via that invoice —
 	// exclude it here so it can't be paid a second time (slider / allocation).
-	locked, err := h.lockedPositions(ctx, personID)
+	locked, err := h.lockedPositionsFrom(ctx, q, personID)
 	if err != nil {
 		return nil, err
 	}
@@ -633,6 +642,84 @@ func (h *Handler) validatePayment(req *paymentRequest) (time.Time, string) {
 	return paidOn, ""
 }
 
+func validIdempotencyKey(key string) bool {
+	if len(key) < 8 || len(key) > 128 || strings.TrimSpace(key) != key {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		if key[i] < 0x21 || key[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+func paymentFingerprint(personID int64, req paymentRequest, paidOn time.Time) (string, error) {
+	allocations := append([]allocRef(nil), req.Allocations...)
+	sort.Slice(allocations, func(i, j int) bool {
+		if allocations[i].Kind == allocations[j].Kind {
+			return allocations[i].ID < allocations[j].ID
+		}
+		return allocations[i].Kind < allocations[j].Kind
+	})
+	payload := struct {
+		PersonID    int64      `json:"person_id"`
+		Amount      float64    `json:"amount"`
+		PaidOn      string     `json:"paid_on"`
+		Method      string     `json:"method"`
+		Note        string     `json:"note"`
+		Allocate    bool       `json:"allocate"`
+		Allocations []allocRef `json:"allocations"`
+	}{personID, req.Amount, paidOn.Format(dateLayout), req.Method, req.Note, req.Allocate, allocations}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// idempotentPayment finds a prior result for the authenticated actor and key.
+// A replay returns the original response without re-running settlement side
+// effects; a mismatched fingerprint is a caller error, never a second payment.
+func idempotentPayment(ctx context.Context, q rowQuerier, createdBy *int64, key, fingerprint string) (payment, int, bool, error) {
+	var paymentID int64
+	var stored string
+	err := q.QueryRow(ctx,
+		`SELECT id, request_fingerprint FROM payments
+		  WHERE created_by IS NOT DISTINCT FROM $1 AND idempotency_key=$2`, createdBy, key).
+		Scan(&paymentID, &stored)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return payment{}, 0, false, nil
+	}
+	if err != nil {
+		return payment{}, 0, false, err
+	}
+	if stored != fingerprint {
+		return payment{}, 0, true, errIdempotencyConflict
+	}
+	p, err := scanPayment(q.QueryRow(ctx, `SELECT `+paymentColumns+` FROM payments WHERE id=$1`, paymentID))
+	if err != nil {
+		return payment{}, 0, true, err
+	}
+	var settled int
+	if err := q.QueryRow(ctx, `SELECT count(*) FROM payment_allocations WHERE payment_id=$1`, paymentID).Scan(&settled); err != nil {
+		return payment{}, 0, true, err
+	}
+	return p, settled, true, nil
+}
+
+func writePaymentResult(w http.ResponseWriter, p payment, settled int, replayed bool) {
+	if replayed {
+		w.Header().Set("Idempotent-Replayed", "true")
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id": p.ID, "person_id": p.PersonID, "amount": p.Amount, "paid_on": p.PaidOn,
+		"method": p.Method, "note": p.Note, "vehicle_id": p.VehicleID, "created_at": p.CreatedAt,
+		"settled": settled,
+	})
+}
+
 // CreatePayment records a payment for a person (editor role).
 func (h *Handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
@@ -654,9 +741,38 @@ func (h *Handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 	if u, ok := auth.UserFrom(r.Context()); ok {
 		createdBy = &u.ID
 	}
+	key := r.Header.Get("Idempotency-Key")
+	if key != "" && !validIdempotencyKey(key) {
+		writeError(w, http.StatusBadRequest, "invalid Idempotency-Key header")
+		return
+	}
+	var fingerprint string
+	if key != "" {
+		var err error
+		fingerprint, err = paymentFingerprint(id, req, paidOn)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not validate payment request")
+			return
+		}
+	}
+	ctx := r.Context()
+	if key != "" {
+		prior, priorSettled, found, err := idempotentPayment(ctx, h.Pool, createdBy, key, fingerprint)
+		if errors.Is(err, errIdempotencyConflict) {
+			writeError(w, http.StatusConflict, "Idempotency-Key was already used for another payment")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not check payment request")
+			return
+		}
+		if found {
+			writePaymentResult(w, prior, priorSettled, true)
+			return
+		}
+	}
 	// Read the open items BEFORE the tx (openOwedItems uses the pool; reading it
 	// inside the tx would hold two connections and deadlock the pool under load).
-	ctx := r.Context()
 	var openItems []owedItem
 	if req.Allocate || len(req.Allocations) > 0 {
 		its, oerr := h.openOwedItems(r, id)
@@ -672,11 +788,47 @@ func (h *Handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 	var p payment
 	var settled int
 	var archive []int64
+	var replayed bool
 	txErr := pgx.BeginFunc(ctx, h.Pool, func(tx pgx.Tx) error {
-		pp, err := scanPayment(tx.QueryRow(ctx,
-			`INSERT INTO payments (person_id, amount, paid_on, method, note, created_by)
-			 VALUES ($1,$2,$3,$4,$5,$6) RETURNING `+paymentColumns,
-			id, req.Amount, paidOn, req.Method, req.Note, createdBy))
+		if key != "" {
+			prior, priorSettled, found, err := idempotentPayment(ctx, tx, createdBy, key, fingerprint)
+			if err != nil {
+				return err
+			}
+			if found {
+				p, settled, replayed = prior, priorSettled, true
+				return nil
+			}
+		}
+
+		var pp payment
+		var err error
+		if key == "" {
+			// Backward compatibility for existing API clients: the official frontend
+			// sends a key, while legacy callers retain the pre-hardening insert path.
+			pp, err = scanPayment(tx.QueryRow(ctx,
+				`INSERT INTO payments (person_id, amount, paid_on, method, note, created_by)
+				 VALUES ($1,$2,$3,$4,$5,$6) RETURNING `+paymentColumns,
+				id, req.Amount, paidOn, req.Method, req.Note, createdBy))
+		} else {
+			pp, err = scanPayment(tx.QueryRow(ctx,
+				`INSERT INTO payments (person_id, amount, paid_on, method, note, created_by, idempotency_key, request_fingerprint)
+				 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+				 ON CONFLICT (COALESCE(created_by, 0), idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+				 RETURNING `+paymentColumns,
+				id, req.Amount, paidOn, req.Method, req.Note, createdBy, key, fingerprint))
+			if errors.Is(err, pgx.ErrNoRows) {
+				prior, priorSettled, found, lookupErr := idempotentPayment(ctx, tx, createdBy, key, fingerprint)
+				if lookupErr != nil {
+					return lookupErr
+				}
+				if !found {
+					return errors.New("idempotency conflict winner not visible")
+				}
+				p, settled, replayed = prior, priorSettled, true
+				return nil
+			}
+		}
 		if err != nil {
 			return err
 		}
@@ -711,6 +863,10 @@ func (h *Handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if txErr != nil {
+		if errors.Is(txErr, errIdempotencyConflict) {
+			writeError(w, http.StatusConflict, "Idempotency-Key was already used for another payment")
+			return
+		}
 		if isForeignKeyViolation(txErr) {
 			writeError(w, http.StatusBadRequest, "person does not exist")
 			return
@@ -722,11 +878,7 @@ func (h *Handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 	for _, vid := range archive {
 		h.autoArchiveIfClosed(r, vid)
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"id": p.ID, "person_id": p.PersonID, "amount": p.Amount, "paid_on": p.PaidOn,
-		"method": p.Method, "note": p.Note, "vehicle_id": p.VehicleID, "created_at": p.CreatedAt,
-		"settled": settled,
-	})
+	writePaymentResult(w, p, settled, replayed)
 }
 
 // DeletePayment removes a recorded payment (editor role) and reverts the items

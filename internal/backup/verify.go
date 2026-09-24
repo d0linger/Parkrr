@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 )
@@ -112,6 +113,42 @@ func VerifyArchive(ctx context.Context, enc []byte, key string) (VerifyReport, e
 	return rep, nil
 }
 
+// VerifyArchiveFile performs the same four-stage verification without retaining
+// encrypted and decrypted copies in memory.
+func VerifyArchiveFile(ctx context.Context, encryptedPath, key string) (VerifyReport, error) {
+	sha, size, err := ChecksumFile(encryptedPath)
+	rep := VerifyReport{Stage: "checksum", SHA256: sha, Bytes: size}
+	if err != nil {
+		return rep, err
+	}
+	if size == 0 {
+		return rep, errors.New("archive is empty")
+	}
+	plainPath, err := decryptArchiveFile(ctx, encryptedPath, key)
+	if err != nil {
+		return rep, fmt.Errorf("archive check failed: %w", err)
+	}
+	defer os.Remove(plainPath)
+	rep.Stage = "archive"
+	toc, err := plainArchiveTOCFile(ctx, plainPath)
+	if err != nil {
+		return rep, fmt.Errorf("archive check failed: %w", err)
+	}
+	info := parseTOC(toc)
+	rep.Entries, rep.Created = info.Entries, info.Created
+	if info.Entries < minArchiveObjects {
+		return rep, fmt.Errorf("archive holds only %d objects (< %d) — looks truncated, empty or foreign",
+			info.Entries, minArchiveObjects)
+	}
+	rep.Stage = "content"
+	rep.Tables, rep.Missing = tablesInTOC(toc)
+	if len(rep.Missing) > 0 {
+		return rep, fmt.Errorf("archive is missing core tables: %s", strings.Join(rep.Missing, ", "))
+	}
+	rep.Stage = "ok"
+	return rep, nil
+}
+
 // archiveTables liest das Inhaltsverzeichnis und meldet, welche Kerntabellen darin
 // vorkommen. pg_restore --list gibt Zeilen der Form
 // "216; 1259 16igt TABLE public persons parkrr" aus.
@@ -185,6 +222,41 @@ func VerifyS3Object(ctx context.Context, c S3Config, name, key, wantSHA string, 
 	// bliebe eine reine S3-Installation inhaltlich völlig ungeprüft.
 	if _, verr := VerifyArchive(ctx, got, key); verr != nil {
 		return fmt.Errorf("stored object failed the archive check: %w", verr)
+	}
+	return nil
+}
+
+// VerifyS3ObjectFile reads the uploaded object back into a bounded temporary file,
+// compares it with the locally generated checksum/size, then validates its archive
+// structure and core tables.
+func VerifyS3ObjectFile(ctx context.Context, c S3Config, name, key, wantSHA string, wantBytes int64) error {
+	size, err := StatS3(ctx, c, name)
+	if err != nil {
+		if errors.Is(err, ErrS3ObjectMissing) {
+			return fmt.Errorf("uploaded object %q is not in the bucket", name)
+		}
+		return fmt.Errorf("s3 stat failed: %w", err)
+	}
+	if size != wantBytes {
+		return fmt.Errorf("object %q is %d bytes, expected %d (incomplete upload?)", name, size, wantBytes)
+	}
+	path, gotBytes, err := DownloadS3File(ctx, c, name)
+	if err != nil {
+		return fmt.Errorf("s3 read-back failed: %w", err)
+	}
+	defer os.Remove(path)
+	if gotBytes != wantBytes {
+		return fmt.Errorf("read back %d bytes, expected %d", gotBytes, wantBytes)
+	}
+	gotSHA, _, err := ChecksumFile(path)
+	if err != nil {
+		return err
+	}
+	if gotSHA != wantSHA {
+		return fmt.Errorf("checksum mismatch: bucket has %s, expected %s", short(gotSHA), short(wantSHA))
+	}
+	if _, err := VerifyArchiveFile(ctx, path, key); err != nil {
+		return fmt.Errorf("stored object failed the archive check: %w", err)
 	}
 	return nil
 }

@@ -32,9 +32,12 @@ func TestAgreementSliderBooksPaymentAndSettlesExtras(t *testing.T) {
 	pid := createIntegrationPerson(t, h)
 	vid := mkStoredVehicle(t, h, pid, 30, firstOfMonthMonthsAgo(3).Format("2006-01-02"))
 
-	// Cover the vehicle with a €30/month Pauschale (3 completed months + a running one).
+	// Cover the vehicle with a €30/month Pauschale that ended after 3 completed
+	// months. A running period may no longer be marked wholesale as paid because
+	// doing so would pre-credit a cost that is not final yet.
 	agBody, _ := json.Marshal(map[string]any{
 		"amount": 30, "period": "monthly", "start_date": firstOfMonthMonthsAgo(3).Format("2006-01-02"),
+		"end_date":    firstOfMonthMonthsAgo(0).AddDate(0, 0, -1).Format("2006-01-02"),
 		"vehicle_ids": []int64{vid},
 	})
 	arec := httptest.NewRecorder()
@@ -72,8 +75,7 @@ func TestAgreementSliderBooksPaymentAndSettlesExtras(t *testing.T) {
 	if math.Abs(after.Balance) > 0.05 {
 		t.Errorf("balance must net to ~0 after paying the Pauschale (rent + extra), got %.2f (before %.2f)", after.Balance, before.Balance)
 	}
-	// Real money-in for 3 completed months (90) + the extra (20) = 110; the running
-	// month stays off-book (not yet final).
+	// Real money-in for 3 completed months (90) + the extra (20) = 110.
 	if math.Abs(after.PaymentsTotal-110) > 0.05 {
 		t.Errorf("PaymentsTotal must be 110 (90 rent + 20 extra), got %.2f", after.PaymentsTotal)
 	}

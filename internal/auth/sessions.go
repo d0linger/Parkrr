@@ -3,7 +3,9 @@ package auth
 import (
 	"context"
 	"net/http"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/preining/parkrr/internal/models"
 )
 
@@ -73,6 +75,37 @@ func (m *Manager) RotateSession(ctx context.Context, w http.ResponseWriter, r *h
 		return err
 	}
 	return m.createSession(ctx, w, r, userID, verified)
+}
+
+// RotateSessionTx stages revocation and replacement in the caller's
+// transaction, returning a cookie writer that must be invoked only after a
+// successful commit. This lets credential updates and session invalidation form
+// one atomic state transition without issuing cookies for a rolled-back row.
+func (m *Manager) RotateSessionTx(ctx context.Context, tx pgx.Tx, r *http.Request, userID int64) (func(http.ResponseWriter), error) {
+	verified := false
+	if u, ok := UserFrom(ctx); ok && u != nil && u.ID == userID {
+		verified = u.FactorVerified
+	}
+	token, err := randomToken(32)
+	if err != nil {
+		return nil, err
+	}
+	csrf := m.csrfToken(token)
+	expires := time.Now().Add(m.sessionMaxAge)
+	ua := r.UserAgent()
+	if len(ua) > 300 {
+		ua = ua[:300]
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM sessions WHERE user_id=$1`, userID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO sessions (token, user_id, expires_at, user_agent, ip, last_seen, factor_verified)
+		 VALUES ($1,$2,$3,$4,$5,now(),$6)`,
+		hashToken(token), userID, expires, ua, m.ClientIP(r), verified); err != nil {
+		return nil, err
+	}
+	return func(w http.ResponseWriter) { m.writeSessionCookies(w, r, token, csrf, expires) }, nil
 }
 
 // CurrentToken exposes the request's session token (used by handlers).

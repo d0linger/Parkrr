@@ -2,13 +2,14 @@ package backup
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -72,20 +73,60 @@ func snapshot(v map[string]any) any {
 	return out
 }
 
-// runMu serializes backup execution. The scheduler and the "run now" endpoints
-// share the same heavy dump→encrypt→write path, so at most one runs at a time.
-var runMu sync.Mutex
+// runGate serializes backup/restore execution while allowing queued callers to
+// leave immediately when their context is canceled.
+var runGate = make(chan struct{}, 1)
+
+func acquireRun(ctx context.Context) error {
+	select {
+	case runGate <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func releaseRun() { <-runGate }
 
 func backupName(t time.Time) string {
 	return "parkrr-" + t.Format("2006-01-02-150405") + ".dump.enc"
 }
 
-func dumpEncrypt(ctx context.Context, dbURL, key string) ([]byte, error) {
-	dump, err := Dump(ctx, dbURL)
+func uniqueBackupName(t time.Time) (string, error) {
+	id := make([]byte, 8)
+	if _, err := rand.Read(id); err != nil {
+		return "", err
+	}
+	return "parkrr-" + t.Format("2006-01-02-150405") + "-" + hex.EncodeToString(id) + ".dump.enc", nil
+}
+
+// acquireS3Lease serializes the complete remote run across application replicas.
+// Advisory locks are session-scoped because the lease spans external I/O; an
+// unconfirmed unlock evicts the physical connection rather than returning a
+// possibly lock-owning session to the pool.
+func acquireS3Lease(ctx context.Context, pool *pgxpool.Pool, bucket string) (func(), error) {
+	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return Encrypt(dump, key)
+	if _, err := conn.Exec(ctx,
+		`SELECT pg_advisory_lock(hashtextextended($1, 0))`, "parkrr.backup-s3:"+bucket); err != nil {
+		conn.Release()
+		return nil, err
+	}
+	return func() {
+		uctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var unlocked bool
+		if err := conn.QueryRow(uctx,
+			`SELECT pg_advisory_unlock(hashtextextended($1, 0))`, "parkrr.backup-s3:"+bucket).Scan(&unlocked); err != nil || !unlocked {
+			slog.Error("backup: could not release S3 advisory lease; evicting connection", "bucket", bucket, "err", err)
+			raw := conn.Hijack()
+			_ = raw.Close(uctx)
+			return
+		}
+		conn.Release()
+	}, nil
 }
 
 // RunVolume makes an encrypted backup, writes it to dir, verifies the archive
@@ -96,15 +137,12 @@ func dumpEncrypt(ctx context.Context, dbURL, key string) ([]byte, error) {
 // archives must not be rotated out behind it — but callers must be able to tell the
 // two apart, or they report a success the status table simultaneously calls a failure.
 func RunVolume(ctx context.Context, pool *pgxpool.Pool, dbURL, key, dir string, r Retention) (int64, bool, error) {
-	runMu.Lock()
-	defer runMu.Unlock()
-
-	enc, err := dumpEncrypt(ctx, dbURL, key)
-	if err != nil {
-		recordVolumeSafe(ctx, pool, 0, false, false)
+	if err := acquireRun(ctx); err != nil {
 		return 0, false, err
 	}
-	_ = os.MkdirAll(dir, 0o700) // ensure the target exists; WriteFile surfaces real errors
+	defer releaseRun()
+
+	_ = os.MkdirAll(dir, 0o700) // the create below surfaces the actionable error
 	// Erst prüfen, dann sichtbar machen. Geschrieben wird nach *.part; erst nach
 	// bestandener Prüfung wird umbenannt. Vorher landete das Archiv sofort unter
 	// seinem endgültigen Namen — ein durchgefallenes blieb liegen, erschien in der
@@ -113,7 +151,25 @@ func RunVolume(ctx context.Context, pool *pgxpool.Pool, dbURL, key, dir string, 
 	// Zwischendatei taucht also weder in der Liste noch beim Aufräumen auf.
 	p := filepath.Join(dir, backupName(time.Now()))
 	part := p + ".part"
-	if err := os.WriteFile(part, enc, 0o600); err != nil {
+	// dir is an operator-owned configuration value and backupName is generated
+	// locally from a fixed format; no request-controlled path component is used.
+	f, err := os.OpenFile(part, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600) // #nosec G304
+	if err != nil {
+		recordVolumeSafe(ctx, pool, 0, false, false)
+		return 0, false, err
+	}
+	if err := DumpEncrypted(ctx, dbURL, key, f); err != nil {
+		_ = f.Close()
+		_ = os.Remove(part)
+		recordVolumeSafe(ctx, pool, 0, false, false)
+		return 0, false, err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		recordVolumeSafe(ctx, pool, 0, false, false)
+		return 0, false, err
+	}
+	if err := f.Close(); err != nil {
 		recordVolumeSafe(ctx, pool, 0, false, false)
 		return 0, false, err
 	}
@@ -138,25 +194,19 @@ func RunVolume(ctx context.Context, pool *pgxpool.Pool, dbURL, key, dir string, 
 	// auftauchen und irgendwann das Volume füllen. Die gerade geschriebene Datei ist
 	// ausgenommen — sie wird gleich geprüft.
 	sweepStaleParts(dir, part)
-	// Wiederherstellungsprüfung. Erst Stufe 1 gegen die DATEI auf der Platte: os.WriteFile
-	// kann bei vollem Dateisystem ohne Fehler zurückkommen, und dann läge dort ein
-	// abgeschnittenes Archiv, das jede spätere Prüfung im Speicher nicht bemerkt.
-	size := int64(len(enc))
-	if onDisk, rerr := os.ReadFile(part); rerr != nil { // #nosec G304 -- selbst erzeugter Pfad
+	// Re-open and hash the durable file. DumpEncrypted propagates short writes and
+	// Sync catches delayed filesystem errors; this confirms the complete archive is
+	// readable without allocating a second full-size copy.
+	_, size, rerr := ChecksumFile(part)
+	if rerr != nil {
 		slog.Warn("backup: read-back failed – discarding the new archive", "path", part, "err", rerr)
-		recordVolumeSafe(ctx, pool, size, false, false)
+		recordVolumeSafe(ctx, pool, 0, false, false)
 		audit(ctx, actionBackupFailed, "Volume-Backup: Rücklesen der Datei fehlgeschlagen",
 			map[string]any{"target": "volume", "stage": "readback", "error": rerr.Error()})
-		return size, false, nil
-	} else if verr := VerifyLocalBytes(onDisk, enc); verr != nil {
-		slog.Warn("backup: written file differs – discarding the new archive", "path", part, "err", verr)
-		recordVolumeSafe(ctx, pool, size, false, false)
-		audit(ctx, actionBackupFailed, "Volume-Backup: Datei weicht vom Erzeugten ab",
-			map[string]any{"target": "volume", "stage": "checksum", "error": verr.Error()})
-		return size, false, nil
+		return 0, false, nil
 	}
 	// Stufen 3+4: Archivkopf und Kerntabellen.
-	if _, verr := VerifyArchive(ctx, enc, key); verr != nil {
+	if _, verr := VerifyArchiveFile(ctx, part, key); verr != nil {
 		// Do NOT rotate the older (verified) archives out behind an UNVERIFIED new
 		// one, and record the run as not-OK — otherwise a persistent verify failure
 		// would prune away the last good backup while last_volume_ok stayed green.
@@ -186,21 +236,53 @@ func RunVolume(ctx context.Context, pool *pgxpool.Pool, dbURL, key, dir string, 
 // RunS3 makes an encrypted backup, uploads it to the bucket (pruning to `keep`),
 // and records the outcome. Returns the object name.
 func RunS3(ctx context.Context, pool *pgxpool.Pool, dbURL, key string, s3 S3Config, r Retention) (string, error) {
-	runMu.Lock()
-	defer runMu.Unlock()
+	if err := acquireRun(ctx); err != nil {
+		return "", err
+	}
+	defer releaseRun()
+	releaseLease, err := acquireS3Lease(ctx, pool, s3.Bucket)
+	if err != nil {
+		return "", err
+	}
+	defer releaseLease()
 
-	enc, err := dumpEncrypt(ctx, dbURL, key)
+	tmp, err := os.CreateTemp("", "parkrr-s3-upload-*.dump.enc")
 	if err != nil {
 		recordS3Safe(ctx, pool, false)
 		return "", err
 	}
-	name := backupName(time.Now())
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := DumpEncrypted(ctx, dbURL, key, tmp); err != nil {
+		_ = tmp.Close()
+		recordS3Safe(ctx, pool, false)
+		return "", err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		recordS3Safe(ctx, pool, false)
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		recordS3Safe(ctx, pool, false)
+		return "", err
+	}
+	sha, size, err := ChecksumFile(tmpPath)
+	if err != nil {
+		recordS3Safe(ctx, pool, false)
+		return "", err
+	}
+	name, err := uniqueBackupName(time.Now())
+	if err != nil {
+		recordS3Safe(ctx, pool, false)
+		return "", err
+	}
 	// keep=0: beim Hochladen NICHT aufräumen. UploadS3 rief pruneS3 direkt nach
 	// PutObject auf — ein abgebrochener Upload verdrängte damit einen guten alten
 	// Stand, bevor überhaupt jemand das neue Objekt geprüft hatte. Aufgeräumt wird
 	// unten, erst nach bestandener Prüfung; dieselbe Reihenfolge wie beim
 	// Volume-Ziel.
-	if err := UploadS3(ctx, s3, name, enc, Retention{}); err != nil {
+	if err := UploadS3File(ctx, s3, name, tmpPath, size, Retention{}); err != nil {
 		recordS3Safe(ctx, pool, false)
 		return "", err
 	}
@@ -209,7 +291,7 @@ func RunS3(ctx context.Context, pool *pgxpool.Pool, dbURL, key string, s3 S3Conf
 	// genauso aussieht. Deshalb Stufe 2: Größe, dann zurücklesen und Prüfsumme
 	// vergleichen — gegen die Summe des ERZEUGTEN Archivs, nicht gegen die des
 	// Objekts, sonst prüft man das Ergebnis mit sich selbst.
-	if verr := VerifyS3Object(ctx, s3, name, key, Checksum(enc), int64(len(enc))); verr != nil {
+	if verr := VerifyS3ObjectFile(ctx, s3, name, key, sha, size); verr != nil {
 		slog.Error("backup: S3 object failed verification", "object", name, "err", verr)
 		// Das durchgefallene Objekt wieder entfernen, sonst steht es im Bucket als
 		// NEUESTES und damit naheliegendstes Archiv zur Wiederherstellung bereit —

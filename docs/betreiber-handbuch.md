@@ -48,15 +48,21 @@ Hoffnung, kein Backup.
 **Wiederherstellen:**
 
 ```bash
+# Zuerst ALLE Parkrr-App-Instanzen stoppen. Der Befehl verweigert den Restore,
+# solange auch nur eine Instanz ihre Datenbank-Lease hält.
+
 # Aus einer Archivdatei (destruktiv — überschreibt die Datenbank, atomar):
 parkrr restore /backups/parkrr-2026-09-07-030000.dump.enc
 
-# Aus S3: Backup-Reiter → „Aus S3 wiederherstellen" (verlangt den Schlüssel
-# und das getippte Wort RESTORE).
+# Aus S3: Archiv im Backup-Reiter herunterladen, dann ebenfalls offline mit
+# `parkrr restore <datei>` einspielen. Online-Restore ist absichtlich gesperrt.
 ```
 
-Nach einer Wiederherstellung melden sich alle Benutzer neu an (Sitzungen leben
-in der Datenbank).
+Danach Parkrr wieder starten. Fehlende Migrationen werden vom Restore-Befehl
+eingespielt; alle Sitzungen werden verworfen, daher melden sich alle Benutzer neu
+an. Neue Sicherungen verwenden ein stückweise authentifiziertes Format und bleiben
+dadurch auch bei großen Datenbanken speicherbegrenzt; ältere Sicherungen bleiben
+lesbar.
 
 ## 3. Updates einspielen
 

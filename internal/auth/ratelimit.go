@@ -87,6 +87,29 @@ func (l *LoginLimiter) Consume(key string) (bool, time.Duration) {
 	return true, 0
 }
 
+// Refund removes exactly one previously consumed reservation while preserving
+// older failures for the key. Call it when the protected operation succeeds or
+// aborts before credential verification; failed attempts remain consumed.
+func (l *LoginLimiter) Refund(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	st := l.attempts[key]
+	if st == nil {
+		return
+	}
+	if st.fails > 0 {
+		st.fails--
+	}
+	// A reservation that reached the threshold installed the cooldown. Once that
+	// reservation is refunded, the remaining attempts are below the threshold.
+	if st.fails < l.maxFails {
+		st.lockedTill = time.Time{}
+	}
+	if st.fails == 0 {
+		delete(l.attempts, key)
+	}
+}
+
 // RecordFailure registers a failed attempt for key and locks it if over the
 // threshold within the failure window.
 func (l *LoginLimiter) RecordFailure(key string) {

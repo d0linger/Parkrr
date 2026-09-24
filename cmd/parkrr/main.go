@@ -111,6 +111,20 @@ func run() error {
 	}
 	defer pool.Close()
 
+	// One shared, process-lifetime lease prevents the offline restore CLI from
+	// running while this replica can serve requests or background jobs. A restore
+	// already in progress holds the exclusive form, so a new replica waits here
+	// before migrations or HTTP startup.
+	appLease, err := database.AcquireApplicationLease(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := appLease.Release(); err != nil {
+			slog.Error("release application restore lease", "err", err)
+		}
+	}()
+
 	if err := database.Migrate(ctx, pool); err != nil {
 		return err
 	}
@@ -168,6 +182,14 @@ func run() error {
 	var stopOnce sync.Once
 	stopCleanup := func() { stopOnce.Do(func() { close(cleanupStop) }) }
 	defer stopCleanup()
+	var workers sync.WaitGroup
+	startWorker := func(fn func()) {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			fn()
+		}()
+	}
 
 	s3 := backup.S3Config{
 		Endpoint: cfg.S3Endpoint, Bucket: cfg.S3Bucket,
@@ -201,7 +223,7 @@ func run() error {
 	}
 	handler, apiHandler, err := server.New(pool, authMgr, webAuthn, cfg.RateLimitPerMin, cfg.MetricsToken, cfg.MetricsRequireAuth,
 		cfg.CheckBreachedPasswords, cfg.FailClosedOnBreach, cfg.BackupKey, cfg.DatabaseURL, cfg.BackupDir, s3,
-		mailer, cfg.PublicBaseURL, cleanupStop)
+		mailer, cfg.PublicBaseURL, cleanupStop, startWorker)
 	if err != nil {
 		return err
 	}
@@ -242,16 +264,20 @@ func run() error {
 	}
 
 	if cfg.BackupKey != "" && (cfg.BackupDir != "" || s3.Enabled()) {
-		go backup.StartScheduler(cleanupStop, pool, cfg.DatabaseURL, cfg.BackupKey, cfg.BackupDir, s3, backupAlert)
+		startWorker(func() {
+			backup.StartScheduler(cleanupStop, pool, cfg.DatabaseURL, cfg.BackupKey, cfg.BackupDir, s3, backupAlert)
+		})
 		slog.Info("scheduled backups enabled", "dir", cfg.BackupDir, "s3", s3.Enabled())
 	}
 
-	go server.StartExpiryCleanup(pool, authMgr, cleanupStop)
+	startWorker(func() { server.StartExpiryCleanup(pool, authMgr, cleanupStop) })
 	// Automatischer Rechnungslauf — nur mit ausdrücklich gesetztem Cron (Hundert 16).
-	go server.StartAutoInvoice(pool, apiHandler, cfg.AutoInvoiceCron, cleanupStop)
-	go server.StartAuditRetention(pool,
-		time.Duration(cfg.AuditRetentionDays)*24*time.Hour,
-		time.Duration(cfg.AuditRetentionShortDays)*24*time.Hour, cleanupStop, sysAudit)
+	startWorker(func() { server.StartAutoInvoice(pool, apiHandler, cfg.AutoInvoiceCron, cleanupStop) })
+	startWorker(func() {
+		server.StartAuditRetention(pool,
+			time.Duration(cfg.AuditRetentionDays)*24*time.Hour,
+			time.Duration(cfg.AuditRetentionShortDays)*24*time.Hour, cleanupStop, sysAudit)
+	})
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -269,10 +295,24 @@ func run() error {
 			serverErr <- err
 		}
 	}()
+	waitWorkers := func() {
+		done := make(chan struct{})
+		go func() {
+			workers.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+			slog.Info("background workers stopped")
+		case <-time.After(20 * time.Second):
+			slog.Warn("background worker drain timed out")
+		}
+	}
 
 	select {
 	case err := <-serverErr:
 		stopCleanup()
+		waitWorkers()
 		return err
 	case <-ctx.Done():
 		slog.Info("shutdown signal received")
@@ -282,7 +322,9 @@ func run() error {
 	stopCleanup()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	shutdownErr := srv.Shutdown(shutdownCtx)
+	waitWorkers()
+	return shutdownErr
 }
 
 // ensureAdmin validates admin configuration is present.
