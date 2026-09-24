@@ -4838,7 +4838,7 @@
         page.append(el('div', { class: 'detail-head' },
             el('button', { class: 'back-btn', onclick: () => navigate('dashboard') }, '‹'),
             el('h2', { style: 'margin:0' }, 'Backup')));
-        let st = { enabled: false, scheduled: false, s3: false, dir: '', schema_version: '', settings: {}, status: {}, files: [], s3_files: [] };
+        let st = { enabled: false, scheduled: false, s3: false, browser_restore: false, dir: '', schema_version: '', settings: {}, status: {}, files: [], s3_files: [] };
         st = { ...st, ...await api.get('/backup/status') };
         st.files = st.files || []; st.s3_files = st.s3_files || [];
 
@@ -4846,6 +4846,7 @@
             page.append(el('div', { class: 'card' },
                 el('h3', {}, 'Nicht aktiviert'),
                 el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Setze die Umgebungsvariable PARKRR_BACKUP_KEY (AES-256-GCM-Schlüssel, getrennt vom Session-Secret), um Sicherungen zu erzeugen.')));
+            if (st.browser_restore) page.append(backupRestoreCard());
             return;
         }
 
@@ -4883,25 +4884,26 @@
                 el('button', { class: 'btn btn-ghost btn-sm', onclick: (e) => testS3Connection(e.currentTarget) }, 'Verbindung testen'),
                 el('button', { class: 'btn btn-primary btn-sm', onclick: (e) => uploadToS3(e.currentTarget) }, 'Jetzt in S3 sichern')));
             if (!st.s3_files.length) s3box.append(el('div', { class: 'card-meta' }, 'Noch keine Objekte im Bucket.'));
-            else s3box.append(collapsibleRows(st.s3_files, (f) => backupFileRow(f, '/api/backup/s3/file/')));
+            else s3box.append(collapsibleRows(st.s3_files, (f) => backupFileRow(f, '/api/backup/s3/file/',
+                st.browser_restore ? () => restoreFromS3(f.name) : null)));
         }
         page.append(el('div', { class: 'card', style: 'margin-top:1rem' }, el('h3', {}, 'S3-Sicherung (extern)'), s3box));
 
-        // Restore is deliberately offline: a live replica holds the shared
-        // database lease and the CLI refuses to proceed until every replica stops.
-        page.append(offlineRestoreCard());
+        page.append(st.browser_restore ? backupRestoreCard() : offlineRestoreCard());
 
         // Key & notes
         page.append(el('div', { class: 'card', style: 'margin-top:1rem' },
             el('h3', {}, 'Schlüssel & Hinweise'),
             el('ul', { class: 'card-meta', style: 'margin:.4rem 0 0;padding-left:1.1rem;line-height:1.6' },
                 el('li', {}, 'Der Verschlüsselungs-Schlüssel wird als Umgebungsvariable ', el('b', {}, 'PARKRR_BACKUP_KEY'), ' gesetzt (getrennt vom Session-Secret), nie in der App gespeichert.'),
-                el('li', {}, 'Zum Wiederherstellen alle Parkrr-Instanzen stoppen und den zur Datei passenden Schlüssel als PARKRR_BACKUP_KEY setzen.'),
+                el('li', {}, st.browser_restore
+                    ? 'Browser-Restore hält alle Replikate automatisch an, prüft das Archiv und meldet alle Benutzer ab.'
+                    : 'Zum Wiederherstellen alle Parkrr-Instanzen stoppen und den zur Datei passenden Schlüssel als PARKRR_BACKUP_KEY setzen.'),
                 el('li', {}, '„Archiv geprüft" heißt: das zuletzt geschriebene Volume-Backup wurde entschlüsselt und sein Inhaltsverzeichnis gelesen (pg_restore --list).'),
                 el('li', {}, 'Restore per Kommandozeile: ', el('code', {}, 'parkrr restore <datei.dump.enc>'), '. Alte und neue Archivformate bleiben lesbar.'))));
     };
     function offlineRestoreCard() {
-        return el('div', { class: 'card', style: 'margin-top:1rem' },
+        return el('div', { class: 'card restore-section', style: 'margin-top:1rem' },
             el('h3', {}, 'Wiederherstellen · offline'),
             el('div', { class: 'card-meta', style: 'margin:.3rem 0 .7rem;color:var(--accent-text);font-weight:600' },
                 'Eine laufende Anwendung darf nicht gegen ein Schema arbeiten, das gerade ersetzt wird. Online-Restore ist deshalb gesperrt.'),
@@ -4946,18 +4948,26 @@
             fileIn.files = e.dataTransfer.files; fileIn.dispatchEvent(new Event('change'));
         });
         const keyIn = el('input', { id: 'restore-key', type: 'password', placeholder: 'Backup-Schlüssel', autocomplete: 'off' });
-        const confirmIn = el('input', { id: 'restore-confirm', type: 'text', placeholder: 'RESTORE', autocomplete: 'off' });
+        const confirmIn = el('input', { id: 'restore-confirm', type: 'text', placeholder: 'Zuerst Backup validieren', autocomplete: 'off', disabled: true });
+        const confirmLabel = el('label', { for: confirmIn.id }, 'Prüfsumme bestätigen');
         const result = el('div', { class: 'card-meta', role: 'status', 'aria-live': 'polite', style: 'margin:.5rem 0' });
-        const restoreBtn = el('button', { class: 'btn btn-danger', disabled: true, onclick: (e) => restoreBackup(fileIn, keyIn, confirmIn, e.currentTarget) }, 'Wiederherstellen');
-        const validateBtn = el('button', { class: 'btn btn-ghost', onclick: () => validateBackup(fileIn, keyIn, result, restoreBtn) }, 'Validieren');
+        const restoreBtn = el('button', { class: 'btn btn-danger', disabled: true, onclick: (e) => restoreBackup(fileIn, keyIn, confirmIn, result, e.currentTarget) }, 'Wiederherstellen');
+        const validateBtn = el('button', { class: 'btn btn-ghost', onclick: (e) => validateBackup(fileIn, keyIn, confirmIn, result, restoreBtn, e.currentTarget) }, 'Validieren');
         // Re-validation is required after any change, so the restore stays gated.
         // showFile hängt NUR am Datei-Input: am Schlüsselfeld würde jeder
         // Tastendruck den Chip abreißen und neu bauen (Fokus- und Screenreader-
         // Position inklusive), obwohl sich die Datei nicht geändert haben kann.
-        const invalidate = () => { restoreBtn.disabled = true; result.textContent = ''; };
+        const invalidate = () => {
+            restoreBtn.disabled = true;
+            delete restoreBtn.dataset.confirmation;
+            confirmIn.value = '';
+            confirmIn.disabled = true;
+            confirmIn.placeholder = 'Zuerst Backup validieren';
+            result.textContent = '';
+        };
         fileIn.addEventListener('change', () => { invalidate(); showFile(); });
         keyIn.addEventListener('input', invalidate);
-        return el('div', { class: 'card', style: 'margin-top:1rem' },
+        return el('div', { class: 'card restore-section', style: 'margin-top:1rem' },
             el('h3', {}, 'Wiederherstellen'),
             el('div', { class: 'card-meta', style: 'margin:.3rem 0 .6rem;color:var(--accent-text);font-weight:600' },
                 '⚠ Überschreibt die gesamte aktuelle Datenbank. Atomar (rollt bei Fehler komplett zurück). Erst validieren.'),
@@ -4965,33 +4975,91 @@
             el('label', { for: keyIn.id }, 'Schlüssel'), keyIn,
             el('div', { style: 'margin-top:.6rem' }, validateBtn),
             result,
-            el('label', { for: confirmIn.id }, 'Zum Bestätigen RESTORE eingeben'), confirmIn,
+            confirmLabel, confirmIn,
             el('div', { style: 'margin-top:.6rem' }, restoreBtn));
     }
-    async function validateBackup(fileIn, keyIn, result, restoreBtn) {
+    async function validateBackup(fileIn, keyIn, confirmIn, result, restoreBtn, validateBtn) {
         if (!fileIn.files[0]) { toast('Bitte eine Backup-Datei wählen', 'error'); return; }
+        if (fileIn.files[0].size > 1024 * 1024 * 1024) { toast('Die Datei überschreitet das Browser-Limit von 1 GiB', 'error'); return; }
         if (!keyIn.value) { toast('Bitte den Schlüssel eingeben', 'error'); return; }
+        const originalLabel = validateBtn.textContent;
+        validateBtn.disabled = true;
+        validateBtn.textContent = 'Validiere …';
         result.textContent = 'Prüfe …';
         const fd = new FormData(); fd.append('file', fileIn.files[0]); fd.append('key', keyIn.value);
         try {
             const res = await fetch('/api/backup/validate', { method: 'POST', headers: { 'X-CSRF-Token': getCookie('parkrr_csrf') }, credentials: 'same-origin', body: fd });
             if (!res.ok) { const j = await res.json().catch(() => ({})); result.textContent = '✗ ' + (j.error || 'Ungültig'); restoreBtn.disabled = true; return; }
             const info = await res.json();
-            result.textContent = '✓ Gültiges Backup · erstellt ' + (info.created || '?') + ' · ' + info.entries + ' Objekte';
+            restoreBtn.dataset.confirmation = info.confirmation;
+            confirmIn.disabled = false;
+            confirmIn.placeholder = info.confirmation;
+            result.textContent = '✓ Gültiges Backup · erstellt ' + (info.created || '?') + ' · ' + info.entries
+                + ' Objekte · zum Fortfahren „' + info.confirmation + '“ eingeben';
             restoreBtn.disabled = false;
         } catch (e) { result.textContent = '✗ ' + e.message; restoreBtn.disabled = true; }
+        finally { validateBtn.disabled = false; validateBtn.textContent = originalLabel; }
     }
-    async function restoreBackup(fileIn, keyIn, confirmIn, btn) {
-        if (confirmIn.value !== 'RESTORE') { toast('Zum Bestätigen RESTORE eingeben', 'error'); return; }
+    async function restoreBackup(fileIn, keyIn, confirmIn, result, btn) {
+        const expected = btn.dataset.confirmation || '';
+        if (!expected || confirmIn.value.trim() !== expected) { toast('Bitte die angezeigte Prüfsummen-Bestätigung exakt eingeben', 'error'); return; }
         if (!await confirmDialog('Datenbank überschreiben?', 'Die gesamte aktuelle Datenbank wird durch das Backup ersetzt. Das lässt sich nicht rückgängig machen. Du wirst danach neu angemeldet.', 'Wiederherstellen')) return;
         const o = btn.textContent; btn.disabled = true; btn.textContent = 'Stelle wieder her …';
-        const fd = new FormData(); fd.append('file', fileIn.files[0]); fd.append('key', keyIn.value); fd.append('confirm', 'RESTORE');
+        const fd = new FormData(); fd.append('file', fileIn.files[0]); fd.append('key', keyIn.value); fd.append('confirm', expected);
         try {
             const res = await fetch('/api/backup/restore', { method: 'POST', headers: { 'X-CSRF-Token': getCookie('parkrr_csrf') }, credentials: 'same-origin', body: fd });
             if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Restore fehlgeschlagen'); }
-            toast('Wiederhergestellt — bitte neu anmelden', 'success');
-            setTimeout(() => logout(), 1800);
-        } catch (e) { toast(e.message, 'error'); btn.disabled = false; btn.textContent = o; }
+            const job = await res.json();
+            await watchRestore(job, result);
+        } catch (e) {
+            toast(e.message === 'reauth_required'
+                ? 'Bitte abmelden, neu anmelden und den Restore innerhalb von zehn Minuten erneut starten.'
+                : e.message, 'error');
+            btn.disabled = false; btn.textContent = o;
+        }
+    }
+    async function watchRestore(job, statusNode) {
+        const labels = {
+            queued: 'Wiederherstellung wurde eingereiht …',
+            draining: 'Anfragen und Hintergrundarbeiten werden sicher beendet …',
+            restoring: 'Datenbank wird atomar wiederhergestellt …',
+            migrating: 'Datenbankschema wird aktualisiert …',
+            purging_sessions: 'Aktive Sitzungen werden widerrufen …',
+            verifying: 'Wiederhergestellte Datenbank wird geprüft …',
+            recovering: 'Unterbrochener Vorgang wird sicher aufgearbeitet …',
+        };
+        for (;;) {
+            try {
+                const res = await fetch('/api/restore/status/' + encodeURIComponent(job.id), {
+                    credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' },
+                });
+                if (!res.ok) {
+                    if (res.status === 429 || res.status >= 500) throw new Error('Status vorübergehend nicht erreichbar');
+                    const body = await res.json().catch(() => ({}));
+                    const statusError = new Error(body.error || 'Restore-Status nicht verfügbar');
+                    statusError.fatal = true;
+                    throw statusError;
+                }
+                const current = await res.json();
+                statusNode.textContent = labels[current.phase] || ('Wiederherstellung: ' + current.phase);
+                if (current.phase === 'complete') {
+                    statusNode.textContent = '✓ Wiederherstellung abgeschlossen · Anmeldung wird neu geladen …';
+                    toast('Wiederherstellung abgeschlossen — bitte neu anmelden', 'success');
+                    setTimeout(() => location.reload(), 1200);
+                    return;
+                }
+                if (current.phase === 'failed' || current.phase === 'cancelled') {
+                    statusNode.textContent = '✗ ' + (current.error || 'Wiederherstellung fehlgeschlagen');
+                    toast(current.error || 'Wiederherstellung fehlgeschlagen', 'error');
+                    setTimeout(() => location.reload(), 2500);
+                    return;
+                }
+            } catch (e) {
+                if (e.fatal) throw e;
+                statusNode.textContent = 'Verbindung unterbrochen — Status wird erneut abgefragt …';
+            }
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
     }
     async function testS3Connection(btn) {
         const o = btn.textContent; btn.disabled = true; btn.textContent = 'Teste …';
@@ -5012,32 +5080,51 @@
         } catch (e) { toast(e.message, 'error'); btn.disabled = false; btn.textContent = o; }
     }
     async function restoreFromS3(name) {
-        // Das schmerzhafteste Formular der Anwendung, um es zweimal auszufuellen: ein
-        // langer Backup-Schluessel plus das Wort RESTORE. Deshalb ueber save — ein
-        // Tippfehler oder ein abgelehnter Schluessel laesst beides stehen (Hundert UX-51).
-        let done = false;
+        let key = '';
+        let validation = null;
         await formModal({
-            title: 'Aus S3 wiederherstellen',
-            submitLabel: 'Wiederherstellen',
-            fields: [
-                { name: 'key', label: 'Backup-Schlüssel', type: 'password', required: true },
-                { name: 'confirm', label: 'Zum Bestätigen RESTORE eingeben', required: true, help: 'Überschreibt die gesamte Datenbank — atomar (rollt bei Fehler zurück).' },
-            ],
+            title: 'S3-Sicherung validieren',
+            submitLabel: 'Validieren',
+            fields: [{ name: 'key', label: 'Backup-Schlüssel', type: 'password', required: true }],
             save: async (data) => {
-                if (data.confirm !== 'RESTORE') throw new Error('Zum Bestätigen RESTORE eingeben');
-                const res = await fetch('/api/backup/restore-s3', {
-                    method: 'POST',
-                    headers: { 'X-CSRF-Token': getCookie('parkrr_csrf'), 'Content-Type': 'application/x-www-form-urlencoded' },
-                    credentials: 'same-origin',
-                    body: new URLSearchParams({ name, key: data.key, confirm: 'RESTORE' }).toString(),
-                });
-                if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'Restore fehlgeschlagen'); }
-                done = true;
+                key = data.key;
+                validation = await api.post('/backup/validate-s3', { name, key });
             },
         });
-        if (!done) return;
-        toast('Wiederhergestellt — bitte neu anmelden', 'success');
-        setTimeout(() => logout(), 1800);
+        if (!validation) return;
+
+        let job = null;
+        await formModal({
+            title: 'S3-Sicherung wiederherstellen',
+            submitLabel: 'Wiederherstellen',
+            danger: 'Überschreibt die gesamte Datenbank. Alle aktiven Sitzungen werden danach widerrufen.',
+            fields: [{
+                name: 'confirm', label: 'Prüfsumme bestätigen', required: true,
+                placeholder: validation.confirmation,
+                help: 'Gültiges Backup vom ' + (validation.created || '?') + ' mit ' + validation.entries
+                    + ' Objekten. Zum Fortfahren exakt „' + validation.confirmation + '“ eingeben.',
+            }],
+            save: async (data) => {
+                if (data.confirm.trim() !== validation.confirmation) {
+                    throw new Error('Die Bestätigung stimmt nicht mit der geprüften Sicherung überein');
+                }
+                try {
+                    job = await api.post('/backup/restore-s3', {
+                        name, key, confirm: validation.confirmation,
+                    });
+                } catch (e) {
+                    if (e.message === 'reauth_required') {
+                        throw new Error('Bitte abmelden, neu anmelden und den Restore innerhalb von zehn Minuten erneut starten.');
+                    }
+                    throw e;
+                }
+            },
+        });
+        if (!job) return;
+        const status = el('div', { class: 'card restore-section', role: 'status', 'aria-live': 'polite' },
+            'Wiederherstellung wird gestartet …');
+        (document.querySelector('.screen-backup') || document.body).append(status);
+        await watchRestore(job, status);
     }
     // Expandable user card: name + role/2FA badges in the header; the panel holds a
     // quick password reset, a full edit, and a clearly separated "Gefahrenzone" for

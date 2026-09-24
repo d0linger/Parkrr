@@ -190,7 +190,7 @@ func Dump(ctx context.Context, dbURL string) ([]byte, error) {
 	// (PARKRR_DATABASE_URL/PARKRR_DB_*), never from a request. The password is
 	// passed via PGPASSWORD, not on the command line.
 	cmd := exec.CommandContext(ctx, "pg_dump", "--format=custom", "--no-owner", "--no-privileges",
-		"--exclude-table-data=sessions", "--dbname="+dsn)
+		"--exclude-table-data=sessions", "--exclude-schema=parkrr_control", "--dbname="+dsn)
 	cmd.Env = env // nil => inherit the parent environment
 	cmd.Stdout = &out
 	cmd.Stderr = &errb

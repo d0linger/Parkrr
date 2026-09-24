@@ -23,6 +23,7 @@ import (
 
 	"github.com/preining/parkrr/internal/auth"
 	"github.com/preining/parkrr/internal/mail"
+	"github.com/preining/parkrr/internal/restorectl"
 )
 
 // Handler holds shared dependencies for all HTTP handlers.
@@ -51,7 +52,10 @@ type Handler struct {
 	DatabaseURL string
 	BackupDir   string
 	S3          backup.S3Config
-	hibpClient  *http.Client
+	// Restore coordinates opt-in browser restores with the process lifecycle.
+	// Nil or disabled keeps the compatibility routes fail-closed.
+	Restore    *restorectl.Controller
+	hibpClient *http.Client
 	// Mail sends transactional e-mail (payment reminders). Defaults to a disabled
 	// sender when SMTP is not configured, so it is never nil.
 	Mail mail.Sender

@@ -308,6 +308,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/backup/s3/test", admin(hf(h.BackupS3Test)))
 	mux.Handle("POST /api/backup/s3", admin(hf(h.CreateBackupS3)))
 	mux.Handle("GET /api/backup/s3/file/{name}", admin(hf(h.BackupS3Download)))
+	mux.Handle("POST /api/backup/validate-s3", admin(hf(h.BackupValidateS3)))
 	mux.Handle("POST /api/backup/restore-s3", admin(hf(h.BackupRestoreS3)))
 
 	// Client-side error telemetry (SPA window.onerror → server log).
@@ -441,7 +442,7 @@ func (w *panicResponseWriter) Write(b []byte) (int, error) {
 // Unwrap lets http.ResponseController find optional interfaces on the wrapped writer.
 func (w *panicResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// maxRequestBody caps every request body as a DoS backstop. It sits ABOVE the
+// maxRequestBody caps ordinary request bodies as a DoS backstop. It sits ABOVE the
 // 8 MiB photo-upload cap (handlers.maxPhotoBytes) so legitimate uploads still
 // pass, while JSON bodies stay further limited to 1 MiB in decodeJSON. A request
 // that declares more is rejected with 413 before any read; MaxBytesReader caps
@@ -462,9 +463,17 @@ var tooLargeMessage = fmt.Sprintf("Die Anfrage ist zu groß (höchstens %d MB). 
 	"Große Sicherungen bitte über die Kommandozeile einspielen.", maxRequestBody>>20)
 
 // limitRequestBody rejects over-large request bodies with 413 and caps the read.
+// Restore upload endpoints stream directly to a private file and therefore get a
+// separate 1 GiB cap; every other endpoint retains the small global boundary.
 func limitRequestBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.ContentLength > maxRequestBody {
+		limit := int64(maxRequestBody)
+		message := tooLargeMessage
+		if r.URL.Path == "/api/backup/validate" || r.URL.Path == "/api/backup/restore" {
+			limit = handlers.MaxBrowserRestoreRequestBody
+			message = "Die Sicherungsdatei ist zu groß (Browser-Limit 1 GiB). Bitte die CLI verwenden."
+		}
+		if r.ContentLength > limit {
 			// Als JSON und auf Deutsch, wie jede andere Absage der Anwendung: die
 			// Oberfläche liest `error` aus dem Rumpf und zeigt sonst die nackte
 			// Zeichenfolge "HTTP 413". Diese Schranke greift VOR jedem Handler, also
@@ -477,11 +486,11 @@ func limitRequestBody(next http.Handler) http.Handler {
 			// nosniff — der Header gehört an die eine Stelle, nicht an eine von vieren.
 			w.Header().Set("X-Content-Type-Options", "nosniff")
 			writeJSONStatus(w, http.StatusRequestEntityTooLarge,
-				map[string]string{"error": tooLargeMessage})
+				map[string]string{"error": message})
 			return
 		}
 		if r.Body != nil {
-			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
 		}
 		next.ServeHTTP(w, r)
 	})

@@ -87,6 +87,7 @@ services:
       # schedule (cron) and retention are edited in the Backup tab, not via env.
       PARKRR_BACKUP_KEY: ${PARKRR_BACKUP_KEY:-}
       PARKRR_BACKUP_DIR: ${PARKRR_BACKUP_DIR:-/backups}
+      PARKRR_BROWSER_RESTORE: ${PARKRR_BROWSER_RESTORE:-false}
       # Optional off-site S3-compatible target (AWS S3 / Backblaze B2 / Wasabi / MinIO).
       PARKRR_S3_ENDPOINT: ${PARKRR_S3_ENDPOINT:-}
       PARKRR_S3_BUCKET: ${PARKRR_S3_BUCKET:-}

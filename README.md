@@ -178,6 +178,7 @@ compose network). Schema migrations run automatically at startup.
 | --- | --- | --- |
 | `PARKRR_BACKUP_KEY` | passphrase enabling scheduled **encrypted** DB backups (AES-256-GCM); empty = backups off | – |
 | `PARKRR_BACKUP_DIR` | directory for local dumps (a mounted volume) | `/backups` (compose) |
+| `PARKRR_BROWSER_RESTORE` | opt in to coordinated browser restore; drains all replicas, restores under an exclusive DB lease, migrates, verifies, and revokes sessions | `false` |
 | `PARKRR_S3_ENDPOINT` / `PARKRR_S3_REGION` | off-site target: S3-compatible endpoint / region | – |
 | `PARKRR_S3_BUCKET` / `PARKRR_S3_PREFIX` | bucket and key prefix for uploaded backups | – |
 | `PARKRR_S3_ACCESS_KEY` / `PARKRR_S3_SECRET_KEY` | S3 credentials | – |

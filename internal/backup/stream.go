@@ -213,7 +213,7 @@ func DumpEncrypted(ctx context.Context, dbURL, key string, dst io.Writer) error 
 	dsn, env := dbExecEnv(dbURL)
 	// #nosec G204 -- fixed executable/arguments; DSN is operator configuration.
 	cmd := exec.CommandContext(ctx, "pg_dump", "--format=custom", "--no-owner", "--no-privileges",
-		"--exclude-table-data=sessions", "--dbname="+dsn)
+		"--exclude-table-data=sessions", "--exclude-schema=parkrr_control", "--dbname="+dsn)
 	cmd.Env = env
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

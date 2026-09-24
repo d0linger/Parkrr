@@ -4,13 +4,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -18,8 +18,7 @@ import (
 	"github.com/preining/parkrr/internal/backup"
 	"github.com/preining/parkrr/internal/config"
 	"github.com/preining/parkrr/internal/database"
-	"github.com/preining/parkrr/internal/mail"
-	"github.com/preining/parkrr/internal/server"
+	"github.com/preining/parkrr/internal/restorectl"
 )
 
 func main() {
@@ -111,17 +110,18 @@ func run() error {
 	}
 	defer pool.Close()
 
-	// One shared, process-lifetime lease prevents the offline restore CLI from
-	// running while this replica can serve requests or background jobs. A restore
-	// already in progress holds the exclusive form, so a new replica waits here
-	// before migrations or HTTP startup.
+	// One shared lease prevents the offline restore CLI from running while this
+	// replica can serve requests or background jobs. A coordinated browser restore
+	// releases it only after the application generation has fully drained.
 	appLease, err := database.AcquireApplicationLease(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		if err := appLease.Release(); err != nil {
-			slog.Error("release application restore lease", "err", err)
+		if appLease != nil {
+			if err := appLease.Release(); err != nil {
+				slog.Error("release application restore lease", "err", err)
+			}
 		}
 	}()
 
@@ -174,114 +174,58 @@ func run() error {
 		slog.Info("passkeys enabled", "rp_id", cfg.WebAuthnRPID, "origins", cfg.WebAuthnOrigins)
 	}
 
-	cleanupStop := make(chan struct{})
-	// Stop background workers (backup scheduler, session/audit cleanup) BEFORE the
-	// HTTP drain — otherwise the scheduler could fire a backup during shutdown.
-	// sync.Once keeps the pre-shutdown stop and the defer safety-net from
-	// double-closing the channel (a panic).
-	var stopOnce sync.Once
-	stopCleanup := func() { stopOnce.Do(func() { close(cleanupStop) }) }
-	defer stopCleanup()
-	var workers sync.WaitGroup
-	startWorker := func(fn func()) {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			fn()
-		}()
-	}
-
 	s3 := backup.S3Config{
 		Endpoint: cfg.S3Endpoint, Bucket: cfg.S3Bucket,
 		AccessKey: cfg.S3AccessKey, SecretKey: cfg.S3SecretKey,
 		Region: cfg.S3Region, Prefix: cfg.S3Prefix, UseSSL: cfg.S3UseSSL,
 	}
-	mailer := mail.New(mail.Config{
-		Host: cfg.SMTPHost, Port: cfg.SMTPPort,
-		Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
-		From: cfg.SMTPFrom, FromName: cfg.SMTPFromName, TLS: cfg.SMTPTLS,
-	})
-	// Versandprotokoll (Hundert 86): JEDER Versuch — Erfolg wie Fehlschlag — landet
-	// in mail_log. Eigener kurzer Context: das Protokoll darf nicht am (womöglich
-	// abgelaufenen) Context des Auslösers hängen; und ein Protokollfehler bleibt
-	// eine Warnung, er macht den Versand nicht ungeschehen.
-	mailer = mail.WithLog(mailer, func(to []string, subject string, ok bool, sendErr error) {
-		lctx, lcancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer lcancel()
-		errText := ""
-		if sendErr != nil {
-			errText = sendErr.Error()
-		}
-		if _, err := pool.Exec(lctx,
-			`INSERT INTO mail_log (recipients, subject, ok, error) VALUES ($1,$2,$3,$4)`,
-			strings.Join(to, ", "), subject, ok, errText); err != nil {
-			slog.Warn("mail_log write failed", "err", err)
-		}
-	})
+	mailer := newMailer(pool, cfg)
 	if mailer.Enabled() {
 		slog.Info("SMTP e-mail enabled", "host", cfg.SMTPHost, "port", cfg.SMTPPort, "tls", cfg.SMTPTLS)
 	}
-	handler, apiHandler, err := server.New(pool, authMgr, webAuthn, cfg.RateLimitPerMin, cfg.MetricsToken, cfg.MetricsRequireAuth,
-		cfg.CheckBreachedPasswords, cfg.FailClosedOnBreach, cfg.BackupKey, cfg.DatabaseURL, cfg.BackupDir, s3,
-		mailer, cfg.PublicBaseURL, cleanupStop, startWorker)
+
+	// This pool remains available while the application pool and handlers are
+	// quiesced. The parkrr_control schema is deliberately excluded from backups.
+	controlPool, err := database.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
-
-	// Scheduled encrypted backups driven by the DB-stored cron schedule
-	// (backup_settings, editable in the Backup tab). Opt-in via env: a key plus at
-	// least one target (a mounted directory and/or S3).
-	// Audit sink for the jobs that run without a request behind them. It reuses the
-	// Handler that server.New already built over this pool rather than constructing a
-	// second one: a duplicate would carry its own idle http.Client and mail sender for
-	// the process lifetime, and the two could drift as configuration is added.
-	// Injected rather than imported — internal/backup cannot import internal/handlers,
-	// which already imports it.
-	if cfg.PasskeyOnly {
-		apiHandler.PasskeyOnly = true
-		slog.Info("Passkey-only-Modus aktiv: Passwort-Login abgeschaltet")
+	defer controlPool.Close()
+	restores, err := restorectl.New(ctx, controlPool, cfg.BrowserRestore)
+	if err != nil {
+		return err
 	}
-	sysAudit := apiHandler.AuditSystem
-	backup.SetAuditor(sysAudit)
+	defer restores.Close()
+	if cfg.BrowserRestore {
+		slog.Warn("browser restore enabled; recent administrator authentication and checksum confirmation are required")
+	}
 
-	// Alarm bei fehlgeschlagenem Backup (Hundert 04). Nur wenn BEIDES eingerichtet
-	// ist: ein SMTP-Relay und mindestens eine Empfängeradresse. Fehlt eines, bleibt
-	// es beim bisherigen Verhalten — Log, Änderungsprotokoll und die Backup-Kachel.
-	var backupAlert backup.Alerter
-	if mailer.Enabled() && len(cfg.AlertEmail) > 0 {
-		to := cfg.AlertEmail
-		backupAlert = func(ctx context.Context, subject, body string) {
-			// Eigener, kurzer Context: der Alarm hängt am 30-Minuten-Context des
-			// Backup-Laufs, und wenn DER gerade abgelaufen ist, käme die Warnung nie
-			// heraus — also genau dann nicht, wenn ein Timeout die Ursache war.
-			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-			defer cancel()
-			if err := mailer.Send(sctx, to, subject, body); err != nil {
-				slog.Error("backup alert e-mail failed", "err", err)
-			}
+	lifecycle := newLifecycleHandler(restores)
+	pending, err := restores.Active(ctx)
+	if err != nil {
+		return err
+	}
+	var generation *appGeneration
+	if pending == nil {
+		generation, err = startAppGeneration(pool, authMgr, webAuthn, cfg, s3, mailer, restores)
+		if err != nil {
+			return err
 		}
-		slog.Info("backup failure alerts enabled", "recipients", len(cfg.AlertEmail))
+		lifecycle.Activate(generation.handler)
+	} else if err := lifecycle.EnterMaintenance(ctx, pending.ID); err != nil {
+		return err
 	}
-
-	if cfg.BackupKey != "" && (cfg.BackupDir != "" || s3.Enabled()) {
-		startWorker(func() {
-			backup.StartScheduler(cleanupStop, pool, cfg.DatabaseURL, cfg.BackupKey, cfg.BackupDir, s3, backupAlert)
-		})
-		slog.Info("scheduled backups enabled", "dir", cfg.BackupDir, "s3", s3.Enabled())
-	}
-
-	startWorker(func() { server.StartExpiryCleanup(pool, authMgr, cleanupStop) })
-	// Automatischer Rechnungslauf — nur mit ausdrücklich gesetztem Cron (Hundert 16).
-	startWorker(func() { server.StartAutoInvoice(pool, apiHandler, cfg.AutoInvoiceCron, cleanupStop) })
-	startWorker(func() {
-		server.StartAuditRetention(pool,
-			time.Duration(cfg.AuditRetentionDays)*24*time.Hour,
-			time.Duration(cfg.AuditRetentionShortDays)*24*time.Hour, cleanupStop, sysAudit)
-	})
+	defer func() {
+		drainCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := generation.Drain(drainCtx); err != nil {
+			slog.Warn("background worker drain failed", "err", err)
+		}
+	}()
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           handler,
+		Handler:           lifecycle,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -295,36 +239,82 @@ func run() error {
 			serverErr <- err
 		}
 	}()
-	waitWorkers := func() {
-		done := make(chan struct{})
-		go func() {
-			workers.Wait()
-			close(done)
-		}()
-		select {
-		case <-done:
-			slog.Info("background workers stopped")
-		case <-time.After(20 * time.Second):
-			slog.Warn("background worker drain timed out")
+
+	jobs := restores.Watch(ctx)
+	for {
+		var job restorectl.Job
+		if pending != nil {
+			job = *pending
+			pending = nil
+		} else {
+			select {
+			case err := <-serverErr:
+				return err
+			case <-ctx.Done():
+				slog.Info("shutdown signal received")
+				return shutdownServer(srv, lifecycle, generation)
+			case watched, ok := <-jobs:
+				if !ok {
+					if ctx.Err() != nil {
+						return shutdownServer(srv, lifecycle, generation)
+					}
+					return errors.New("restore job watcher stopped unexpectedly")
+				}
+				job = watched
+			}
 		}
-	}
 
-	select {
-	case err := <-serverErr:
-		stopCleanup()
-		waitWorkers()
-		return err
-	case <-ctx.Done():
-		slog.Info("shutdown signal received")
-	}
+		if job.Terminal() {
+			continue
+		}
+		current, err := restores.Get(ctx, job.ID)
+		if err != nil {
+			return err
+		}
+		if current.Terminal() {
+			continue
+		}
+		job = current
+		if err := lifecycle.EnterMaintenance(ctx, job.ID); err != nil {
+			return err
+		}
+		if err := generation.Drain(ctx); err != nil {
+			return err
+		}
+		pool.Reset()
+		if err := appLease.Release(); err != nil {
+			return fmt.Errorf("release application restore lease: %w", err)
+		}
+		appLease = nil
 
-	// Halt the background workers before draining in-flight HTTP requests.
-	stopCleanup()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	shutdownErr := srv.Shutdown(shutdownCtx)
-	waitWorkers()
-	return shutdownErr
+		safe, restoreErr := coordinateRestore(ctx, cfg.DatabaseURL, pool, restores, job)
+		if !safe {
+			return fmt.Errorf("restore %s did not reach a safe database state: %w", job.ID, restoreErr)
+		}
+		if restoreErr != nil {
+			slog.Error("browser restore ended without replacing the database", "job", job.ID, "err", restoreErr)
+		}
+
+		pool.Reset()
+		appLease, err = database.AcquireApplicationLease(ctx, cfg.DatabaseURL)
+		if err != nil {
+			return err
+		}
+		if err := database.Migrate(ctx, pool); err != nil {
+			return err
+		}
+		// Restoring an older database must not roll back the environment-managed
+		// administrator identity. Startup applies this same invariant.
+		if err := bootstrapAdmin(ctx, pool, cfg); err != nil {
+			return err
+		}
+		generation, err = startAppGeneration(pool, authMgr, webAuthn, cfg, s3, mailer, restores)
+		if err != nil {
+			return err
+		}
+		lifecycle.Activate(generation.handler)
+		slog.Info("application resumed after restore coordination", "job", job.ID)
+	}
 }
 
 // ensureAdmin validates admin configuration is present.

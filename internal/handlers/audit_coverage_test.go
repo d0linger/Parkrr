@@ -458,9 +458,8 @@ var auditExemptHandlers = map[string]string{
 	"PasskeyRegisterBegin": "WebAuthn ceremony start; stores only an ephemeral challenge, the finish step is audited",
 	"PasskeyLoginBegin":    "WebAuthn ceremony start; stores only an ephemeral challenge, the finish step is audited",
 	"BackupValidate":       "read-only (decrypt + pg_restore --list), changes nothing",
+	"BackupValidateS3":     "read-only S3 download plus decrypt and pg_restore --list, changes nothing",
 	"BackupS3Test":         "read-only connection test, changes nothing",
-	"BackupRestore":        "fail-closed compatibility route: online restore is refused and changes nothing",
-	"BackupRestoreS3":      "fail-closed compatibility route: online S3 restore is refused and changes nothing",
 	"ClientError":          "forwards a browser error to slog, touches no domain data",
 	"ReorderPhotos":        "reine Darstellungsreihenfolge derselben Fotos — kein Inhalt entsteht, ändert sich oder verschwindet; Upload und Löschen der Fotos selbst sind auditiert",
 }

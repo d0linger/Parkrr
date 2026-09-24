@@ -17,8 +17,9 @@ const restoreLockName = "parkrr.database-restore"
 var ErrApplicationActive = errors.New("one or more Parkrr application instances are still running")
 
 // RestoreLease pins one raw PostgreSQL session. Application servers hold the
-// shared form for their complete lifetime; the restore CLI requires the exclusive
-// form. This costs one connection per replica, not one per request.
+// shared form while an application generation can serve or run jobs; offline and
+// coordinated browser restores require the exclusive form. This costs one
+// connection per replica, not one per request.
 type RestoreLease struct {
 	conn   *pgx.Conn
 	shared bool
@@ -69,6 +70,23 @@ func TryAcquireRestoreLease(ctx context.Context, dbURL string) (*RestoreLease, e
 	if !acquired {
 		_ = conn.Close(context.Background())
 		return nil, ErrApplicationActive
+	}
+	return &RestoreLease{conn: conn}, nil
+}
+
+// AcquireRestoreLease waits until every application replica has released its
+// shared process lease, then owns the exclusive restore lease. New replicas that
+// request the shared form queue behind this waiter and cannot start serving in
+// the middle of a restore.
+func AcquireRestoreLease(ctx context.Context, dbURL string) (*RestoreLease, error) {
+	conn, err := maintenanceConn(ctx, dbURL)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := conn.Exec(ctx,
+		`SELECT pg_advisory_lock(hashtextextended($1, 0))`, restoreLockName); err != nil {
+		_ = conn.Close(context.Background())
+		return nil, fmt.Errorf("acquire exclusive restore lease: %w", err)
 	}
 	return &RestoreLease{conn: conn}, nil
 }
