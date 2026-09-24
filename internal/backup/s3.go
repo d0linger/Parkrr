@@ -167,8 +167,8 @@ func TestS3(ctx context.Context, c S3Config) error {
 	return nil
 }
 
-// DownloadS3File downloads one object to a mode-0600 temporary file with a hard
-// size cap. The caller owns and must remove the returned path.
+// DownloadS3File downloads one object to a mode-0600 temporary file in WorkDir
+// with a hard size cap. The caller owns and must remove the returned path.
 func DownloadS3File(ctx context.Context, c S3Config, name string) (string, int64, error) {
 	cl, err := c.client()
 	if err != nil {
@@ -188,7 +188,7 @@ func DownloadS3File(ctx context.Context, c S3Config, name string) (string, int64
 		return "", 0, err
 	}
 	defer obj.Close()
-	f, err := os.CreateTemp("", "parkrr-s3-*.dump.enc")
+	f, err := createWorkFile("parkrr-s3-", ".dump.enc")
 	if err != nil {
 		return "", 0, err
 	}

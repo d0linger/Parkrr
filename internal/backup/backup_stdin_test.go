@@ -18,7 +18,7 @@ func TestRestoreLargeArchiveWithoutTemporaryStorage(t *testing.T) {
 	if dbURL == "" {
 		t.Skip("PARKRR_BACKUP_TEST_DATABASE_URL not set")
 	}
-	for _, tool := range []string{"pg_dump", "pg_restore"} {
+	for _, tool := range []string{"pg_dump", "pg_restore", "psql"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("%s not installed", tool)
 		}
@@ -44,7 +44,7 @@ func TestRestoreLargeArchiveWithoutTemporaryStorage(t *testing.T) {
 	}
 	defer func() {
 		if _, err := conn.Exec(context.Background(),
-			`DROP VIEW IF EXISTS public.backup_stdin_dependency; DROP SCHEMA backup_stdin_test CASCADE`); err != nil {
+			`DROP SCHEMA IF EXISTS backup_stdin_dep CASCADE; DROP SCHEMA backup_stdin_test CASCADE`); err != nil {
 			t.Error(err)
 		}
 	}()
@@ -89,12 +89,15 @@ func TestRestoreLargeArchiveWithoutTemporaryStorage(t *testing.T) {
 	if err := Restore(ctx, dbURL, enc, "wrong-key"); err == nil {
 		t.Fatal("wrong key restored")
 	}
+	// The dependent view lives in its own schema: the restore replaces public as a
+	// whole, so a view there would simply be dropped with it.
 	if _, err := conn.Exec(ctx, `UPDATE backup_stdin_test.payload SET data='preserved' WHERE id=1;
-		CREATE VIEW public.backup_stdin_dependency AS SELECT id FROM backup_stdin_test.payload`); err != nil {
+		CREATE SCHEMA backup_stdin_dep;
+		CREATE VIEW backup_stdin_dep.dependency AS SELECT id FROM backup_stdin_test.payload`); err != nil {
 		t.Fatal(err)
 	}
 	// A dependent object outside the archive forces a real SQL error. The target
-	// must remain unchanged because pg_restore runs in a single transaction.
+	// must remain unchanged because the restore runs in a single transaction.
 	if err := Restore(ctx, dbURL, enc, key); err == nil {
 		t.Fatal("expected dependency failure")
 	}

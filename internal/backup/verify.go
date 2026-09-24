@@ -114,7 +114,8 @@ func VerifyArchive(ctx context.Context, enc []byte, key string) (VerifyReport, e
 }
 
 // VerifyArchiveFile performs the same four-stage verification without retaining
-// encrypted and decrypted copies in memory.
+// encrypted and decrypted copies in memory, and without writing the plaintext to
+// disk: the archive is decrypted straight into pg_restore --list.
 func VerifyArchiveFile(ctx context.Context, encryptedPath, key string) (VerifyReport, error) {
 	sha, size, err := ChecksumFile(encryptedPath)
 	rep := VerifyReport{Stage: "checksum", SHA256: sha, Bytes: size}
@@ -124,13 +125,8 @@ func VerifyArchiveFile(ctx context.Context, encryptedPath, key string) (VerifyRe
 	if size == 0 {
 		return rep, errors.New("archive is empty")
 	}
-	plainPath, err := decryptArchiveFile(ctx, encryptedPath, key)
-	if err != nil {
-		return rep, fmt.Errorf("archive check failed: %w", err)
-	}
-	defer os.Remove(plainPath)
 	rep.Stage = "archive"
-	toc, err := plainArchiveTOCFile(ctx, plainPath)
+	toc, err := archiveTOCFile(ctx, encryptedPath, key)
 	if err != nil {
 		return rep, fmt.Errorf("archive check failed: %w", err)
 	}
