@@ -967,6 +967,19 @@ func (h *Handler) DeleteAgreement(w http.ResponseWriter, r *http.Request) {
 	h.writeAgreements(w, r, pid)
 }
 
+// lockAgreementPersonTx takes the invoice lock of the agreement's person
+// (lockInvoicePersonTx); found=false when the agreement does not exist.
+func lockAgreementPersonTx(ctx context.Context, tx pgx.Tx, agreementID int64) (found bool, err error) {
+	var pid int64
+	if err := tx.QueryRow(ctx, `SELECT person_id FROM flat_rate_periods WHERE id=$1`, agreementID).Scan(&pid); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, lockInvoicePersonTx(ctx, tx, pid)
+}
+
 type agreementPaidRequest struct {
 	Paid bool `json:"paid"`
 }
@@ -997,6 +1010,16 @@ func (h *Handler) SetAgreementPaid(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	// CreateInvoice's per-person lock BEFORE the invoice check below, so an invoice
+	// can't claim a period between the check and the settlement (BIL-05).
+	if ok, lerr := lockAgreementPersonTx(ctx, tx, id); lerr != nil {
+		writeError(w, http.StatusInternalServerError, "could not update agreement")
+		return
+	} else if !ok {
+		writeError(w, http.StatusNotFound, "agreement not found")
+		return
+	}
 
 	// An invoiced Pauschale is settled through its Rechnung, not the master slider.
 	// Block the toggle (both directions) when a non-canceled invoice bills any of its
@@ -1270,6 +1293,15 @@ func (h *Handler) SetAgreementPeriodPaid(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
+
+	// CreateInvoice's per-person lock before the fakturier check below (BIL-05).
+	if ok, lerr := lockAgreementPersonTx(r.Context(), tx, id); lerr != nil {
+		writeError(w, http.StatusInternalServerError, "could not update payment")
+		return
+	} else if !ok {
+		writeError(w, http.StatusNotFound, "agreement not found")
+		return
+	}
 
 	// Read + lock the agreement inside the transaction so the master-flag branch
 	// below acts on a consistent snapshot even under concurrent paid toggles.

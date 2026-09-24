@@ -31,12 +31,13 @@ func TestRecurringChargeAsPeriod(t *testing.T) {
 		t.Fatalf("period-paid = %v, want 25", paid)
 	}
 
-	// The master flag pays everything accrued.
+	// Paid is derived for display and never a master flag: on its own it settles
+	// nothing — not even periods that have not happened yet (BIL-01).
 	rc.PaidPeriods = nil
 	rc.Paid = true
 	p = rc.AsPeriod()
-	if paid := float64(p.PaidCentsInRange(rc.StartDate, until)) / 100; math.Abs(paid-50) > 0.001 {
-		t.Fatalf("master-paid = %v, want 50", paid)
+	if paid := float64(p.PaidCentsInRange(rc.StartDate, until)) / 100; paid != 0 {
+		t.Fatalf("derived Paid settled %v, want 0", paid)
 	}
 
 	// Yearly: 120/year from 1 Jan accrues the full 120 through year end.

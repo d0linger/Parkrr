@@ -163,8 +163,10 @@ func TestInvoicedPeriodNotDoubleCredited(t *testing.T) {
 }
 
 // TestReToggleManuallySettledChargeNoError (review P0-#2): a charge settled by a
-// manual payment, toggled open, then paid again must not hit the (kind,ref_id)
-// unique index and 500 — syncTogglePaymentTx sees the existing allocation and no-ops.
+// manual payment must not hit the (kind,ref_id) unique index and 500. Toggling it
+// open is refused (BIL-03: the allocation would survive the flag and block every
+// invoice of the person); a legacy row already in that state re-toggles to paid
+// as a no-op because syncTogglePaymentTx sees the existing allocation.
 func TestReToggleManuallySettledChargeNoError(t *testing.T) {
 	h := testHandler(t)
 	pid := createIntegrationPerson(t, h)
@@ -184,8 +186,23 @@ func TestReToggleManuallySettledChargeNoError(t *testing.T) {
 		t.Fatalf("payment: %d %s", prec.Code, prec.Body.String())
 	}
 
-	// Toggle open, then paid again — the second must not 500 on the unique index.
-	setChargePaidT(t, h, cid, false)
+	body, _ := json.Marshal(map[string]any{"paid": false})
+	req := httptest.NewRequest(http.MethodPost, "/api/charges/"+strconv.FormatInt(cid, 10)+"/paid", bytes.NewReader(body))
+	req.SetPathValue("id", strconv.FormatInt(cid, 10))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.SetChargePaid(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("toggling a manually settled charge open must be 409, got %d %s", rec.Code, rec.Body.String())
+	}
+	if !chargePaid(t, h, cid) {
+		t.Fatal("refused toggle must leave the charge paid")
+	}
+
+	// Legacy state (flag open, allocation kept): paid again must not 500.
+	if _, err := h.Pool.Exec(t.Context(), `UPDATE charges SET paid=false WHERE id=$1`, cid); err != nil {
+		t.Fatal(err)
+	}
 	setChargePaidT(t, h, cid, true)
 }
 

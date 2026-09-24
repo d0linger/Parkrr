@@ -430,7 +430,20 @@ func TestSliderInertOnInvoicedPosition(t *testing.T) {
 	iv := createInvoice(t, h, pid) // locks the charge
 
 	before := personStatsT(t, h, pid)
-	setChargePaidT(t, h, cid, true) // slider on the now-invoiced charge
+	// Slider on the now-invoiced charge: refused (BIL-03 path B — it used to write
+	// paid=true without a payment, so after a Storno the charge was never billable).
+	body, _ := json.Marshal(map[string]any{"paid": true})
+	req := httptest.NewRequest(http.MethodPost, "/api/charges/"+strconv.FormatInt(cid, 10)+"/paid", bytes.NewReader(body))
+	req.SetPathValue("id", strconv.FormatInt(cid, 10))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.SetChargePaid(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("slider on an invoiced charge must be 409, got %d %s", rec.Code, rec.Body.String())
+	}
+	if chargePaid(t, h, cid) {
+		t.Error("refused slider must not flip the charge's paid flag")
+	}
 	after := personStatsT(t, h, pid)
 
 	// No auto-payment => balance unchanged, invoice still fully open.

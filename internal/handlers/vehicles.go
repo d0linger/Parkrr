@@ -54,7 +54,10 @@ func (h *Handler) autoArchiveIfClosed(r *http.Request, id int64) {
 		`UPDATE vehicles SET archived=true, updated_at=now()
 		 WHERE id=$1 AND archived=false
 		   AND (status='cancelled'
-		        OR (status='collected' AND paid)
+		        -- paid only closes the vehicle when the settlement reaches its last
+		        -- day: rent after paid_through is still owed and invoiced (BIL-02),
+		        -- and an archived vehicle is never invoiced.
+		        OR (status='collected' AND paid AND paid_through >= end_date)
 		        -- collected + settled through invoice(s): has a covering non-canceled
 		        -- invoice and none of them is still open (all fully paid).
 		        OR (status='collected'
@@ -78,7 +81,7 @@ const vehicleSelect = `SELECT v.id, v.person_id, v.category_id, v.label, v.licen
 	        c.name, c.default_monthly_cost, c.default_yearly_cost,
 	        p.first_name, p.last_name,
 	        (SELECT count(*) FROM vehicle_photos vp WHERE vp.vehicle_id = v.id),
-	        v.spot_id, sp.hall_id, hl.name
+	        v.spot_id, sp.hall_id, hl.name, v.paid_through
 	 FROM vehicles v
 	 JOIN categories c ON c.id = v.category_id
 	 JOIN persons p ON p.id = v.person_id
@@ -876,29 +879,12 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 	}
 	var archived, curPaid bool
 	var personID int64
+	var curThrough *time.Time
 	scanErr := h.Pool.QueryRow(r.Context(),
-		`SELECT archived, paid, person_id FROM vehicles WHERE id=$1`, id).Scan(&archived, &curPaid, &personID)
+		`SELECT archived, paid, person_id, paid_through FROM vehicles WHERE id=$1`, id).
+		Scan(&archived, &curPaid, &personID, &curThrough)
 	if !ensureVehicleWritable(w, archived, scanErr) {
 		return
-	}
-	// A vehicle already billed by an active invoice is settled through that invoice.
-	// Marking it globally "bezahlt" would record no payment (it's excluded from
-	// openOwedItems) yet — via the per-period model — suppress ALL its future rent:
-	// silent lost revenue. Block the slider; settle via the invoice instead.
-	if req.Paid && !curPaid {
-		var invoiced bool
-		// Fail CLOSED: a query error must not skip the guard (that would re-open the
-		// silent lost-revenue path the guard exists to prevent).
-		if err := h.Pool.QueryRow(r.Context(),
-			`SELECT EXISTS(SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
-			   WHERE s.kind='vehicle' AND s.ref_id=$1 AND NOT i.canceled)`, id).Scan(&invoiced); err != nil {
-			writeError(w, http.StatusInternalServerError, "could not verify invoice status")
-			return
-		}
-		if invoiced {
-			writeError(w, http.StatusConflict, "Fahrzeug ist bereits fakturiert – über die Rechnung begleichen")
-			return
-		}
 	}
 	// P2.3: keep the money in step — record the auto-payment while still open (so
 	// its amount is visible in openOwedItems), then flip the flag, all in ONE
@@ -915,17 +901,74 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	today := businessDay(h.now())
+	newThrough := curThrough // unchanged unless the flag flips
 	failMsg := "could not update payment status"
 	if err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		// CreateInvoice's per-person lock first, then the invoice check: an invoice
+		// can no longer claim the vehicle's periods between the check and the flag
+		// (BIL-05).
+		if err := lockInvoicePersonTx(r.Context(), tx, personID); err != nil {
+			return err
+		}
 		if req.Paid && !curPaid {
+			// A vehicle already billed by an active invoice is settled through that
+			// invoice. Marking it "bezahlt" would record no payment (it's excluded from
+			// openOwedItems) yet settle rent the invoice bills: block the slider.
+			// Fail CLOSED: a query error must not skip the guard.
+			if inv, err := periodInvoicedTx(r.Context(), tx, "vehicle", id, ""); err != nil {
+				failMsg = "could not verify invoice status"
+				return err
+			} else if inv {
+				return &settlementConflictError{"Fahrzeug ist bereits fakturiert – über die Rechnung begleichen"}
+			}
 			if err := h.syncTogglePaymentTx(r.Context(), tx, "vehicle", id, personID, true, amt, bound); err != nil {
 				failMsg = "could not record payment"
 				return err
 			}
+			// The settlement pays the rent accrued through today — paid_through records
+			// exactly that, so later rent is owed and invoiced again (BIL-02). If a
+			// payment already claimed the vehicle, its booking day is the boundary.
+			through := today
+			var claimedAt *time.Time
+			if err := tx.QueryRow(r.Context(),
+				`SELECT max(created_at) FROM payment_allocations WHERE kind='vehicle' AND ref_id=$1`, id).
+				Scan(&claimedAt); err != nil {
+				return err
+			}
+			if claimedAt != nil {
+				if d := businessDay(claimedAt.In(h.now().Location())); d.Before(through) {
+					through = d
+				}
+			}
+			if _, err := tx.Exec(r.Context(),
+				`UPDATE vehicles SET paid=true, paid_through=$2, updated_at=now() WHERE id=$1`, id, through); err != nil {
+				return err
+			}
+			newThrough = &through
+			return nil
+		}
+		if !req.Paid && curPaid {
+			// Money a regular payment allocated to the vehicle can't be toggled away:
+			// the allocation would survive with the flag open, and the vehicle would be
+			// both paid and billed. Reverse (storno) that payment instead.
+			var manual bool
+			if err := tx.QueryRow(r.Context(),
+				`SELECT EXISTS(SELECT 1 FROM payment_allocations a JOIN payments p ON p.id=a.payment_id
+				   WHERE a.kind='vehicle' AND a.ref_id=$1 AND NOT p.auto)`, id).Scan(&manual); err != nil {
+				return err
+			}
+			if manual {
+				return &settlementConflictError{"Fahrzeug wurde über eine Zahlung beglichen – bitte die Zahlung stornieren"}
+			}
 		}
 		if _, err := tx.Exec(r.Context(),
-			`UPDATE vehicles SET paid=$1, updated_at=now() WHERE id=$2`, req.Paid, id); err != nil {
+			`UPDATE vehicles SET paid=$1, paid_through=CASE WHEN $1 THEN paid_through END, updated_at=now() WHERE id=$2`,
+			req.Paid, id); err != nil {
 			return err
+		}
+		if !req.Paid {
+			newThrough = nil
 		}
 		if !req.Paid && curPaid {
 			// Don't swallow this: if removing the auto-payment fails the flag flips
@@ -938,6 +981,11 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	}); err != nil {
+		var conflict *settlementConflictError
+		if errors.As(err, &conflict) {
+			writeError(w, http.StatusConflict, conflict.msg)
+			return
+		}
 		if writeSettlementConflict(w, err) {
 			return
 		}
@@ -949,7 +997,8 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 		label = "bezahlt"
 	}
 	h.auditChange(r, "update", "vehicle", id, "Zahlung "+h.vehicleDesc(r, id)+": "+label,
-		diffFields(map[string]any{"paid": curPaid}, map[string]any{"paid": req.Paid}))
+		diffFields(map[string]any{"paid": curPaid, "paid_through": dateOrNil(curThrough)},
+			map[string]any{"paid": req.Paid, "paid_through": dateOrNil(newThrough)}))
 	h.autoArchiveIfClosed(r, id)
 	h.writeVehicle(w, r.Context(), id, http.StatusOK)
 }
@@ -1100,7 +1149,7 @@ func scanVehicleRow(row rowScanner) (models.Vehicle, models.Category, error) {
 		&v.NeedsPower, &v.PlannerSymbol,
 		&cat.Name, &cat.DefaultMonthlyCost, &cat.DefaultYearlyCost,
 		&firstName, &lastName, &v.PhotoCount,
-		&v.SpotID, &v.HallID, &hallName)
+		&v.SpotID, &v.HallID, &hallName, &v.PaidThrough)
 	if err != nil {
 		return v, cat, err
 	}
@@ -1179,6 +1228,14 @@ func enrich(v *models.Vehicle, cat models.Category, now time.Time) {
 	v.EffectiveRate = v.EffectiveRateFor(cat)
 	v.AccruedCost = round2(v.AccruedCostAsOf(cat, now))
 	v.IsActive = v.Status == models.StatusStored || v.Status == models.StatusReserved
+}
+
+// dateOrNil renders a nullable DATE for an audit diff.
+func dateOrNil(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return t.Format(dateLayout)
 }
 
 func vehicleLabel(label, plate string) string {

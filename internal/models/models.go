@@ -428,15 +428,19 @@ func (a *FlatRatePeriod) AccruedAsOf(asOf time.Time) float64 {
 // flat-rate / per-vehicle rent. Its accrual and per-period payment math reuse the
 // flat-rate period logic via AsPeriod.
 type RecurringCharge struct {
-	ID          int64              `json:"id"`
-	PersonID    int64              `json:"person_id"`
-	VehicleID   *int64             `json:"vehicle_id"` // nil = person-level, directly payable
-	Description string             `json:"description"`
-	Amount      float64            `json:"amount"`
-	Period      string             `json:"period"` // monthly | yearly
-	StartDate   time.Time          `json:"start_date"`
-	EndDate     *time.Time         `json:"end_date"` // nil = open-ended
-	Paid        bool               `json:"paid"`     // master flag: whole charge paid
+	ID          int64      `json:"id"`
+	PersonID    int64      `json:"person_id"`
+	VehicleID   *int64     `json:"vehicle_id"` // nil = person-level, directly payable
+	Description string     `json:"description"`
+	Amount      float64    `json:"amount"`
+	Period      string     `json:"period"` // monthly | yearly
+	StartDate   time.Time  `json:"start_date"`
+	EndDate     *time.Time `json:"end_date"` // nil = open-ended
+	// Paid is DERIVED (not stored): every completed period is paid in full. There
+	// is no sticky master flag any more — the "bezahlt" slider writes per-period
+	// keys for the completed periods only, so later periods become owed again
+	// (migration 077, BIL-01). AsPeriod therefore never passes it on.
+	Paid        bool               `json:"paid"`
 	PaidPeriods []string           `json:"paid_periods"`
 	PaidFixed   map[string]float64 `json:"paid_fixed,omitempty"`
 	CreatedAt   time.Time          `json:"created_at"`
@@ -451,7 +455,9 @@ type RecurringCharge struct {
 
 // AsPeriod returns a FlatRatePeriod view so the recurring charge reuses the exact
 // prorated accrual and per-period payment math as flat-rate agreements. A bound
-// charge carries its vehicle id so coverage/settlement can attribute it.
+// charge carries its vehicle id so coverage/settlement can attribute it. Only the
+// per-period keys settle: the derived Paid must never act as a master flag, which
+// would settle periods that have not happened yet.
 func (rc *RecurringCharge) AsPeriod() FlatRatePeriod {
 	vids := []int64{}
 	if rc.VehicleID != nil {
@@ -459,8 +465,26 @@ func (rc *RecurringCharge) AsPeriod() FlatRatePeriod {
 	}
 	return FlatRatePeriod{
 		Amount: rc.Amount, Period: rc.Period, StartDate: rc.StartDate, EndDate: rc.EndDate,
-		Paid: rc.Paid, PaidPeriods: rc.PaidPeriods, PaidFixed: rc.PaidFixed, VehicleIDs: vids,
+		PaidPeriods: rc.PaidPeriods, PaidFixed: rc.PaidFixed, VehicleIDs: vids,
 	}
+}
+
+// CompletePeriodsPaid reports whether at least one period has completed as of
+// asOf and every completed period is paid in full (a whole-period key, or no
+// cost). The running period does not count: it is owed until it closes.
+func (a *FlatRatePeriod) CompletePeriodsPaid(asOf time.Time) bool {
+	paid := a.paidKeySet()
+	seen := false
+	for _, per := range a.ElapsedPeriodsDetailed(asOf) {
+		if !per.Complete {
+			continue
+		}
+		seen = true
+		if !a.Paid && !paid[per.Key] && toCents(per.Cost) > 0 {
+			return false
+		}
+	}
+	return seen
 }
 
 // Category is a centrally-managed vehicle type with default pricing.
@@ -505,6 +529,10 @@ type Vehicle struct {
 	ReservedFrom  *time.Time `json:"reserved_from"`
 	ReservedUntil *time.Time `json:"reserved_until"`
 	Paid          bool       `json:"paid"`
+	// PaidThrough is the last day (inclusive) of rent the settlement behind Paid
+	// covers — the day its money was booked. Rent after it is owed and invoiced per
+	// completed period; nil = nothing settled (migration 077, BIL-02).
+	PaidThrough   *time.Time `json:"paid_through,omitempty"`
 	NeedsPower    bool       `json:"needs_power"`    // Ladebedarf (Strom) — Garagenplaner only, no billing effect
 	PlannerSymbol *string    `json:"planner_symbol"` // override the category top-view symbol; nil = automatic
 	// Archived marks a closed vehicle (cancelled, or collected + paid) that has
