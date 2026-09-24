@@ -136,6 +136,7 @@
         power: '<path d="M12 4v8"/><path d="M7.4 6.8a7 7 0 1 0 9.2 0"/>',
         chevron: '<path d="M9 6l6 6-6 6"/>',
         tag: '<path d="M12.6 3.6 20.4 11.4a2 2 0 0 1 0 2.8l-6.2 6.2a2 2 0 0 1-2.8 0L3.6 12.6V5.6a2 2 0 0 1 2-2h7Z"/><circle cx="8.3" cy="8.3" r="1.3"/>',
+        euro: '<path d="M17.5 6.5A7 7 0 1 0 17.5 17.5"/><path d="M5 10.2h9M5 13.8h9"/>',
         receipt: '<path d="M6 3h12v18l-2.2-1.3-2 1.3-2-1.3-2 1.3-2-1.3L6 21V3Z"/><path d="M9.2 8.5h5.6M9.2 12h5.6"/>',
         check: '<path d="M20 6 9 17l-5-5"/>',
         plus: '<path d="M12 5v14M5 12h14"/>',
@@ -1150,7 +1151,7 @@
         return { name: name || 'dashboard', id: id ? Number(id) : null };
     }
     // garage/hall sind Unteransichten des Planers und markieren denselben Reiter.
-    const TAB_FOR = { dashboard: 'dashboard', persons: 'persons', person: 'persons', vehicles: 'vehicles', vehicle: 'vehicles', finance: 'finance',
+    const TAB_FOR = { dashboard: 'dashboard', persons: 'persons', person: 'persons', vehicles: 'vehicles', vehicle: 'vehicles', tariffs: 'tariffs',
         garages: 'garages', garage: 'garages', hall: 'garages' };
     function navigate(path) {
         if (('#/' + path) === location.hash) render();
@@ -8622,7 +8623,7 @@
         const group = (title) => body.append(el('div', { class: 'menu-sec' }, title));
         group('Betrieb');
         if (isAdmin()) body.append(item('receipt', 'Rechnungen', () => navigate('billing')));
-        body.append(item('tag', 'Tarife', () => navigate('tariffs')));
+        body.append(item('euro', 'Zusatzkosten', () => navigate('finance')));
         group('Verwaltung');
         body.append(item('settings', 'Einstellungen', () => navigate('settings')));
         if (isAdmin()) body.append(item('users', 'Benutzer', () => navigate('users')));

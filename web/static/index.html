@@ -108,12 +108,13 @@
             <button class="tab" data-route="vehicles" type="button">
                 <span class="tab-pill" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16v-3.2c0-.6.2-1.2.6-1.7l2-2.6c.4-.5 1-.8 1.6-.8h6.4c.7 0 1.3.3 1.7.9l1.9 2.5c.4.5.6 1.1.6 1.7V16"/><circle cx="7.5" cy="17" r="1.8"/><circle cx="16.5" cy="17" r="1.8"/><path d="M3 16h18"/></svg></span><span>Gefährte</span>
             </button>
-            <button class="tab" data-route="finance" type="button">
-                <span class="tab-pill" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 6.5A7 7 0 1 0 17.5 17.5"/><path d="M5 10.2h9M5 13.8h9"/></svg></span><span>Zusatzkosten</span>
+            <!-- Tarife statt Zusatzkosten: Tarife werden im Betrieb oefter geoeffnet;
+                 Zusatzkosten liegen im Menue unter "Betrieb". -->
+            <button class="tab" data-route="tariffs" type="button">
+                <span class="tab-pill" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12.6 3.6 20.4 11.4a2 2 0 0 1 0 2.8l-6.2 6.2a2 2 0 0 1-2.8 0L3.6 12.6V5.6a2 2 0 0 1 2-2h7Z"/><circle cx="8.3" cy="8.3" r="1.3"/></svg></span><span>Tarife</span>
             </button>
-            <!-- Stellplaetze statt Tarife: PRODUCT.md nennt den massstaeblichen
-                 Hallenplaner als eines von drei Alleinstellungsmerkmalen, waehrend
-                 Tarife eine saisonale Konfiguration ist. Ein Platz in der Tableiste
+            <!-- Stellplaetze: PRODUCT.md nennt den massstaeblichen Hallenplaner als
+                 eines von drei Alleinstellungsmerkmalen. Ein Platz in der Tableiste
                  ist die staerkste Aussage, die eine mobile App ueber sich macht. -->
             <button class="tab" data-route="garages" type="button">
                 <span class="tab-pill" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 10.5 12 4l8.5 6.5V20a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1Z"/><path d="M7.5 21v-6.5h9V21"/><path d="M7.5 17.5h9"/></svg></span><span>Stellplätze</span>
