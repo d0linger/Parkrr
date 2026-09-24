@@ -167,7 +167,7 @@ func (h *AuthHandler) PasskeyRegisterBegin(w http.ResponseWriter, r *http.Reques
 	}
 	// Step-up: registering a durable new factor requires a recent primary-factor
 	// login, or the account password if that window has closed (finding SH-02).
-	if !h.requireStepUp(w, r, u.Username, body.Password) {
+	if !h.requireStepUp(w, r, u, body.Password) {
 		return
 	}
 	// Eine bestehende Sperre auch hier durchsetzen, AUCH wenn das Step-up-Fenster
@@ -380,7 +380,7 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 	}
 	h.clearCeremony(r.Context(), w, r)
 
-	uid, cloneWarning, err := h.WebAuthn.FinishLogin(r.Context(), cer.Session, r)
+	uid, credID, cloneWarning, err := h.WebAuthn.FinishLogin(r.Context(), cer.Session, r)
 	if errors.Is(err, auth.ErrPasskeySuspended) {
 		h.auditAs(r, uid, "", "security", "passkey", uid, "passkey suspended after clone warning")
 		writeError(w, http.StatusUnauthorized, "passkey login failed")
@@ -428,7 +428,15 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 	// throttled even after a successful passkey login. The passkey path is
 	// usernameless, so key the reset by the resolved account name (as UserLimiter is).
 	h.UserLimiter.Reset(strings.ToLower(u.Username))
-	if err := h.Auth.CreateVerifiedSession(r.Context(), w, r, uid); err != nil {
+	// Tie the session to the credential that just signed (audit AUTH-04): an admin
+	// 2FA reset or passkey deletion that committed after the assertion verified
+	// must not leave a fresh factor-verified session behind.
+	if err := h.Auth.CreatePasskeySession(r.Context(), w, r, uid, credID); err != nil {
+		if errors.Is(err, auth.ErrCredentialChanged) {
+			slog.Warn("passkey login rejected: credential removed during login", "user_id", uid)
+			writeError(w, http.StatusUnauthorized, "passkey login failed")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not create session")
 		return
 	}
