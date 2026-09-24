@@ -790,7 +790,17 @@ type overviewCachedResponse struct {
 	header http.Header
 	status int
 	body   []byte
+	// day is the accrual day the summary was computed for; storedAt bounds how
+	// long it may be served (see overviewCacheTTL).
+	day      string
+	storedAt time.Time
 }
+
+// overviewCacheTTL caps how long a cached overview is served. The revision
+// sequence advances when a write statement runs, not when it commits, so a
+// calculation can read the bumped revision yet still see pre-commit data; the
+// TTL bounds that staleness instead of letting it last until the next write.
+const overviewCacheTTL = 30 * time.Second
 
 type overviewResponseWriter struct {
 	header http.Header
@@ -820,19 +830,28 @@ func (h *Handler) overviewRevision(ctx context.Context) (int64, error) {
 	return revision, err
 }
 
-func (h *Handler) cachedOverview(year int, revision int64) (overviewCachedResponse, bool) {
+// cachedOverview returns the cached summary for year when it was computed at
+// revision for the accrual day and is younger than overviewCacheTTL.
+func (h *Handler) cachedOverview(year int, day string, revision int64, now time.Time) (overviewCachedResponse, bool) {
 	h.overviewMu.RLock()
 	defer h.overviewMu.RUnlock()
 	if h.overviewCacheRevision != revision {
 		return overviewCachedResponse{}, false
 	}
 	resp, ok := h.overviewCache[year]
-	return resp, ok
+	if !ok || resp.day != day || now.Sub(resp.storedAt) >= overviewCacheTTL {
+		return overviewCachedResponse{}, false
+	}
+	return resp, true
 }
 
-func (h *Handler) storeOverview(year int, revision int64, resp overviewCachedResponse) {
+// storeOverview caches resp for year at revision and the accrual day.
+func (h *Handler) storeOverview(year int, day string, revision int64, resp overviewCachedResponse) {
 	h.overviewMu.Lock()
 	defer h.overviewMu.Unlock()
+	if h.overviewCache == nil {
+		h.overviewCache = make(map[int]overviewCachedResponse)
+	}
 	if h.overviewCacheRevision != revision {
 		h.overviewCacheRevision = revision
 		clear(h.overviewCache)
@@ -843,6 +862,8 @@ func (h *Handler) storeOverview(year int, revision int64, resp overviewCachedRes
 	if len(h.overviewCache) >= 8 {
 		clear(h.overviewCache)
 	}
+	resp.day = day
+	resp.storedAt = time.Now()
 	h.overviewCache[year] = resp
 }
 
@@ -865,18 +886,22 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, "query failed", err)
 		return
 	}
-	year := parseYearParam(r, h.now().Year())
-	if resp, ok := h.cachedOverview(year, revision); ok {
+	// One clock read decides both the year default and the accrual day, and the
+	// calculation uses the same instant, so the cache key matches its content.
+	now := h.now()
+	year := parseYearParam(r, now.Year())
+	day := now.Format("2006-01-02")
+	if resp, ok := h.cachedOverview(year, day, revision, time.Now()); ok {
 		writeCachedOverview(w, resp)
 		return
 	}
 
-	key := fmt.Sprintf("%d:%d", year, revision)
+	key := fmt.Sprintf("%d:%s:%d", year, day, revision)
 	result := h.overviewGroup.DoChan(key, func() (any, error) {
 		calcCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Second)
 		defer cancel()
 		capture := &overviewResponseWriter{header: make(http.Header)}
-		h.overviewUncached(capture, r.Clone(calcCtx))
+		h.overviewUncached(capture, r.Clone(calcCtx), now)
 		status := capture.status
 		if status == 0 {
 			status = http.StatusOK
@@ -888,7 +913,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 		// A write may have committed while the multi-query calculation ran. Only
 		// publish the result if it still describes the revision used as its key.
 		if current, rerr := h.overviewRevision(calcCtx); rerr == nil && current == revision && status == http.StatusOK {
-			h.storeOverview(year, revision, resp)
+			h.storeOverview(year, day, revision, resp)
 		}
 		return resp, nil
 	})
@@ -904,7 +929,7 @@ func (h *Handler) Overview(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) overviewUncached(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) overviewUncached(w http.ResponseWriter, r *http.Request, now time.Time) {
 	ctx := r.Context()
 	resp := overviewResponse{
 		StatusCounts: map[string]int{
@@ -928,7 +953,6 @@ func (h *Handler) overviewUncached(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := h.now()
 	resp.Year = parseYearParam(r, now.Year())
 	resp.TopOutstanding = []personOutstanding{}
 	yearStart := time.Date(resp.Year, 1, 1, 0, 0, 0, 0, time.UTC)

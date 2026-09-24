@@ -2286,7 +2286,11 @@
         const sel = { auto: true, checked: new Set(items.map((i) => i.kind + ':' + i.id)) };
         // Keep one key for the lifetime of this modal: a network retry can safely
         // return the first result instead of recording the money twice.
-        const paymentKey = crypto.randomUUID();
+        // randomUUID needs a secure context; plain-HTTP deployments fall back to
+        // 16 random bytes as hex, which the server's key validation accepts.
+        const paymentKey = typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
 
         await formModal({
             title: 'Zahlung erfassen',

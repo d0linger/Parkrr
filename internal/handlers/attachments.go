@@ -181,13 +181,16 @@ func (h *Handler) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, "could not store attachment", err)
 		return
 	}
+	// Nur Metadaten ins Protokoll — nie die Bytes.
+	if err := h.auditCreatedTx(r.Context(), tx, r, "attachment", attID, "Anhang hochgeladen: "+filename,
+		map[string]any{col: id, "filename": filename, "content_type": contentType, "byte_size": len(data)}); err != nil {
+		serverError(w, r, "could not store attachment", err)
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		serverError(w, r, "could not store attachment", err)
 		return
 	}
-	// Nur Metadaten ins Protokoll — nie die Bytes.
-	h.auditCreated(r, "attachment", attID, "Anhang hochgeladen: "+filename,
-		map[string]any{col: id, "filename": filename, "content_type": contentType, "byte_size": len(data)})
 	writeJSON(w, http.StatusCreated, attachmentMeta{
 		ID: attID, Filename: filename, ContentType: contentType, ByteSize: len(data), CreatedAt: time.Now(),
 	})

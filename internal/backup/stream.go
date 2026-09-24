@@ -229,11 +229,13 @@ func DumpEncrypted(ctx context.Context, dbURL, key string, dst io.Writer) error 
 		_ = cmd.Process.Kill()
 	}
 	waitErr := cmd.Wait()
-	if waitErr != nil {
-		return fmt.Errorf("pg_dump failed: %w: %s", waitErr, stderr.String())
-	}
+	// A failed encryption killed pg_dump, so its exit status only echoes that
+	// kill; report the encryption error that caused it.
 	if encryptErr != nil {
 		return fmt.Errorf("encrypt pg_dump: %w", encryptErr)
+	}
+	if waitErr != nil {
+		return fmt.Errorf("pg_dump failed: %w: %s", waitErr, stderr.String())
 	}
 	return nil
 }

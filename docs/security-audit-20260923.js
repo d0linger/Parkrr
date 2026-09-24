@@ -438,11 +438,16 @@ function renderList() {
   host.replaceChildren();
   $("#result-count").textContent = `${visible.length} of ${findings.length} visible`;
   $("#empty-state").hidden = visible.length !== 0;
-  if (visible.length && !visible.some((f) => f.id === state.selected)) state.selected = visible[0].id;
+  if (visible.length && !visible.some((f) => f.id === state.selected)) {
+    const hadSelection = state.selected !== null;
+    state.selected = visible[0].id;
+    // Filtering hid the linked finding: keep the deep link on what is shown.
+    if (hadSelection) history.replaceState(null, "", `#${state.selected}`);
+  }
   if (!visible.length) state.selected = null;
   visible.forEach((f) => {
     const status = statusOf(f.id);
-    const button = make("button", { class: "finding-row", type: "button", role: "option", "aria-selected": f.id === state.selected, "data-id": f.id, style: `--severity:${severityVar(f.severity)}`, onclick: () => selectFinding(f.id, true) },
+    const button = make("button", { class: "finding-row", type: "button", "aria-current": f.id === state.selected ? "true" : "false", "data-id": f.id, style: `--severity:${severityVar(f.severity)}`, onclick: () => selectFinding(f.id, true) },
       make("span", { class: "finding-id", text: f.id }),
       make("span", { class: "finding-copy" }, make("span", { class: "finding-title", text: f.title }), make("span", { class: "finding-target", text: f.target })),
       make("span", { class: "finding-foot" }, make("span", { class: "triage-mark", "data-status": status, "aria-hidden": "true" }), `${f.category} · ${statusLabels[status]}`));
@@ -487,8 +492,17 @@ function selectFinding(id, userInitiated = false) {
   state.selected = id;
   history.replaceState(null, "", `#${id}`);
   renderList(); renderDossier(); renderSummary();
-  if (matchMedia("(max-width: 920px)").matches) openMobileDossier();
+  // renderList replaced the rows, so move focus onto the new button for the
+  // selection the user just made.
+  if (userInitiated) document.querySelector(`[data-id="${id}"]`)?.focus({ preventScroll: true });
+  if (mobileLayout.matches) openMobileDossier();
 }
+
+// Keep in sync with the single-column breakpoint in security-audit-20260923.css.
+const mobileLayout = matchMedia("(max-width: 1024px)");
+mobileLayout.addEventListener("change", (event) => {
+  if (!event.matches && $("#dossier").classList.contains("is-open")) closeMobileDossier();
+});
 
 const mobileBackground = [".skip-link", ".topbar", ".intro", ".risk-strip", ".controls", ".register"];
 function openMobileDossier() {
@@ -579,4 +593,4 @@ document.addEventListener("keydown", (event) => {
 });
 
 render();
-if (hashID && matchMedia("(max-width: 920px)").matches) openMobileDossier();
+if (hashID && mobileLayout.matches) openMobileDossier();

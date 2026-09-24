@@ -164,7 +164,7 @@ compose network). Schema migrations run automatically at startup.
 | `PARKRR_AUDIT_RETENTION_DAYS` | long window: prune audit entries older than N days (`0` = disables **this** window only, see below). Records of account (`invoice`, `payment`, `billing`, `flatrate`, `recurring_charge`) are never pruned at any age | `2555` (7 y, BAO §132) |
 | `PARKRR_AUDIT_RETENTION_SHORT_DAYS` | short window for auth/ops noise only (`login`, `logout`, `backup`, `remind`, `import`); `0` disables the short tier | `365` |
 | `PARKRR_METRICS_TOKEN` | Bearer token for `/metrics` (empty = open on an internal network) | – |
-| `PARKRR_METRICS_REQUIRE_AUTH` | refuse to serve `/metrics` unless a token is set | `false` |
+| `PARKRR_METRICS_REQUIRE_AUTH` | refuse to serve `/metrics` unless a token is set | `false` in the app; `true` in `docker-compose.ghcr.yml` |
 | `PARKRR_CHECK_BREACHED_PASSWORDS` | check new passwords against the HIBP range API (fail-open) | `true` |
 | `PARKRR_BREACH_CHECK_FAIL_CLOSED` | reject a new password if the HIBP check itself fails (instead of the default fail-open) | `false` |
 | `PARKRR_LOG_FORMAT` / `PARKRR_LOG_LEVEL` | `json`\|`text` / `debug`..`error` | `json` / `info` |

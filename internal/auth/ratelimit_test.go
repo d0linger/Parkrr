@@ -142,3 +142,30 @@ func TestLoginLimiter_ConsumeIsAtomicUnderConcurrency(t *testing.T) {
 		}
 	}
 }
+
+// Refunding the attempt that tripped a non-sticky lock must undo that attempt
+// only: the failures before it still count, so the next attempt re-locks.
+func TestLoginLimiter_RefundOfThresholdAttemptKeepsPriorFailures(t *testing.T) {
+	l := NewLoginLimiter(3, time.Hour, time.Minute)
+	for i := 0; i < 2; i++ {
+		if ok, _ := l.Consume("k"); !ok {
+			t.Fatalf("attempt %d rejected before the threshold", i+1)
+		}
+	}
+	if ok, _ := l.Consume("k"); !ok {
+		t.Fatal("threshold attempt rejected")
+	}
+	if ok, _ := l.Allowed("k"); ok {
+		t.Fatal("threshold attempt did not lock the key")
+	}
+	l.Refund("k")
+	if ok, _ := l.Allowed("k"); !ok {
+		t.Fatal("refunding the threshold attempt kept the lock")
+	}
+	if ok, _ := l.Consume("k"); !ok {
+		t.Fatal("attempt after refund rejected")
+	}
+	if ok, _ := l.Allowed("k"); ok {
+		t.Fatal("prior failures were erased by the refund: next attempt did not re-lock")
+	}
+}

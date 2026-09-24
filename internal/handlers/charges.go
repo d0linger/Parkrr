@@ -80,8 +80,15 @@ func (h *Handler) CreateServiceType(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create service")
 		return
 	}
-	h.auditCreated(r, "service_type", id, "created service "+req.Name,
-		map[string]any{"name": req.Name, "default_amount": req.DefaultAmount})
+	if err := h.auditCreatedTx(r.Context(), tx, r, "service_type", id, "created service "+req.Name,
+		map[string]any{"name": req.Name, "default_amount": req.DefaultAmount}); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create service")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create service")
+		return
+	}
 	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
 }
 
@@ -503,7 +510,8 @@ func (h *Handler) UpdateCharge(w http.ResponseWriter, r *http.Request) {
 		           WHERE s.kind='charge' AND s.ref_id=c.id AND NOT i.canceled)
 		   OR EXISTS(SELECT 1 FROM payment_allocations a JOIN payments p ON p.id=a.payment_id
 		             WHERE a.kind='charge' AND a.ref_id=c.id AND NOT p.reversed)
-		 FROM charges c WHERE c.id=$1`,
+		 FROM charges c WHERE c.id=$1
+		 FOR UPDATE OF c`,
 		id, req.PersonID, req.VehicleID, req.Amount, req.Quantity).Scan(&billingChanged, &chargeLocked); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "charge not found")

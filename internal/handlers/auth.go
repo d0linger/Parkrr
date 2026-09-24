@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -310,11 +311,13 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	h.Limiter.Reset(key)
 	h.UserLimiter.Reset(userKeyOf(key, ip))
 	h.IPLimiter.Refund(ip)
-	createSession := h.Auth.CreateSession
-	if u.TOTPEnabled {
-		createSession = h.Auth.CreateVerifiedSession
-	}
-	if err := createSession(r.Context(), w, r, u.ID); err != nil {
+	// Bind the session to the verified password hash: a password change that
+	// commits while this login is in flight must not leave it a surviving session.
+	if err := h.Auth.CreatePasswordSession(r.Context(), w, r, u.ID, u.PasswordHash, u.TOTPEnabled); err != nil {
+		if errors.Is(err, auth.ErrCredentialChanged) {
+			writeError(w, http.StatusUnauthorized, "Benutzername oder Passwort ist falsch")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "could not create session")
 		return
 	}

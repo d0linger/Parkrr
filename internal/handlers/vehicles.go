@@ -363,6 +363,7 @@ func (h *Handler) vehicleOwnerReferenced(ctx context.Context, q rowQuerier, vehi
 	var referenced bool
 	err := q.QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM charges WHERE vehicle_id=$1)
+		     OR EXISTS(SELECT 1 FROM recurring_charges WHERE vehicle_id=$1)
 		     OR EXISTS(SELECT 1 FROM flat_rate_period_vehicles WHERE vehicle_id=$1)
 		     OR EXISTS(SELECT 1 FROM invoice_source WHERE kind='vehicle' AND ref_id=$1)
 		     OR EXISTS(SELECT 1 FROM payment_allocations WHERE kind='vehicle' AND ref_id=$1)`,

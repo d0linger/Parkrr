@@ -22,21 +22,43 @@ func TestDeleteCredentialSafelyPreservesOneUnderConcurrency(t *testing.T) {
 		}
 	}
 
+	type result struct {
+		deleted int64
+		last    bool
+		err     error
+	}
+	results := make([]result, len(ids))
 	start := make(chan struct{})
 	var wg sync.WaitGroup
-	for _, id := range ids {
-		id := id
+	for i, id := range ids {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			<-start
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_, _, _ = service.DeleteCredentialSafely(ctx, userID, id, true)
+			deleted, last, err := service.DeleteCredentialSafely(ctx, userID, id, true)
+			results[i] = result{deleted, last, err}
 		}()
 	}
 	close(start)
 	wg.Wait()
+	var succeeded, rejected int
+	for i, res := range results {
+		switch {
+		case res.err != nil:
+			t.Fatalf("deletion %d returned unexpected error: %v", i, res.err)
+		case res.deleted == 1 && !res.last:
+			succeeded++
+		case res.deleted == 0 && res.last:
+			rejected++
+		default:
+			t.Fatalf("deletion %d: deleted=%d lastCredential=%v", i, res.deleted, res.last)
+		}
+	}
+	if succeeded != 1 || rejected != 1 {
+		t.Fatalf("got %d successful and %d lastCredential-rejected deletions, want 1 and 1", succeeded, rejected)
+	}
 	var remaining int
 	if err := pool.QueryRow(t.Context(),
 		`SELECT count(*) FROM webauthn_credentials WHERE user_id=$1`, userID).Scan(&remaining); err != nil {

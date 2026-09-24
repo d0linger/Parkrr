@@ -21,6 +21,13 @@ type attemptState struct {
 	fails      int
 	firstFail  time.Time
 	lockedTill time.Time
+	// thresholdReset marks a non-sticky state whose budget was just cleared by
+	// the attempt that reached maxFails. priorFails/priorFirstFail hold the
+	// failures before that attempt so Refund can restore them instead of
+	// erasing them along with the refunded reservation.
+	thresholdReset bool
+	priorFails     int
+	priorFirstFail time.Time
 }
 
 // NewLoginLimiter creates a limiter allowing maxFails within failWindow before
@@ -97,7 +104,13 @@ func (l *LoginLimiter) Refund(key string) {
 	if st == nil {
 		return
 	}
-	if st.fails > 0 {
+	if st.thresholdReset {
+		// The refunded reservation is the one that tripped the non-sticky reset:
+		// undo the reset, not the earlier failures.
+		st.fails = st.priorFails
+		st.firstFail = st.priorFirstFail
+		st.thresholdReset = false
+	} else if st.fails > 0 {
 		st.fails--
 	}
 	// A reservation that reached the threshold installed the cooldown. Once that
@@ -125,11 +138,15 @@ func (l *LoginLimiter) recordLocked(key string, now time.Time) {
 		st = &attemptState{firstFail: now}
 		l.attempts[key] = st
 	}
+	st.thresholdReset = false
 	st.fails++
 	if st.fails >= l.maxFails {
 		st.lockedTill = now.Add(l.lockFor)
 		if !l.sticky {
 			// Fixed-window: each cooldown starts a fresh budget.
+			st.thresholdReset = true
+			st.priorFails = st.fails - 1
+			st.priorFirstFail = st.firstFail
 			st.fails = 0
 			st.firstFail = now
 		}

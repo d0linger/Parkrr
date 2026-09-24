@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-webauthn/webauthn/webauthn"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/preining/parkrr/internal/auth"
 	"github.com/preining/parkrr/internal/models"
@@ -88,6 +89,10 @@ func (h *AuthHandler) storeCeremony(ctx context.Context, w http.ResponseWriter, 
 	return nil
 }
 
+// errNoCeremony reports a missing, unknown, expired, consumed or unreadable
+// ceremony — a client-side condition, unlike a transient database error.
+var errNoCeremony = errors.New("no ceremony in progress")
+
 // loadCeremony atomically claims the ceremony named by the cookie: it locks the
 // row, verifies it is unconsumed and unexpired, and marks it consumed — so a
 // captured cookie can be used at most once, and a concurrent finish loses the
@@ -96,7 +101,7 @@ func (h *AuthHandler) loadCeremony(ctx context.Context, r *http.Request) (waCere
 	var cer waCeremony
 	c, err := r.Cookie(waCookie)
 	if err != nil || c.Value == "" {
-		return cer, errors.New("no ceremony in progress")
+		return cer, errNoCeremony
 	}
 	tx, err := h.Pool.Begin(ctx)
 	if err != nil {
@@ -108,7 +113,10 @@ func (h *AuthHandler) loadCeremony(ctx context.Context, r *http.Request) (waCere
 		`SELECT data FROM webauthn_ceremonies
 		 WHERE id=$1 AND consumed_at IS NULL AND expires_at > now()
 		 FOR UPDATE`, c.Value).Scan(&data); err != nil {
-		return cer, errors.New("no ceremony in progress")
+		if errors.Is(err, pgx.ErrNoRows) {
+			return cer, errNoCeremony
+		}
+		return cer, err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE webauthn_ceremonies SET consumed_at=now() WHERE id=$1`, c.Value); err != nil {
 		return cer, err
@@ -116,7 +124,10 @@ func (h *AuthHandler) loadCeremony(ctx context.Context, r *http.Request) (waCere
 	if err := tx.Commit(ctx); err != nil {
 		return cer, err
 	}
-	return cer, json.Unmarshal(data, &cer)
+	if err := json.Unmarshal(data, &cer); err != nil {
+		return cer, errNoCeremony
+	}
+	return cer, nil
 }
 
 // clearCeremony deletes the ceremony row (by cookie id) and expires the cookie.
@@ -359,7 +370,11 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 	}
 	cer, err := h.loadCeremony(r.Context(), r)
 	if err != nil {
-		h.Limiter.Refund(key)
+		// Only a transient database error is refunded. An unknown or expired
+		// ceremony id keeps its attempt, so forged cookies spend the login budget.
+		if !errors.Is(err, errNoCeremony) {
+			h.Limiter.Refund(key)
+		}
 		writeError(w, http.StatusBadRequest, "passkey login expired, please retry")
 		return
 	}

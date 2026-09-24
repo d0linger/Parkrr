@@ -65,7 +65,7 @@
           <div><h2>Findings</h2><p id="result-count" aria-live="polite"></p></div>
           <label class="sort-control">Sort<select id="sort-findings"><option value="severity">Risk first</option><option value="id">Finding ID</option><option value="category">Domain</option><option value="status">Triage status</option></select></label>
         </header>
-        <div class="finding-list" id="finding-list" role="listbox" aria-label="Audit findings"></div>
+        <div class="finding-list" id="finding-list" role="group" aria-label="Audit findings"></div>
         <div class="empty-state" id="empty-state" hidden>
           <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M9 49V22l23-13 23 13v27M17 49V27h30v22M24 49V36h16v13M7 49h50"/></svg><h3>No findings on this bay.</h3><p>Try removing a filter or searching for a broader term.</p><button type="button" class="reset-button">Clear filters</button>
         </div>
