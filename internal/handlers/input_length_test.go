@@ -355,6 +355,14 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "days is too long",
 		},
+		{
+			name:       "Search: q parameter too long",
+			path:       "/api/search?q=" + strings.Repeat("q", maxSearchQueryLen+1),
+			method:     "GET",
+			body:       nil,
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "search query is too long",
+		},
 	}
 
 	for _, tt := range tests {
@@ -412,6 +420,8 @@ func TestInputLengthValidation(t *testing.T) {
 				h.OverdueInvoices(w, req)
 			case "EndingSoon: days parameter too long":
 				h.EndingSoon(w, req)
+			case "Search: q parameter too long":
+				h.Search(w, req)
 			}
 
 			if w.Code != tt.wantStatus {
