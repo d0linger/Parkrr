@@ -38,6 +38,8 @@ test('concurrent MFA failures log out and warn once, then reset for the next ses
         '\n({ handle, logout });',
         { state, api, totalCounts: new Map(), listState: new Map(), bulkSel: new Set(),
             bulkMode: false, dashYear: null, calMonth: null,
+            // logout() closes open <dialog>s; the sandbox has none to close.
+            document: { querySelectorAll: () => [] },
             showLogin: () => { loginViews++; },
             toast: (message) => warnings.push(message), navigate: (page) => redirects.push(page) },
     );
