@@ -373,6 +373,8 @@ type sessionMaterial struct {
 	expires         time.Time
 }
 
+// newSessionMaterial generates a session token, its CSRF token, expiry and the
+// capped user agent, without storing anything yet.
 func (m *Manager) newSessionMaterial(r *http.Request) (sessionMaterial, error) {
 	token, err := randomToken(32)
 	if err != nil {

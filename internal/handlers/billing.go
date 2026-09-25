@@ -54,6 +54,7 @@ var (
 // (the tx rolls back; the handler answers with msg).
 type settlementConflictError struct{ msg string }
 
+// Error returns the 409 message for the client.
 func (e *settlementConflictError) Error() string { return e.msg }
 
 // lockInvoicePersonTx takes the per-person lock CreateInvoice holds while it
@@ -340,6 +341,7 @@ func (h *Handler) invoiceLines(r *http.Request, personID int64) ([]owedItem, err
 	return h.invoiceLinesFrom(r, h.Pool, personID)
 }
 
+// invoiceLinesFrom is invoiceLines reading through q, so a transaction can use it.
 func (h *Handler) invoiceLinesFrom(r *http.Request, q dbQuerier, personID int64) ([]owedItem, error) {
 	ctx := r.Context()
 	now := h.now()

@@ -89,6 +89,7 @@ func setupLogging() {
 	slog.SetDefault(slog.New(h))
 }
 
+// run loads the configuration, migrates the database and serves until shutdown.
 func run() error {
 	cfg, err := config.Load()
 	if err != nil {

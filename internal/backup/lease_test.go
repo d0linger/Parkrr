@@ -121,3 +121,56 @@ func TestLostLeaseCancelsTheRun(t *testing.T) {
 		t.Fatal("the run kept going after its lease session was terminated")
 	}
 }
+
+// Concurrent first use yields exactly one identity (first creator wins), and no
+// temp files are left behind.
+func TestVolumeIdentityConcurrentCreation(t *testing.T) {
+	dir := t.TempDir()
+	const n = 16
+	ids := make(chan string, n)
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			id, err := volumeIdentity(dir)
+			ids <- id
+			errs <- err
+		}()
+	}
+	first := ""
+	for i := 0; i < n; i++ {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+		id := <-ids
+		if first == "" {
+			first = id
+		} else if id != first {
+			t.Fatalf("concurrent callers got different identities: %q vs %q", first, id)
+		}
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 || entries[0].Name() != volumeIDFile {
+		t.Fatalf("expected only %s, got %v", volumeIDFile, entries)
+	}
+}
+
+// An incomplete identity file left by a crash (or an older build) must not block
+// the volume forever once it is stale.
+func TestVolumeIdentityReplacesStaleIncompleteFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, volumeIDFile)
+	if err := os.WriteFile(path, []byte("half"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	id, err := volumeIdentity(dir)
+	if err != nil || len(id) != 32 {
+		t.Fatalf("stale incomplete identity was not replaced: id=%q err=%v", id, err)
+	}
+	if again, _ := volumeIdentity(dir); again != id {
+		t.Fatalf("identity changed on re-read: %q vs %q", id, again)
+	}
+}

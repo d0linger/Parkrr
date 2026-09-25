@@ -274,6 +274,7 @@ func (h *Handler) openOwedItems(r *http.Request, personID int64) ([]owedItem, er
 	return h.openOwedItemsFrom(r, h.Pool, personID)
 }
 
+// openOwedItemsFrom is openOwedItems reading through q, so a transaction can use it.
 func (h *Handler) openOwedItemsFrom(r *http.Request, q dbQuerier, personID int64) ([]owedItem, error) {
 	ctx := r.Context()
 	now := h.now()
@@ -757,6 +758,8 @@ func idempotentRowID(ctx context.Context, q rowQuerier, lookup string, idem crea
 	return id, true, nil
 }
 
+// writeIdempotencyError answers a failed Idempotency-Key check: 409 for a key
+// reused with a different request, 500 otherwise.
 func writeIdempotencyError(w http.ResponseWriter, err error) {
 	if errors.Is(err, errIdempotencyConflict) {
 		writeError(w, http.StatusConflict, "Idempotency-Key was already used for another request")
@@ -771,6 +774,8 @@ func writeIdempotentReplay(w http.ResponseWriter, id int64) {
 	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
 }
 
+// paymentFingerprint hashes the normalized payment request, so a replayed
+// Idempotency-Key can be told apart from a key reused for a different payment.
 func paymentFingerprint(personID int64, req paymentRequest, paidOn time.Time) (string, error) {
 	allocations := append([]allocRef(nil), req.Allocations...)
 	sort.Slice(allocations, func(i, j int) bool {

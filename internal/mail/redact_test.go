@@ -23,6 +23,11 @@ func TestRedactAddrs(t *testing.T) {
 		{"rejected a@x.at.", []string{"a@x.at"}, "rejected " + AddrPlaceholder + "."},
 		{"user 'a@x.at' unknown", []string{"a@x.at"}, "user '" + AddrPlaceholder + "' unknown"},
 		{"to a@x.at- bounced", []string{"a@x.at"}, "to " + AddrPlaceholder + "- bounced"},
+		// Unicode-Anführungszeichen sind Satzzeichen, keine Adressbytes.
+		{"user “a@x.at” unknown", []string{"a@x.at"}, "user “" + AddrPlaceholder + "” unknown"},
+		{"user ‘a@x.at’ unknown", []string{"a@x.at"}, "user ‘" + AddrPlaceholder + "’ unknown"},
+		// Buchstaben einer internationalisierten Adresse bleiben Teil von ihr.
+		{"RCPT jösé@x.at: 550", []string{"sé@x.at"}, "RCPT jösé@x.at: 550"},
 		// Ein Apostroph INNERHALB einer längeren Adresse bleibt eine fremde Adresse.
 		{"RCPT o'a@x.at: 550", []string{"a@x.at"}, "RCPT o'a@x.at: 550"},
 		{"x", []string{"", "  ", "nope"}, "x"},

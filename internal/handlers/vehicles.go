@@ -1142,6 +1142,7 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
+// scanVehicleRow reads one vehicle row together with its category.
 func scanVehicleRow(row rowScanner) (models.Vehicle, models.Category, error) {
 	var v models.Vehicle
 	var cat models.Category

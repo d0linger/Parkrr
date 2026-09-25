@@ -258,6 +258,8 @@ func openLegacy(enc []byte, key string, inPlace bool) ([]byte, error) {
 	return plain, nil
 }
 
+// openDst returns the destination buffer for GCM Open: the ciphertext's own
+// backing array when decrypting in place (one buffer instead of two), else nil.
 func openDst(ct []byte, inPlace bool) []byte {
 	if inPlace {
 		return ct[:0]

@@ -183,6 +183,7 @@ var errLeaseLost = errors.New("backup lease lost")
 // leaseCheckInterval is how often a held lease's session is pinged.
 var leaseCheckInterval = 15 * time.Second
 
+// s3LeaseName is the advisory-lease name that serializes S3 runs per bucket.
 func s3LeaseName(bucket string) string { return "parkrr.backup-s3:" + bucket }
 
 // volumeLeaseName: Repliken teilen sich das Backup-Verzeichnis (BAK-05). Ohne
@@ -191,7 +192,7 @@ func s3LeaseName(bucket string) string { return "parkrr.backup-s3:" + bucket }
 //
 // Der Name folgt der Identität des VOLUMES, nicht dem Pfad: Repliken können
 // dasselbe Volume unter verschiedenen Pfaden einhängen. Die Identität liegt als
-// Zufalls-ID in einer Datei auf dem Volume selbst; wer sie zuerst anlegt (O_EXCL),
+// Zufalls-ID in einer Datei auf dem Volume selbst; wer sie zuerst veröffentlicht (Hardlink),
 // legt sie fest, alle anderen lesen dieselbe. Ist das Verzeichnis nicht
 // beschreibbar, bleibt als Rückfall der bereinigte Pfad.
 func volumeLeaseName(dir string) string {
@@ -205,41 +206,73 @@ func volumeLeaseName(dir string) string {
 
 const volumeIDFile = ".parkrr-volume-id"
 
+// volumeIdentity returns the volume's identity, creating it on first use. The ID
+// is written and synced to a private temp file first and then published with a
+// hard link, which fails atomically when a peer published first — readers never
+// see a half-written file, and the first creator wins. An invalid file older than
+// staleVolumeIDAge (left by an older build or a crash) is removed and recreated.
 func volumeIdentity(dir string) (string, error) {
 	path := filepath.Join(dir, volumeIDFile)
 	for attempt := 0; attempt < 3; attempt++ {
-		if b, err := os.ReadFile(path); err == nil { // #nosec G304 -- fixed name inside the configured backup dir
+		b, err := os.ReadFile(path) // #nosec G304 -- fixed name inside the configured backup dir
+		switch {
+		case err == nil:
 			if id := strings.TrimSpace(string(b)); len(id) == 32 {
 				return id, nil
 			}
-			// A peer is between create and write; read again.
-			time.Sleep(50 * time.Millisecond)
+			if fi, serr := os.Stat(path); serr == nil && time.Since(fi.ModTime()) > staleVolumeIDAge {
+				_ = os.Remove(path)
+			} else {
+				time.Sleep(50 * time.Millisecond)
+			}
 			continue
-		} else if !errors.Is(err, os.ErrNotExist) {
+		case !errors.Is(err, os.ErrNotExist):
 			return "", err
 		}
-		raw := make([]byte, 16)
-		if _, err := rand.Read(raw); err != nil {
-			return "", err
-		}
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- fixed name inside the configured backup dir
+		id, err := publishVolumeIdentity(dir, path)
 		if errors.Is(err, os.ErrExist) {
-			continue // a peer created it first: use theirs
+			continue // a peer published first: use theirs
 		}
-		if err != nil {
-			return "", err
-		}
-		id := hex.EncodeToString(raw)
-		_, werr := f.WriteString(id + "\n")
-		if cerr := f.Close(); werr == nil {
-			werr = cerr
-		}
-		if werr != nil {
-			return "", werr
-		}
-		return id, nil
+		return id, err
 	}
 	return "", errors.New("volume identity file is unreadable or incomplete")
+}
+
+// staleVolumeIDAge is how old an invalid identity file must be before it counts
+// as abandoned rather than as a peer's in-progress write.
+const staleVolumeIDAge = 10 * time.Second
+
+// publishVolumeIdentity writes a fresh ID to a temp file and links it into place.
+// It returns os.ErrExist when an identity is already published.
+func publishVolumeIdentity(dir, path string) (string, error) {
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	id := hex.EncodeToString(raw)
+	tmp, err := os.CreateTemp(dir, volumeIDFile+".tmp-*")
+	if err != nil {
+		return "", err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	_, werr := tmp.WriteString(id + "\n")
+	if werr == nil {
+		werr = tmp.Sync()
+	}
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		return "", werr
+	}
+	if err := os.Link(tmpName, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return "", os.ErrExist
+		}
+		return "", err
+	}
+	return id, nil
 }
 
 // RunVolume makes an encrypted backup, writes it to dir, verifies the archive
@@ -561,6 +594,8 @@ func EffectiveLast(dbLast *time.Time, mem time.Time) *time.Time {
 	return dbLast
 }
 
+// schedulerTick runs the volume and S3 backups that are due, audits each outcome
+// and alerts on real failures; a busy lease or a shutdown is not a failure.
 func schedulerTick(parent context.Context, pool *pgxpool.Pool, dbURL, key, dir string, s3 S3Config, lastVol, lastS3 *time.Time, alert Alerter) {
 	if parent.Err() != nil {
 		return

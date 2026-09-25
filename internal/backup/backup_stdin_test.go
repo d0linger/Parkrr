@@ -138,4 +138,33 @@ func TestRestoreLargeArchiveWithoutTemporaryStorage(t *testing.T) {
 	if !viewExists {
 		t.Fatal("the refused restore dropped the external view")
 	}
+	if _, err := conn.Exec(ctx, `DROP SCHEMA backup_stdin_ext CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+
+	// A column OUTSIDE public whose type is declared in public would be dropped,
+	// data and all, by the CASCADE. The restore must refuse and keep it.
+	if _, err := conn.Exec(ctx, `CREATE TYPE public.backup_stdin_mood AS ENUM ('ok', 'bad');
+		CREATE SCHEMA backup_stdin_typed;
+		CREATE TABLE backup_stdin_typed.rows(id integer PRIMARY KEY, mood public.backup_stdin_mood);
+		INSERT INTO backup_stdin_typed.rows VALUES (1, 'bad')`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := conn.Exec(context.Background(),
+			`DROP SCHEMA IF EXISTS backup_stdin_typed CASCADE; DROP TYPE IF EXISTS public.backup_stdin_mood`); err != nil {
+			t.Error(err)
+		}
+	}()
+	err = Restore(ctx, dbURL, enc, key)
+	if err == nil || !strings.Contains(err.Error(), "backup_stdin_typed.rows.mood") {
+		t.Fatalf("restore over a column typed from public: err = %v, want a refusal naming the column", err)
+	}
+	var mood string
+	if err := conn.QueryRow(ctx, `SELECT mood::text FROM backup_stdin_typed.rows WHERE id = 1`).Scan(&mood); err != nil {
+		t.Fatalf("the refused restore lost the typed column: %v", err)
+	}
+	if mood != "bad" {
+		t.Fatalf("typed column data changed: %q", mood)
+	}
 }

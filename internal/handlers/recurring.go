@@ -107,6 +107,7 @@ func ptrInt64Differs(a, b *int64) bool {
 	return *a != *b
 }
 
+// getRecurring loads one recurring charge with its derived fields.
 func (h *Handler) getRecurring(ctx context.Context, id int64) (models.RecurringCharge, error) {
 	rc, err := scanRecurring(h.Pool.QueryRow(ctx, recurringSelect+` WHERE rc.id=$1`, id))
 	if err == nil {

@@ -128,6 +128,8 @@ func SweepWorkFiles(backupDir string, keep ...string) {
 	sweepWorkPattern(filepath.Join(stagingBase, ".restore-staging"), "restore-*.dump.enc", keepSet, now)
 }
 
+// sweepWorkPattern removes leftover work files matching pattern in dir: this
+// host's at once, other hosts' only once stale; paths in keep are skipped.
 func sweepWorkPattern(dir, pattern string, keep map[string]bool, now time.Time) {
 	matches, err := filepath.Glob(filepath.Join(dir, pattern))
 	if err != nil {

@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // ErrDisabled is returned by Send when SMTP is not configured.
@@ -229,6 +231,8 @@ func WithLog(s Sender, log Log) Sender {
 }
 
 func (l *loggingSender) Enabled() bool { return l.inner.Enabled() }
+
+// Send delivers through the inner sender and logs the attempt with redacted errors.
 func (l *loggingSender) Send(ctx context.Context, to []string, subject, body string) error {
 	err := l.inner.Send(ctx, to, subject, body)
 	// Protokolliert werden die Adressen, die der Versender TATSÄCHLICH auf den
@@ -251,7 +255,10 @@ type redactedError struct {
 	err error
 }
 
+// Error returns the redacted message.
 func (e *redactedError) Error() string { return e.msg }
+
+// Unwrap returns the original error.
 func (e *redactedError) Unwrap() error { return e.err }
 
 // redactErr entfernt Empfängeradressen aus einem Versandfehler, bevor er ins
@@ -293,6 +300,7 @@ func RedactAddrs(s string, addrs []string) string {
 	return s
 }
 
+// redactOne replaces every whole-address occurrence of addr in s, ignoring case.
 func redactOne(s, addr string) string {
 	lower, needle := strings.ToLower(s), strings.ToLower(addr)
 	// ToLower kann in exotischen Fällen die Bytelänge ändern; dann sind die Indizes
@@ -330,21 +338,54 @@ func redactOne(s, addr string) string {
 // zur Adresse, wenn dahinter (davor) ein weiteres Adresszeichen folgt — sonst ist
 // es Satzzeichen: "… an a@x.at." oder 'a@x.at'.
 func addrBoundaryBefore(s string, start int) bool {
-	if start == 0 || !isAddrByte(s[start-1]) {
+	if !addrCharBefore(s, start) {
 		return true
 	}
-	return s[start-1] == '\'' && (start == 1 || !isAddrByte(s[start-2]))
+	return s[start-1] == '\'' && !addrCharBefore(s, start-1)
 }
 
+// addrBoundaryAfter reports whether a match ending at s[end] is a whole address.
 func addrBoundaryAfter(s string, end int) bool {
-	if end >= len(s) || !isAddrByte(s[end]) {
+	if !addrCharAt(s, end) {
 		return true
 	}
 	switch s[end] {
 	case '.', '-', '\'':
-		return end+1 >= len(s) || !isAddrByte(s[end+1])
+		return !addrCharAt(s, end+1)
 	}
 	return false
+}
+
+// addrCharBefore reports whether the character ending at s[i] belongs to an
+// address; addrCharAt does the same for the character starting at s[i]. Non-ASCII
+// characters are decoded whole, so Unicode punctuation such as curly quotes is a
+// boundary while letters of an internationalised address are not.
+func addrCharBefore(s string, i int) bool {
+	if i <= 0 {
+		return false
+	}
+	if s[i-1] < utf8.RuneSelf {
+		return isAddrByte(s[i-1])
+	}
+	r, _ := utf8.DecodeLastRuneInString(s[:i])
+	return isAddrRune(r)
+}
+
+func addrCharAt(s string, i int) bool {
+	if i >= len(s) {
+		return false
+	}
+	if s[i] < utf8.RuneSelf {
+		return isAddrByte(s[i])
+	}
+	r, _ := utf8.DecodeRuneInString(s[i:])
+	return isAddrRune(r)
+}
+
+// isAddrRune classifies a non-ASCII character. Invalid UTF-8 counts as part of an
+// address, as before: a false boundary could redact half of a foreign address.
+func isAddrRune(r rune) bool {
+	return r == utf8.RuneError || unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r)
 }
 
 // isAddrByte meldet Zeichen, die innerhalb einer Adresse stehen dürfen (RFC 5322

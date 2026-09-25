@@ -178,6 +178,8 @@ func rateLimitKey(ip string) string {
 	return pfx.String()
 }
 
+// allow takes one token from the client's bucket and reports whether the
+// request may proceed.
 func (l *ipLimiter) allow(ip string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()

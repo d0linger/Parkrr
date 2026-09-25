@@ -38,8 +38,9 @@ import (
 // Datenbank vor PostgreSQL 15), fällt es auf das bisherige Verhalten zurück —
 // ein Restore, der bisher gelang, soll nicht an dieser Härtung scheitern.
 //
-// Vor dem DROP ... CASCADE bricht der Vorspann ab, wenn Sichten oder
-// Fremdschlüssel AUSSERHALB von public auf public verweisen: CASCADE würde sie
+// Vor dem DROP ... CASCADE bricht der Vorspann ab, wenn Sichten, Fremdschlüssel
+// oder Spalten mit einem Typ aus public AUSSERHALB von public auf public
+// verweisen: CASCADE würde sie
 // sonst stillschweigend mitlöschen, obwohl sie nicht im Archiv stehen (etwa eine
 // Auswertungssicht des Betreibers). parkrr_control verweist nicht auf public und
 // ist davon nicht betroffen.
@@ -65,6 +66,17 @@ BEGIN
           JOIN pg_class ref ON ref.oid = c.confrelid
           JOIN pg_namespace rn ON rn.oid = ref.relnamespace AND rn.nspname = 'public'
          WHERE c.contype = 'f'
+        UNION ALL
+        -- A column whose type lives in public (enum, domain, composite) would be
+        -- dropped with its data by the CASCADE.
+        SELECT an.nspname || '.' || ac.relname || '.' || a.attname
+          FROM pg_attribute a
+          JOIN pg_class ac ON ac.oid = a.attrelid AND ac.relkind IN ('r', 'p', 'f', 'm', 'v', 'c')
+          JOIN pg_namespace an ON an.oid = ac.relnamespace AND an.nspname <> 'public'
+               AND an.nspname NOT IN ('pg_catalog', 'information_schema') AND an.nspname NOT LIKE 'pg_toast%'
+          JOIN pg_type ty ON ty.oid = a.atttypid
+          JOIN pg_namespace tyn ON tyn.oid = ty.typnamespace AND tyn.nspname = 'public'
+         WHERE a.attnum > 0 AND NOT a.attisdropped
     ) s;
     IF deps IS NOT NULL THEN
         RAISE EXCEPTION 'parkrr: objects outside schema public depend on it and would be dropped by the restore: %', deps

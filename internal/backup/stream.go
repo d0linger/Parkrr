@@ -40,6 +40,7 @@ func SetLegacyArchiveLimit(n int64) {
 	legacyLimit.Store(min(max(n, 1), maxLegacyBytes))
 }
 
+// legacyArchiveLimit is the byte cap for buffered legacy (v1/v2) archives.
 func legacyArchiveLimit() int64 {
 	if n := legacyLimit.Load(); n > 0 {
 		return n
@@ -311,6 +312,8 @@ func DumpEncrypted(ctx context.Context, dbURL, key string, dst io.Writer) error 
 	return nil
 }
 
+// decryptArchiveFile decrypts an archive into a work file (pg_restore needs a
+// seekable input) and returns its path; the caller removes it.
 func decryptArchiveFile(ctx context.Context, encryptedPath, key string) (string, error) {
 	in, err := os.Open(encryptedPath) // #nosec G304 -- operator/configured backup path
 	if err != nil {
@@ -365,6 +368,8 @@ type discardAfterError struct {
 	err error
 }
 
+// Write forwards p until the first error and then swallows the rest, so the
+// decrypting side keeps authenticating every frame.
 func (d *discardAfterError) Write(p []byte) (int, error) {
 	if d.err == nil {
 		if _, err := d.w.Write(p); err != nil {
