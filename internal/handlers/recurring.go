@@ -19,7 +19,10 @@ import (
 // derived from the per-period keys (deriveRecurring).
 const recurringSelect = `SELECT rc.id, rc.person_id, rc.vehicle_id, rc.description, rc.amount, rc.period,
 	rc.start_date, rc.end_date, rc.paid_periods, rc.paid_fixed, rc.created_at, rc.updated_at,
-	COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), cat.name, '') AS vehicle_label
+	COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), cat.name, '') AS vehicle_label,
+	ARRAY(SELECT s.period_key FROM invoice_source s JOIN invoices i ON i.id = s.invoice_id
+	       WHERE s.kind = 'recurring' AND s.ref_id = rc.id
+	         AND NOT i.canceled AND (i.total - i.paid_amount) <= 0.005) AS invoice_paid_periods
 	FROM recurring_charges rc
 	LEFT JOIN vehicles v ON v.id = rc.vehicle_id
 	LEFT JOIN categories cat ON cat.id = v.category_id`
@@ -30,7 +33,7 @@ func scanRecurring(row pgx.Row) (models.RecurringCharge, error) {
 	var fixedRaw []byte
 	if err := row.Scan(&rc.ID, &rc.PersonID, &rc.VehicleID, &rc.Description, &rc.Amount, &rc.Period,
 		&rc.StartDate, &rc.EndDate, &rc.PaidPeriods, &fixedRaw,
-		&rc.CreatedAt, &rc.UpdatedAt, &rc.VehicleLabel); err != nil {
+		&rc.CreatedAt, &rc.UpdatedAt, &rc.VehicleLabel, &rc.InvoicePaidPeriods); err != nil {
 		return rc, err
 	}
 	if rc.PaidPeriods == nil {
@@ -86,7 +89,12 @@ func deriveRecurring(rc *models.RecurringCharge, now time.Time) {
 	// charge as paid while it is still billed and owed.
 	rc.Settled = p.SettledAsOf(now)
 	// "bezahlt" for the master slider: every COMPLETED period is paid. The running
-	// period is owed until it closes, so it neither sets nor clears this.
+	// period is owed until it closes, so it neither sets nor clears this. A period
+	// billed on a fully paid (non-canceled) invoice counts as paid too; open or
+	// canceled invoices do not.
+	if len(rc.InvoicePaidPeriods) > 0 {
+		p.PaidPeriods = append(append([]string{}, rc.PaidPeriods...), rc.InvoicePaidPeriods...)
+	}
 	rc.Paid = p.CompletePeriodsPaid(now)
 }
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,5 +108,34 @@ func TestRestoreLargeArchiveWithoutTemporaryStorage(t *testing.T) {
 	}
 	if data != "preserved" {
 		t.Fatal("failed restore changed existing data")
+	}
+	if _, err := conn.Exec(ctx, `DROP SCHEMA backup_stdin_dep CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+
+	// A view OUTSIDE public that reads a public table would be dropped silently by
+	// DROP SCHEMA public CASCADE. The restore must refuse instead and keep it.
+	if _, err := conn.Exec(ctx, `CREATE TABLE public.backup_stdin_pub(id integer PRIMARY KEY);
+		CREATE SCHEMA backup_stdin_ext;
+		CREATE VIEW backup_stdin_ext.reads_public AS SELECT id FROM public.backup_stdin_pub`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := conn.Exec(context.Background(),
+			`DROP SCHEMA IF EXISTS backup_stdin_ext CASCADE; DROP TABLE IF EXISTS public.backup_stdin_pub`); err != nil {
+			t.Error(err)
+		}
+	}()
+	err = Restore(ctx, dbURL, enc, key)
+	if err == nil || !strings.Contains(err.Error(), "backup_stdin_ext.reads_public") {
+		t.Fatalf("restore over an external dependency on public: err = %v, want a refusal naming the view", err)
+	}
+	var viewExists bool
+	if err := conn.QueryRow(ctx,
+		`SELECT to_regclass('backup_stdin_ext.reads_public') IS NOT NULL`).Scan(&viewExists); err != nil {
+		t.Fatal(err)
+	}
+	if !viewExists {
+		t.Fatal("the refused restore dropped the external view")
 	}
 }

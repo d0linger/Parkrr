@@ -271,8 +271,7 @@ angefasst wurde.
   Zwischendateien mehr.
 - **Wiederherstellung wartet nicht mehr** bis zu 30 Minuten auf ein laufendes
   Backup — es wird abgebrochen.
-- **Kein unverschlüsselter Datenbank-Dump bleibt nach einem Absturz liegen;**
-  die nächtliche Prüfung schreibt gar keinen mehr.
+- **Die nächtliche Prüfung schreibt keinen unverschlüsselten Datenbank-Dump mehr.**
 - **2FA-Codes lassen sich nicht mehr durchprobieren:** Nach 5 Fehlversuchen
   sperrt der zweite Faktor zunehmend länger (1 Min … 24 h); ein Admin-Reset hebt
   die Sperre auf.

@@ -312,7 +312,7 @@ func redactOne(s, addr string) string {
 			break
 		}
 		start, end := i+j, i+j+len(needle)
-		if (start > 0 && isAddrByte(s[start-1])) || (end < len(s) && isAddrByte(s[end])) {
+		if !addrBoundaryBefore(s, start) || !addrBoundaryAfter(s, end) {
 			b.WriteString(s[i : start+1])
 			i = start + 1
 			continue
@@ -323,6 +323,28 @@ func redactOne(s, addr string) string {
 	}
 	b.WriteString(s[i:])
 	return b.String()
+}
+
+// addrBoundaryBefore/After melden, ob der Treffer an dieser Stelle endet. Ein
+// Apostroph davor bzw. ein Punkt, Bindestrich oder Apostroph danach gehört nur dann
+// zur Adresse, wenn dahinter (davor) ein weiteres Adresszeichen folgt — sonst ist
+// es Satzzeichen: "… an a@x.at." oder 'a@x.at'.
+func addrBoundaryBefore(s string, start int) bool {
+	if start == 0 || !isAddrByte(s[start-1]) {
+		return true
+	}
+	return s[start-1] == '\'' && (start == 1 || !isAddrByte(s[start-2]))
+}
+
+func addrBoundaryAfter(s string, end int) bool {
+	if end >= len(s) || !isAddrByte(s[end]) {
+		return true
+	}
+	switch s[end] {
+	case '.', '-', '\'':
+		return end+1 >= len(s) || !isAddrByte(s[end+1])
+	}
+	return false
 }
 
 // isAddrByte meldet Zeichen, die innerhalb einer Adresse stehen dürfen (RFC 5322

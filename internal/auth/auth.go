@@ -360,7 +360,7 @@ func (m *Manager) CreatePasswordSession(
 	ct, err := m.pool.Exec(ctx,
 		`INSERT INTO sessions (token, user_id, expires_at, user_agent, ip, last_seen, factor_verified)
 		 SELECT $1, u.id, $3, $4, $5, now(), $6
-		 FROM users u WHERE u.id = $2 AND u.password_hash = $7
+		 FROM users u WHERE u.id = $2 AND u.password_hash = $7 AND NOT u.disabled
 		   AND (NOT $6 OR (u.totp_enabled AND u.totp_secret = $8))
 		 FOR SHARE`,
 		hashToken(s.token), userID, s.expires, s.ua, m.ClientIP(r), factorVerified, passwordHash, totpSecret)

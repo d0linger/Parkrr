@@ -113,22 +113,56 @@ var ErrBackupBusy = errors.New("another Parkrr instance is running this backup r
 // Fehlschlag samt Alarm. Warten wäre ohnehin sinnlos: wer die Sperre hält, macht
 // genau diesen Lauf, und ein zweiter direkt danach wäre ein Duplikat. Der
 // Versuch kehrt sofort zurück, der statement_timeout spielt keine Rolle mehr.
-func tryAcquireLease(ctx context.Context, pool *pgxpool.Pool, name string) (func(), error) {
+//
+// Der zurückgegebene Kontext endet, sobald die Sperrsitzung wegbricht: eine
+// Session-Sperre gilt nur, solange ihre Verbindung lebt. Ohne diese Überwachung
+// liefe ein Lauf nach einem Verbindungsabbruch ungeschützt weiter, während eine
+// andere Replik die Sperre bekommt — und deren sweepStaleParts räumte die noch
+// wachsende .part weg. Die Freigabe beendet erst die Überwachung, dann die Sperre.
+func tryAcquireLease(ctx context.Context, pool *pgxpool.Pool, name string) (context.Context, func(), error) {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var acquired bool
 	if err := conn.QueryRow(ctx,
 		`SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, name).Scan(&acquired); err != nil {
 		conn.Release()
-		return nil, err
+		return nil, nil, err
 	}
 	if !acquired {
 		conn.Release()
-		return nil, ErrBackupBusy
+		return nil, nil, ErrBackupBusy
 	}
-	return func() {
+	leaseCtx, cancelLease := context.WithCancelCause(ctx)
+	stopWatch := make(chan struct{})
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		t := time.NewTicker(leaseCheckInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopWatch:
+				return
+			case <-leaseCtx.Done():
+				return
+			case <-t.C:
+				pctx, cancel := context.WithTimeout(leaseCtx, 5*time.Second)
+				err := conn.Ping(pctx)
+				cancel()
+				if err != nil && leaseCtx.Err() == nil {
+					slog.Error("backup: advisory lease session lost; stopping the run", "lease", name, "err", err)
+					cancelLease(fmt.Errorf("%w: %v", errLeaseLost, err))
+					return
+				}
+			}
+		}
+	}()
+	return leaseCtx, func() {
+		close(stopWatch)
+		<-watchDone // the watcher no longer touches conn
+		defer cancelLease(nil)
 		uctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var unlocked bool
@@ -143,12 +177,70 @@ func tryAcquireLease(ctx context.Context, pool *pgxpool.Pool, name string) (func
 	}, nil
 }
 
+// errLeaseLost ends a run whose advisory lease session went away mid-run.
+var errLeaseLost = errors.New("backup lease lost")
+
+// leaseCheckInterval is how often a held lease's session is pinged.
+var leaseCheckInterval = 15 * time.Second
+
 func s3LeaseName(bucket string) string { return "parkrr.backup-s3:" + bucket }
 
 // volumeLeaseName: Repliken teilen sich das Backup-Verzeichnis (BAK-05). Ohne
 // gemeinsame Sperre starteten alle in derselben Minute, und sweepStaleParts der
 // einen löschte die halb geschriebene .part der anderen.
-func volumeLeaseName(dir string) string { return "parkrr.backup-volume:" + filepath.Clean(dir) }
+//
+// Der Name folgt der Identität des VOLUMES, nicht dem Pfad: Repliken können
+// dasselbe Volume unter verschiedenen Pfaden einhängen. Die Identität liegt als
+// Zufalls-ID in einer Datei auf dem Volume selbst; wer sie zuerst anlegt (O_EXCL),
+// legt sie fest, alle anderen lesen dieselbe. Ist das Verzeichnis nicht
+// beschreibbar, bleibt als Rückfall der bereinigte Pfad.
+func volumeLeaseName(dir string) string {
+	if id, err := volumeIdentity(dir); err == nil {
+		return "parkrr.backup-volume:" + id
+	} else {
+		slog.Warn("backup: volume identity unavailable; locking by path", "dir", dir, "err", err)
+	}
+	return "parkrr.backup-volume:" + filepath.Clean(dir)
+}
+
+const volumeIDFile = ".parkrr-volume-id"
+
+func volumeIdentity(dir string) (string, error) {
+	path := filepath.Join(dir, volumeIDFile)
+	for attempt := 0; attempt < 3; attempt++ {
+		if b, err := os.ReadFile(path); err == nil { // #nosec G304 -- fixed name inside the configured backup dir
+			if id := strings.TrimSpace(string(b)); len(id) == 32 {
+				return id, nil
+			}
+			// A peer is between create and write; read again.
+			time.Sleep(50 * time.Millisecond)
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		raw := make([]byte, 16)
+		if _, err := rand.Read(raw); err != nil {
+			return "", err
+		}
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- fixed name inside the configured backup dir
+		if errors.Is(err, os.ErrExist) {
+			continue // a peer created it first: use theirs
+		}
+		if err != nil {
+			return "", err
+		}
+		id := hex.EncodeToString(raw)
+		_, werr := f.WriteString(id + "\n")
+		if cerr := f.Close(); werr == nil {
+			werr = cerr
+		}
+		if werr != nil {
+			return "", werr
+		}
+		return id, nil
+	}
+	return "", errors.New("volume identity file is unreadable or incomplete")
+}
 
 // RunVolume makes an encrypted backup, writes it to dir, verifies the archive
 // (decrypt + pg_restore --list), prunes to the newest `keep`, and records the
@@ -162,13 +254,12 @@ func RunVolume(ctx context.Context, pool *pgxpool.Pool, dbURL, key, dir string, 
 		return 0, false, err
 	}
 	defer releaseRun()
-	releaseLease, err := tryAcquireLease(ctx, pool, volumeLeaseName(dir))
+	_ = os.MkdirAll(dir, 0o700) // the create below surfaces the actionable error
+	ctx, releaseLease, err := tryAcquireLease(ctx, pool, volumeLeaseName(dir))
 	if err != nil {
 		return 0, false, err
 	}
 	defer releaseLease()
-
-	_ = os.MkdirAll(dir, 0o700) // the create below surfaces the actionable error
 	// Erst prüfen, dann sichtbar machen. Geschrieben wird nach *.part; erst nach
 	// bestandener Prüfung wird umbenannt. Vorher landete das Archiv sofort unter
 	// seinem endgültigen Namen — ein durchgefallenes blieb liegen, erschien in der
@@ -275,7 +366,7 @@ func RunS3(ctx context.Context, pool *pgxpool.Pool, dbURL, key string, s3 S3Conf
 		return "", err
 	}
 	defer releaseRun()
-	releaseLease, err := tryAcquireLease(ctx, pool, s3LeaseName(s3.Bucket))
+	ctx, releaseLease, err := tryAcquireLease(ctx, pool, s3LeaseName(s3.Bucket))
 	if err != nil {
 		return "", err
 	}
@@ -519,6 +610,11 @@ func schedulerTick(parent context.Context, pool *pgxpool.Pool, dbURL, key, dir s
 			audit(ctx, actionBackupFailed, "Geplantes Volume-Backup FEHLGESCHLAGEN",
 				map[string]any{"target": "volume", "ok": false, "cron": settings.VolumeCron, "error": err.Error()})
 			alertBackupFailure(ctx, alert, "Volume", "Der Lauf brach ab.", err.Error())
+		case !verified && stopped():
+			// The stop signal cancelled the verify step: a shutdown, not a bad archive.
+			slog.Warn("scheduled volume backup cancelled during verification: the application is stopping", "dir", dir)
+			audit(ctx, actionBackupFailed, "Geplantes Volume-Backup abgebrochen (Anwendung wird angehalten)",
+				map[string]any{"target": "volume", "ok": false, "verified": false, "cron": settings.VolumeCron})
 		case !verified:
 			// Written, but it did not decrypt/restore-list cleanly. recordVolume already
 			// flagged it not-OK; reporting ok:true here would leave the append-only trail

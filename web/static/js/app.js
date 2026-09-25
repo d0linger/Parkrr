@@ -1254,9 +1254,9 @@
             window.scrollTo(0, 0);
             syncPageTitle(host);
         } catch (err) {
-            // 401 IMMER behandeln, auch wenn überholt: die Sitzung ist weg, unabhängig
-            // davon, welche Route gerade gewinnt.
-            if (err.status === 401) { if (state.user) logout(); return; } // handle() hat meist schon abgemeldet
+            // 401: handle() entscheidet über das Abmelden (inkl. Schutz vor veralteten
+            // Antworten und authFloor) — hier nur nichts anzeigen.
+            if (err.status === 401) return;
             if (mySeq !== renderSeq) return; // der Abbruch gehört zur alten Route — nicht anzeigen
             page.innerHTML = '';
             page.append(el('div', { class: 'empty route-error', role: 'alert' },
@@ -5412,7 +5412,7 @@
             // Fehler melden und den Knopf sichtbar lassen, damit ein Retry möglich
             // bleibt (Hundert UX-57). Vorher verschwand der Knopf kommentarlos.
             if (loadErr) {
-                if (loadErr.status === 401) { if (state.user) await logout(); return; }
+                if (loadErr.status === 401) return; // handle() meldet ab, falls die Sitzung wirklich weg ist
                 loadStatus.textContent = 'Änderungen konnten nicht geladen werden. Bitte erneut versuchen.';
                 moreBtn.textContent = 'Erneut versuchen'; moreBtn.hidden = false;
                 return;

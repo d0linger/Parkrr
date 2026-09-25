@@ -4,35 +4,48 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// BAK-03/BAK-05: a second replica must not WAIT for a running backup (the wait was
-// killed by the pool's 10 s statement_timeout and reported as a failure). It gets
-// ErrBackupBusy at once, and RunVolume leaves the shared directory untouched.
-func TestBackupLeaseReportsBusyInsteadOfWaiting(t *testing.T) {
+func leaseTestPool(t *testing.T) (context.Context, *pgxpool.Pool) {
+	t.Helper()
 	url := os.Getenv("PARKRR_TEST_DATABASE_URL")
 	if url == "" {
 		t.Skip("PARKRR_TEST_DATABASE_URL not set")
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	pool, err := pgxpool.New(ctx, url)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
+	return ctx, pool
+}
+
+// BAK-03/BAK-05: a second replica must not WAIT for a running backup (the wait was
+// killed by the pool's 10 s statement_timeout and reported as a failure). It gets
+// ErrBackupBusy at once, and RunVolume leaves the shared directory untouched.
+func TestBackupLeaseReportsBusyInsteadOfWaiting(t *testing.T) {
+	ctx, pool := leaseTestPool(t)
 
 	dir := t.TempDir()
-	release, err := tryAcquireLease(ctx, pool, volumeLeaseName(dir))
+	_, release, err := tryAcquireLease(ctx, pool, volumeLeaseName(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Released on any early t.Fatal too; cleared after the explicit release below.
+	defer func() {
+		if release != nil {
+			release()
+		}
+	}()
 	started := time.Now()
-	if _, err := tryAcquireLease(ctx, pool, volumeLeaseName(dir)); !errors.Is(err, ErrBackupBusy) {
+	if _, _, err := tryAcquireLease(ctx, pool, volumeLeaseName(dir)); !errors.Is(err, ErrBackupBusy) {
 		t.Fatalf("second lease: err = %v, want ErrBackupBusy", err)
 	}
 	size, verified, err := RunVolume(ctx, pool, "postgres://unused/none", "key", dir, Retention{})
@@ -42,19 +55,69 @@ func TestBackupLeaseReportsBusyInsteadOfWaiting(t *testing.T) {
 	if time.Since(started) > 5*time.Second {
 		t.Fatal("the busy lease blocked instead of returning at once")
 	}
-	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
-		t.Fatalf("a skipped run touched the backup directory: %v", entries)
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if e.Name() != volumeIDFile {
+			t.Fatalf("a skipped run touched the backup directory: %v", entries)
+		}
 	}
 	// Another target (bucket) is independent.
-	releaseS3, err := tryAcquireLease(ctx, pool, s3LeaseName("bucket-a"))
+	_, releaseS3, err := tryAcquireLease(ctx, pool, s3LeaseName("bucket-a"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	releaseS3()
 	release()
-	again, err := tryAcquireLease(ctx, pool, volumeLeaseName(dir))
+	release = nil
+	_, again, err := tryAcquireLease(ctx, pool, volumeLeaseName(dir))
 	if err != nil {
 		t.Fatalf("lease not reusable after release: %v", err)
 	}
 	again()
+}
+
+// The lease name follows the volume, not the mount path: a second path to the
+// same directory (as another replica would mount it) yields the same lease.
+func TestVolumeLeaseNameFollowsTheVolume(t *testing.T) {
+	dir := t.TempDir()
+	first := volumeLeaseName(dir)
+	if first == "parkrr.backup-volume:"+filepath.Clean(dir) {
+		t.Fatal("lease name fell back to the path although the directory is writable")
+	}
+	if again := volumeLeaseName(dir + string(filepath.Separator) + "."); again != first {
+		t.Fatalf("same volume, different lease names: %q vs %q", first, again)
+	}
+	if other := volumeLeaseName(t.TempDir()); other == first {
+		t.Fatal("two different volumes share one lease name")
+	}
+}
+
+// A lease whose session dies mid-run must end the run's context instead of
+// letting it continue unprotected while another replica takes the lock.
+func TestLostLeaseCancelsTheRun(t *testing.T) {
+	ctx, pool := leaseTestPool(t)
+	old := leaseCheckInterval
+	leaseCheckInterval = 50 * time.Millisecond
+	t.Cleanup(func() { leaseCheckInterval = old })
+
+	runCtx, release, err := tryAcquireLease(ctx, pool, s3LeaseName("lease-loss-test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if _, err := pool.Exec(ctx,
+		`SELECT pg_terminate_backend(pid) FROM pg_locks
+		  WHERE locktype = 'advisory' AND granted AND pid <> pg_backend_pid()
+		    AND (classid::bigint << 32 | objid::bigint) = hashtextextended($1, 0)`,
+		s3LeaseName("lease-loss-test")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runCtx.Done():
+		if !errors.Is(context.Cause(runCtx), errLeaseLost) {
+			t.Fatalf("run context ended with %v, want errLeaseLost", context.Cause(runCtx))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the run kept going after its lease session was terminated")
+	}
 }

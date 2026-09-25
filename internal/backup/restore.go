@@ -37,10 +37,39 @@ import (
 // Rolle das Recht dazu (public gehört ihr nicht, etwa bei einer verwalteten
 // Datenbank vor PostgreSQL 15), fällt es auf das bisherige Verhalten zurück —
 // ein Restore, der bisher gelang, soll nicht an dieser Härtung scheitern.
+//
+// Vor dem DROP ... CASCADE bricht der Vorspann ab, wenn Sichten oder
+// Fremdschlüssel AUSSERHALB von public auf public verweisen: CASCADE würde sie
+// sonst stillschweigend mitlöschen, obwohl sie nicht im Archiv stehen (etwa eine
+// Auswertungssicht des Betreibers). parkrr_control verweist nicht auf public und
+// ist davon nicht betroffen.
 const restorePrelude = `SET client_min_messages = warning;
 BEGIN;
 DO $parkrr_restore$
+DECLARE
+    deps text;
 BEGIN
+    SELECT string_agg(DISTINCT dep, ', ') INTO deps FROM (
+        SELECT vn.nspname || '.' || v.relname AS dep
+          FROM pg_depend d
+          JOIN pg_rewrite rw ON d.classid = 'pg_rewrite'::regclass AND d.objid = rw.oid
+          JOIN pg_class v ON v.oid = rw.ev_class
+          JOIN pg_namespace vn ON vn.oid = v.relnamespace AND vn.nspname <> 'public'
+          JOIN pg_class t ON d.refclassid = 'pg_class'::regclass AND d.refobjid = t.oid
+          JOIN pg_namespace tn ON tn.oid = t.relnamespace AND tn.nspname = 'public'
+        UNION ALL
+        SELECT sn.nspname || '.' || src.relname || ' (' || c.conname || ')'
+          FROM pg_constraint c
+          JOIN pg_class src ON src.oid = c.conrelid
+          JOIN pg_namespace sn ON sn.oid = src.relnamespace AND sn.nspname <> 'public'
+          JOIN pg_class ref ON ref.oid = c.confrelid
+          JOIN pg_namespace rn ON rn.oid = ref.relnamespace AND rn.nspname = 'public'
+         WHERE c.contype = 'f'
+    ) s;
+    IF deps IS NOT NULL THEN
+        RAISE EXCEPTION 'parkrr: objects outside schema public depend on it and would be dropped by the restore: %', deps
+            USING ERRCODE = 'dependent_objects_still_exist';
+    END IF;
     DROP SCHEMA IF EXISTS public CASCADE;
     CREATE SCHEMA public;
     COMMENT ON SCHEMA public IS 'standard public schema';

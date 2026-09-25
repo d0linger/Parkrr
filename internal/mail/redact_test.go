@@ -19,6 +19,12 @@ func TestRedactAddrs(t *testing.T) {
 		{"RCPT susan@x.at: 550", []string{"an@x.at"}, "RCPT susan@x.at: 550"},
 		{"RCPT an@x.at.evil: 550", []string{"an@x.at"}, "RCPT an@x.at.evil: 550"},
 		{"no address here", []string{"a@x.at"}, "no address here"},
+		// Satzzeichen hinter bzw. um die Adresse gehören nicht dazu.
+		{"rejected a@x.at.", []string{"a@x.at"}, "rejected " + AddrPlaceholder + "."},
+		{"user 'a@x.at' unknown", []string{"a@x.at"}, "user '" + AddrPlaceholder + "' unknown"},
+		{"to a@x.at- bounced", []string{"a@x.at"}, "to " + AddrPlaceholder + "- bounced"},
+		// Ein Apostroph INNERHALB einer längeren Adresse bleibt eine fremde Adresse.
+		{"RCPT o'a@x.at: 550", []string{"a@x.at"}, "RCPT o'a@x.at: 550"},
 		{"x", []string{"", "  ", "nope"}, "x"},
 	}
 	for _, c := range cases {

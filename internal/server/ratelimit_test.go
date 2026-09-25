@@ -48,16 +48,29 @@ func TestIPLimiterBucketMapIsCapped(t *testing.T) {
 	for i := 0; i < maxRateBuckets; i++ {
 		l.buckets[fmt.Sprintf("k%d", i)] = &bucket{tokens: 5}
 	}
+	// New clients from one /16 share one coarse bucket and drain it together …
 	for i := 0; i < 20; i++ {
-		l.allow(fmt.Sprintf("10.%d.%d.1", i/256, i%256))
+		l.allow(fmt.Sprintf("10.0.%d.1", i))
 	}
-	if n := len(l.buckets); n > maxRateBuckets+1 {
-		t.Fatalf("bucket map grew past the cap: %d", n)
+	if b := l.buckets[aggregateKey("10.0.0.1")]; b == nil || b.tokens >= 1 {
+		t.Errorf("new keys of one network must share and drain their aggregate bucket: %+v", b)
 	}
-	if b := l.buckets[overflowBucketKey]; b == nil || b.tokens >= 1 {
-		t.Errorf("new keys beyond the cap must share and drain the overflow bucket: %+v", b)
+	// … while a new client from another network is not throttled by that flood.
+	if !l.allow("192.168.1.1") {
+		t.Error("a flood from one network throttled a new client from another")
 	}
 	if !l.allow("k1") {
 		t.Error("an existing client lost its own bucket when the map filled up")
+	}
+	// The aggregate buckets are capped as well; beyond that, the global bucket.
+	for i := 0; l.aggBuckets < maxAggregateBuckets; i++ {
+		l.allow(fmt.Sprintf("2001:db8:%x::1", i))
+	}
+	l.allow("2001:db9::1")
+	if _, ok := l.buckets[overflowBucketKey]; !ok {
+		t.Error("with the aggregate buckets exhausted, new keys must fall back to the overflow bucket")
+	}
+	if n := len(l.buckets); n > maxRateBuckets+maxAggregateBuckets+1 {
+		t.Fatalf("bucket map grew past the cap: %d", n)
 	}
 }

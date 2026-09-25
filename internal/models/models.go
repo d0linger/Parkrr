@@ -440,11 +440,14 @@ type RecurringCharge struct {
 	// is no sticky master flag any more — the "bezahlt" slider writes per-period
 	// keys for the completed periods only, so later periods become owed again
 	// (migration 077, BIL-01). AsPeriod therefore never passes it on.
-	Paid        bool               `json:"paid"`
-	PaidPeriods []string           `json:"paid_periods"`
-	PaidFixed   map[string]float64 `json:"paid_fixed,omitempty"`
-	CreatedAt   time.Time          `json:"created_at"`
-	UpdatedAt   time.Time          `json:"updated_at"`
+	Paid        bool     `json:"paid"`
+	PaidPeriods []string `json:"paid_periods"`
+	// InvoicePaidPeriods lists the sub-period keys billed on a fully paid,
+	// non-canceled invoice (read-only, derived like FlatRatePeriod's).
+	InvoicePaidPeriods []string           `json:"invoice_paid_periods,omitempty"`
+	PaidFixed          map[string]float64 `json:"paid_fixed,omitempty"`
+	CreatedAt          time.Time          `json:"created_at"`
+	UpdatedAt          time.Time          `json:"updated_at"`
 
 	// Derived (not stored).
 	Accrued      float64            `json:"accrued"`

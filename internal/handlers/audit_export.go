@@ -194,6 +194,9 @@ func (h *Handler) ExportAudit(w http.ResponseWriter, r *http.Request) {
 		// Abfrage ab, statt sie für einen verschwundenen Abrufer zu Ende zu lesen.
 		if errors.Is(err, errAuditExportWrite) {
 			slog.Warn("audit export aborted: client write failed", "rows", count, "err", err)
+			// Before the deferred rows.Close runs: it would otherwise read the rest
+			// of the result for a client that is gone.
+			cancel()
 			return
 		}
 		serverError(w, r, "audit export failed", err)
