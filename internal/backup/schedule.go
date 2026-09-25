@@ -266,13 +266,41 @@ func publishVolumeIdentity(dir, path string) (string, error) {
 	if werr != nil {
 		return "", werr
 	}
-	if err := os.Link(tmpName, path); err != nil {
+	if err := linkFile(tmpName, path); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return "", os.ErrExist
 		}
-		return "", err
+		// No hard links on this volume (some network or FUSE filesystems): fall
+		// back to an exclusive create. A reader may briefly see it incomplete;
+		// volumeIdentity re-reads such a file and only replaces it once stale.
+		slog.Warn("backup: volume does not support hard links; creating the identity file directly", "dir", dir, "err", err)
+		return id, writeIdentityExclusive(path, id)
 	}
 	return id, nil
+}
+
+// linkFile is os.Link, replaceable in tests that simulate a volume without
+// hard-link support.
+var linkFile = os.Link
+
+// writeIdentityExclusive creates path only if it does not exist yet and writes
+// and syncs the ID into it. It returns os.ErrExist when a peer created it first.
+func writeIdentityExclusive(path, id string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- fixed name inside the configured backup dir
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return os.ErrExist
+		}
+		return err
+	}
+	_, werr := f.WriteString(id + "\n")
+	if werr == nil {
+		werr = f.Sync()
+	}
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	return werr
 }
 
 // RunVolume makes an encrypted backup, writes it to dir, verifies the archive

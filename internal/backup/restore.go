@@ -77,6 +77,19 @@ BEGIN
           JOIN pg_type ty ON ty.oid = a.atttypid
           JOIN pg_namespace tyn ON tyn.oid = ty.typnamespace AND tyn.nspname = 'public'
          WHERE a.attnum > 0 AND NOT a.attisdropped
+        UNION ALL
+        -- A type outside public built on a public type (a domain over a public
+        -- enum, say) would be dropped by the CASCADE, and every column using it
+        -- with it. Any longer chain has a first external link that depends on
+        -- public directly, so the direct dependency is enough to catch it.
+        SELECT xn.nspname || '.' || xt.typname || ' (type)'
+          FROM pg_depend d
+          JOIN pg_type xt ON d.classid = 'pg_type'::regclass AND d.objid = xt.oid
+          JOIN pg_namespace xn ON xn.oid = xt.typnamespace AND xn.nspname <> 'public'
+               AND xn.nspname NOT IN ('pg_catalog', 'information_schema') AND xn.nspname NOT LIKE 'pg_toast%'
+          JOIN pg_type pt ON d.refclassid = 'pg_type'::regclass AND d.refobjid = pt.oid
+          JOIN pg_namespace pn ON pn.oid = pt.typnamespace AND pn.nspname = 'public'
+         WHERE d.deptype = 'n'
     ) s;
     IF deps IS NOT NULL THEN
         RAISE EXCEPTION 'parkrr: objects outside schema public depend on it and would be dropped by the restore: %', deps

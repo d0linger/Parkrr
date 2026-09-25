@@ -167,4 +167,32 @@ func TestRestoreLargeArchiveWithoutTemporaryStorage(t *testing.T) {
 	if mood != "bad" {
 		t.Fatalf("typed column data changed: %q", mood)
 	}
+	if _, err := conn.Exec(ctx, `DROP SCHEMA backup_stdin_typed CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Transitively: a domain OUTSIDE public over a public type, used by an external
+	// column. The column's own type is not in public, but the CASCADE would drop
+	// the domain and, with it, the column.
+	if _, err := conn.Exec(ctx, `CREATE SCHEMA backup_stdin_domain;
+		CREATE DOMAIN backup_stdin_domain.mood_d AS public.backup_stdin_mood;
+		CREATE TABLE backup_stdin_domain.rows(id integer PRIMARY KEY, mood backup_stdin_domain.mood_d);
+		INSERT INTO backup_stdin_domain.rows VALUES (1, 'ok')`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := conn.Exec(context.Background(), `DROP SCHEMA IF EXISTS backup_stdin_domain CASCADE`); err != nil {
+			t.Error(err)
+		}
+	}()
+	err = Restore(ctx, dbURL, enc, key)
+	if err == nil || !strings.Contains(err.Error(), "backup_stdin_domain.mood_d") {
+		t.Fatalf("restore over an external domain on a public type: err = %v, want a refusal naming the domain", err)
+	}
+	if err := conn.QueryRow(ctx, `SELECT mood::text FROM backup_stdin_domain.rows WHERE id = 1`).Scan(&mood); err != nil {
+		t.Fatalf("the refused restore lost the domain-typed column: %v", err)
+	}
+	if mood != "ok" {
+		t.Fatalf("domain-typed column data changed: %q", mood)
+	}
 }

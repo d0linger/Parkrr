@@ -174,3 +174,27 @@ func TestVolumeIdentityReplacesStaleIncompleteFile(t *testing.T) {
 		t.Fatalf("identity changed on re-read: %q vs %q", id, again)
 	}
 }
+
+// A volume without hard-link support falls back to an exclusive create; the
+// identity is still stable, and a peer's file still wins.
+func TestVolumeIdentityWithoutHardLinks(t *testing.T) {
+	old := linkFile
+	linkFile = func(string, string) error { return errors.New("operation not supported") }
+	t.Cleanup(func() { linkFile = old })
+
+	dir := t.TempDir()
+	id, err := volumeIdentity(dir)
+	if err != nil || len(id) != 32 {
+		t.Fatalf("fallback create failed: id=%q err=%v", id, err)
+	}
+	if again, err := volumeIdentity(dir); err != nil || again != id {
+		t.Fatalf("identity not stable after fallback: %q vs %q (err %v)", id, again, err)
+	}
+	if err := writeIdentityExclusive(filepath.Join(dir, volumeIDFile), "x"); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("exclusive create over an existing identity: err = %v, want os.ErrExist", err)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Fatalf("temp files left behind: %v", entries)
+	}
+}
