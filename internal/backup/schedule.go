@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -88,10 +89,6 @@ func acquireRun(ctx context.Context) error {
 
 func releaseRun() { <-runGate }
 
-func backupName(t time.Time) string {
-	return "parkrr-" + t.Format("2006-01-02-150405") + ".dump.enc"
-}
-
 func uniqueBackupName(t time.Time) (string, error) {
 	id := make([]byte, 8)
 	if _, err := rand.Read(id); err != nil {
@@ -100,33 +97,210 @@ func uniqueBackupName(t time.Time) (string, error) {
 	return "parkrr-" + t.Format("2006-01-02-150405") + "-" + hex.EncodeToString(id) + ".dump.enc", nil
 }
 
-// acquireS3Lease serializes the complete remote run across application replicas.
+// ErrBackupBusy meldet, dass eine andere Replik denselben Lauf gerade ausführt.
+// Das ist kein Fehlschlag: der Lauf findet statt, nur nicht hier. Der Planer
+// überspringt ihn deshalb ohne Fehlerprotokoll und ohne Alarm-E-Mail.
+var ErrBackupBusy = errors.New("another Parkrr instance is running this backup right now")
+
+// tryAcquireLease serializes a complete backup run across application replicas.
 // Advisory locks are session-scoped because the lease spans external I/O; an
 // unconfirmed unlock evicts the physical connection rather than returning a
 // possibly lock-owning session to the pool.
-func acquireS3Lease(ctx context.Context, pool *pgxpool.Pool, bucket string) (func(), error) {
+//
+// BEWUSST pg_try_advisory_lock statt pg_advisory_lock (BAK-03): das blockierende
+// Warten lief auf einer Pool-Verbindung mit statement_timeout=10s und wurde nach
+// zehn Sekunden abgebrochen — jede zweite Replik meldete so bei jedem Lauf einen
+// Fehlschlag samt Alarm. Warten wäre ohnehin sinnlos: wer die Sperre hält, macht
+// genau diesen Lauf, und ein zweiter direkt danach wäre ein Duplikat. Der
+// Versuch kehrt sofort zurück, der statement_timeout spielt keine Rolle mehr.
+//
+// Der zurückgegebene Kontext endet, sobald die Sperrsitzung wegbricht: eine
+// Session-Sperre gilt nur, solange ihre Verbindung lebt. Ohne diese Überwachung
+// liefe ein Lauf nach einem Verbindungsabbruch ungeschützt weiter, während eine
+// andere Replik die Sperre bekommt — und deren sweepStaleParts räumte die noch
+// wachsende .part weg. Die Freigabe beendet erst die Überwachung, dann die Sperre.
+func tryAcquireLease(ctx context.Context, pool *pgxpool.Pool, name string) (context.Context, func(), error) {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if _, err := conn.Exec(ctx,
-		`SELECT pg_advisory_lock(hashtextextended($1, 0))`, "parkrr.backup-s3:"+bucket); err != nil {
+	var acquired bool
+	if err := conn.QueryRow(ctx,
+		`SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, name).Scan(&acquired); err != nil {
 		conn.Release()
-		return nil, err
+		return nil, nil, err
 	}
-	return func() {
+	if !acquired {
+		conn.Release()
+		return nil, nil, ErrBackupBusy
+	}
+	leaseCtx, cancelLease := context.WithCancelCause(ctx)
+	stopWatch := make(chan struct{})
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		t := time.NewTicker(leaseCheckInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopWatch:
+				return
+			case <-leaseCtx.Done():
+				return
+			case <-t.C:
+				pctx, cancel := context.WithTimeout(leaseCtx, 5*time.Second)
+				err := conn.Ping(pctx)
+				cancel()
+				if err != nil && leaseCtx.Err() == nil {
+					slog.Error("backup: advisory lease session lost; stopping the run", "lease", name, "err", err)
+					cancelLease(fmt.Errorf("%w: %v", errLeaseLost, err))
+					return
+				}
+			}
+		}
+	}()
+	return leaseCtx, func() {
+		close(stopWatch)
+		<-watchDone // the watcher no longer touches conn
+		defer cancelLease(nil)
 		uctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var unlocked bool
 		if err := conn.QueryRow(uctx,
-			`SELECT pg_advisory_unlock(hashtextextended($1, 0))`, "parkrr.backup-s3:"+bucket).Scan(&unlocked); err != nil || !unlocked {
-			slog.Error("backup: could not release S3 advisory lease; evicting connection", "bucket", bucket, "err", err)
+			`SELECT pg_advisory_unlock(hashtextextended($1, 0))`, name).Scan(&unlocked); err != nil || !unlocked {
+			slog.Error("backup: could not release advisory lease; evicting connection", "lease", name, "err", err)
 			raw := conn.Hijack()
 			_ = raw.Close(uctx)
 			return
 		}
 		conn.Release()
 	}, nil
+}
+
+// errLeaseLost ends a run whose advisory lease session went away mid-run.
+var errLeaseLost = errors.New("backup lease lost")
+
+// leaseCheckInterval is how often a held lease's session is pinged.
+var leaseCheckInterval = 15 * time.Second
+
+// s3LeaseName is the advisory-lease name that serializes S3 runs per bucket.
+func s3LeaseName(bucket string) string { return "parkrr.backup-s3:" + bucket }
+
+// volumeLeaseName: Repliken teilen sich das Backup-Verzeichnis (BAK-05). Ohne
+// gemeinsame Sperre starteten alle in derselben Minute, und sweepStaleParts der
+// einen löschte die halb geschriebene .part der anderen.
+//
+// Der Name folgt der Identität des VOLUMES, nicht dem Pfad: Repliken können
+// dasselbe Volume unter verschiedenen Pfaden einhängen. Die Identität liegt als
+// Zufalls-ID in einer Datei auf dem Volume selbst; wer sie zuerst veröffentlicht (Hardlink),
+// legt sie fest, alle anderen lesen dieselbe. Ist das Verzeichnis nicht
+// beschreibbar, bleibt als Rückfall der bereinigte Pfad.
+func volumeLeaseName(dir string) string {
+	if id, err := volumeIdentity(dir); err == nil {
+		return "parkrr.backup-volume:" + id
+	} else {
+		slog.Warn("backup: volume identity unavailable; locking by path", "dir", dir, "err", err)
+	}
+	return "parkrr.backup-volume:" + filepath.Clean(dir)
+}
+
+const volumeIDFile = ".parkrr-volume-id"
+
+// volumeIdentity returns the volume's identity, creating it on first use. The ID
+// is written and synced to a private temp file first and then published with a
+// hard link, which fails atomically when a peer published first — readers never
+// see a half-written file, and the first creator wins. An invalid file older than
+// staleVolumeIDAge (left by an older build or a crash) is removed and recreated.
+func volumeIdentity(dir string) (string, error) {
+	path := filepath.Join(dir, volumeIDFile)
+	for attempt := 0; attempt < 3; attempt++ {
+		b, err := os.ReadFile(path) // #nosec G304 -- fixed name inside the configured backup dir
+		switch {
+		case err == nil:
+			if id := strings.TrimSpace(string(b)); len(id) == 32 {
+				return id, nil
+			}
+			if fi, serr := os.Stat(path); serr == nil && time.Since(fi.ModTime()) > staleVolumeIDAge {
+				_ = os.Remove(path)
+			} else {
+				time.Sleep(50 * time.Millisecond)
+			}
+			continue
+		case !errors.Is(err, os.ErrNotExist):
+			return "", err
+		}
+		id, err := publishVolumeIdentity(dir, path)
+		if errors.Is(err, os.ErrExist) {
+			continue // a peer published first: use theirs
+		}
+		return id, err
+	}
+	return "", errors.New("volume identity file is unreadable or incomplete")
+}
+
+// staleVolumeIDAge is how old an invalid identity file must be before it counts
+// as abandoned rather than as a peer's in-progress write.
+const staleVolumeIDAge = 10 * time.Second
+
+// publishVolumeIdentity writes a fresh ID to a temp file and links it into place.
+// It returns os.ErrExist when an identity is already published.
+func publishVolumeIdentity(dir, path string) (string, error) {
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	id := hex.EncodeToString(raw)
+	tmp, err := os.CreateTemp(dir, volumeIDFile+".tmp-*")
+	if err != nil {
+		return "", err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	_, werr := tmp.WriteString(id + "\n")
+	if werr == nil {
+		werr = tmp.Sync()
+	}
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		return "", werr
+	}
+	if err := linkFile(tmpName, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return "", os.ErrExist
+		}
+		// No hard links on this volume (some network or FUSE filesystems): fall
+		// back to an exclusive create. A reader may briefly see it incomplete;
+		// volumeIdentity re-reads such a file and only replaces it once stale.
+		slog.Warn("backup: volume does not support hard links; creating the identity file directly", "dir", dir, "err", err)
+		return id, writeIdentityExclusive(path, id)
+	}
+	return id, nil
+}
+
+// linkFile is os.Link, replaceable in tests that simulate a volume without
+// hard-link support.
+var linkFile = os.Link
+
+// writeIdentityExclusive creates path only if it does not exist yet and writes
+// and syncs the ID into it. It returns os.ErrExist when a peer created it first.
+func writeIdentityExclusive(path, id string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- fixed name inside the configured backup dir
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return os.ErrExist
+		}
+		return err
+	}
+	_, werr := f.WriteString(id + "\n")
+	if werr == nil {
+		werr = f.Sync()
+	}
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	return werr
 }
 
 // RunVolume makes an encrypted backup, writes it to dir, verifies the archive
@@ -141,19 +315,32 @@ func RunVolume(ctx context.Context, pool *pgxpool.Pool, dbURL, key, dir string, 
 		return 0, false, err
 	}
 	defer releaseRun()
-
 	_ = os.MkdirAll(dir, 0o700) // the create below surfaces the actionable error
+	ctx, releaseLease, err := tryAcquireLease(ctx, pool, volumeLeaseName(dir))
+	if err != nil {
+		return 0, false, err
+	}
+	defer releaseLease()
 	// Erst prüfen, dann sichtbar machen. Geschrieben wird nach *.part; erst nach
 	// bestandener Prüfung wird umbenannt. Vorher landete das Archiv sofort unter
 	// seinem endgültigen Namen — ein durchgefallenes blieb liegen, erschien in der
 	// Backup-Übersicht als wiederherstellbar und war als NEUESTE Datei sogar
 	// bevorzugt. Das Glob-Muster parkrr-*.dump.enc greift bei *.part nicht, die
 	// Zwischendatei taucht also weder in der Liste noch beim Aufräumen auf.
-	p := filepath.Join(dir, backupName(time.Now()))
+	//
+	// Der Name trägt ein Zufallssuffix (uniqueBackupName, wie beim S3-Ziel): zwei
+	// Läufe in derselben Sekunde öffneten vorher dieselbe Datei mit O_TRUNC und
+	// schrieben ineinander. O_EXCL macht eine Kollision zum Fehler statt zum Salat.
+	name, err := uniqueBackupName(time.Now())
+	if err != nil {
+		recordVolumeSafe(ctx, pool, 0, false, false)
+		return 0, false, err
+	}
+	p := filepath.Join(dir, name)
 	part := p + ".part"
-	// dir is an operator-owned configuration value and backupName is generated
+	// dir is an operator-owned configuration value and the name is generated
 	// locally from a fixed format; no request-controlled path component is used.
-	f, err := os.OpenFile(part, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600) // #nosec G304
+	f, err := os.OpenFile(part, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) // #nosec G304
 	if err != nil {
 		recordVolumeSafe(ctx, pool, 0, false, false)
 		return 0, false, err
@@ -240,13 +427,13 @@ func RunS3(ctx context.Context, pool *pgxpool.Pool, dbURL, key string, s3 S3Conf
 		return "", err
 	}
 	defer releaseRun()
-	releaseLease, err := acquireS3Lease(ctx, pool, s3.Bucket)
+	ctx, releaseLease, err := tryAcquireLease(ctx, pool, s3LeaseName(s3.Bucket))
 	if err != nil {
 		return "", err
 	}
 	defer releaseLease()
 
-	tmp, err := os.CreateTemp("", "parkrr-s3-upload-*.dump.enc")
+	tmp, err := createWorkFile("parkrr-s3-upload-", ".dump.enc")
 	if err != nil {
 		recordS3Safe(ctx, pool, false)
 		return "", err
@@ -378,6 +565,13 @@ func StartScheduler(stop <-chan struct{}, pool *pgxpool.Pool, dbURL, key, dir st
 	if key == "" || (dir == "" && !s3.Enabled()) {
 		return
 	}
+	// Der Lauf hängt am stop-Kanal (BAK-04). Vorher lief schedulerTick unter einem
+	// eigenen 30-Minuten-Context, der vom Anhalten nichts wusste: ein Drain für eine
+	// Browser-Wiederherstellung wartete dann bis zu einer halben Stunde auf einen
+	// pg_dump von Daten, die gleich ersetzt werden — mit geschlossenem Zugang für
+	// alle. Jetzt beendet das Schließen von stop pg_dump, Upload und Prüfung sofort.
+	runCtx, cancelRuns := contextUntil(stop)
+	defer cancelRuns()
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	// In-memory guards for the last fire of each target. They back-stop the DB
@@ -389,9 +583,23 @@ func StartScheduler(stop <-chan struct{}, pool *pgxpool.Pool, dbURL, key, dir st
 		case <-stop:
 			return
 		case <-ticker.C:
-			schedulerTick(pool, dbURL, key, dir, s3, &lastVol, &lastS3, alert)
+			schedulerTick(runCtx, pool, dbURL, key, dir, s3, &lastVol, &lastS3, alert)
 		}
 	}
+}
+
+// contextUntil returns a context that is cancelled as soon as stop closes (or
+// cancel is called, which also ends the watcher goroutine).
+func contextUntil(stop <-chan struct{}) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		select {
+		case <-stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
 }
 
 // EffectiveLast returns the later of the persisted last-run and the in-memory
@@ -414,9 +622,18 @@ func EffectiveLast(dbLast *time.Time, mem time.Time) *time.Time {
 	return dbLast
 }
 
-func schedulerTick(pool *pgxpool.Pool, dbURL, key, dir string, s3 S3Config, lastVol, lastS3 *time.Time, alert Alerter) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+// schedulerTick runs the volume and S3 backups that are due, audits each outcome
+// and alerts on real failures; a busy lease or a shutdown is not a failure.
+func schedulerTick(parent context.Context, pool *pgxpool.Pool, dbURL, key, dir string, s3 S3Config, lastVol, lastS3 *time.Time, alert Alerter) {
+	if parent.Err() != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
 	defer cancel()
+	// stopped: der Lauf wurde abgebrochen, weil die Anwendung angehalten wird
+	// (Herunterfahren oder Wiederherstellung). Protokolliert wird das weiterhin,
+	// aber niemand bekommt dafür eine Alarm-E-Mail — es ist kein Defekt.
+	stopped := func() bool { return parent.Err() != nil }
 
 	settings, err := LoadSettings(ctx, pool)
 	if err != nil {
@@ -445,11 +662,22 @@ func schedulerTick(pool *pgxpool.Pool, dbURL, key, dir string, s3 S3Config, last
 	if dir != "" && fireDue(settings.VolumeCron, EffectiveLast(status.LastVolumeAt, *lastVol), now) {
 		*lastVol = now // advance the guard before running so a status-write failure can't re-fire
 		switch size, verified, err := RunVolume(ctx, pool, dbURL, key, dir, settings.VolumeRetention()); {
+		case errors.Is(err, ErrBackupBusy):
+			slog.Info("scheduled volume backup skipped: another instance is running it", "dir", dir)
+		case err != nil && stopped():
+			slog.Warn("scheduled volume backup cancelled: the application is stopping", "err", err)
+			audit(ctx, actionBackupFailed, "Geplantes Volume-Backup abgebrochen (Anwendung wird angehalten)",
+				map[string]any{"target": "volume", "ok": false, "cron": settings.VolumeCron, "error": err.Error()})
 		case err != nil:
 			slog.Error("scheduled volume backup failed", "err", err)
 			audit(ctx, actionBackupFailed, "Geplantes Volume-Backup FEHLGESCHLAGEN",
 				map[string]any{"target": "volume", "ok": false, "cron": settings.VolumeCron, "error": err.Error()})
 			alertBackupFailure(ctx, alert, "Volume", "Der Lauf brach ab.", err.Error())
+		case !verified && stopped():
+			// The stop signal cancelled the verify step: a shutdown, not a bad archive.
+			slog.Warn("scheduled volume backup cancelled during verification: the application is stopping", "dir", dir)
+			audit(ctx, actionBackupFailed, "Geplantes Volume-Backup abgebrochen (Anwendung wird angehalten)",
+				map[string]any{"target": "volume", "ok": false, "verified": false, "cron": settings.VolumeCron})
 		case !verified:
 			// Written, but it did not decrypt/restore-list cleanly. recordVolume already
 			// flagged it not-OK; reporting ok:true here would leave the append-only trail
@@ -465,14 +693,34 @@ func schedulerTick(pool *pgxpool.Pool, dbURL, key, dir string, s3 S3Config, last
 				map[string]any{"target": "volume", "ok": true, "verified": true, "bytes": size, "cron": settings.VolumeCron, "keep": settings.VolumeKeep})
 		}
 	}
+	if stopped() {
+		return
+	}
+	if s3.Enabled() && dir != "" {
+		// Der Volume-Lauf kann eine halbe Stunde gedauert haben. In der Zeit hat eine
+		// andere Replik das fällige S3-Backup womöglich schon erledigt; mit dem Stand
+		// vom Anfang des Ticks liefe es hier ein zweites Mal.
+		if fresh, err := LoadStatus(ctx, pool); err == nil {
+			status = fresh
+		}
+		now = time.Now()
+	}
 	if s3.Enabled() && fireDue(settings.S3Cron, EffectiveLast(status.LastS3At, *lastS3), now) {
 		*lastS3 = now
-		if name, err := RunS3(ctx, pool, dbURL, key, s3, settings.S3Retention()); err != nil {
+		name, err := RunS3(ctx, pool, dbURL, key, s3, settings.S3Retention())
+		switch {
+		case errors.Is(err, ErrBackupBusy):
+			slog.Info("scheduled S3 backup skipped: another instance is running it", "bucket", s3.Bucket)
+		case err != nil && stopped():
+			slog.Warn("scheduled S3 backup cancelled: the application is stopping", "err", err)
+			audit(ctx, actionBackupFailed, "Geplantes S3-Backup abgebrochen (Anwendung wird angehalten)",
+				map[string]any{"target": "s3", "ok": false, "bucket": s3.Bucket, "cron": settings.S3Cron, "error": err.Error()})
+		case err != nil:
 			slog.Error("scheduled S3 backup failed", "err", err)
 			audit(ctx, actionBackupFailed, "Geplantes S3-Backup FEHLGESCHLAGEN",
 				map[string]any{"target": "s3", "ok": false, "bucket": s3.Bucket, "cron": settings.S3Cron, "error": err.Error()})
 			alertBackupFailure(ctx, alert, "S3", "Der Lauf in den Bucket "+s3.Bucket+" brach ab.", err.Error())
-		} else {
+		default:
 			slog.Info("scheduled S3 backup uploaded", "bucket", s3.Bucket, "name", name)
 			audit(ctx, "backup", "Geplantes S3-Backup hochgeladen",
 				map[string]any{"target": "s3", "ok": true, "bucket": s3.Bucket, "object": name, "cron": settings.S3Cron, "keep": settings.S3Keep})
@@ -513,6 +761,11 @@ func fireDue(cron string, last *time.Time, now time.Time) bool {
 // keep wird ausdrücklich übergeben und nicht als "der neueste Name" erraten: bei
 // einer rückwärts gestellten Uhr sortierte die gerade geschriebene Datei nicht mehr
 // zuletzt und würde unter den Händen des eigenen Laufs gelöscht.
+//
+// Mehrere Repliken auf einem Verzeichnis (BAK-05): RunVolume hält während des
+// ganzen Laufs die Sperre volumeLeaseName(dir), und jede .part trägt einen
+// eindeutigen Namen. Solange der Sweep läuft, schreibt deshalb niemand sonst eine
+// .part in dieses Verzeichnis — jede andere ist wirklich ein Rest.
 func sweepStaleParts(dir, keep string) {
 	parts, err := filepath.Glob(filepath.Join(dir, "parkrr-*.dump.enc.part"))
 	if err != nil {

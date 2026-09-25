@@ -283,6 +283,33 @@ func (m *Manager) Authenticate(ctx context.Context, username, password string) (
 	return u, nil
 }
 
+// AuthenticateUserID re-verifies the password of a KNOWN account, looked up by
+// primary key. Re-authentication of a signed-in user (step-up, password change,
+// 2FA management) must use this instead of Authenticate(u.Username, ...): a
+// username lookup that resolved to a different row than the session's user would
+// let that other account's password unlock this one (audit AUTH-02). The
+// returned user carries the verified PasswordHash, so a following write can be
+// bound to exactly that credential.
+func (m *Manager) AuthenticateUserID(ctx context.Context, userID int64, password string) (*models.User, error) {
+	var u models.User
+	err := m.pool.QueryRow(ctx,
+		`SELECT id, username, email, password_hash, is_admin, role,
+		        totp_secret, totp_enabled, disabled, created_at, updated_at
+		 FROM users WHERE id = $1`, userID,
+	).Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.IsAdmin, &u.Role,
+		&u.TOTPSecret, &u.TOTPEnabled, &u.Disabled, &u.CreatedAt, &u.UpdatedAt)
+	if err != nil {
+		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
+		return nil, errors.New("invalid credentials")
+	}
+	if !CheckPassword(u.PasswordHash, password) || u.Disabled {
+		return nil, errors.New("invalid credentials")
+	}
+	return &u, nil
+}
+
+// userByUsername resolves a login name. lower(username) is unique since
+// migration 075, so this matches at most one row.
 func (m *Manager) userByUsername(ctx context.Context, username string) (*models.User, error) {
 	var u models.User
 	err := m.pool.QueryRow(ctx,
@@ -318,33 +345,83 @@ var ErrCredentialChanged = errors.New("credential changed during login")
 // share-locks the user row, so it serializes with a concurrent password change:
 // either the change commits first and the login gets ErrCredentialChanged, or
 // the session commits first and the change's session revocation removes it.
+//
+// A factor-verified session is additionally bound to the TOTP secret the login
+// checked: an admin 2FA reset that commits while the login is in flight clears
+// that secret, so the login gets ErrCredentialChanged instead of leaving a
+// factor-verified session behind (audit AUTH-04).
 func (m *Manager) CreatePasswordSession(
-	ctx context.Context, w http.ResponseWriter, r *http.Request, userID int64, passwordHash string, factorVerified bool,
+	ctx context.Context, w http.ResponseWriter, r *http.Request, userID int64, passwordHash, totpSecret string, factorVerified bool,
 ) error {
-	token, err := randomToken(32)
+	s, err := m.newSessionMaterial(r)
 	if err != nil {
 		return err
-	}
-	csrf := m.csrfToken(token)
-	expires := time.Now().Add(m.sessionMaxAge)
-	ua := r.UserAgent()
-	if len(ua) > 300 {
-		ua = ua[:300]
 	}
 	ct, err := m.pool.Exec(ctx,
 		`INSERT INTO sessions (token, user_id, expires_at, user_agent, ip, last_seen, factor_verified)
 		 SELECT $1, u.id, $3, $4, $5, now(), $6
-		 FROM users u WHERE u.id = $2 AND u.password_hash = $7
+		 FROM users u WHERE u.id = $2 AND u.password_hash = $7 AND NOT u.disabled
+		   AND (NOT $6 OR (u.totp_enabled AND u.totp_secret = $8))
 		 FOR SHARE`,
-		hashToken(token), userID, expires, ua, m.ClientIP(r), factorVerified, passwordHash)
+		hashToken(s.token), userID, s.expires, s.ua, m.ClientIP(r), factorVerified, passwordHash, totpSecret)
+	return m.finishBoundSession(w, r, s, ct.RowsAffected(), err)
+}
+
+// sessionMaterial is a freshly generated, not yet stored session.
+type sessionMaterial struct {
+	token, csrf, ua string
+	expires         time.Time
+}
+
+// newSessionMaterial generates a session token, its CSRF token, expiry and the
+// capped user agent, without storing anything yet.
+func (m *Manager) newSessionMaterial(r *http.Request) (sessionMaterial, error) {
+	token, err := randomToken(32)
+	if err != nil {
+		return sessionMaterial{}, err
+	}
+	ua := r.UserAgent()
+	if len(ua) > 300 {
+		ua = ua[:300]
+	}
+	return sessionMaterial{token: token, csrf: m.csrfToken(token), ua: ua, expires: time.Now().Add(m.sessionMaxAge)}, nil
+}
+
+// finishBoundSession completes a credential-bound INSERT ... SELECT: zero rows
+// means the verified credential changed in between (ErrCredentialChanged);
+// cookies are written only for a stored session.
+func (m *Manager) finishBoundSession(w http.ResponseWriter, r *http.Request, s sessionMaterial, rows int64, err error) error {
 	if err != nil {
 		return err
 	}
-	if ct.RowsAffected() != 1 {
+	if rows != 1 {
 		return ErrCredentialChanged
 	}
-	m.writeSessionCookies(w, r, token, csrf, expires)
+	m.writeSessionCookies(w, r, s.token, s.csrf, s.expires)
 	return nil
+}
+
+// CreatePasskeySession issues a factor-verified session only while the passkey
+// that produced the assertion still exists and its account is not disabled. The
+// insert share-locks the credential and user rows, so it serializes with an
+// admin 2FA reset or a passkey deletion: either that commits first and the login
+// gets ErrCredentialChanged, or the session commits first and the reset's
+// session revocation removes it (audit AUTH-04).
+func (m *Manager) CreatePasskeySession(
+	ctx context.Context, w http.ResponseWriter, r *http.Request, userID int64, credentialID []byte,
+) error {
+	s, err := m.newSessionMaterial(r)
+	if err != nil {
+		return err
+	}
+	ct, err := m.pool.Exec(ctx,
+		`INSERT INTO sessions (token, user_id, expires_at, user_agent, ip, last_seen, factor_verified)
+		 SELECT $1, u.id, $3, $4, $5, now(), TRUE
+		 FROM users u JOIN webauthn_credentials wc ON wc.user_id = u.id
+		 WHERE u.id = $2 AND wc.credential_id = $6 AND NOT u.disabled
+		 FOR SHARE`,
+		hashToken(s.token), userID, s.expires, s.ua, m.ClientIP(r), credentialID)
+	return m.finishBoundSession(w, r, s, ct.RowsAffected(), err)
 }
 
 // Keep the existing session API shape; assurance is an internal, explicit input.

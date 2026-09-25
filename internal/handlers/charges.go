@@ -432,6 +432,30 @@ func (h *Handler) CreateCharge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, badMsg)
 		return
 	}
+	// Optional Idempotency-Key (WEB-02): a retry with the same key returns the
+	// first charge instead of creating a duplicate; the same key with a different
+	// request is a 409. Without the header nothing changes.
+	idem, ok := idempotencyFor(w, r, struct {
+		Endpoint    string  `json:"endpoint"`
+		PersonID    int64   `json:"person_id"`
+		VehicleID   *int64  `json:"vehicle_id"`
+		Description string  `json:"description"`
+		Amount      float64 `json:"amount"`
+		Quantity    float64 `json:"quantity"`
+		ChargedOn   string  `json:"charged_on"`
+	}{"charge", req.PersonID, req.VehicleID, req.Description, req.Amount, req.Quantity, req.ChargedOn})
+	if !ok {
+		return
+	}
+	if idem.key != "" {
+		if prior, found, err := idempotentRowID(r.Context(), h.Pool, chargeIdempotencyLookup, idem); err != nil {
+			writeIdempotencyError(w, err)
+			return
+		} else if found {
+			writeIdempotentReplay(w, prior)
+			return
+		}
+	}
 	tx, err := h.Pool.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create charge")
@@ -439,11 +463,34 @@ func (h *Handler) CreateCharge(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
 	var id int64
-	err = tx.QueryRow(r.Context(),
-		`INSERT INTO charges (person_id, vehicle_id, description, amount, quantity, charged_on)
-		 VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-		req.PersonID, req.VehicleID, req.Description, req.Amount, req.Quantity, chargedOn,
-	).Scan(&id)
+	if idem.key == "" {
+		err = tx.QueryRow(r.Context(),
+			`INSERT INTO charges (person_id, vehicle_id, description, amount, quantity, charged_on)
+			 VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+			req.PersonID, req.VehicleID, req.Description, req.Amount, req.Quantity, chargedOn,
+		).Scan(&id)
+	} else {
+		err = tx.QueryRow(r.Context(),
+			`INSERT INTO charges (person_id, vehicle_id, description, amount, quantity, charged_on,
+			        idempotency_actor, idempotency_key, request_fingerprint)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+			 ON CONFLICT (COALESCE(idempotency_actor, 0), idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+			 RETURNING id`,
+			req.PersonID, req.VehicleID, req.Description, req.Amount, req.Quantity, chargedOn,
+			idem.actor, idem.key, idem.fingerprint,
+		).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// A concurrent request with the same key won: replay its charge.
+			_ = tx.Rollback(r.Context())
+			prior, found, lerr := idempotentRowID(r.Context(), h.Pool, chargeIdempotencyLookup, idem)
+			if lerr != nil || !found {
+				writeIdempotencyError(w, lerr)
+				return
+			}
+			writeIdempotentReplay(w, prior)
+			return
+		}
+	}
 	if err != nil {
 		if isForeignKeyViolation(err) {
 			writeError(w, http.StatusBadRequest, "person or vehicle does not exist")
@@ -686,6 +733,36 @@ func (h *Handler) SetChargePaid(w http.ResponseWriter, r *http.Request) {
 	}
 	failMsg := "could not update charge"
 	if err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		// CreateInvoice's per-person lock, then the state checks (BIL-05).
+		if err := lockInvoicePersonTx(r.Context(), tx, personID); err != nil {
+			return err
+		}
+		if req.Paid != curPaid {
+			// A charge on an active invoice is settled through that invoice, in both
+			// directions: "bezahlt" would book no payment (toggleOwed sees nothing
+			// open) yet write paid=true, so after a Storno the charge could never be
+			// billed again while the balance still owed it (BIL-03).
+			if inv, err := periodInvoicedTx(r.Context(), tx, "charge", id, ""); err != nil {
+				return err
+			} else if inv {
+				return &settlementConflictError{"Zusatzkosten sind fakturiert – über die Rechnung begleichen"}
+			}
+		}
+		if !req.Paid && curPaid {
+			// Money a regular payment allocated to the charge can't be toggled away:
+			// the allocation survives the flag, the charge would be billed again and
+			// the charge-claim guard would refuse EVERY invoice of the person (BIL-03).
+			// Reverse (storno) that payment instead.
+			var manual bool
+			if err := tx.QueryRow(r.Context(),
+				`SELECT EXISTS(SELECT 1 FROM payment_allocations a JOIN payments p ON p.id=a.payment_id
+				   WHERE a.kind='charge' AND a.ref_id=$1 AND NOT p.auto)`, id).Scan(&manual); err != nil {
+				return err
+			}
+			if manual {
+				return &settlementConflictError{"Zusatzkosten wurden über eine Zahlung beglichen – bitte die Zahlung stornieren"}
+			}
+		}
 		if req.Paid && !curPaid {
 			if err := h.syncTogglePaymentTx(r.Context(), tx, "charge", id, personID, true, amt, bound); err != nil {
 				failMsg = "could not record payment"
@@ -706,6 +783,11 @@ func (h *Handler) SetChargePaid(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	}); err != nil {
+		var conflict *settlementConflictError
+		if errors.As(err, &conflict) {
+			writeError(w, http.StatusConflict, conflict.msg)
+			return
+		}
 		if writeSettlementConflict(w, err) {
 			return
 		}

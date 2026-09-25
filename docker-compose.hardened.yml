@@ -5,18 +5,29 @@
 #
 # Works with both rootful and rootless engines (Docker rootless / Podman). It
 # adds no-new-privileges, capability dropping, a read-only app rootfs and
-# resource limits. The app is a static distroless binary that already runs as a
-# non-root user and writes nothing to disk, so it can be locked down hard;
-# Postgres needs a writable data dir and a few capabilities for its entrypoint,
-# so it is hardened more conservatively.
+# resource limits. The app is a static binary that already runs as a non-root
+# user and writes nothing to its container filesystem, so it can be locked down
+# hard; Postgres needs a writable data dir and a few capabilities for its
+# entrypoint, so it is hardened more conservatively.
 
 services:
   app:
     # Static binary, logs to stdout, photos live in the DB — nothing is written
     # to the container filesystem, so the rootfs can be read-only.
+    #
+    # Backup temp files (S3 upload and read-back, downloads, the decrypted dump
+    # during a restore) are as large as the database. They go to
+    # <PARKRR_BACKUP_DIR>/.tmp on the /backups volume, NOT to /tmp: keep
+    # PARKRR_BACKUP_DIR set to a writable volume, even for an S3-only setup (an
+    # empty volume cron keeps volume backups off). Plan free space there of about
+    # twice the archive size (S3 upload plus its read-back copy, or a staged
+    # upload plus the decrypted dump during a restore). Only with an empty
+    # PARKRR_BACKUP_DIR does the app fall back to /tmp, and the 32 MiB tmpfs below
+    # is far too small for that.
     read_only: true
     tmpfs:
-      # Bounded so a runaway temp write cannot consume host RAM up to mem_limit.
+      # Bounded so a runaway temp write cannot consume host RAM up to mem_limit
+      # (tmpfs pages count toward the container's memory).
       - /tmp:size=32m,mode=1777
     security_opt:
       - no-new-privileges:true

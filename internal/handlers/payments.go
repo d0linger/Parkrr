@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/preining/parkrr/internal/auth"
+	"github.com/preining/parkrr/internal/models"
 )
 
 // maxMoneyAmount is the upper bound for a single money value. NUMERIC(12,2) holds
@@ -50,6 +51,21 @@ func writeSettlementConflict(w http.ResponseWriter, err error) bool {
 	writeError(w, http.StatusConflict,
 		"Position wurde zwischenzeitlich bezahlt oder fakturiert – bitte neu laden.")
 	return true
+}
+
+// isChargeClaimConflict reports the charge-claim trigger (069/070) refusing a
+// charge that a payment and an invoice both want to own.
+func isChargeClaimConflict(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "charge_claim_exclusive"
+}
+
+// isRetryableTxError reports a deadlock (40P01) or serialization failure (40001):
+// Postgres rolled the whole transaction back, so nothing was written and the
+// request may simply be repeated.
+func isRetryableTxError(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && (pgErr.Code == "40P01" || pgErr.Code == "40001")
 }
 
 // payment is one recorded money-in entry (see migration 023_payments.sql).
@@ -149,7 +165,8 @@ type paymentRequest struct {
 // line fields an invoice needs.
 type owedItem struct {
 	Date       time.Time
-	Kind       string // "vehicle" | "charge" | "agreement" | "recurring"
+	End        time.Time // last service day of a periodic line (zero for one-off lines: Date)
+	Kind       string    // "vehicle" | "charge" | "agreement" | "recurring"
 	ID         int64
 	Period     string // sub-period key for periodic kinds; "" for discrete ones
 	Label      string
@@ -184,6 +201,12 @@ func periodKeySet(keys []string) map[string]bool {
 		m[k] = true
 	}
 	return m
+}
+
+// businessDay returns t's calendar day in the business zone as a UTC-midnight
+// date — the carrier form of DATE columns (see models.DayAfter).
+func businessDay(t time.Time) time.Time {
+	return models.DayAfter(t).AddDate(0, 0, -1)
 }
 
 // createdByFrom returns the acting user's id (for payments.created_by) or nil when
@@ -251,6 +274,7 @@ func (h *Handler) openOwedItems(r *http.Request, personID int64) ([]owedItem, er
 	return h.openOwedItemsFrom(r, h.Pool, personID)
 }
 
+// openOwedItemsFrom is openOwedItems reading through q, so a transaction can use it.
 func (h *Handler) openOwedItemsFrom(r *http.Request, q dbQuerier, personID int64) ([]owedItem, error) {
 	ctx := r.Context()
 	now := h.now()
@@ -287,9 +311,13 @@ func (h *Handler) openOwedItemsFrom(r *http.Request, q dbQuerier, personID int64
 		})
 	}
 
+	// A charge a payment allocation already claims is settled by that money, even
+	// if its flag reads open (legacy toggle-off state, BIL-03) — it is neither open
+	// for another settlement nor for an invoice.
 	rows, err := q.Query(ctx,
-		`SELECT id, description, quantity, amount, charged_on FROM charges
-		   WHERE person_id=$1 AND vehicle_id IS NULL AND NOT paid`, personID)
+		`SELECT c.id, c.description, c.quantity, c.amount, c.charged_on FROM charges c
+		   WHERE c.person_id=$1 AND c.vehicle_id IS NULL AND NOT c.paid
+		     AND NOT EXISTS (SELECT 1 FROM payment_allocations pa WHERE pa.kind='charge' AND pa.ref_id=c.id)`, personID)
 	if err != nil {
 		return nil, err
 	}
@@ -373,8 +401,15 @@ func (h *Handler) toggleOwed(r *http.Request, kind string, refID, personID int64
 	}
 	var bound []boundCharge
 	if kind == "vehicle" {
+		// A bound charge an active invoice bills is settled through that invoice
+		// (paying it never flips charges.paid). Counting it here made the claim
+		// trigger refuse the whole toggle — a permanent 409 on the vehicle slider
+		// (BIL-04). Same filter as settleAgreementExtrasTx.
 		rows, qerr := h.Pool.Query(ctx,
-			`SELECT id, amount, quantity FROM charges WHERE vehicle_id=$1 AND NOT paid`, refID)
+			`SELECT c.id, c.amount, c.quantity FROM charges c
+			  WHERE c.vehicle_id=$1 AND NOT c.paid
+			    AND NOT EXISTS (SELECT 1 FROM invoice_source s JOIN invoices i ON i.id=s.invoice_id
+			                     WHERE s.kind='charge' AND s.ref_id=c.id AND NOT i.canceled)`, refID)
 		if qerr != nil {
 			return 0, nil, qerr
 		}
@@ -527,7 +562,20 @@ func (h *Handler) syncTogglePaymentTx(ctx context.Context, tx pgx.Tx, kind strin
 // race — the position was already allocated by another payment — is a clean no-op,
 // never an orphaned paid flag with no allocation. Returns whether it settled and,
 // for a settled vehicle, its id so the caller can auto-archive after commit.
-func settleItemTx(ctx context.Context, tx pgx.Tx, paymentID int64, it owedItem) (settled bool, archiveVehicle int64, err error) {
+//
+// A vehicle's allocation pays its rent accrued through today (it.LineTotal is the
+// accrual as of today), so paid_through records exactly that day: rent after it is
+// owed and invoiced again (BIL-02). The caller holds the person's invoice lock;
+// a vehicle an invoice claimed since the open items were read is skipped here
+// (only charges have a DB-level claim guard, BIL-05).
+func settleItemTx(ctx context.Context, tx pgx.Tx, paymentID int64, it owedItem, today time.Time) (settled bool, archiveVehicle int64, err error) {
+	if it.Kind == "vehicle" {
+		if inv, ierr := periodInvoicedTx(ctx, tx, "vehicle", it.ID, ""); ierr != nil {
+			return false, 0, ierr
+		} else if inv {
+			return false, 0, nil // billed meanwhile — settle via the invoice
+		}
+	}
 	ct, err := tx.Exec(ctx,
 		`INSERT INTO payment_allocations (payment_id, kind, ref_id, amount)
 		 VALUES ($1,$2,$3,$4) ON CONFLICT (kind, ref_id) DO NOTHING`,
@@ -540,7 +588,8 @@ func settleItemTx(ctx context.Context, tx pgx.Tx, paymentID int64, it owedItem) 
 	}
 	switch it.Kind {
 	case "vehicle":
-		if _, err := tx.Exec(ctx, `UPDATE vehicles SET paid=true, updated_at=now() WHERE id=$1`, it.ID); err != nil {
+		if _, err := tx.Exec(ctx,
+			`UPDATE vehicles SET paid=true, paid_through=$2, updated_at=now() WHERE id=$1`, it.ID, today); err != nil {
 			return false, 0, err
 		}
 		return true, it.ID, nil
@@ -587,7 +636,7 @@ func (h *Handler) settlePaymentTx(ctx context.Context, tx pgx.Tx, paymentID int6
 			}
 			continue // explicit: skip an unaffordable pick, still settle the rest
 		}
-		ok, veh, serr := settleItemTx(ctx, tx, paymentID, it)
+		ok, veh, serr := settleItemTx(ctx, tx, paymentID, it, businessDay(h.now()))
 		if serr != nil {
 			return settled, archive, serr
 		}
@@ -654,6 +703,79 @@ func validIdempotencyKey(key string) bool {
 	return true
 }
 
+// createIdempotency is the optional Idempotency-Key of a create endpoint (POST
+// /charges, POST /persons/{id}/recurring), scoped to the acting user like the
+// payment keys. An empty key means the header was absent: behave as before.
+type createIdempotency struct {
+	key, fingerprint string
+	actor            *int64
+}
+
+// Lookups for idempotentRowID (constant SQL; the row's id is the response).
+const (
+	chargeIdempotencyLookup = `SELECT id, request_fingerprint FROM charges
+	  WHERE idempotency_actor IS NOT DISTINCT FROM $1 AND idempotency_key=$2`
+	recurringIdempotencyLookup = `SELECT id, request_fingerprint FROM recurring_charges
+	  WHERE idempotency_actor IS NOT DISTINCT FROM $1 AND idempotency_key=$2`
+)
+
+// idempotencyFor reads and validates the optional Idempotency-Key header and
+// fingerprints the normalized request. ok=false means the error response was
+// already written.
+func idempotencyFor(w http.ResponseWriter, r *http.Request, payload any) (createIdempotency, bool) {
+	out := createIdempotency{key: r.Header.Get("Idempotency-Key")}
+	if out.key == "" {
+		return out, true
+	}
+	if !validIdempotencyKey(out.key) {
+		writeError(w, http.StatusBadRequest, "invalid Idempotency-Key header")
+		return out, false
+	}
+	fp, err := requestFingerprint(payload)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not validate request")
+		return out, false
+	}
+	out.fingerprint, out.actor = fp, createdByFrom(r.Context())
+	return out, true
+}
+
+// idempotentRowID finds the row an earlier request created under this actor +
+// key. A different fingerprint is errIdempotencyConflict (409), never a replay.
+func idempotentRowID(ctx context.Context, q rowQuerier, lookup string, idem createIdempotency) (int64, bool, error) {
+	var id int64
+	var stored string
+	err := q.QueryRow(ctx, lookup, idem.actor, idem.key).Scan(&id, &stored)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if stored != idem.fingerprint {
+		return 0, true, errIdempotencyConflict
+	}
+	return id, true, nil
+}
+
+// writeIdempotencyError answers a failed Idempotency-Key check: 409 for a key
+// reused with a different request, 500 otherwise.
+func writeIdempotencyError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errIdempotencyConflict) {
+		writeError(w, http.StatusConflict, "Idempotency-Key was already used for another request")
+		return
+	}
+	writeError(w, http.StatusInternalServerError, "could not check request")
+}
+
+// writeIdempotentReplay answers a retried create with the first result.
+func writeIdempotentReplay(w http.ResponseWriter, id int64) {
+	w.Header().Set("Idempotent-Replayed", "true")
+	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
+}
+
+// paymentFingerprint hashes the normalized payment request, so a replayed
+// Idempotency-Key can be told apart from a key reused for a different payment.
 func paymentFingerprint(personID int64, req paymentRequest, paidOn time.Time) (string, error) {
 	allocations := append([]allocRef(nil), req.Allocations...)
 	sort.Slice(allocations, func(i, j int) bool {
@@ -671,6 +793,12 @@ func paymentFingerprint(personID int64, req paymentRequest, paidOn time.Time) (s
 		Allocate    bool       `json:"allocate"`
 		Allocations []allocRef `json:"allocations"`
 	}{personID, req.Amount, paidOn.Format(dateLayout), req.Method, req.Note, req.Allocate, allocations}
+	return requestFingerprint(payload)
+}
+
+// requestFingerprint hashes a normalized request payload for the Idempotency-Key
+// check: the same key with a different fingerprint is a 409, never a replay.
+func requestFingerprint(payload any) (string, error) {
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
@@ -834,6 +962,11 @@ func (h *Handler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 		}
 		p = pp
 		if len(openItems) > 0 {
+			// CreateInvoice's per-person lock: no invoice can claim these items
+			// between the open-items read and the claims below (BIL-05).
+			if err := lockInvoicePersonTx(ctx, tx, id); err != nil {
+				return err
+			}
 			n, arch, serr := h.settlePaymentTx(ctx, tx, p.ID, &req, openItems)
 			if serr != nil {
 				return serr
@@ -939,6 +1072,16 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 		if err := prows.Err(); err != nil {
 			return err
 		}
+		// Lock the invoices this payment funded BEFORE touching their
+		// invoice_payments rows — the order CancelInvoice uses (invoice row, then its
+		// invoice_payments). Deleting the links first and updating the invoice last
+		// took the two locks in the opposite order and deadlocked a concurrent Storno
+		// (BIL-07). Ordered by id so two reversals never cross either.
+		if _, err := tx.Exec(ctx,
+			`SELECT id FROM invoices WHERE id IN (SELECT invoice_id FROM invoice_payments WHERE payment_id=$1)
+			  ORDER BY id FOR UPDATE`, id); err != nil {
+			return err
+		}
 		var invPays []invPay
 		irows, err := tx.Query(ctx, `SELECT invoice_id, amount FROM invoice_payments WHERE payment_id=$1`, id)
 		if err != nil {
@@ -989,7 +1132,7 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 			}
 			switch rf.kind {
 			case "vehicle":
-				if _, err := tx.Exec(ctx, `UPDATE vehicles SET paid=false, updated_at=now() WHERE id=$1`, rf.id); err != nil {
+				if _, err := tx.Exec(ctx, `UPDATE vehicles SET paid=false, paid_through=NULL, updated_at=now() WHERE id=$1`, rf.id); err != nil {
 					return err
 				}
 			case "charge":
@@ -1020,6 +1163,11 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 	}
 	if errors.Is(txErr, errPaymentNotFound) || (txErr == nil && !deleted) {
 		writeError(w, http.StatusNotFound, "payment not found")
+		return
+	}
+	if isRetryableTxError(txErr) {
+		// Rolled back atomically by Postgres — nothing was reversed; safe to repeat.
+		writeError(w, http.StatusConflict, "Gleichzeitige Änderung an dieser Zahlung – bitte erneut versuchen")
 		return
 	}
 	if txErr != nil {
@@ -1115,6 +1263,10 @@ func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
 	settled := 0
 	var archive []int64
 	txErr := pgx.BeginFunc(ctx, h.Pool, func(tx pgx.Tx) error {
+		// Serialize against CreateInvoice for this person (BIL-05).
+		if err := lockInvoicePersonTx(ctx, tx, id); err != nil {
+			return err
+		}
 		for _, it := range items {
 			if budget < 0.005 {
 				break // no drawable Guthaben left at all
@@ -1161,7 +1313,7 @@ func (h *Handler) ApplyCredit(w http.ResponseWriter, r *http.Request) {
 			if remaining+0.005 < it.LineTotal {
 				continue // lost the remaining budget to a concurrent settlement
 			}
-			ok, veh, serr := settleItemTx(ctx, tx, payID, it)
+			ok, veh, serr := settleItemTx(ctx, tx, payID, it, businessDay(h.now()))
 			if serr != nil {
 				return serr
 			}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/preining/parkrr/internal/mail"
 	"github.com/preining/parkrr/internal/models"
 )
 
@@ -215,32 +216,41 @@ func (h *Handler) UpdatePerson(w http.ResponseWriter, r *http.Request) {
 // Aussage über die Sache und bleibt; wer dort stand, geht. vehicle_label ist häufig
 // das Kennzeichen und damit selbst personenbezogen.
 //
-// mail_log kennt nur die Empfängerzeile. Verglichen wird deshalb ELEMENTWEISE gegen
-// die Liste, die mail.Send mit ", " zusammensetzt — nicht per ILIKE '%...%'. Ein
-// Teilstring-Vergleich traf zweierlei zu viel: eine fremde Adresse, in der die eigene
-// steckt ("an@x.at" in "susan@x.at"), und — schlimmer — die Jokerzeichen % und _, die
-// in einer Adresse syntaktisch erlaubt sind und ILIKE zum Platzhalter machen. Eine
-// Person mit der Adresse "%@%" hätte beim Löschen die Empfängerspalte des GANZEN
-// Protokolls geleert, und den Wunsch nach genau dieser Adresse kann ein Kunde im
-// Portal selbst stellen. Derselbe Fehler war in der Audit-Suche (audit.go) schon
-// gefunden. Betreff, Zeitpunkt und Erfolg bleiben als Versandnachweis stehen.
+// mail_log kennt keine Person, nur Adressen — und zwar in ZWEI Spalten: recipients
+// und error (der SMTP-Fehlertext nennt die abgewiesene Adresse, PRT-03). Gesucht
+// wird nach JEDER Adresse, die die Person je hatte (personKnownEmails), nicht nur
+// nach der heutigen: Mahnungen und Portal-Links an eine inzwischen geänderte
+// Adresse stünden sonst weiter im Protokoll.
 //
-// Beide Seiten des Vergleichs werden getrimmt, nicht nur die gespeicherte. Der
-// Versandweg schreibt die BEREINIGTE Adresse ins Protokoll (reminders.go trimmt vor
-// dem Senden, mail.cleanAddrs parst sie zusätzlich nach RFC 5322), die Spalte
-// persons.email dagegen kann Leerraum tragen: portal_requests übernimmt den
-// Kundenwunsch ungetrimmt. Eine Person mit " kunde@x.at" hätte sonst gemeldet
-// bekommen, sie sei gelöscht, während ihre Adresse im Protokoll stehen blieb — eine
-// stille verfehlte Löschung ohne Fehlermeldung. TrimSpace in Go statt trim() in SQL:
-// PostgreSQLs trim() entfernt nur Leerzeichen, kein Tabulator, kein Zeilenumbruch.
+// recipients wird ELEMENTWEISE gegen die Liste verglichen, die mail.Send mit ", "
+// zusammensetzt — nicht per ILIKE '%...%'. Ein Teilstring-Vergleich traf zweierlei
+// zu viel: eine fremde Adresse, in der die eigene steckt ("an@x.at" in
+// "susan@x.at"), und — schlimmer — die Jokerzeichen % und _, die in einer Adresse
+// syntaktisch erlaubt sind und ILIKE zum Platzhalter machen. Eine Person mit der
+// Adresse "%@%" hätte beim Löschen die Empfängerspalte des GANZEN Protokolls
+// geleert, und den Wunsch nach genau dieser Adresse kann ein Kunde im Portal selbst
+// stellen. Derselbe Fehler war in der Audit-Suche (audit.go) schon gefunden.
+// Betreff, Zeitpunkt und Erfolg bleiben als Versandnachweis stehen. In error wird
+// nur die Adresse ersetzt (mail.RedactAddrs, an Adressgrenzen), der SMTP-Status
+// bleibt als Diagnose.
+//
+// Alle Adressen werden getrimmt und kleingeschrieben verglichen. Der Versandweg
+// schreibt die BEREINIGTE Adresse ins Protokoll (reminders.go trimmt vor dem Senden,
+// mail.cleanAddrs parst sie zusätzlich nach RFC 5322), die Spalte persons.email
+// dagegen kann Leerraum tragen: portal_requests übernimmt den Kundenwunsch
+// ungetrimmt. TrimSpace in Go statt trim() in SQL: PostgreSQLs trim() entfernt nur
+// Leerzeichen, kein Tabulator, kein Zeilenumbruch.
 //
 // Die strpos-Vorschaltung ist reine Beschleunigung und verändert die Menge nicht: ein
 // Listenelement, das der Adresse GLEICH ist, steckt zwangsläufig auch als Teilstring
 // in der Zeile. Ohne sie läuft der unnest je Zeile des ganzen Protokolls — mail_log
 // unterliegt keiner Aufräumfrist und wächst unbegrenzt, und die Anweisung steckt in
 // der Löschtransaktion, die am statement_timeout hängt.
+//
+// Muss laufen, SOLANGE die Quellen in personKnownEmails noch lesbar sind: vor dem
+// Leeren der portal_requests und vor dem Überschreiben von invoice_reminders.
 func anonymizeUnlinkedTraces(
-	ctx context.Context, q execer, personID int64, prevEmail string,
+	ctx context.Context, q pgx.Tx, personID int64, prevEmail string,
 ) error {
 	if _, err := q.Exec(ctx,
 		`UPDATE spot_occupancy_history
@@ -248,23 +258,114 @@ func anonymizeUnlinkedTraces(
          WHERE person_id = $1`, personID); err != nil {
 		return err
 	}
-	if prevEmail = strings.TrimSpace(prevEmail); prevEmail != "" {
+	addrs, err := personKnownEmails(ctx, q, personID, prevEmail)
+	if err != nil {
+		return err
+	}
+	if len(addrs) > 0 {
 		if _, err := q.Exec(ctx,
 			`UPDATE mail_log SET recipients = 'anonymisiert'
-             WHERE strpos(lower(recipients), lower($1)) > 0
-               AND lower($1) = ANY (
-                   SELECT lower(btrim(x, E' \t\r\n'))
-                   FROM unnest(string_to_array(recipients, ',')) AS x
-               )`, prevEmail); err != nil {
+             WHERE EXISTS (SELECT 1 FROM unnest($1::text[]) AS a
+                            WHERE strpos(lower(recipients), a) > 0)
+               AND EXISTS (SELECT 1 FROM unnest(string_to_array(recipients, ',')) AS x
+                            WHERE lower(btrim(x, E' \t\r\n')) = ANY ($1::text[]))`, addrs); err != nil {
+			return err
+		}
+		if err := scrubMailLogErrors(ctx, q, addrs); err != nil {
 			return err
 		}
 	}
 	// Ownership identifies these recipients, not the current email value.
-	_, err := q.Exec(ctx,
+	_, err = q.Exec(ctx,
 		`UPDATE invoice_reminders SET sent_to = 'anonymisiert'
          WHERE invoice_id IN (SELECT id FROM invoices WHERE person_id = $1)
            AND sent_to <> 'anonymisiert'`, personID)
 	return err
+}
+
+// personKnownEmails sammelt jede Adresse, die für die Person je bekannt war
+// (getrimmt, kleingeschrieben, ohne Dubletten): die heutige, die Empfänger ihrer
+// Mahnungen (invoice_reminders, per Rechnungseigentum), die in Portal-Wünschen
+// genannten und die alten wie neuen Werte aus den Änderungen am Personensatz im
+// Audit-Protokoll (Anlegen, UpdatePerson, übernommene Kundenwünsche).
+func personKnownEmails(ctx context.Context, q pgx.Tx, personID int64, current string) ([]string, error) {
+	rows, err := q.Query(ctx,
+		`SELECT x FROM (
+            SELECT unnest(string_to_array(r.sent_to, ',')) AS x
+              FROM invoice_reminders r JOIN invoices i ON i.id = r.invoice_id
+             WHERE i.person_id = $1
+            UNION ALL
+            SELECT payload->>'email' FROM portal_requests WHERE person_id = $1
+            UNION ALL
+            SELECT e.v
+              FROM audit_log a
+             CROSS JOIN LATERAL (VALUES (a.changes->'email'->>'old'),
+                                        (a.changes->'email'->>'new')) AS e(v)
+             WHERE a.entity = 'person' AND a.entity_id = $1
+               AND jsonb_typeof(a.changes->'email') = 'object'
+         ) s
+         WHERE x IS NOT NULL AND strpos(x, '@') > 0`, personID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	var out []string
+	add := func(a string) {
+		a = strings.ToLower(strings.TrimSpace(a))
+		if a == "" || !strings.Contains(a, "@") || seen[a] {
+			return
+		}
+		seen[a] = true
+		out = append(out, a)
+	}
+	add(current)
+	for rows.Next() {
+		var a string
+		if err := rows.Scan(&a); err != nil {
+			return nil, err
+		}
+		add(a)
+	}
+	return out, rows.Err()
+}
+
+// scrubMailLogErrors ersetzt die Adressen in mail_log.error. Die Ersetzung läuft in
+// Go (mail.RedactAddrs) statt als regexp_replace: dieselbe Grenzregel wie beim
+// Schreiben des Protokolls, und keine Adresse wird je als Muster interpretiert.
+func scrubMailLogErrors(ctx context.Context, q pgx.Tx, addrs []string) error {
+	rows, err := q.Query(ctx,
+		`SELECT id, error FROM mail_log
+          WHERE error <> ''
+            AND EXISTS (SELECT 1 FROM unnest($1::text[]) AS a WHERE strpos(lower(error), a) > 0)`, addrs)
+	if err != nil {
+		return err
+	}
+	type hit struct {
+		id  int64
+		msg string
+	}
+	var hits []hit
+	for rows.Next() {
+		var ht hit
+		if err := rows.Scan(&ht.id, &ht.msg); err != nil {
+			rows.Close()
+			return err
+		}
+		if red := mail.RedactAddrs(ht.msg, addrs); red != ht.msg {
+			hits = append(hits, hit{id: ht.id, msg: red})
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, ht := range hits {
+		if _, err := q.Exec(ctx, `UPDATE mail_log SET error = $2 WHERE id = $1`, ht.id, ht.msg); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DeletePerson removes a person and (via cascade) their vehicles.
@@ -386,6 +487,12 @@ func (h *Handler) AnonymizePerson(w http.ResponseWriter, r *http.Request) {
 		// gekommen und wurden dabei übersehen; drei davon hängen NICHT am Fremdschlüssel
 		// der Person, überleben also auch ein DELETE (siehe DeletePerson).
 		//
+		// ZUERST die Spuren ohne Fremdschlüssel: anonymizeUnlinkedTraces sucht die
+		// früheren Adressen der Person auch in den Portal-Wünschen (PRT-03) — die
+		// müssen also noch lesbar sein.
+		if e := anonymizeUnlinkedTraces(r.Context(), tx, id, prevEmail); e != nil {
+			return e
+		}
 		// portal_requests: die payload trägt bei contact_update die GEWÜNSCHTE neue
 		// Adresse im Klartext — also genau die Daten, die hier verschwinden sollen. Die
 		// Zeile selbst bleibt als Vorgang stehen, ihr Inhalt nicht.
@@ -397,13 +504,13 @@ func (h *Handler) AnonymizePerson(w http.ResponseWriter, r *http.Request) {
 		// attachments: Verträge, Typenscheine, Gutachten — Dokumente ÜBER die Person.
 		// Anders als das Übergabeprotokoll sind sie kein Beleg über die Sache, sondern
 		// eine Sammlung personenbezogener Unterlagen; sie werden entfernt, nicht geleert.
+		// Getroffen wird nach dem beim Hochladen festgeschriebenen Halter
+		// (owner_person_id, PRT-01), nicht nach dem heutigen des Gefährts: sonst
+		// blieben die Unterlagen eines Vorbesitzers stehen, und die des neuen Halters
+		// verschwänden mit der Löschung eines anderen.
 		if _, e := tx.Exec(r.Context(),
 			`DELETE FROM attachments
-			  WHERE person_id = $1
-			     OR vehicle_id IN (SELECT id FROM vehicles WHERE person_id = $1)`, id); e != nil {
-			return e
-		}
-		if e := anonymizeUnlinkedTraces(r.Context(), tx, id, prevEmail); e != nil {
+			  WHERE person_id = $1 OR owner_person_id = $1`, id); e != nil {
 			return e
 		}
 		// Übergabeprotokolle sind seit Migration 051 unveränderlich. SET LOCAL öffnet
@@ -415,11 +522,12 @@ func (h *Handler) AnonymizePerson(w http.ResponseWriter, r *http.Request) {
 		}
 		// Der Beleg BLEIBT ein Beleg: Richtung, Datum, Zustandsnotizen und der Bezug
 		// zum Gefährt sind der Nachweis über die Sache, nicht über die Person, und
-		// gehören zur Aufbewahrung. Entfernt wird, wer unterschrieben hat.
+		// gehören zur Aufbewahrung. Entfernt wird, wer unterschrieben hat — nach dem
+		// beim Anlegen festgeschriebenen Halter (PRT-01), nicht nach dem heutigen.
 		_, e := tx.Exec(r.Context(),
 			`UPDATE handover_protocols
 			    SET signer_name = 'Anonymisiert', signature = NULL
-			  WHERE vehicle_id IN (SELECT id FROM vehicles WHERE person_id = $1)
+			  WHERE person_id = $1
 			    AND (signer_name <> 'Anonymisiert' OR signature IS NOT NULL)`, id)
 		return e
 	})

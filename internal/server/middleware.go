@@ -7,6 +7,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -102,6 +104,8 @@ type ipLimiter struct {
 	buckets  map[string]*bucket
 	capacity float64
 	refill   float64 // tokens per second
+	// aggBuckets counts the coarse-prefix buckets (aggKeyPrefix) in buckets.
+	aggBuckets int
 }
 
 type bucket struct {
@@ -117,14 +121,88 @@ func newIPLimiter(perMin int) *ipLimiter {
 	}
 }
 
+// maxRateBuckets deckelt die Bucket-Tabelle (PRT-04). Ein Eintrag lebt nach
+// seiner letzten Anfrage noch mindestens zehn Minuten (cleanup); ohne Deckel
+// wächst die Tabelle mit jeder neuen Quelladresse, bis der Speicher ausgeht.
+const maxRateBuckets = 50000
+
+// Ist die Tabelle voll, bekommen NEUE Schlüssel keinen eigenen Bucket mehr,
+// sondern teilen sich einen gröberen: IPv6 je /48, IPv4 je /16. So trifft eine
+// Flut aus einem Netz nur dieses Netz, nicht jeden neuen Kunden. Diese
+// Sammel-Buckets sind ihrerseits auf maxAggregateBuckets gedeckelt; erst danach
+// teilen sich alle übrigen Neuen den einen overflowBucketKey. Bestehende Clients
+// behalten ihren eigenen Bucket.
+const (
+	aggKeyPrefix        = "agg:"
+	maxAggregateBuckets = 1024
+	overflowBucketKey   = "overflow"
+)
+
+// aggregateKey bildet eine Adresse auf ihr grobes Netz ab (IPv6 /48, IPv4 /16).
+func aggregateKey(ip string) string {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ""
+	}
+	addr = addr.WithZone("").Unmap()
+	bits := 48
+	if addr.Is4() {
+		bits = 16
+	}
+	pfx, err := addr.Prefix(bits)
+	if err != nil {
+		return ""
+	}
+	return aggKeyPrefix + pfx.String()
+}
+
+// rateLimitKey bildet die Client-Adresse auf ihren Bucket ab. IPv4 (auch als
+// ::ffff:a.b.c.d) bleibt die volle Adresse; IPv6 wird auf das /64 gekürzt, weil
+// ein einzelner Anschluss üblicherweise ein ganzes /64 bekommt und daraus beliebig
+// viele Quelladressen wählen kann — pro Adresse ein eigener, voller Bucket hob die
+// Grenze für jeden IPv6-Client auf (PRT-04). Nicht parsbare Werte bleiben
+// unverändert.
+func rateLimitKey(ip string) string {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	addr = addr.WithZone("").Unmap()
+	if addr.Is4() {
+		return addr.String()
+	}
+	pfx, err := addr.Prefix(64)
+	if err != nil {
+		return ip
+	}
+	return pfx.String()
+}
+
+// allow takes one token from the client's bucket and reports whether the
+// request may proceed.
 func (l *ipLimiter) allow(ip string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
-	b := l.buckets[ip]
+	key := rateLimitKey(ip)
+	b := l.buckets[key]
+	if b == nil && len(l.buckets) >= maxRateBuckets {
+		key = overflowBucketKey
+		if agg := aggregateKey(ip); agg != "" {
+			if ab := l.buckets[agg]; ab != nil || l.aggBuckets < maxAggregateBuckets {
+				key, b = agg, ab
+			}
+		}
+		if key == overflowBucketKey {
+			b = l.buckets[key]
+		}
+	}
 	if b == nil {
 		b = &bucket{tokens: l.capacity, last: now}
-		l.buckets[ip] = b
+		l.buckets[key] = b
+		if strings.HasPrefix(key, aggKeyPrefix) {
+			l.aggBuckets++
+		}
 	}
 	b.tokens += now.Sub(b.last).Seconds() * l.refill
 	if b.tokens > l.capacity {
@@ -146,6 +224,9 @@ func (l *ipLimiter) cleanup() {
 	for ip, b := range l.buckets {
 		if b.last.Before(cutoff) {
 			delete(l.buckets, ip)
+			if strings.HasPrefix(ip, aggKeyPrefix) {
+				l.aggBuckets--
+			}
 		}
 	}
 }

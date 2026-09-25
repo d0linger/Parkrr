@@ -85,6 +85,9 @@ services:
       # lives next to the DB volume — convenient, but a copy beside the database it
       # protects is not an off-site backup: also configure S3 for 3-2-1. The
       # schedule (cron) and retention are edited in the Backup tab, not via env.
+      # Large backup temp files (S3 upload/read-back, downloads, the decrypted dump
+      # during a restore) also go to <PARKRR_BACKUP_DIR>/.tmp; plan ~2x the
+      # archive size of free space on this volume.
       PARKRR_BACKUP_KEY: ${PARKRR_BACKUP_KEY:-}
       PARKRR_BACKUP_DIR: ${PARKRR_BACKUP_DIR:-/backups}
       PARKRR_BROWSER_RESTORE: ${PARKRR_BROWSER_RESTORE:-false}

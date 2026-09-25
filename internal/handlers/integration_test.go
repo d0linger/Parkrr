@@ -41,7 +41,8 @@ func cleanupPersons(t *testing.T, pool *pgxpool.Pool) {
 	ctx := context.Background()
 	// Protected handovers now require explicit deletion before their parents.
 	if err := purgeExec(ctx, pool, `DELETE FROM handover_protocols WHERE vehicle_id IN
-		(SELECT id FROM vehicles WHERE person_id IN (SELECT id FROM persons WHERE last_name='Integration'))`); err != nil {
+		(SELECT id FROM vehicles WHERE person_id IN (SELECT id FROM persons WHERE last_name='Integration'))
+		OR person_id IN (SELECT id FROM persons WHERE last_name='Integration')`); err != nil {
 		t.Logf("cleanup handovers: %v", err)
 	}
 	// Records of account are immutable (migration 034); teardown uses the purge

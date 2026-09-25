@@ -12,9 +12,12 @@ import (
 	"net"
 	netmail "net/mail"
 	"net/smtp"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // ErrDisabled is returned by Send when SMTP is not configured.
@@ -228,6 +231,8 @@ func WithLog(s Sender, log Log) Sender {
 }
 
 func (l *loggingSender) Enabled() bool { return l.inner.Enabled() }
+
+// Send delivers through the inner sender and logs the attempt with redacted errors.
 func (l *loggingSender) Send(ctx context.Context, to []string, subject, body string) error {
 	err := l.inner.Send(ctx, to, subject, body)
 	// Protokolliert werden die Adressen, die der Versender TATSÄCHLICH auf den
@@ -235,6 +240,162 @@ func (l *loggingSender) Send(ctx context.Context, to []string, subject, body str
 	// Rohliste behauptete das Protokoll eine Zustellung an eine Adresse, die nie
 	// angesprochen wurde, und der Betreiber las in der Versandübersicht ein "ja"
 	// auf die Frage, ob der Kunde die Mahnung bekommen hat.
-	l.log(cleanAddrs(to), subject, err == nil, err)
+	rcpts := cleanAddrs(to)
+	l.log(rcpts, subject, err == nil, redactErr(err, append(rcpts, to...)))
 	return err
+}
+
+// AddrPlaceholder ersetzt eine E-Mail-Adresse in protokollierten Fehlertexten.
+const AddrPlaceholder = "[Adresse entfernt]"
+
+// redactedError trägt den bereinigten Text für das Protokoll; Unwrap liefert den
+// Originalfehler, damit errors.Is/As weiter greifen.
+type redactedError struct {
+	msg string
+	err error
+}
+
+// Error returns the redacted message.
+func (e *redactedError) Error() string { return e.msg }
+
+// Unwrap returns the original error.
+func (e *redactedError) Unwrap() error { return e.err }
+
+// redactErr entfernt Empfängeradressen aus einem Versandfehler, bevor er ins
+// Versandprotokoll geht (PRT-03). Der SMTP-Fehlertext nennt die Adresse gleich
+// doppelt — in "mail: RCPT <addr>" und meist noch einmal in der Antwort des Relays
+// ("550 5.1.1 <addr>: Recipient address rejected"). mail_log unterliegt keiner
+// Aufräumfrist; eine Adresse darin überlebt sonst jede Löschung der Person, weil
+// die Anonymisierung nur die Empfängerspalte kennt. Der Statuscode bleibt stehen —
+// er ist die eigentliche Diagnose. Über die bekannten Empfänger hinaus wird jedes
+// adressförmige Wort ersetzt: ein Relay kann die Adresse umgeschrieben zurückmelden.
+func redactErr(err error, addrs []string) error {
+	if err == nil {
+		return nil
+	}
+	msg := RedactAddrs(err.Error(), addrs)
+	msg = addrLike.ReplaceAllString(msg, AddrPlaceholder)
+	if msg == err.Error() {
+		return err
+	}
+	return &redactedError{msg: msg, err: err}
+}
+
+// addrLike trifft ein adressförmiges Wort: Nicht-Trennzeichen, @, Nicht-Trennzeichen.
+var addrLike = regexp.MustCompile(`[^\s<>"'(),;:\[\]]+@[^\s<>"'(),;:\[\]]+`)
+
+// RedactAddrs ersetzt jedes Vorkommen der angegebenen Adressen in s durch
+// AddrPlaceholder — ohne Rücksicht auf Groß-/Kleinschreibung (Domains sind
+// es nicht, und Relays schreiben gern um) und NUR an Wortgrenzen einer Adresse:
+// "an@x.at" darf in "susan@x.at" nicht treffen, sonst stünde dort eine fremde,
+// halb verstümmelte Adresse.
+func RedactAddrs(s string, addrs []string) string {
+	for _, a := range addrs {
+		a = strings.TrimSpace(a)
+		if a == "" || !strings.Contains(a, "@") {
+			continue
+		}
+		s = redactOne(s, a)
+	}
+	return s
+}
+
+// redactOne replaces every whole-address occurrence of addr in s, ignoring case.
+func redactOne(s, addr string) string {
+	lower, needle := strings.ToLower(s), strings.ToLower(addr)
+	// ToLower kann in exotischen Fällen die Bytelänge ändern; dann sind die Indizes
+	// nicht mehr übertragbar. Konservativ: den ganzen Text ersetzen, statt eine
+	// Adresse stehen zu lassen.
+	if len(lower) != len(s) {
+		if strings.Contains(lower, needle) {
+			return AddrPlaceholder
+		}
+		return s
+	}
+	var b strings.Builder
+	i := 0
+	for {
+		j := strings.Index(lower[i:], needle)
+		if j < 0 {
+			break
+		}
+		start, end := i+j, i+j+len(needle)
+		if !addrBoundaryBefore(s, start) || !addrBoundaryAfter(s, end) {
+			b.WriteString(s[i : start+1])
+			i = start + 1
+			continue
+		}
+		b.WriteString(s[i:start])
+		b.WriteString(AddrPlaceholder)
+		i = end
+	}
+	b.WriteString(s[i:])
+	return b.String()
+}
+
+// addrBoundaryBefore/After melden, ob der Treffer an dieser Stelle endet. Ein
+// Apostroph davor bzw. ein Punkt, Bindestrich oder Apostroph danach gehört nur dann
+// zur Adresse, wenn dahinter (davor) ein weiteres Adresszeichen folgt — sonst ist
+// es Satzzeichen: "… an a@x.at." oder 'a@x.at'.
+func addrBoundaryBefore(s string, start int) bool {
+	if !addrCharBefore(s, start) {
+		return true
+	}
+	return s[start-1] == '\'' && !addrCharBefore(s, start-1)
+}
+
+// addrBoundaryAfter reports whether a match ending at s[end] is a whole address.
+func addrBoundaryAfter(s string, end int) bool {
+	if !addrCharAt(s, end) {
+		return true
+	}
+	switch s[end] {
+	case '.', '-', '\'':
+		return !addrCharAt(s, end+1)
+	}
+	return false
+}
+
+// addrCharBefore reports whether the character ending at s[i] belongs to an
+// address; addrCharAt does the same for the character starting at s[i]. Non-ASCII
+// characters are decoded whole, so Unicode punctuation such as curly quotes is a
+// boundary while letters of an internationalised address are not.
+func addrCharBefore(s string, i int) bool {
+	if i <= 0 {
+		return false
+	}
+	if s[i-1] < utf8.RuneSelf {
+		return isAddrByte(s[i-1])
+	}
+	r, _ := utf8.DecodeLastRuneInString(s[:i])
+	return isAddrRune(r)
+}
+
+func addrCharAt(s string, i int) bool {
+	if i >= len(s) {
+		return false
+	}
+	if s[i] < utf8.RuneSelf {
+		return isAddrByte(s[i])
+	}
+	r, _ := utf8.DecodeRuneInString(s[i:])
+	return isAddrRune(r)
+}
+
+// isAddrRune classifies a non-ASCII character. Invalid UTF-8 counts as part of an
+// address, as before: a false boundary could redact half of a foreign address.
+func isAddrRune(r rune) bool {
+	return r == utf8.RuneError || unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r)
+}
+
+// isAddrByte meldet Zeichen, die innerhalb einer Adresse stehen dürfen (RFC 5322
+// atext plus Punkt und @) — grenzt eines davon an den Treffer, ist er nur ein Teil
+// einer längeren, fremden Adresse. Bytes >= 0x80 zählen mit (internationalisierte
+// Adressen).
+func isAddrByte(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c >= 0x80:
+		return true
+	}
+	return strings.IndexByte(".!#$%&'*+/=?^_`{|}~-@", c) >= 0
 }

@@ -129,13 +129,21 @@ func TestRecurringSumsUnbound(t *testing.T) {
 		return d
 	}
 	now := mustDate("2026-06-15")
+	// Every elapsed month paid via its own per-period key (the only settlement
+	// since migration 077 — the derived Paid is not a master flag).
 	rc := models.RecurringCharge{
 		Amount: 100, Period: models.BillingMonthly,
-		StartDate: mustDate("2026-01-01"), Paid: true, // whole charge paid via own flag
+		StartDate:   mustDate("2026-01-01"),
+		PaidPeriods: []string{"2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06"},
 	}
 	accrued, paid := recurringSums([]models.RecurringCharge{rc}, nil, nil, now)
 	if math.Abs(paid-accrued) > 0.01 {
-		t.Errorf("unbound paid=%.2f should equal accrued=%.2f when own paid flag set", paid, accrued)
+		t.Errorf("unbound paid=%.2f should equal accrued=%.2f when every period is paid", paid, accrued)
+	}
+	// The derived Paid must NOT settle anything on its own (BIL-01).
+	rc.PaidPeriods, rc.Paid = nil, true
+	if _, paid := recurringSums([]models.RecurringCharge{rc}, nil, nil, now); paid > 0.005 {
+		t.Errorf("derived Paid must not act as a master flag, credited %.2f", paid)
 	}
 	if accrued <= 0 {
 		t.Fatalf("expected positive accrued, got %.2f", accrued)

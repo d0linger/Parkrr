@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/preining/parkrr/internal/auth"
+	"github.com/preining/parkrr/internal/models"
 )
 
 // Finding SH-02: adding a second factor requires step-up — a recent primary-factor
@@ -42,6 +43,7 @@ func TestRequireStepUp(t *testing.T) {
 		t.Fatalf("insert user: %v", err)
 	}
 	t.Cleanup(func() { _, _ = h.Pool.Exec(ctx, `DELETE FROM users WHERE username = $1`, uname) })
+	su := &models.User{ID: uid, Username: uname}
 
 	// Create a real session (created_at = now) and capture its cookie.
 	rec := httptest.NewRecorder()
@@ -64,7 +66,7 @@ func TestRequireStepUp(t *testing.T) {
 	}
 
 	// 1) Recent login: passes without a password.
-	if w := httptest.NewRecorder(); !ah.requireStepUp(w, reqWithSession(), uname, "") {
+	if w := httptest.NewRecorder(); !ah.requireStepUp(w, reqWithSession(), su, "") {
 		t.Errorf("recent session should pass step-up without a password (got %d)", w.Code)
 	}
 
@@ -76,7 +78,7 @@ func TestRequireStepUp(t *testing.T) {
 
 	// 2) Window closed, no password: 403 reauth_required.
 	w2 := httptest.NewRecorder()
-	if ah.requireStepUp(w2, reqWithSession(), uname, "") {
+	if ah.requireStepUp(w2, reqWithSession(), su, "") {
 		t.Error("stale session with no password must NOT pass step-up")
 	}
 	if w2.Code != http.StatusForbidden || !strings.Contains(w2.Body.String(), "reauth_required") {
@@ -84,13 +86,13 @@ func TestRequireStepUp(t *testing.T) {
 	}
 
 	// 3) Window closed, correct password: passes.
-	if w := httptest.NewRecorder(); !ah.requireStepUp(w, reqWithSession(), uname, pw) {
+	if w := httptest.NewRecorder(); !ah.requireStepUp(w, reqWithSession(), su, pw) {
 		t.Errorf("correct password should pass step-up (got %d)", w.Code)
 	}
 
 	// 4) Window closed, wrong password: 403.
 	w4 := httptest.NewRecorder()
-	if ah.requireStepUp(w4, reqWithSession(), uname, "wrong-password") {
+	if ah.requireStepUp(w4, reqWithSession(), su, "wrong-password") {
 		t.Error("wrong password must NOT pass step-up")
 	}
 	if w4.Code != http.StatusForbidden {

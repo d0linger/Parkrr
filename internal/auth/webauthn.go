@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/preining/parkrr/internal/models"
@@ -147,36 +148,62 @@ func (s *WebAuthnService) BeginLogin() (*protocol.CredentialAssertion, *webauthn
 	return s.wa.BeginDiscoverableLogin(webauthn.WithUserVerification(protocol.VerificationRequired))
 }
 
+// errUnknownUserHandle is the lookup result for a userHandle that names no
+// account. It is an ordinary verification failure, never ErrWebAuthnInternal.
+var errUnknownUserHandle = errors.New("unknown passkey user handle")
+
+// discoverableUser resolves the userHandle a client sent with a discoverable
+// assertion. The handle is attacker-controlled and is looked up BEFORE any
+// signature check, so a malformed handle or one naming no account returns a
+// plain error: it must cost the client a throttle attempt and answer 401 exactly
+// like a bad signature, not 500, which would also reveal which ids exist (audit
+// AUTH-05). Only a real database failure is returned as backendErr.
+func (s *WebAuthnService) discoverableUser(ctx context.Context, rawUserHandle []byte) (u webauthn.User, backendErr, err error) {
+	uid := handleToID(rawUserHandle)
+	if uid <= 0 {
+		return nil, nil, errUnknownUserHandle
+	}
+	mu, err := s.userByID(ctx, uid)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, errUnknownUserHandle
+	}
+	if err != nil {
+		return nil, err, err
+	}
+	creds, err := s.loadCredentials(ctx, uid)
+	if err != nil {
+		return nil, err, err
+	}
+	return &webAuthnUser{id: uid, name: mu.Username, creds: creds}, nil, nil
+}
+
 // FinishLogin verifies the assertion and returns the id of the user it belongs
-// to. The sign counter is advanced to detect cloned authenticators.
-func (s *WebAuthnService) FinishLogin(ctx context.Context, sd webauthn.SessionData, r *http.Request) (uid int64, cloneWarning bool, err error) {
+// to and the credential id that signed it. The sign counter is advanced to
+// detect cloned authenticators.
+func (s *WebAuthnService) FinishLogin(ctx context.Context, sd webauthn.SessionData, r *http.Request) (uid int64, credentialID []byte, cloneWarning bool, err error) {
 	// handlerErr captures backend failures from the user-lookup callback so they
 	// can be distinguished from a genuine assertion-verification failure below.
 	var handlerErr error
 	handler := func(_, rawUserHandle []byte) (webauthn.User, error) {
+		wu, backendErr, lerr := s.discoverableUser(ctx, rawUserHandle)
+		if lerr != nil {
+			handlerErr = backendErr
+			return nil, lerr
+		}
 		uid = handleToID(rawUserHandle)
-		u, uerr := s.userByID(ctx, uid)
-		if uerr != nil {
-			handlerErr = uerr
-			return nil, uerr
-		}
-		creds, cerr := s.loadCredentials(ctx, uid)
-		if cerr != nil {
-			handlerErr = cerr
-			return nil, cerr
-		}
-		return &webAuthnUser{id: uid, name: u.Username, creds: creds}, nil
+		return wu, nil
 	}
 	cred, err := s.wa.FinishDiscoverableLogin(handler, sd, r)
 	if err != nil {
 		if handlerErr != nil {
-			// A backend/lookup failure (or stale credential), not a forged
-			// assertion — don't let it count against the rate limit.
-			return 0, false, internalErr(handlerErr)
+			// A backend failure, not a forged assertion — don't let it count
+			// against the rate limit.
+			return 0, nil, false, internalErr(handlerErr)
 		}
-		return 0, false, err
+		return 0, nil, false, err
 	}
-	return s.finishVerifiedLogin(ctx, uid, cred)
+	uid, cloneWarning, err = s.finishVerifiedLogin(ctx, uid, cred)
+	return uid, cred.ID, cloneWarning, err
 }
 
 // ErrPasskeySuspended reports a credential rejected by the configured clone policy.

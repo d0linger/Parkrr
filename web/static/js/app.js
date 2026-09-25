@@ -136,6 +136,7 @@
         power: '<path d="M12 4v8"/><path d="M7.4 6.8a7 7 0 1 0 9.2 0"/>',
         chevron: '<path d="M9 6l6 6-6 6"/>',
         tag: '<path d="M12.6 3.6 20.4 11.4a2 2 0 0 1 0 2.8l-6.2 6.2a2 2 0 0 1-2.8 0L3.6 12.6V5.6a2 2 0 0 1 2-2h7Z"/><circle cx="8.3" cy="8.3" r="1.3"/>',
+        euro: '<path d="M17.5 6.5A7 7 0 1 0 17.5 17.5"/><path d="M5 10.2h9M5 13.8h9"/>',
         receipt: '<path d="M6 3h12v18l-2.2-1.3-2 1.3-2-1.3-2 1.3-2-1.3L6 21V3Z"/><path d="M9.2 8.5h5.6M9.2 12h5.6"/>',
         check: '<path d="M20 6 9 17l-5-5"/>',
         plus: '<path d="M12 5v14M5 12h14"/>',
@@ -194,20 +195,29 @@
                 opts.body = JSON.stringify(body);
             }
             if (method !== 'GET') opts.headers['X-CSRF-Token'] = getCookie('parkrr_csrf');
-            return handle(await fetch('/api' + path, opts), path);
+            const seq = ++reqSeq;
+            return handle(await fetch('/api' + path, opts), path, seq);
         },
         async upload(path, formData, method = 'POST') {
+            const seq = ++reqSeq;
             const res = await fetch('/api' + path, {
                 method, body: formData, credentials: 'same-origin',
                 headers: { 'X-CSRF-Token': getCookie('parkrr_csrf') },
             });
-            return handle(res, path);
+            return handle(res, path, seq);
         },
         get: (p) => api.request('GET', p),
         post: (p, b, headers) => api.request('POST', p, b, headers),
         put: (p, b) => api.request('PUT', p, b),
         del: (p) => api.request('DELETE', p),
     };
+    // One Idempotency-Key per create dialog, so a retry after a lost response
+    // returns the first result instead of booking twice. randomUUID needs a
+    // secure context; plain-HTTP deployments fall back to 16 random bytes as hex,
+    // which the server's key validation accepts.
+    const idempotencyKey = () => (typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join(''));
     // Letzte gemeldete Gesamtzahl je Pfad. Der Server schickt X-Total-Count auf allen
     // Listen-Endpunkten, das Frontend hat ihn nie gelesen: eine am Serverlimit
     // abgeschnittene Liste war von einer vollständigen nicht zu unterscheiden — man
@@ -220,8 +230,21 @@
     // nackten Fehler zu zeigen.
     let twoFARedirected = false;
     let twoFALoggingOut = false;
+    // Abgelaufene Sitzung: EIN Logout, egal wie viele Anfragen gleichzeitig 401
+    // bekommen. Vorher meldete ein Formular nach Sitzungsablauf endlos "not
+    // authenticated" inline, ohne Weg zurück zur Anmeldung.
+    let sessionLoggingOut = false;
+    // Anfragen sind durchnummeriert: ein 401 zählt nur, wenn danach keine JÜNGERE
+    // Anfrage erfolgreich war (okSeq) und die Anfrage nicht aus einer früheren
+    // Sitzung stammt (authFloor, beim Logout gesetzt). Sonst meldete eine späte
+    // Antwort der alten Sitzung die gerade neu angemeldete ab.
+    let reqSeq = 0, okSeq = 0, authFloor = 0;
+    // Anmelde-/2FA-/Abmelde-Endpunkte liefern 401 als reguläre Antwort (falsches
+    // Passwort, Code nötig) — das ist kein Sitzungsablauf.
+    const isAuthFlowPath = (path) => /^\/auth\/(login|logout|passkey\/login)(\/|$|\?)/.test(path || '');
 
-    async function handle(res, path) {
+    async function handle(res, path, seq = 0) {
+        if (res.ok && seq > okSeq) okSeq = seq;
         if (res.status === 204) return null;
         let data = null;
         const ct = res.headers.get('content-type') || '';
@@ -232,6 +255,12 @@
         }
         if (ct.includes('application/json')) data = await res.json();
         if (!res.ok) {
+            if (res.status === 401 && state.user && !sessionLoggingOut && !twoFALoggingOut && !isAuthFlowPath(path)
+                && seq > authFloor && seq >= okSeq) {
+                sessionLoggingOut = true;
+                await logout();
+                toast('Sitzung abgelaufen – bitte erneut anmelden.', 'warn');
+            }
             if (res.status === 403 && data && data.error === '2fa_authentication_required') {
                 if (state.user && !twoFALoggingOut) {
                     twoFALoggingOut = true;
@@ -1150,7 +1179,7 @@
         return { name: name || 'dashboard', id: id ? Number(id) : null };
     }
     // garage/hall sind Unteransichten des Planers und markieren denselben Reiter.
-    const TAB_FOR = { dashboard: 'dashboard', persons: 'persons', person: 'persons', vehicles: 'vehicles', vehicle: 'vehicles', finance: 'finance',
+    const TAB_FOR = { dashboard: 'dashboard', persons: 'persons', person: 'persons', vehicles: 'vehicles', vehicle: 'vehicles', tariffs: 'tariffs',
         garages: 'garages', garage: 'garages', hall: 'garages' };
     function navigate(path) {
         if (('#/' + path) === location.hash) render();
@@ -1225,9 +1254,9 @@
             window.scrollTo(0, 0);
             syncPageTitle(host);
         } catch (err) {
-            // 401 IMMER behandeln, auch wenn überholt: die Sitzung ist weg, unabhängig
-            // davon, welche Route gerade gewinnt.
-            if (err.status === 401) { logout(); return; }
+            // 401: handle() entscheidet über das Abmelden (inkl. Schutz vor veralteten
+            // Antworten und authFloor) — hier nur nichts anzeigen.
+            if (err.status === 401) return;
             if (mySeq !== renderSeq) return; // der Abbruch gehört zur alten Route — nicht anzeigen
             page.innerHTML = '';
             page.append(el('div', { class: 'empty route-error', role: 'alert' },
@@ -2286,11 +2315,7 @@
         const sel = { auto: true, checked: new Set(items.map((i) => i.kind + ':' + i.id)) };
         // Keep one key for the lifetime of this modal: a network retry can safely
         // return the first result instead of recording the money twice.
-        // randomUUID needs a secure context; plain-HTTP deployments fall back to
-        // 16 random bytes as hex, which the server's key validation accepts.
-        const paymentKey = typeof crypto.randomUUID === 'function'
-            ? crypto.randomUUID()
-            : Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
+        const paymentKey = idempotencyKey();
 
         await formModal({
             title: 'Zahlung erfassen',
@@ -2399,6 +2424,9 @@
             el('div', { class: 'pay-amt', style: neg ? 'color:var(--danger)' : 'color:var(--text)' }, eur(iv.total)));
     }
     async function payInvoiceFor(iv) {
+        // Ein Schlüssel pro Dialog: geht die Antwort verloren und der Benutzer
+        // speichert erneut, bucht der Server die Zahlung nicht ein zweites Mal.
+        const payKey = idempotencyKey();
         await formModal({
             title: 'Rechnung ' + iv.number + ' bezahlen',
             fields: [
@@ -2412,7 +2440,7 @@
                 const r = await api.post('/persons/' + iv.person_id + '/pay-invoices', {
                     amount: Number(d.amount), paid_on: d.paid_on, method: d.method,
                     allocations: [{ invoice_id: iv.id, amount: Number(d.amount) }],
-                });
+                }, { 'Idempotency-Key': payKey });
                 toast((r && r.unallocated > 0.005) ? ('Bezahlt · Rest ' + eur(r.unallocated) + ' nicht zugeordnet') : 'Rechnung bezahlt', 'success');
                 render();
             },
@@ -3132,6 +3160,9 @@
     }
     const periodFixed = (a, key) => (a.paid_fixed && a.paid_fixed[key] != null) ? a.paid_fixed[key] : null;
     const periodPaid = (a, key) => !!a.paid || (a.paid_periods || []).includes(key) || periodFixed(a, key) != null;
+    // Nebenkosten: `paid` ist abgeleitet (alle ABGESCHLOSSENEN Perioden bezahlt) und
+    // gilt nie für die laufende Periode — pro Periode zählen nur die eigenen Schlüssel.
+    const recurringPeriodPaid = (rc, key) => (rc.paid_periods || []).includes(key) || periodFixed(rc, key) != null;
     // For a still-running period, ask whether "bezahlt" means the whole period was
     // prepaid or only a fixed Teilbetrag. Returns { amount } (null = whole) or null.
     async function periodPayDialog(label, defAmt, current) {
@@ -3268,7 +3299,7 @@
         return segThumb(seg);
     }
     function recurringPeriodSlider(rc, key, running, defAmt) {
-        const paid = periodPaid(rc, key);
+        const paid = recurringPeriodPaid(rc, key);
         const seg = el('div', { class: 'seg-mini pay', role: 'radiogroup', 'aria-label': 'Zahlstatus ' + key });
         const post = async (val, amount) => {
             try {
@@ -4227,6 +4258,10 @@
                 ...vs.filter((v) => !v.archived || v.id === keepId).map((v) => ({ value: v.id, label: vehicleTitle(v) + (v.archived ? ' · archiviert' : '') }))];
         };
         const initVehOpts = await vehOpts(initPerson, existing?.vehicle_id);
+        // Anlegen ist nicht idempotent: ein Schlüssel pro Dialog, damit ein erneutes
+        // Speichern nach verlorener Antwort keine zweite Position erzeugt. Nur für
+        // POST — Bearbeiten (PUT) ist ohnehin wiederholbar.
+        const createKey = { 'Idempotency-Key': idempotencyKey() };
         await formModal({
             title: existing ? 'Zusatzkosten bearbeiten' : 'Neue Zusatzkosten',
             fields: [
@@ -4313,7 +4348,7 @@
                         vehicle_id: data.vehicle_id ? Number(data.vehicle_id) : null,
                     };
                     if (existing) await api.put('/charges/' + existing.id, payload);
-                    else await api.post('/charges', payload);
+                    else await api.post('/charges', payload, createKey);
                 } else {
                     // Recurring: monthly/yearly, accrues per period; optionally bound to
                     // a Gefährt (then settled via the Gefährt/Pauschale, like one-offs).
@@ -4321,7 +4356,7 @@
                         description: data.description, amount: Number(data.amount), period: data.billing,
                         start_date: data.start_date, end_date: data.end_date === '' ? null : data.end_date,
                         vehicle_id: data.vehicle_id ? Number(data.vehicle_id) : null,
-                    });
+                    }, createKey);
                 }
                 toast('Zusatzkosten gespeichert', 'success'); render();
             },
@@ -5377,7 +5412,7 @@
             // Fehler melden und den Knopf sichtbar lassen, damit ein Retry möglich
             // bleibt (Hundert UX-57). Vorher verschwand der Knopf kommentarlos.
             if (loadErr) {
-                if (loadErr.status === 401) { await logout(); return; }
+                if (loadErr.status === 401) return; // handle() meldet ab, falls die Sitzung wirklich weg ist
                 loadStatus.textContent = 'Änderungen konnten nicht geladen werden. Bitte erneut versuchen.';
                 moreBtn.textContent = 'Erneut versuchen'; moreBtn.hidden = false;
                 return;
@@ -6359,7 +6394,7 @@
         }
         // After a free floor edit, re-home the polygon into [0,Wm]×[0,Hm]: shift any
         // negative coords to origin and grow Wm/Hm to fit, so enlarging an edge works.
-        function refit() { let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity; P.floor.forEach(([x, y]) => { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); }); const dx = minX < 0 ? -minX : 0, dy = minY < 0 ? -minY : 0; if (dx || dy) { P.floor = P.floor.map(([x, y]) => [x + dx, y + dy]); P.excl.forEach((e) => { e.x += dx; e.y += dy; }); P.spots.forEach((s) => { s.x += dx; s.y += dy; s._dirty = true; }); maxX += dx; maxY += dy; } P.Wm = Math.max(6, Math.ceil(maxX - 1e-6)); P.Hm = Math.max(5, Math.ceil(maxY - 1e-6)); clampAll(); }
+        function refit() { let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity; P.floor.forEach(([x, y]) => { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); }); const dx = minX < 0 ? -minX : 0, dy = minY < 0 ? -minY : 0; if (dx || dy) { P.floor = P.floor.map(([x, y]) => [x + dx, y + dy]); P.excl.forEach((e) => { e.x += dx; e.y += dy; }); P.spots.forEach((s) => { s.x += dx; s.y += dy; dirtySpot(s); }); maxX += dx; maxY += dy; } P.Wm = Math.max(6, Math.ceil(maxX - 1e-6)); P.Hm = Math.max(5, Math.ceil(maxY - 1e-6)); clampAll(); }
 
         // ---- undo/redo (index-based history over hall geometry + placement
         // geometry, not existence). The current state always lives at hist[hpos];
@@ -6370,7 +6405,7 @@
         function restore(js) {
             const st = JSON.parse(js); P.floor = st.floor; P.Wm = st.Wm; P.Hm = st.Hm; P.tor = st.tor; P.load = st.load; P.shape = st.shape; P.excl = st.excl; if (st.walls) P.walls = st.walls; P.structSel = null;
             st.spots.forEach((g) => { const s = P.spots.find((x) => x._id === g._id); if (!s) return;
-                if (s.x !== g.x || s.y !== g.y || s.w !== g.w || s.h !== g.h || s.rot !== g.rot || s.status !== g.status || !!s.noBuf !== !!g.noBuf) { s.x = g.x; s.y = g.y; s.w = g.w; s.h = g.h; s.rot = g.rot; s.status = g.status; s.noBuf = !!g.noBuf; s._dirty = true; } });
+                if (s.x !== g.x || s.y !== g.y || s.w !== g.w || s.h !== g.h || s.rot !== g.rot || s.status !== g.status || !!s.noBuf !== !!g.noBuf) { s.x = g.x; s.y = g.y; s.w = g.w; s.h = g.h; s.rot = g.rot; s.status = g.status; s.noBuf = !!g.noBuf; dirtySpot(s); } });
             // Undo/Redo tauscht P.excl, P.walls und P.floor KOMPLETT aus — also genau
             // die Eingaben des Umschluss-Caches. Ohne diesen Stempel bliebe die
             // berechnete Parkflaeche auf dem Stand VOR dem Zurueckgehen stehen.
@@ -6403,8 +6438,41 @@
         // undo across a refit can't desync them) but persisted automatically on a
         // short debounce, so nothing is lost on navigation. The Save button is a
         // manual "save now".
-        function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(() => { if (P.dirty) doSaveGeom(true); }, 800); }
+        // Die Schleife hat Grenzen: sie läuft nur, solange der Planer im Dokument hängt
+        // und jemand angemeldet ist; 401/403 halten sie an (saveHalted), Serverfehler
+        // verlängern den Abstand exponentiell (saveFails). Sonst feuerte ein
+        // verwaister Planer nach Sitzungsablauf alle 800 ms weiter — und nach erneuter
+        // Anmeldung überschrieb er neuere Arbeit mit seiner alten Geometrie.
+        let saveHalted = false, saveFails = 0, detached = false;
+        const saveDelay = () => Math.min(800 * 2 ** saveFails, 60000);
+        function scheduleSave() {
+            clearTimeout(saveTimer); saveTimer = null;
+            if (detached || saveHalted || !root.isConnected || !state.user) return;
+            saveTimer = setTimeout(() => {
+                if (!root.isConnected) { detach(); return; }
+                saveTimer = null;
+                if (P.dirty && state.user) doSaveGeom(true);
+            }, saveDelay());
+        }
         function markDirty() { P.dirty = true; scheduleSave(); }
+        // Jede Platz-Änderung zählt _ver hoch; persistSpot setzt _dirty nur zurück,
+        // wenn der gespeicherte Schnappschuss noch der neueste Stand ist.
+        function dirtySpot(s) { s._dirty = true; s._ver = (s._ver || 0) + 1; }
+        // Planer nicht mehr im Dokument (Route verlassen oder neu aufgebaut): hier endet
+        // die Schleife. Nur eine frische, noch nicht gespeicherte Änderung (normale
+        // Entprellung, kein Wiederholversuch) wird EINMAL sofort gesichert — so geht
+        // beim Wegnavigieren nichts verloren, und kein Wiederholversuch schreibt Minuten
+        // später alte Geometrie über neuere Arbeit.
+        function detach() {
+            if (detached) return;
+            detached = true;
+            window.removeEventListener('hashchange', leaveH);
+            const pending = saveTimer != null;
+            clearTimeout(saveTimer); saveTimer = null;
+            if (pending && P.dirty && saveFails === 0 && !saveHalted && state.user) doSaveGeom(true);
+        }
+        const leaveH = () => { if (!root.isConnected) detach(); };
+        window.addEventListener('hashchange', leaveH);
         function doUndo() { if (P.hpos <= 0) return; P.hpos--; restore(P.hist[P.hpos]); markDirty(); P.sel = null; hideLen(); draw(); toast('Rückgängig'); }
         function doRedo() { if (P.hpos >= P.hist.length - 1) return; P.hpos++; restore(P.hist[P.hpos]); markDirty(); P.sel = null; hideLen(); draw(); toast('Wiederholt'); }
         let spaceDown = false; // Space held → left-drag pans instead of moving a block
@@ -7146,7 +7214,7 @@
             if (!dx && !dy) return;
             P.walls.nodes.forEach((n) => { n.x = round2(n.x + dx); n.y = round2(n.y + dy); });
             P.excl.forEach((e) => { e.x += dx; e.y += dy; });
-            P.spots.forEach((s) => { s.x += dx; s.y += dy; s._dirty = true; });
+            P.spots.forEach((s) => { s.x += dx; s.y += dy; dirtySpot(s); });
             P.floor = P.floor.map(([x, y]) => [round2(x + dx), round2(y + dy)]);
             if (P.plan) { P.plan.x += dx; P.plan.y += dy; }
         }
@@ -7647,7 +7715,7 @@
             const b = P.spots.find((s) => s._id === P.sel); if (!b) return;
             const old = b.rot || 0; b.rot = (old + 90) % 360;
             if (!validVeh(b, b._id)) { b.rot = old; toast('Drehen nicht möglich', 'error'); return; }
-            b._dirty = true; markDirty(); pushUndo(); draw(); toast('Gedreht');
+            dirtySpot(b); markDirty(); pushUndo(); draw(); toast('Gedreht');
         }
 
         // ---- persistence ----
@@ -7658,9 +7726,17 @@
             // Persist the SPOT's own unique label (hall-unique, uq_spots_hall_label), NOT the
             // vehicle display label — two like-named vehicles must not collide on save.
             const label = b.spotLabel || b.label, geometry = { x: round2(b.x), y: round2(b.y), w: round2(b.w), h: round2(b.h), rot: Math.round(b.rot || 0), status: b.status, noBuf: b.noBuf || undefined };
+            const ver = b._ver || 0;
             b._wq = (b._wq || Promise.resolve())
                 .then(() => api.put('/spots/' + b._id, { label, geometry }))
-                .then(() => { b._dirty = false; }, (err) => { b._dirty = true; P.dirty = true; renderToolbar(); toast(err.message || 'Speichern fehlgeschlagen', 'error'); });
+                // Nur zurücksetzen, wenn seit dem Schnappschuss keine neuere Änderung kam:
+                // sonst löschte ein spät fertiger PUT die Markierung einer Bewegung, die
+                // währenddessen passierte, und der Planer meldete "Gespeichert" (WEB-03).
+                .then(() => { if ((b._ver || 0) === ver) b._dirty = false; }, (err) => {
+                    b._dirty = true; P.dirty = true; spotErr = err; renderToolbar();
+                    if (err.status === 401 || err.status === 403) haltSave(err);
+                    else toast(err.message || 'Speichern fehlgeschlagen', 'error');
+                });
             return b._wq;
         }
         // Persist a resized vehicle's footprint as its real Länge×Breite via the existing
@@ -7678,8 +7754,33 @@
             return { nodes: P.walls.nodes.map((n) => ({ x: round2(n.x), y: round2(n.y) })), edges: P.walls.edges.map((e) => ({ a: e.a, b: e.b, kind: e.kind, thick: round2(e.thick), ops: (e.ops && e.ops.length) ? e.ops.map((o) => ({ c: round2(o.c), w: round2(o.w), kind: o.kind, side: o.side, hinge: o.hinge, frame: o.frame })) : undefined })) };
         }
         function currentGeometry() { return { floor: P.floor, Wm: P.Wm, Hm: P.Hm, tor: P.tor, load: P.load, shape: P.shape, excl: P.excl.map((e) => ({ kind: e.kind, x: round2(e.x), y: round2(e.y), w: round2(e.w), h: round2(e.h), rot: Math.round(e.rot || 0), label: e.label, mat: e.mat || undefined })), walls: (P.walls.edges.length ? currentWalls() : undefined), wallRef: P.wallRef !== 'axis' ? P.wallRef : undefined, plan: P.plan ? { href: P.plan.href, dxf: P.plan.dxf, x: round2(P.plan.x), y: round2(P.plan.y), w: round2(P.plan.w), h: round2(P.plan.h), opacity: round2(P.plan.opacity), hidden: P.plan.hidden || undefined } : undefined }; }
+        // Höchstens EIN Speichern gleichzeitig: überlappende PUTs konnten auf langsamer
+        // Leitung in falscher Reihenfolge ankommen. Ein Aufruf währenddessen merkt sich
+        // nur einen Nachlauf, der nach dem laufenden startet.
+        let saveBusy = false, saveTrail = null, spotErr = null;
         async function doSaveGeom(silent) {
+            if (!silent) saveHalted = false; // manuelles "Speichern" versucht es erneut
+            if (saveBusy) { saveTrail = { silent: !!silent && (saveTrail ? saveTrail.silent : true) }; return; }
+            saveBusy = true;
+            let ok = false;
+            try { ok = await saveGeomOnce(silent); } finally { saveBusy = false; }
+            const trail = saveTrail; saveTrail = null;
+            // Nach einem Fehler übernimmt der (verzögerte) Wiederholversuch; ein
+            // sofortiger Nachlauf würde die Wartezeit umgehen. Auch nach detach() läuft
+            // der Nachlauf genau einmal: er trägt die letzte Änderung vor dem Verlassen.
+            if (ok && trail && P.dirty && !saveHalted && state.user) doSaveGeom(trail.silent);
+        }
+        // 401/403: Auto-Speichern anhalten statt endlos zu wiederholen. Den 401 hat
+        // handle() bereits in den Logout überführt; ein 403 ohne 2FA-Grund heißt
+        // "keine Berechtigung" — das muss man sehen, auch beim stillen Speichern.
+        function haltSave(err) {
+            if (saveHalted) return;
+            saveHalted = true; clearTimeout(saveTimer); saveTimer = null;
+            if (err.status === 403 && state.user) toast('Grundriss nicht gespeichert: ' + (err.message || 'keine Berechtigung'), 'error');
+        }
+        async function saveGeomOnce(silent) {
             P.dirty = false; renderToolbar(); // optimistic; a change during the save re-flags it
+            spotErr = null;
             try {
                 await api.put('/halls/' + P.hallId, { name: P.hallName, geometry: currentGeometry() });
                 // Free placement: an invalid spot (outside / gate / lane / collision) is kept
@@ -7692,17 +7793,25 @@
                     await persistSpot(b);
                 }
                 // A failed spot write re-flags P.dirty (persistSpot); reschedule instead of
-                // falsely reporting success.
+                // falsely reporting success — with backoff, unless it halted the loop.
+                if (spotErr) { saveFails = Math.min(saveFails + 1, 7); scheduleSave(); return false; }
+                saveFails = 0;
                 if (P.dirty) scheduleSave();
                 else if (heldInvalid && !silent) toast(heldInvalid + (heldInvalid === 1 ? ' Fahrzeug ungültig platziert — nicht gespeichert' : ' Fahrzeuge ungültig platziert — nicht gespeichert'), 'warn');
                 else if (!silent) toast('Grundriss gespeichert', 'ok');
+                return true;
             } catch (err) {
+                P.dirty = true; renderToolbar();
                 // A 400 means the geometry is rejected as-is (almost always: too large — a
                 // heavy Bauplan underlay). Retrying can't help, so surface it even on the
                 // silent auto-save path and DON'T reschedule an endless failing loop.
-                if (err.status === 400) { toast('Grundriss zu groß zum Speichern — Bauplan verkleinern/entfernen', 'error'); P.dirty = true; renderToolbar(); return; }
+                if (err.status === 400) { toast('Grundriss zu groß zum Speichern — Bauplan verkleinern/entfernen', 'error'); return false; }
+                if (err.status === 401 || err.status === 403) { haltSave(err); return false; }
                 if (!silent) toast(err.message || 'Speichern fehlgeschlagen', 'error');
-                P.dirty = true; renderToolbar(); scheduleSave();
+                // Server-/Netzfehler: exponentiell länger warten (0,8 s … 60 s).
+                saveFails = Math.min(saveFails + 1, 7);
+                scheduleSave();
+                return false;
             }
         }
         async function dupHall() {
@@ -7728,7 +7837,7 @@
                         // Scale the placed footprint to the real Länge×Breite (maßstabsgetreu).
                         // Safe now: the .gp-rot class collision that caused the oval/no-click is
                         // gone, and blocks are crisp rectangles (border-radius:3).
-                        if (body.length_m != null && body.width_m != null) { sp.w = body.length_m; sp.h = body.width_m; sp._dirty = true; markDirty(); }
+                        if (body.length_m != null && body.width_m != null) { sp.w = body.length_m; sp.h = body.width_m; dirtySpot(sp); markDirty(); }
                     }
                     const pl = P.palette.find((x) => x.id === veh.id); if (pl) { pl.length_m = body.length_m; pl.width_m = body.width_m; pl.height_m = body.height_m; pl.weight_t = body.weight_t; }
                 } });
@@ -7846,7 +7955,7 @@
                 const pl = by.get(it.key);
                 if (it.spot) {
                     const b = it.spot;
-                    if (pl && pl.ok) { b.x = pl.x; b.y = pl.y; b.rot = pl.rot; b._invalid = false; b._dirty = true; batch.push(b); arranged++; }
+                    if (pl && pl.ok) { b.x = pl.x; b.y = pl.y; b.rot = pl.rot; b._invalid = false; dirtySpot(b); batch.push(b); arranged++; }
                     else { // no collision-free spot → delete the placement, vehicle returns to staging
                         try { await api.del('/spots/' + b._id); P.spots = P.spots.filter((x) => x !== b);
                             if (b.vehId) P.palette.push({ id: b.vehId, label: b.label, type: b.type, person_id: b.personId, person_name: b.personName, length_m: b.L, width_m: b.W, height_m: b.H, weight_t: b.t });
@@ -7857,7 +7966,7 @@
                             // been moved onto that space. Leaving it flagged valid would show an overlap
                             // the feature promises never to produce, so mark it blocked (⚠ blockiert,
                             // red outline) and let the user resolve it.
-                            b._invalid = true; b._dirty = true; errs++;
+                            b._invalid = true; dirtySpot(b); errs++;
                         }
                     }
                 } else if (pl && pl.ok) { // staging vehicle that fits → create its spot
@@ -7874,10 +7983,11 @@
 
             if (batch.length) {
                 try {
+                    const vers = batch.map((b) => b._ver || 0);
                     await api.put('/halls/' + P.hallId + '/spots/geometry', {
                         spots: batch.map((b) => ({ id: b._id, geometry: { x: round2(b.x), y: round2(b.y), w: round2(b.w), h: round2(b.h), rot: Math.round(b.rot || 0), status: b.status, noBuf: b.noBuf || undefined } })),
                     });
-                    batch.forEach((b) => { b._dirty = false; });
+                    batch.forEach((b, i) => { if ((b._ver || 0) === vers[i]) b._dirty = false; });
                 } catch (err) {
                     // Alles-oder-nichts: der Server hat NICHTS übernommen. Die Plätze bleiben
                     // dirty, der Zustand auf dem Schirm ist der gewollte — erneut speichern
@@ -7952,7 +8062,7 @@
             if (b.personId) el0.append(el('button', { class: 'btn btn-ghost btn-sm btn-block', style: 'margin:.2rem 0 .4rem', onclick: () => navigate('persons/' + b.personId) }, '👤 Mieterdaten öffnen →'));
             if (canManageNow) {
                 const seg = el('div', { class: 'gp-segd' });
-                Object.keys(GPSTAT).forEach((k) => seg.append(el('button', { class: b.status === k ? 'on' : '', onclick: () => { b.status = k; b._dirty = true; markDirty(); pushUndo(); draw(); } }, GPSTAT[k].sym + ' ' + GPSTAT[k].label)));
+                Object.keys(GPSTAT).forEach((k) => seg.append(el('button', { class: b.status === k ? 'on' : '', onclick: () => { b.status = k; dirtySpot(b); markDirty(); pushUndo(); draw(); } }, GPSTAT[k].sym + ' ' + GPSTAT[k].label)));
                 el0.append(seg);
                 const fit = el('div', { class: 'gp-fit' });
                 fit.append(el('h4', {}, el('span', {}, 'Prüfung'), el('span', { class: warn(b) ? 'bad' : 'ok' }, warn(b) ? '⚠ Warnung' : '✓ ok')));
@@ -7962,7 +8072,7 @@
                 fit.append(line('Gewicht ' + (b.t != null ? b.t.toFixed(2).replace('.', ',') : '?') + ' ≤ ' + P.load.toFixed(1) + ' t', weightOK(b)));
                 el0.append(fit);
                 // Per-vehicle buffer opt-out (only meaningful while global buffer is on).
-                el0.append(el('button', { class: 'btn btn-ghost btn-sm btn-block', style: 'margin:.15rem 0 .35rem' + (b.noBuf ? '' : ';border-color:var(--gpteal2);color:var(--gpteal2)'), onclick: () => { b.noBuf = !b.noBuf; b._dirty = true; markDirty(); pushUndo(); persistSpot(b); draw(); } }, el('span', {}, icon('shield', 15), b.noBuf ? ' Pufferzone: aus' : ' Pufferzone: an')));
+                el0.append(el('button', { class: 'btn btn-ghost btn-sm btn-block', style: 'margin:.15rem 0 .35rem' + (b.noBuf ? '' : ';border-color:var(--gpteal2);color:var(--gpteal2)'), onclick: () => { b.noBuf = !b.noBuf; dirtySpot(b); markDirty(); pushUndo(); persistSpot(b); draw(); } }, el('span', {}, icon('shield', 15), b.noBuf ? ' Pufferzone: aus' : ' Pufferzone: an')));
                 // Planer-Darstellung: Ladebedarf + Symbol pro Fahrzeug — direkt hier (im Sync
                 // mit dem Fahrzeug-Formular, da dieselben Fahrzeug-Spalten geschrieben werden).
                 if (b.vehId) {
@@ -8138,7 +8248,7 @@
         // Waende rutschten sichtbar, enclosure() lieferte aber weiter den alten
         // Raster — Parkflaeche, Raum-m², Frei/Belegt und der SVG/PDF-Export rechneten
         // gegen einen Grundriss, den es nicht mehr gab.
-        function clampAll() { P.spots.concat(P.excl).forEach((t) => { const cl = clampXY(t, t.x, t.y); t.x = cl.x; t.y = cl.y; if (t._id) t._dirty = true; }); bumpGeom(); }
+        function clampAll() { P.spots.concat(P.excl).forEach((t) => { const cl = clampXY(t, t.x, t.y); t.x = cl.x; t.y = cl.y; if (t._id) dirtySpot(t); }); bumpGeom(); }
         function addExcl(k) {
             const s = EXCL[k]; const b = { id: 'e' + (P.uid++), kind: k, x: 1, y: 1, w: s.w, h: s.h, label: s.label, mat: s.mat };
             // Zones (Stellfläche) may sit anywhere; blocking structures seek a free cell.
@@ -8253,7 +8363,7 @@
                 const bad = isVeh ? !validVeh(b, b._id) : (isZoneKind(b.kind) ? false : collide(b, b.id));
                 if (bad && !isVeh) { b.rot = d.orot; draw(); toast('Drehen: Kollision/außerhalb — zurück', 'error'); return; } // exclusions still snap back
                 P.sel = b._id || b.id;
-                if (isVeh) { b._invalid = bad; b._dirty = true; markDirty(); pushUndo(); draw(); toast(bad ? 'Gedreht — ungültige Lage, Speichern erst wenn frei' : 'Gedreht', bad ? 'warn' : ''); }
+                if (isVeh) { b._invalid = bad; dirtySpot(b); markDirty(); pushUndo(); draw(); toast(bad ? 'Gedreht — ungültige Lage, Speichern erst wenn frei' : 'Gedreht', bad ? 'warn' : ''); }
                 else { commitGeom(); toast('Gedreht'); } // commitGeom already redraws
                 return;
             }
@@ -8261,7 +8371,7 @@
                 const bad = isVeh ? !validVeh({ kind: 'veh', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b._id) : (isZoneKind(b.kind) ? false : collide({ kind: 'excl', x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot }, b.id));
                 if (bad) { b.x = d.o0.x; b.y = d.o0.y; b.w = d.o0.w; b.h = d.o0.h; if (isVeh) { b.L = d.o0.w; b.W = d.o0.h; } P.sel = b._id || b.id; draw(); toast('Passt nicht (Rand/Kollision) — zurück', 'error'); return; }
                 P.sel = b._id || b.id;
-                if (isVeh) { b.L = b.w; b.W = b.h; persistDims(b); b._dirty = true; markDirty(); pushUndo(); } else commitGeom();
+                if (isVeh) { b.L = b.w; b.W = b.h; persistDims(b); dirtySpot(b); markDirty(); pushUndo(); } else commitGeom();
                 draw(); toast('Größe geändert' + (isVeh ? ' · ' + dimText(b).replace(/^.*· /, '') : '')); return;
             }
             if (!d.moved) { P.sel = b._id || b.id; draw(); return; }
@@ -8269,7 +8379,7 @@
                 d.elm.classList.remove('moving');
                 const res = d.group.map((m) => { const mb = m.b, mv = !!mb._id && mb.kind !== 'excl'; const bd = mv ? !validVeh({ kind: 'veh', x: mb.x, y: mb.y, w: mb.w, h: mb.h, rot: mb.rot }, mb._id) : (isZoneKind(mb.kind) ? false : collide({ kind: 'excl', x: mb.x, y: mb.y, w: mb.w, h: mb.h }, mb.id)); return { mv, bd }; });
                 if (res.some((x) => !x.mv && x.bd)) { d.group.forEach((m) => { m.b.x = m.ox; m.b.y = m.oy; }); draw(); toast('Gruppe: Kollision/außerhalb — zurück', 'error'); return; }
-                res.forEach((x, i) => { if (x.mv) { d.group[i].b._invalid = x.bd; d.group[i].b._dirty = true; } });
+                res.forEach((x, i) => { if (x.mv) { d.group[i].b._invalid = x.bd; dirtySpot(d.group[i].b); } });
                 markDirty(); pushUndo(); draw(); const bad = res.some((x) => x.bd);
                 toast(d.group.length + ' verschoben' + (bad ? ' · einige ungültig, Speichern erst wenn frei' : ''), bad ? 'warn' : 'ok'); return;
             }
@@ -8282,7 +8392,7 @@
                 return;
             }
             // vehicle: keep the position even when invalid; persist only once it is valid again
-            b._invalid = bad; b._dirty = true; markDirty(); pushUndo(); draw();
+            b._invalid = bad; dirtySpot(b); markDirty(); pushUndo(); draw();
             toast(bad ? 'Außerhalb/blockiert — Position bleibt, Speichern erst wenn gültig' : ('Verschoben' + (P.snap ? ' (gerastet)' : ' (frei)')), bad ? 'warn' : '');
         });
 
@@ -8622,7 +8732,7 @@
         const group = (title) => body.append(el('div', { class: 'menu-sec' }, title));
         group('Betrieb');
         if (isAdmin()) body.append(item('receipt', 'Rechnungen', () => navigate('billing')));
-        body.append(item('tag', 'Tarife', () => navigate('tariffs')));
+        body.append(item('euro', 'Zusatzkosten', () => navigate('finance')));
         group('Verwaltung');
         body.append(item('settings', 'Einstellungen', () => navigate('settings')));
         if (isAdmin()) body.append(item('users', 'Benutzer', () => navigate('users')));
@@ -8937,7 +9047,12 @@
         // zu tun ist. Ebenso die Zählerstände fremder Listen.
         twoFARedirected = false;
         twoFALoggingOut = false;
+        sessionLoggingOut = false;
+        authFloor = reqSeq;
         totalCounts.clear();
+        // Ein offener Dialog (z. B. ein Formular, dessen Speichern an der
+        // abgelaufenen Sitzung scheiterte) läge sonst modal über der Anmeldung.
+        document.querySelectorAll('dialog[open]').forEach((d) => d.close());
         showLogin();
     }
 

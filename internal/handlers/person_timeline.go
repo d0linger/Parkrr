@@ -72,7 +72,7 @@ func (h *Handler) PersonTimeline(w http.ResponseWriter, r *http.Request) {
 			         || CASE WHEN ho.signer_name <> '' THEN ' (unterschrieben: ' || ho.signer_name || ')' ELSE '' END,
 			       ho.id
 			  FROM handover_protocols ho JOIN vehicles v ON v.id = ho.vehicle_id
-			 WHERE v.person_id = $1
+			 WHERE ho.person_id = $1
 			UNION ALL
 			SELECT fp.start_date::timestamp AT TIME ZONE 'UTC', 'agreement',
 			       'Pauschale vereinbart: ' || to_char(fp.amount, 'FM999G999G990D00') || ' € / '

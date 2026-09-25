@@ -211,6 +211,14 @@ func Decrypt(enc []byte, key string) ([]byte, error) {
 		}
 		return plain.Bytes(), nil
 	}
+	return openLegacy(enc, key, false)
+}
+
+// openLegacy entschlüsselt die Formate v2 (PKRRBK02) und v1 (ohne Kopf). Beide
+// authentisieren die ganze Datei auf einmal und lassen sich deshalb nicht streamen.
+// inPlace legt den Klartext in den Speicher von enc (GCM erlaubt ciphertext[:0] als
+// Ziel): ein Aufrufer, dem der Puffer gehört, hält dann EINE Kopie statt zwei.
+func openLegacy(enc []byte, key string, inPlace bool) ([]byte, error) {
 	if bytes.HasPrefix(enc, []byte(backupMagic)) {
 		if len(enc) < len(backupMagic)+backupSaltSize {
 			return nil, errors.New("backup file is too short or corrupt")
@@ -226,7 +234,7 @@ func Decrypt(enc []byte, key string) ([]byte, error) {
 		}
 		nonce := enc[headerLen : headerLen+a.NonceSize()]
 		ct := enc[headerLen+a.NonceSize():]
-		plain, err := a.Open(nil, nonce, ct, header)
+		plain, err := a.Open(openDst(ct, inPlace), nonce, ct, header)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt failed (wrong key or corrupt file): %w", err)
 		}
@@ -243,16 +251,26 @@ func Decrypt(enc []byte, key string) ([]byte, error) {
 		return nil, errors.New("backup file is too short or corrupt")
 	}
 	nonce, ct := enc[:a.NonceSize()], enc[a.NonceSize():]
-	plain, err := a.Open(nil, nonce, ct, nil)
+	plain, err := a.Open(openDst(ct, inPlace), nonce, ct, nil)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt failed (wrong key or corrupt file): %w", err)
 	}
 	return plain, nil
 }
 
+// openDst returns the destination buffer for GCM Open: the ciphertext's own
+// backing array when decrypting in place (one buffer instead of two), else nil.
+func openDst(ct []byte, inPlace bool) []byte {
+	if inPlace {
+		return ct[:0]
+	}
+	return nil
+}
+
 // Restore decrypts a backup and restores it into the database at dbURL. This is
-// DESTRUCTIVE: --clean --if-exists drops and recreates objects. The archive is
-// validated (pg_restore --list) before the DB is touched.
+// DESTRUCTIVE: the public schema is replaced by the archive's content (see
+// restoreArchive). The archive is validated (pg_restore --list) before the DB is
+// touched.
 func Restore(ctx context.Context, dbURL string, enc []byte, key string) error {
 	// A scheduled dump must never observe a partially restored schema.
 	if err := acquireRun(ctx); err != nil {
@@ -263,21 +281,12 @@ func Restore(ctx context.Context, dbURL string, enc []byte, key string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := plainArchiveTOC(ctx, plain); err != nil {
+	toc, err := plainArchiveTOC(ctx, plain)
+	if err != nil {
 		return err
 	}
-	var errb bytes.Buffer
-	dsn, env := dbExecEnv(dbURL)
-	// Keep restoration atomic and the database password out of argv.
-	// #nosec G204 -- fixed executable; DSN is operator configuration.
-	cmd := exec.CommandContext(ctx, "pg_restore",
-		"--single-transaction", "--clean", "--if-exists",
-		"--no-owner", "--no-privileges", "--dbname="+dsn)
-	cmd.Env = env
-	cmd.Stdin = bytes.NewReader(plain)
-	cmd.Stderr = &errb
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("pg_restore failed: %w: %s", err, errb.String())
+	if err := checkRestorableTOC(toc); err != nil {
+		return err
 	}
-	return nil
+	return restoreArchive(ctx, dbURL, "", bytes.NewReader(plain))
 }

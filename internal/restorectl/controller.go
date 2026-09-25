@@ -19,6 +19,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/preining/parkrr/internal/backup"
 )
 
 type Phase string
@@ -369,8 +371,10 @@ func (c *Controller) RemoveRecoveredArchive(job Job) {
 	dir := filepath.Dir(path)
 	uploaded := filepath.Base(dir) == ".restore-staging" &&
 		strings.HasPrefix(base, "restore-") && strings.HasSuffix(base, ".dump.enc")
-	s3 := dir == filepath.Clean(os.TempDir()) &&
-		strings.HasPrefix(base, "parkrr-s3-") && strings.HasSuffix(base, ".dump.enc")
+	// S3 downloads live in the backup work directory (<PARKRR_BACKUP_DIR>/.tmp);
+	// os.TempDir() stays accepted for the fallback and for jobs of older versions.
+	s3Dir := dir == filepath.Clean(backup.WorkDir()) || dir == filepath.Clean(os.TempDir())
+	s3 := s3Dir && strings.HasPrefix(base, "parkrr-s3-") && strings.HasSuffix(base, ".dump.enc")
 	if !uploaded && !s3 {
 		slog.Warn("refusing to remove unrecognized recovered restore path", "job", job.ID)
 		return

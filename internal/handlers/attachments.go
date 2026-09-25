@@ -150,8 +150,16 @@ func (h *Handler) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 	if col == "vehicle_id" {
 		ownerTable = "vehicles"
 	}
-	var ownerID int64
-	if err := tx.QueryRow(r.Context(), `SELECT id FROM `+ownerTable+` WHERE id=$1 FOR UPDATE`, id).Scan(&ownerID); err != nil {
+	// ownerPerson ist die Person, die der Anhang betrifft (PRT-01): bei einem
+	// Personen-Anhang sie selbst, bei einem Gefährt-Anhang der Halter BEIM
+	// HOCHLADEN. Die Anonymisierung löscht nach dieser Spalte, nicht nach dem
+	// heutigen Halter. Die Zeilensperre hält den Halter bis zum Commit fest.
+	personExpr := "id"
+	if col == "vehicle_id" {
+		personExpr = "person_id"
+	}
+	var ownerPerson int64
+	if err := tx.QueryRow(r.Context(), `SELECT `+personExpr+` FROM `+ownerTable+` WHERE id=$1 FOR UPDATE`, id).Scan(&ownerPerson); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "owner not found")
 			return
@@ -171,9 +179,9 @@ func (h *Handler) UploadAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 	var attID int64
 	if err := tx.QueryRow(r.Context(),
-		`INSERT INTO attachments (`+col+`, filename, content_type, byte_size, data)
-		 VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-		id, filename, contentType, len(data), data).Scan(&attID); err != nil {
+		`INSERT INTO attachments (`+col+`, owner_person_id, filename, content_type, byte_size, data)
+		 VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+		id, ownerPerson, filename, contentType, len(data), data).Scan(&attID); err != nil {
 		if isForeignKeyViolation(err) {
 			writeError(w, http.StatusNotFound, "owner not found")
 			return

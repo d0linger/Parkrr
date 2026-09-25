@@ -89,6 +89,7 @@ func setupLogging() {
 	slog.SetDefault(slog.New(h))
 }
 
+// run loads the configuration, migrates the database and serves until shutdown.
 func run() error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -103,6 +104,10 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(),
 		os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Große Zwischendateien (S3, Downloads, entschlüsselte Dumps) unter
+	// <PARKRR_BACKUP_DIR>/.tmp statt im oft winzigen /tmp (BAK-02).
+	backup.ConfigureWorkDir(cfg.BackupDir)
 
 	pool, err := database.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -205,6 +210,15 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// Reste abgebrochener Läufe wegräumen (BAK-06): ein SIGKILL/OOM-Kill überspringt
+	// jedes defer os.Remove und ließ sonst einen entschlüsselten Dump liegen. Erst
+	// hier, mit gehaltener Anwendungs-Lease (kein CLI-Restore läuft) und bekanntem
+	// Restore-Job, dessen Archiv nicht angefasst werden darf.
+	var keepStaged string
+	if pending != nil {
+		keepStaged = pending.SourcePath
+	}
+	backup.SweepWorkFiles(cfg.BackupDir, keepStaged)
 	var generation *appGeneration
 	if pending == nil {
 		generation, err = startAppGeneration(pool, authMgr, webAuthn, cfg, s3, mailer, restores)

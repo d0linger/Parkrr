@@ -66,12 +66,14 @@ func TestRecurringMasterSliderBooksPayment(t *testing.T) {
 	setRecurringMasterPaid(t, h, rid, true)
 	after := personStatsT(t, h, pid)
 
-	// 3 completed months × 20 = 60 booked; balance nets to 0 (running month off-book).
+	// 3 completed months × 20 = 60 booked. The running month is NOT settled by the
+	// master slider (BIL-01): it stays owed until it closes and is invoiced then.
 	if math.Abs(after.PaymentsTotal-60) > 0.05 {
 		t.Errorf("recurring master paid must book 60 (3×20), got %.2f", after.PaymentsTotal)
 	}
-	if math.Abs(after.Balance) > 0.05 {
-		t.Errorf("balance must net to ~0 after paying the recurring charge, got %.2f", after.Balance)
+	if math.Abs(after.Balance-(before.Balance-60)) > 0.05 || after.Balance < -0.05 {
+		t.Errorf("balance must drop by exactly the 60 booked (running month still owed): before=%.2f after=%.2f",
+			before.Balance, after.Balance)
 	}
 
 	setRecurringMasterPaid(t, h, rid, false)

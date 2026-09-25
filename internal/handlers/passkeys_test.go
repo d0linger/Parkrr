@@ -207,7 +207,7 @@ func TestPasskeyRegisterBegin_RateLimitWithOpenStepUpWindow(t *testing.T) {
 
 	// Vorbedingung: bei offenem Fenster kommt requireStepUp ohne Passwort durch.
 	// Faellt das um, prueft der Rest des Tests nicht mehr, was er soll.
-	if w := httptest.NewRecorder(); !ah.requireStepUp(w, reqFrom(), uname, "") {
+	if w := httptest.NewRecorder(); !ah.requireStepUp(w, reqFrom(), u, "") {
 		t.Fatalf("setup: recent session should pass step-up without a password (got %d)", w.Code)
 	}
 

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/preining/parkrr/internal/auth"
+	"github.com/preining/parkrr/internal/models"
 )
 
 // AuthHandler wires authentication endpoints to the auth Manager.
@@ -187,7 +189,9 @@ const stepUpWindow = 10 * time.Minute
 // A missing password yields 403 "reauth_required" so the client can prompt and
 // retry with the password; a wrong password is throttled like a login failure.
 // Returns false (and writes the response) when the caller must stop.
-func (h *AuthHandler) requireStepUp(w http.ResponseWriter, r *http.Request, username, password string) bool {
+// The password is verified against u's own row (by id), never by username
+// lookup (audit AUTH-02).
+func (h *AuthHandler) requireStepUp(w http.ResponseWriter, r *http.Request, u *models.User, password string) bool {
 	if t, ok := h.Auth.SessionCreatedAt(r.Context(), r); ok && time.Since(t) < stepUpWindow {
 		return true
 	}
@@ -199,11 +203,11 @@ func (h *AuthHandler) requireStepUp(w http.ResponseWriter, r *http.Request, user
 		writeError(w, http.StatusForbidden, "Passwort ist falsch")
 		return false
 	}
-	key, ip, ok := h.checkRateLimit(w, r, username)
+	key, ip, ok := h.checkRateLimit(w, r, u.Username)
 	if !ok {
 		return false
 	}
-	if _, err := h.Auth.Authenticate(r.Context(), username, password); err != nil {
+	if _, err := h.Auth.AuthenticateUserID(r.Context(), u.ID, password); err != nil {
 		h.recordReauthFailure(key, ip)
 		writeError(w, http.StatusForbidden, "Passwort ist falsch")
 		return false
@@ -273,6 +277,25 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		// Persistent per-account second-factor budget (audit AUTH-03). Counted
+		// BEFORE the check; only a successful second factor clears it below.
+		failures, lockedFor, lerr := h.Auth.ReserveSecondFactorAttempt(r.Context(), u.ID)
+		if lerr != nil {
+			h.refundLogin(key, ip)
+			writeError(w, http.StatusInternalServerError, "Zwei-Faktor-Code konnte nicht geprüft werden")
+			return
+		}
+		if lockedFor > 0 {
+			// No request data here (CodeQL go/clear-text-logging, as for #34): the IP
+			// comes from a forwarded header. The request log still carries it.
+			slog.Warn("login failed", "user_id", u.ID, "reason", "2fa locked")
+			w.Header().Set("Retry-After", formatSeconds(lockedFor))
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{
+				"error":         "Zu viele falsche Zwei-Faktor-Codes – bitte in " + formatMinutes(lockedFor) + " erneut versuchen",
+				"totp_required": true,
+			})
+			return
+		}
 		ok := false
 		if step, matched := h.Auth.ValidateEncryptedTOTPStep(u.TOTPSecret, code, time.Now()); matched {
 			// Replay guard: consume the code by advancing last_totp_step atomically.
@@ -283,6 +306,9 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 				// Fail closed on a DB error rather than mislabelling a valid code as a
 				// replay and counting it toward the account lockout.
 				h.refundLogin(key, ip)
+				if rerr := h.Auth.ReleaseSecondFactorAttempt(r.Context(), u.ID); rerr != nil {
+					slog.Warn("could not release second-factor attempt", "user_id", u.ID, "err", rerr)
+				}
 				writeError(w, http.StatusInternalServerError, "Zwei-Faktor-Code konnte nicht geprüft werden")
 				return
 			}
@@ -297,12 +323,24 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		}
 		if !ok {
 			h.recordLoginFailure(key, ip)
-			slog.Warn("login failed", "user", u.Username, "ip", ip, "reason", "bad 2fa code")
+			// No request data and no failure count in the ops log (CodeQL
+			// go/clear-text-logging); the count goes to the audit entry below.
+			slog.Warn("login failed", "user_id", u.ID, "reason", "bad 2fa code")
+			// Repeated failures AFTER a correct password mean someone holds the
+			// password: that belongs in the trail, not only in the ops log.
+			if failures >= auth.SecondFactorFreeFailures {
+				h.auditAs(r, u.ID, u.Username, "security", "user", u.ID, fmt.Sprintf(
+					"%s: %d consecutive failed second-factor codes after a correct password; second factor temporarily locked",
+					u.Username, failures))
+			}
 			writeJSON(w, http.StatusUnauthorized, map[string]any{
 				"error":         "Zwei-Faktor-Code ist ungültig",
 				"totp_required": true,
 			})
 			return
+		}
+		if err := h.Auth.ResetSecondFactorFailures(r.Context(), u.ID); err != nil {
+			slog.Warn("could not reset second-factor failures", "user_id", u.ID, "err", err)
 		}
 	}
 
@@ -311,9 +349,10 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	h.Limiter.Reset(key)
 	h.UserLimiter.Reset(userKeyOf(key, ip))
 	h.IPLimiter.Refund(ip)
-	// Bind the session to the verified password hash: a password change that
-	// commits while this login is in flight must not leave it a surviving session.
-	if err := h.Auth.CreatePasswordSession(r.Context(), w, r, u.ID, u.PasswordHash, u.TOTPEnabled); err != nil {
+	// Bind the session to the verified password hash (and, for a verified second
+	// factor, the TOTP secret): a password change or 2FA reset that commits while
+	// this login is in flight must not leave it a surviving session.
+	if err := h.Auth.CreatePasswordSession(r.Context(), w, r, u.ID, u.PasswordHash, u.TOTPSecret, u.TOTPEnabled); err != nil {
 		if errors.Is(err, auth.ErrCredentialChanged) {
 			writeError(w, http.StatusUnauthorized, "Benutzername oder Passwort ist falsch")
 			return
@@ -386,7 +425,8 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, err := h.Auth.Authenticate(r.Context(), u.Username, req.CurrentPassword); err != nil {
+	verified, err := h.Auth.AuthenticateUserID(r.Context(), u.ID, req.CurrentPassword)
+	if err != nil {
 		// checkRateLimit gates this flow on BOTH limiters, so feed both — a wrong
 		// current password counts against the per-account throttle too. recordReauth-
 		// Failure trifft Limiter + UserLimiter (nicht den login-only IPLimiter): ein
@@ -413,9 +453,19 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
-	if _, err := tx.Exec(r.Context(),
-		`UPDATE users SET password_hash=$1, updated_at=now() WHERE id=$2`, hash, u.ID); err != nil {
+	// Bind the write to the hash verified above (audit AUTH-01). Between that check
+	// and this point lie a breach lookup and bcrypt; an admin reset or another
+	// password change that commits meanwhile must win, not be silently overwritten
+	// by this in-flight request.
+	ct, err := tx.Exec(r.Context(),
+		`UPDATE users SET password_hash=$1, updated_at=now() WHERE id=$2 AND password_hash=$3`,
+		hash, u.ID, verified.PasswordHash)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not update password")
+		return
+	}
+	if ct.RowsAffected() != 1 {
+		writeError(w, http.StatusConflict, "Das Passwort wurde zwischenzeitlich geändert – bitte neu anmelden")
 		return
 	}
 	// Terminate every existing session and bind the new password to a fresh
