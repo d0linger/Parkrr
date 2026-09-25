@@ -286,7 +286,9 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if lockedFor > 0 {
-			slog.Warn("login failed", "user_id", u.ID, "ip", ip, "reason", "2fa locked")
+			// No request data here (CodeQL go/clear-text-logging, as for #34): the IP
+			// comes from a forwarded header. The request log still carries it.
+			slog.Warn("login failed", "user_id", u.ID, "reason", "2fa locked")
 			w.Header().Set("Retry-After", formatSeconds(lockedFor))
 			writeJSON(w, http.StatusTooManyRequests, map[string]any{
 				"error":         "Zu viele falsche Zwei-Faktor-Codes – bitte in " + formatMinutes(lockedFor) + " erneut versuchen",
@@ -321,8 +323,9 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		}
 		if !ok {
 			h.recordLoginFailure(key, ip)
-			// The failure count goes to the audit entry below, not the ops log (CodeQL go/clear-text-logging).
-			slog.Warn("login failed", "user_id", u.ID, "ip", ip, "reason", "bad 2fa code")
+			// No request data and no failure count in the ops log (CodeQL
+			// go/clear-text-logging); the count goes to the audit entry below.
+			slog.Warn("login failed", "user_id", u.ID, "reason", "bad 2fa code")
 			// Repeated failures AFTER a correct password mean someone holds the
 			// password: that belongs in the trail, not only in the ops log.
 			if failures >= auth.SecondFactorFreeFailures {
