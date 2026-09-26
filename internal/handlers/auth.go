@@ -501,7 +501,11 @@ func (h *AuthHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 // RevokeSession deletes one of the current user's sessions by handle.
 func (h *AuthHandler) RevokeSession(w http.ResponseWriter, r *http.Request) {
 	u, _ := auth.UserFrom(r.Context())
-	handle := r.PathValue("handle")
+	handle := trim(r.PathValue("handle"))
+	if !validNameLength(handle) {
+		writeError(w, http.StatusBadRequest, "handle is too long")
+		return
+	}
 	n, err := h.Auth.RevokeSession(r.Context(), u.ID, handle)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not revoke session")
