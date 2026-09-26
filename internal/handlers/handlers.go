@@ -236,7 +236,7 @@ func (h *Handler) totalCount(w http.ResponseWriter, ctx context.Context, query s
 // result set into memory.
 func pageParams(r *http.Request, defLimit, maxLimit int) (limit, offset int) {
 	limit = defLimit
-	if l := r.URL.Query().Get("limit"); l != "" {
+	if l := r.URL.Query().Get("limit"); l != "" && validDateLength(l) {
 		if n, err := strconv.Atoi(l); err == nil && n > 0 {
 			limit = n
 		}
@@ -244,7 +244,7 @@ func pageParams(r *http.Request, defLimit, maxLimit int) (limit, offset int) {
 	if limit > maxLimit {
 		limit = maxLimit
 	}
-	if o := r.URL.Query().Get("offset"); o != "" {
+	if o := r.URL.Query().Get("offset"); o != "" && validDateLength(o) {
 		if n, err := strconv.Atoi(o); err == nil && n > 0 {
 			offset = n
 		}

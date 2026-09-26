@@ -97,6 +97,10 @@ func (h *Handler) ListVehicles(w http.ResponseWriter, r *http.Request) {
 	limit, offset := pageParams(r, 1000, 1000)
 	var personID int64 // 0 = unfiltered
 	if pid := r.URL.Query().Get("person_id"); pid != "" {
+		if !validDateLength(pid) {
+			writeError(w, http.StatusBadRequest, "person_id is too long")
+			return
+		}
 		n, perr := strconv.ParseInt(pid, 10, 64)
 		if perr != nil || n <= 0 {
 			writeError(w, http.StatusBadRequest, "invalid person_id")
