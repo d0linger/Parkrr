@@ -355,6 +355,22 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "days is too long",
 		},
+		{
+			name:       "ListVehicles: person_id parameter too long",
+			path:       "/api/vehicles?person_id=" + longDate,
+			method:     "GET",
+			body:       nil,
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "person_id is too long",
+		},
+		{
+			name:       "ListCharges: person_id parameter too long",
+			path:       "/api/charges?person_id=" + longDate,
+			method:     "GET",
+			body:       nil,
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "person_id is too long",
+		},
 	}
 
 	for _, tt := range tests {
@@ -412,6 +428,10 @@ func TestInputLengthValidation(t *testing.T) {
 				h.OverdueInvoices(w, req)
 			case "EndingSoon: days parameter too long":
 				h.EndingSoon(w, req)
+			case "ListVehicles: person_id parameter too long":
+				h.ListVehicles(w, req)
+			case "ListCharges: person_id parameter too long":
+				h.ListCharges(w, req)
 			}
 
 			if w.Code != tt.wantStatus {

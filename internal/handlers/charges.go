@@ -217,6 +217,10 @@ func (h *Handler) ListCharges(w http.ResponseWriter, r *http.Request) {
 	         LEFT JOIN categories cat ON cat.id = v.category_id`
 	limit, offset := pageParams(r, 1000, 1000)
 	if raw := r.URL.Query().Get("person_id"); raw != "" {
+		if !validDateLength(raw) {
+			writeError(w, http.StatusBadRequest, "person_id is too long")
+			return
+		}
 		pid, perr := strconv.ParseInt(raw, 10, 64)
 		if perr != nil {
 			writeError(w, http.StatusBadRequest, "invalid person_id")

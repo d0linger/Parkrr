@@ -78,7 +78,7 @@ type personStatsResponse struct {
 // parseYearParam reads an optional ?year= query parameter, returning def when it
 // is absent or outside the supported 2000–2100 range.
 func parseYearParam(r *http.Request, def int) int {
-	if y := r.URL.Query().Get("year"); y != "" {
+	if y := r.URL.Query().Get("year"); y != "" && validDateLength(y) {
 		if n, err := strconv.Atoi(y); err == nil && n >= 2000 && n <= 2100 {
 			return n
 		}
