@@ -355,6 +355,14 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "days is too long",
 		},
+		{
+			name:       "RevokeSession: handle parameter too long",
+			path:       "/api/sessions/" + longName,
+			method:     "DELETE",
+			body:       nil,
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "handle is too long",
+		},
 	}
 
 	for _, tt := range tests {
@@ -412,6 +420,10 @@ func TestInputLengthValidation(t *testing.T) {
 				h.OverdueInvoices(w, req)
 			case "EndingSoon: days parameter too long":
 				h.EndingSoon(w, req)
+			case "RevokeSession: handle parameter too long":
+				req.SetPathValue("handle", longName)
+				ah := &AuthHandler{Handler: h}
+				ah.RevokeSession(w, req)
 			}
 
 			if w.Code != tt.wantStatus {
