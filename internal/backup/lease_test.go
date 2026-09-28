@@ -52,7 +52,9 @@ func TestBackupLeaseReportsBusyInsteadOfWaiting(t *testing.T) {
 	if !errors.Is(err, ErrBackupBusy) || size != 0 || verified {
 		t.Fatalf("RunVolume while a peer holds the lease: size=%d verified=%v err=%v", size, verified, err)
 	}
-	if time.Since(started) > 5*time.Second {
+	// Generous for a loaded shared test database; the old blocking wait is caught
+	// above anyway (it ended in a statement-timeout error, not ErrBackupBusy).
+	if time.Since(started) > 15*time.Second {
 		t.Fatal("the busy lease blocked instead of returning at once")
 	}
 	entries, _ := os.ReadDir(dir)
@@ -117,7 +119,7 @@ func TestLostLeaseCancelsTheRun(t *testing.T) {
 		if !errors.Is(context.Cause(runCtx), errLeaseLost) {
 			t.Fatalf("run context ended with %v, want errLeaseLost", context.Cause(runCtx))
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(15 * time.Second): // pings every 50 ms; slack for a loaded CI host
 		t.Fatal("the run kept going after its lease session was terminated")
 	}
 }

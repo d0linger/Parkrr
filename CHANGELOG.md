@@ -14,6 +14,13 @@ der Implementierung („neue Spalte in export.go").
 Stand des Verbesserungsprogramms „Parkrr-Hundert" (September 2026).
 
 ### Hinzugefügt
+- **Vollständiges Steuerjahr für Vermietung und Verpachtung:** Einnahmen nach
+  Zuflussdatum, korrigierbare Schalter-Daten, Steuerobjekte über den Hallen,
+  unveränderliche Werbungskosten samt Belegen und Storno, wiederkehrende
+  Ausgaben, Anlagenverzeichnis mit linearer AfA/Halbjahresregel sowie
+  Überschuss und E1b-Vorschau je Objekt. Dazu kommen 15-Tage-Regel,
+  Kleinunternehmer-Fortschritt, Jahresabschluss-Sperre und ein ZIP-Paket mit
+  PDF, CSV-Dateien und sämtlichen Belegen für den Steuerberater.
 - **Konto sperren statt löschen:** Benutzerkonten können deaktiviert werden;
   die Sperre wirkt sofort (auch auf laufende Sitzungen) und erhält die
   Urheberschaft auf Rechnungen, Zahlungen und Übergabeprotokollen.

@@ -86,12 +86,17 @@ func (h *Handler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case "payments":
+		// ?year= limits the export to one calendar year (by payment date).
 		name = "zahlungen"
+		if y := parseYearParam(r, 0); y != 0 {
+			name += "-" + strconv.Itoa(y)
+		}
 		header = []string{"datum", "person", "betrag_eur", "methode", "gefaehrt_id", "storniert", "notiz"}
 		rr, err := h.Pool.Query(r.Context(),
 			`SELECT p.paid_on, per.first_name, per.last_name, p.amount, p.method, p.vehicle_id, p.reversed, p.note
 			   FROM payments p JOIN persons per ON per.id = p.person_id
-			  ORDER BY p.paid_on DESC, p.id DESC`)
+			  WHERE $1 = 0 OR extract(year FROM p.paid_on) = $1
+			  ORDER BY p.paid_on DESC, p.id DESC`, parseYearParam(r, 0))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "Export fehlgeschlagen")
 			return
@@ -318,15 +323,19 @@ func (h *Handler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Guard every data cell against formula injection (header is developer-controlled).
+	writeCSVDownload(w, r, name, header, rows, h.now())
+}
+
+// writeCSVDownload sends header and rows as a ;-separated, BOM-prefixed CSV
+// attachment named parkrr-<name>-<date>.csv. Every data cell is guarded against
+// formula injection; the file is built in memory so a writer error becomes a
+// clean 500 instead of a truncated 200 (finding OPS-05).
+func writeCSVDownload(w http.ResponseWriter, r *http.Request, name string, header []string, rows [][]string, now time.Time) {
 	for i := range rows {
 		for j := range rows[i] {
 			rows[i][j] = csvSafe(rows[i][j])
 		}
 	}
-	// Build the whole CSV in memory first. A csv.NewWriter(w) streams straight into the
-	// already-committed 200 response, so a mid-write failure shipped a TRUNCATED file as
-	// HTTP 200; buffering lets a writer error become a clean 500 (finding OPS-05).
 	var buf bytes.Buffer
 	buf.Write([]byte{0xEF, 0xBB, 0xBF}) // UTF-8 BOM for Excel
 	cw := csv.NewWriter(&buf)
@@ -347,7 +356,7 @@ func (h *Handler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Disposition",
-		`attachment; filename="parkrr-`+name+`-`+h.now().Format("2006-01-02")+`.csv"`)
+		`attachment; filename="parkrr-`+name+`-`+now.Format("2006-01-02")+`.csv"`)
 	_, _ = w.Write(buf.Bytes())
 }
 
