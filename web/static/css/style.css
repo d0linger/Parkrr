@@ -2566,3 +2566,14 @@ button.portal-row { width:100%; border:0; border-bottom:1px solid var(--border);
     /* Auswahlkästchen der Mehrfachauswahl: 18px war auf dem Telefon kaum zu treffen. */
     .bulk-wrap > .bulk-cb { width: 24px; height: 24px; }
 }
+
+/* Steuerjahr (Einnahmenaufstellung) */
+.tax-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+.tax-grid > .card { margin: 0; }
+.tax-rows { display: grid; gap: 0.7rem; margin-bottom: 0.6rem; }
+.tax-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.3rem 0.75rem; font-size: var(--text-base); }
+.tax-row .v, .tax-shift .v { font-variant-numeric: tabular-nums; font-weight: 650; }
+.tax-row .bar { grid-column: 1 / -1; height: 6px; border-radius: 4px; background: var(--bg-elev-2); overflow: hidden; }
+.tax-row .bar span { display: block; height: 100%; border-radius: 4px; background: var(--primary); }
+.tax-shift { display: grid; gap: 0.4rem; margin: 0.7rem 0; padding: 0; list-style: none; font-size: var(--text-sm); }
+.tax-shift li { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; }

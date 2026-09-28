@@ -14,6 +14,11 @@ der Implementierung („neue Spalte in export.go").
 Stand des Verbesserungsprogramms „Parkrr-Hundert" (September 2026).
 
 ### Hinzugefügt
+- **Steuerjahr (Einnahmenaufstellung):** Menü › Betrieb › Steuerjahr zeigt die
+  Zahlungseingänge eines Jahres nach Tag des Geldeingangs, für die Beilage E1b
+  (Vermietung und Verpachtung): Summe ohne Stornos, pro Monat, nach Art und
+  Zahlungsart, Hinweis auf Schalter-Buchungen und die 15-Tage-Regel als
+  Vorschlag. Export als PDF und CSV; der Zahlungsexport nimmt jetzt ein Jahr.
 - **Konto sperren statt löschen:** Benutzerkonten können deaktiviert werden;
   die Sperre wirkt sofort (auch auf laufende Sitzungen) und erhält die
   Urheberschaft auf Rechnungen, Zahlungen und Übergabeprotokollen.

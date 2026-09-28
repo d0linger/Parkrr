@@ -137,6 +137,7 @@
         chevron: '<path d="M9 6l6 6-6 6"/>',
         tag: '<path d="M12.6 3.6 20.4 11.4a2 2 0 0 1 0 2.8l-6.2 6.2a2 2 0 0 1-2.8 0L3.6 12.6V5.6a2 2 0 0 1 2-2h7Z"/><circle cx="8.3" cy="8.3" r="1.3"/>',
         euro: '<path d="M17.5 6.5A7 7 0 1 0 17.5 17.5"/><path d="M5 10.2h9M5 13.8h9"/>',
+        ledger: '<path d="M6 3.5h11a2 2 0 0 1 2 2V20.5H8a2 2 0 0 1-2-2Z"/><path d="M6 18.5a2 2 0 0 1 2-2h11M10 8h5M10 11.5h5"/>',
         receipt: '<path d="M6 3h12v18l-2.2-1.3-2 1.3-2-1.3-2 1.3-2-1.3L6 21V3Z"/><path d="M9.2 8.5h5.6M9.2 12h5.6"/>',
         check: '<path d="M20 6 9 17l-5-5"/>',
         plus: '<path d="M12 5v14M5 12h14"/>',
@@ -865,10 +866,12 @@
 
     // Vertical bars with rounded ends, gradient fill, a highlighted latest bar and
     // per-bar hover tooltip.
-    function chartBars(values, labels, title = 'Balken') {
+    // highlightLast marks the latest non-zero bar as "the current one"; a closed
+    // period (a past tax year) passes false so no month is singled out.
+    function chartBars(values, labels, title = 'Balken', highlightLast = true) {
         const W = 340, H = 160, pl = 8, pr = 8, pt = 16, pb = 22, n = values.length;
         const max = Math.max(1, ...values) * 1.15, iw = W - pl - pr, ih = H - pt - pb;
-        const gap = iw / n, bw = Math.min(24, gap * 0.62), hi = lastPositive(values), id = gid(), names = tipNames(labels);
+        const gap = iw / n, bw = Math.min(24, gap * 0.62), hi = highlightLast ? lastPositive(values) : -1, id = gid(), names = tipNames(labels);
         let grid = '';
         for (let r = 0; r <= 3; r++) { const gy = pt + ih * r / 3; grid += `<line class="c-grid" x1="${pl}" y1="${gy.toFixed(1)}" x2="${W - pr}" y2="${gy.toFixed(1)}"/>`; }
         let bars = '', lab = '';
@@ -1277,6 +1280,7 @@
         tariffs: 'Standardpreise pflegen und Leistungen für die schnelle Erfassung vorbereiten.',
         users: 'Zugänge und Berechtigungen für dein Team verwalten.',
         billing: 'Aussteller, Steuer und Zahlungsdaten für neue Rechnungen festlegen.',
+        taxyear: 'Zahlungseingänge eines Jahres für die Einkommensteuererklärung (Beilage E1b), nach Tag des Geldeingangs.',
         backup: 'Sicherungen herunterladen, automatische Abläufe prüfen und Daten wiederherstellen.',
         audit: 'Änderungen nach Zeitpunkt, Aktion und Objekt nachvollziehen.',
         settings: 'Dein Konto schützen und angemeldete Geräte verwalten.',
@@ -2597,6 +2601,91 @@
     };
 
     // ---------- Rechnungs-Einstellungen (admin) ----------
+    // ---------- Steuerjahr (Einnahmenaufstellung) ----------
+    // Zahlungseingänge eines Kalenderjahres nach Zufluss (§ 19 EStG), als Grundlage
+    // für die Beilage E1b (Vermietung und Verpachtung). Die 15-Tage-Regel ist nur ein
+    // Vorschlag und standardmäßig aus: sie setzt voraus, dass auch die Fälligkeit im
+    // Fenster um den Jahreswechsel liegt, und die kennt Parkrr nicht.
+    let taxYear = null, taxRule = false;
+    function taxRows(groups, total) {
+        const box = el('div', { class: 'tax-rows' });
+        if (!groups.length) box.append(el('div', { class: 'card-meta' }, 'Keine Einnahmen in diesem Jahr.'));
+        for (const g of groups) {
+            const share = total > 0 ? Math.max(0, Math.min(100, (g.amount / total) * 100)) : 0;
+            box.append(el('div', { class: 'tax-row' },
+                el('span', {}, g.label), el('span', { class: 'v' }, eur(g.amount)),
+                el('div', { class: 'bar', 'aria-hidden': 'true' }, el('span', { style: 'width:' + share.toFixed(1) + '%' }))));
+        }
+        return box;
+    }
+    function taxShiftList(rep) {
+        const list = el('ul', { class: 'tax-shift' });
+        const item = (p, sign, to) => list.append(el('li', {},
+            el('span', { class: 'v' }, sign + ' ' + eur(p.amount)),
+            el('span', {}, new Date(p.paid_on).toLocaleDateString('de-AT') + ' · ' + p.person + ' · Periode ' + p.period + ' → ' + to)));
+        rep.shifted_in.forEach((p) => item(p, '+', 'zählt zu ' + rep.year));
+        rep.shifted_out.forEach((p) => item(p, '−', 'zählt zu ' + p.rule_year));
+        return list;
+    }
+    routes.taxyear = async (page) => {
+        if (!isAdmin()) { page.innerHTML = ''; page.append(emptyState('shield', 'Nur für Administratoren.')); return; }
+        const nowYear = new Date().getFullYear();
+        if (taxYear == null) taxYear = nowYear - 1; // die Erklärung betrifft meist das Vorjahr
+        const rep = await api.get('/reports/tax-year?year=' + taxYear);
+        page.innerHTML = '';
+        const yearSel = el('div', { class: 'pager', style: 'margin:0' },
+            el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Vorheriges Jahr', disabled: taxYear <= 2000,
+                onclick: () => { taxYear--; render(); } }, '‹'),
+            el('span', { class: 'info' }, String(taxYear)),
+            el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Nächstes Jahr', disabled: taxYear >= nowYear,
+                onclick: () => { taxYear++; render(); } }, '›'));
+        page.append(el('div', { class: 'page-head' }, el('h2', {}, 'Steuerjahr'),
+            el('div', { class: 'page-head-actions' }, yearSel)));
+
+        const total = taxRule ? rep.total_with_rule : rep.total_by_date;
+        page.append(el('div', { class: 'stat-grid' },
+            stat(eur(total), taxRule ? 'Einnahmen mit 15-Tage-Regel' : 'Einnahmen nach Zahlungsdatum'),
+            stat(String(rep.count), 'Zahlungen · ' + rep.reversed_count + (rep.reversed_count === 1 ? ' Storno' : ' Stornos') + ' nicht enthalten')));
+
+        if (rep.slider_count) {
+            page.append(el('div', { class: 'load-notice', role: 'status' },
+                el('span', {}, rep.slider_count + ' Zahlungen (' + eur(rep.slider_amount) + ') wurden über den „bezahlt“-Schalter gebucht. '
+                    + 'Ihr Datum ist der Tag der Buchung, nicht zwingend der Geldeingang. Bitte prüfen, besonders rund um den Jahreswechsel.')));
+        }
+
+        const ruleCheck = el('input', { type: 'checkbox', id: 'tax_rule' });
+        ruleCheck.checked = taxRule;
+        ruleCheck.addEventListener('change', () => { taxRule = ruleCheck.checked; render(); });
+        const shifted = rep.shifted_in.length + rep.shifted_out.length;
+        page.append(el('div', { class: 'card' }, el('h3', {}, '15-Tage-Regel'),
+            el('label', { class: 'switch' }, ruleCheck, el('span', { class: 'track' }),
+                el('span', {}, 'Wiederkehrende Einnahmen am Jahreswechsel dem Jahr zurechnen, zu dem sie gehören')),
+            el('div', { class: 'card-meta' }, 'Gilt nur, wenn auch die Fälligkeit in den 15 Tagen um den Jahreswechsel liegt. '
+                + 'Das weiß Parkrr nicht, darum ist die Regel standardmäßig aus. Im Zweifel mit dem Steuerberater klären.'),
+            shifted ? taxShiftList(rep)
+                : el('div', { class: 'card-meta' }, 'Für ' + rep.year + ' betrifft die Regel keine Zahlung.'),
+            shifted ? el('div', { class: 'card-meta' }, 'Nach Zahlungsdatum: ' + eur(rep.total_by_date)
+                + ' · mit Regel: ' + eur(rep.total_with_rule)) : null));
+
+        const monthCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Einnahmen pro Monat · ' + rep.year));
+        monthCard.append(chartBars(rep.by_month, MONTHS, 'Einnahmen pro Monat', false));
+        page.append(monthCard);
+        page.append(el('div', { class: 'tax-grid' },
+            el('div', { class: 'card' }, el('h3', {}, 'Nach Art'), taxRows(rep.by_kind, rep.total_by_date),
+                el('div', { class: 'card-meta' }, 'Über Rechnungen bezahltes Geld bleibt eine Gruppe: Rechnungspositionen tragen keine Art.')),
+            el('div', { class: 'card' }, el('h3', {}, 'Nach Zahlungsart'), taxRows(rep.by_method, rep.total_by_date))));
+
+        const q = '?year=' + rep.year + (taxRule ? '&rule=1' : '');
+        page.append(el('div', { class: 'chart-card' },
+            el('h3', {}, 'Für den Steuerberater'),
+            el('div', { class: 'muted', style: 'font-size:.82rem;margin:-.35rem 0 .7rem' },
+                'Einnahmen für die Beilage E1b (Vermietung und Verpachtung). Werbungskosten erfasst Parkrr noch nicht.'),
+            el('div', { class: 'btn-row', style: 'flex-wrap:wrap;gap:.5rem' },
+                el('a', { class: 'btn btn-primary btn-sm', href: '/api/reports/tax-year.pdf' + q, download: '' }, icon('receipt', 15), ' Einnahmenaufstellung (PDF)'),
+                el('a', { class: 'btn btn-ghost btn-sm', href: '/api/reports/tax-year.csv' + q, download: '' }, icon('download', 15), ' Einnahmen ' + rep.year + ' (CSV)'),
+                el('a', { class: 'btn btn-ghost btn-sm', href: '/api/export/payments?year=' + rep.year, download: '' }, icon('download', 15), ' Alle Zahlungen ' + rep.year + ' (CSV)'))));
+    };
+
     routes.billing = async (page) => {
         if (!isAdmin()) { page.innerHTML = ''; page.append(emptyState('shield', 'Nur für Administratoren.')); return; }
         const s = (await api.get('/billing/settings')) || {};
@@ -8733,6 +8822,7 @@
         group('Betrieb');
         if (isAdmin()) body.append(item('receipt', 'Rechnungen', () => navigate('billing')));
         body.append(item('euro', 'Zusatzkosten', () => navigate('finance')));
+        if (isAdmin()) body.append(item('ledger', 'Steuerjahr', () => navigate('taxyear')));
         group('Verwaltung');
         body.append(item('settings', 'Einstellungen', () => navigate('settings')));
         if (isAdmin()) body.append(item('users', 'Benutzer', () => navigate('users')));

@@ -171,6 +171,10 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/invoices/overdue", authed(hf(h.OverdueInvoices)))
 	// Offene-Posten-Liste als druckfertiges Dokument mit Stichtag (Hundert 17).
 	mux.Handle("GET /api/reports/outstanding.pdf", authed(hf(h.OutstandingReportPDF)))
+	// Steuerjahr (Einnahmenaufstellung): admin-only, like the invoice settings.
+	mux.Handle("GET /api/reports/tax-year", admin(hf(h.TaxYear)))
+	mux.Handle("GET /api/reports/tax-year.csv", admin(hf(h.TaxYearCSV)))
+	mux.Handle("GET /api/reports/tax-year.pdf", admin(hf(h.TaxYearPDF)))
 
 	// --- Flat-rate agreements (Pauschale-Einträge) ---
 	mux.Handle("GET /api/persons/{id}/agreements", authed(hf(h.ListAgreements)))
