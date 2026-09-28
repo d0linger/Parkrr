@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,6 +45,8 @@ func TestPageParams(t *testing.T) {
 		{"?limit=-5", 100, 500, 100, 0},           // invalid ignored
 		{"?offset=-3", 100, 500, 100, 0},          // negative offset ignored
 		{"?limit=abc", 100, 500, 100, 0},          // non-numeric ignored
+		{"?limit=" + strings.Repeat("9", maxNumericParamLen+1), 100, 500, 100, 0},
+		{"?offset=" + strings.Repeat("9", maxNumericParamLen+1), 100, 500, 100, 0},
 	}
 	for _, c := range cases {
 		r := httptest.NewRequest("GET", "/x"+c.query, nil)

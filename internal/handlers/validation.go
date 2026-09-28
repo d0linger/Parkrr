@@ -27,9 +27,14 @@ const (
 	minPasswordLen = 8
 	maxPasswordLen = 72
 	// Date strings are YYYY-MM-DD (10 chars); 20 leaves headroom while capping an
-	// over-long payload before time.Parse. Cron/backup-key caps bound cron parsing
-	// and key-derivation input — defense-in-depth behind the request body limit.
-	maxDateLen        = 20
+	// over-long payload before time.Parse.
+	maxDateLen = 20
+	// Numeric query parameters fit in 20 decimal digits before integer parsing.
+	maxNumericParamLen = 20
+	// Session handles are the eight-character token prefixes exposed by ListSessions.
+	maxSessionHandleLen = 8
+	// Cron/backup-key caps bound cron parsing and key-derivation input —
+	// defense-in-depth behind the request body limit.
 	maxCronLen        = 100
 	maxBackupKeyLen   = 100
 	maxSearchQueryLen = 500
@@ -48,6 +53,16 @@ func validSearchQueryLength(s string) bool {
 // time.Parse so an over-long date string is rejected early).
 func validDateLength(s string) bool {
 	return len(s) <= maxDateLen
+}
+
+// validNumericParamLength bounds decimal query parameters before integer parsing.
+func validNumericParamLength(s string) bool {
+	return len(s) <= maxNumericParamLen
+}
+
+// validSessionHandleLength bounds the token prefix exposed by ListSessions.
+func validSessionHandleLength(s string) bool {
+	return len(s) <= maxSessionHandleLen
 }
 
 // validCronLength reports whether s is within the cron expression length cap.

@@ -12,7 +12,7 @@ import (
 )
 
 // TestInputLengthValidation pins the shared length caps from validation.go against
-// the 15 handlers listed below. Each case feeds one field exactly one byte over its
+// the handlers listed below. Each case feeds one field exactly one byte over its
 // cap and expects 400 plus the caller-facing message, so a cap that goes missing, or
 // a message that drifts, fails here rather than reaching the database.
 //
@@ -34,6 +34,10 @@ func TestInputLengthValidation(t *testing.T) {
 	longAddress := strings.Repeat("e", maxAddressLen+1)
 	longCron := strings.Repeat("*", maxCronLen+1)
 	longDate := strings.Repeat("2", maxDateLen+1)
+	longNumericParam := strings.Repeat("2", maxNumericParamLen+1)
+	longSearchQuery := strings.Repeat("q", maxSearchQueryLen+1)
+	longSessionHandle := strings.Repeat("s", maxSessionHandleLen+1)
+	ah := &AuthHandler{Handler: h}
 
 	tests := []struct {
 		name       string
@@ -355,6 +359,34 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "days is too long",
 		},
+		{
+			name:       "Search: q parameter too long",
+			path:       "/api/search?q=" + longSearchQuery,
+			method:     "GET",
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "search query is too long",
+		},
+		{
+			name:       "ListVehicles: person_id parameter too long",
+			path:       "/api/vehicles?person_id=" + longNumericParam,
+			method:     "GET",
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "person_id is too long",
+		},
+		{
+			name:       "ListCharges: person_id parameter too long",
+			path:       "/api/charges?person_id=" + longNumericParam,
+			method:     "GET",
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "person_id is too long",
+		},
+		{
+			name:       "RevokeSession: handle parameter too long",
+			path:       "/api/auth/sessions/" + longSessionHandle,
+			method:     "DELETE",
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "handle is too long",
+		},
 	}
 
 	for _, tt := range tests {
@@ -412,6 +444,15 @@ func TestInputLengthValidation(t *testing.T) {
 				h.OverdueInvoices(w, req)
 			case "EndingSoon: days parameter too long":
 				h.EndingSoon(w, req)
+			case "Search: q parameter too long":
+				h.Search(w, req)
+			case "ListVehicles: person_id parameter too long":
+				h.ListVehicles(w, req)
+			case "ListCharges: person_id parameter too long":
+				h.ListCharges(w, req)
+			case "RevokeSession: handle parameter too long":
+				req.SetPathValue("handle", longSessionHandle)
+				ah.RevokeSession(w, req)
 			}
 
 			if w.Code != tt.wantStatus {
