@@ -89,6 +89,9 @@ per vehicle — monthly or yearly, prorated to the day.
 - **Payments & credit (Guthaben)** — record a payment, auto-allocate it across the
   open items, and carry any remainder forward as credit; reversing a payment
   re-opens exactly what it had covered.
+- **Austrian tax-year ledger** — track cash-basis income and immutable expenses
+  with receipts, recurring costs, properties, straight-line depreciation and
+  E1b previews; lock a completed year and export a complete adviser ZIP.
 - **Statistics & charts** — revenue/month, status distribution, paid/open, and
   cost per person by month and year (local SVG charts).
 - **CSV import & export** — bulk-import people from a CSV (with a downloadable

@@ -1280,7 +1280,7 @@
         tariffs: 'Standardpreise pflegen und Leistungen für die schnelle Erfassung vorbereiten.',
         users: 'Zugänge und Berechtigungen für dein Team verwalten.',
         billing: 'Aussteller, Steuer und Zahlungsdaten für neue Rechnungen festlegen.',
-        taxyear: 'Zahlungseingänge eines Jahres für die Einkommensteuererklärung (Beilage E1b), nach Tag des Geldeingangs.',
+        taxyear: 'Einnahmen, Werbungskosten, Abschreibungen und E1b-Werte eines Steuerjahres nach dem Zufluss-Abfluss-Prinzip.',
         backup: 'Sicherungen herunterladen, automatische Abläufe prüfen und Daten wiederherstellen.',
         audit: 'Änderungen nach Zeitpunkt, Aktion und Objekt nachvollziehen.',
         settings: 'Dein Konto schützen und angemeldete Geräte verwalten.',
@@ -2627,11 +2627,258 @@
         rep.shifted_out.forEach((p) => item(p, '−', 'zählt zu ' + p.rule_year));
         return list;
     }
+    function taxField(label, control, help) {
+        const wrap = el('label', { class: 'tax-field' }, el('span', {}, label), control);
+        if (help) wrap.append(el('small', { class: 'card-meta' }, help));
+        return wrap;
+    }
+    function taxPropertySelect(rep, value, attrs = {}) {
+        return el('select', attrs, ...rep.properties.map((p) => el('option', {
+            value: p.id, selected: Number(value || rep.properties[0]?.id) === Number(p.id),
+        }, p.name)));
+    }
+    function taxCategorySelect(rep, value, attrs = {}) {
+        return el('select', attrs, ...rep.categories.map((c) => el('option', {
+            value: c.id, selected: Number(value || rep.categories[0]?.id) === Number(c.id),
+        }, c.label + ' · KZ ' + c.e1b_code)));
+    }
+    function taxYearDate(year) {
+        return year === new Date().getFullYear() ? today() : year + '-12-31';
+    }
+    function taxExpenseBook(rep) {
+        const section = el('section', { class: 'tax-section' },
+            el('div', { class: 'section-title' }, el('h3', {}, 'Werbungskosten'), el('span', { class: 'v' }, eur(rep.expense_total))));
+        if (!rep.locked) {
+            const prop = taxPropertySelect(rep, null, { hidden: rep.properties.length === 1 });
+            const cat = taxCategorySelect(rep);
+            const paid = el('input', { type: 'date', value: taxYearDate(rep.year), required: true });
+            const desc = el('input', { placeholder: 'z. B. Wartung Hallentor', maxlength: 500, required: true });
+            const payee = el('input', { placeholder: 'Empfänger', maxlength: 500 });
+            const amount = el('input', { type: 'number', min: '0.01', step: '0.01', placeholder: '0,00', required: true });
+            const vat = el('input', { type: 'number', min: '0', step: '0.01', value: '0' });
+            const method = el('select', {}, el('option', { value: 'ueberweisung' }, 'Überweisung'), el('option', { value: 'bar' }, 'Bar'),
+                el('option', { value: 'paypal' }, 'PayPal'), el('option', { value: 'sonstiges' }, 'Sonstiges'));
+            const receipt = el('input', { type: 'file', accept: '.pdf,image/jpeg,image/png' });
+            const form = el('form', { class: 'tax-form-grid' }, prop,
+                taxField('Kategorie', cat), taxField('Bezahlt am', paid), taxField('Beschreibung', desc),
+                taxField('Empfänger', payee), taxField('Betrag brutto', amount), taxField('davon USt', vat),
+                taxField('Zahlungsart', method), taxField('Beleg (PDF/JPEG/PNG)', receipt));
+            if (rep.properties.length > 1) form.prepend(taxField('Steuerobjekt', prop));
+            const submit = el('button', { class: 'btn btn-primary', type: 'submit' }, 'Ausgabe buchen');
+            form.append(submit);
+            form.addEventListener('submit', async (e) => {
+                e.preventDefault(); submit.disabled = true;
+                try {
+                    const created = await api.post('/tax/expenses', {
+                        property_id: Number(prop.value), category_id: Number(cat.value), paid_on: paid.value,
+                        description: desc.value, payee: payee.value, amount: Number(amount.value),
+                        vat_amount: Number(vat.value || 0), payment_method: method.value,
+                    });
+                    if (receipt.files[0]) {
+                        const fd = new FormData(); fd.append('file', receipt.files[0]);
+                        await api.upload('/tax/expenses/' + created.id + '/receipts', fd);
+                    }
+                    toast('Ausgabe gebucht', 'success'); render();
+                } catch (err) { toast(err.message, 'error'); submit.disabled = false; }
+            });
+            section.append(el('details', { class: 'card tax-details' }, el('summary', {}, '+ Ausgabe erfassen'), form));
+        }
+        const list = el('div', { class: 'tax-ledger' });
+        if (!rep.expenses.length) list.append(el('div', { class: 'card-meta' }, 'Keine Werbungskosten in diesem Jahr.'));
+        rep.expenses.forEach((expense) => {
+            const actions = el('div', { class: 'btn-row tax-row-actions' });
+            if (expense.receipt_count) {
+                const show = el('button', { class: 'btn btn-ghost btn-sm' }, 'Belege ' + expense.receipt_count);
+                show.addEventListener('click', async () => {
+                    try {
+                        const items = await api.get('/tax/expenses/' + expense.id + '/receipts');
+                        show.replaceWith(el('div', { class: 'tax-receipts' }, ...items.map((a) =>
+                            el('a', { href: '/api/tax/receipts/' + a.id, download: '', class: 'btn btn-ghost btn-sm' }, a.filename))));
+                    } catch (err) { toast(err.message, 'error'); }
+                });
+                actions.append(show);
+            }
+            if (!rep.locked && !expense.reverses_id && !expense.reversed) {
+                const file = el('input', { type: 'file', accept: '.pdf,image/jpeg,image/png', hidden: true });
+                file.addEventListener('change', async () => {
+                    if (!file.files[0]) return;
+                    const fd = new FormData(); fd.append('file', file.files[0]);
+                    try { await api.upload('/tax/expenses/' + expense.id + '/receipts', fd); toast('Beleg gespeichert', 'success'); render(); }
+                    catch (err) { toast(err.message, 'error'); }
+                });
+                actions.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => file.click() }, '+ Beleg'), file);
+                const reverse = el('button', { class: 'btn btn-ghost btn-sm' }, 'Stornieren');
+                reverse.addEventListener('click', async () => {
+                    if (!await confirmDialog('Ausgabe stornieren?', 'Es wird eine unveränderliche Gegenbuchung erstellt.', 'Stornieren')) return;
+                    try { await api.post('/tax/expenses/' + expense.id + '/reverse', {}); toast('Gegenbuchung erstellt', 'success'); render(); }
+                    catch (err) { toast(err.message, 'error'); }
+                });
+                actions.append(reverse);
+            }
+            list.append(el('div', { class: 'tax-ledger-row' },
+                el('div', {}, el('b', {}, expense.description),
+                    el('small', {}, expense.paid_on + ' · ' + expense.category + (rep.properties.length > 1 ? ' · ' + expense.property : '') + (expense.payee ? ' · ' + expense.payee : ''))),
+                el('span', { class: 'v ' + (expense.amount < 0 ? 'negative' : '') }, eur(expense.amount)), actions));
+        });
+        section.append(list);
+        return section;
+    }
+
+    function taxRecurringBook(rep) {
+        const section = el('details', { class: 'card tax-details' },
+            el('summary', {}, 'Wiederkehrende Ausgaben · ' + rep.recurring_expenses.length));
+        if (!rep.locked) {
+            const prop = taxPropertySelect(rep, null, { hidden: rep.properties.length === 1 });
+            const cat = taxCategorySelect(rep);
+            const desc = el('input', { required: true, maxlength: 500, placeholder: 'z. B. Versicherung' });
+            const amount = el('input', { required: true, type: 'number', min: '0.01', step: '0.01' });
+            const frequency = el('select', {}, el('option', { value: 'monthly' }, 'Monatlich'), el('option', { value: 'yearly' }, 'Jährlich'));
+            const day = el('input', { type: 'number', min: 1, max: 28, value: 1 });
+            const month = el('input', { type: 'number', min: 1, max: 12, value: 1 });
+            const start = el('input', { type: 'date', value: rep.year + '-01-01' });
+            const form = el('form', { class: 'tax-form-grid' }, prop, taxField('Kategorie', cat), taxField('Beschreibung', desc),
+                taxField('Betrag', amount), taxField('Rhythmus', frequency), taxField('Fälligkeitstag', day),
+                taxField('Monat (jährlich)', month), taxField('Beginn', start));
+            if (rep.properties.length > 1) form.prepend(taxField('Steuerobjekt', prop));
+            const submit = el('button', { class: 'btn btn-primary', type: 'submit' }, 'Vorlage anlegen'); form.append(submit);
+            form.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                try {
+                    await api.post('/tax/recurring', { property_id: Number(prop.value), category_id: Number(cat.value), description: desc.value,
+                        payee: '', amount: Number(amount.value), payment_method: 'ueberweisung', frequency: frequency.value,
+                        due_day: Number(day.value), due_month: Number(month.value), start_on: start.value, end_on: '' });
+                    toast('Vorlage angelegt', 'success'); render();
+                } catch (err) { toast(err.message, 'error'); }
+            });
+            section.append(form);
+        }
+        const list = el('div', { class: 'tax-ledger' });
+        if (!rep.recurring_expenses.length) list.append(el('div', { class: 'card-meta' }, 'Noch keine wiederkehrenden Ausgaben.'));
+        rep.recurring_expenses.forEach((item) => {
+            const date = el('input', { type: 'date', value: taxYearDate(rep.year), disabled: rep.locked || !item.active });
+            const book = el('button', { class: 'btn btn-ghost btn-sm', disabled: rep.locked || !item.active }, 'Buchen');
+            book.addEventListener('click', async () => {
+                try { await api.post('/tax/recurring/' + item.id + '/book', { paid_on: date.value }); toast('Ausgabe gebucht', 'success'); render(); }
+                catch (err) { toast(err.message, 'error'); }
+            });
+            const toggle = el('button', { class: 'btn btn-ghost btn-sm', disabled: rep.locked }, item.active ? 'Deaktivieren' : 'Aktivieren');
+            toggle.addEventListener('click', async () => {
+                try { await api.put('/tax/recurring/' + item.id, { active: !item.active }); toast('Vorlage gespeichert', 'success'); render(); }
+                catch (err) { toast(err.message, 'error'); }
+            });
+            list.append(el('div', { class: 'tax-ledger-row' },
+                el('div', {}, el('b', {}, item.description), el('small', {}, eur(item.amount) + ' · ' + (item.frequency === 'monthly' ? 'monatlich' : 'jährlich') + (item.active ? '' : ' · inaktiv'))),
+                date, el('div', { class: 'btn-row' }, book, toggle)));
+        });
+        section.append(list);
+        return section;
+    }
+
+    function taxAssetBook(rep) {
+        const section = el('details', { class: 'card tax-details' },
+            el('summary', {}, 'Anlageverzeichnis · AfA ' + eur(rep.depreciation_total)));
+        if (!rep.locked) {
+            const prop = taxPropertySelect(rep, null, { hidden: rep.properties.length === 1 });
+            const name = el('input', { required: true, maxlength: 500, placeholder: 'z. B. Torantrieb' });
+            const service = el('input', { type: 'date', required: true, value: rep.year + '-01-01' });
+            const basis = el('input', { type: 'number', min: '0.01', step: '0.01', required: true });
+            const life = el('input', { type: 'number', min: '0.1', max: 200, step: '0.1', required: true });
+            const half = el('input', { type: 'checkbox' }); half.checked = true;
+            const form = el('form', { class: 'tax-form-grid' }, prop, taxField('Wirtschaftsgut', name),
+                taxField('In Betrieb seit', service), taxField('Bemessungsgrundlage', basis), taxField('Nutzungsdauer (Jahre)', life),
+                el('label', { class: 'switch' }, half, el('span', { class: 'track' }), el('span', {}, 'Halbjahresregel anwenden')));
+            if (rep.properties.length > 1) form.prepend(taxField('Steuerobjekt', prop));
+            const submit = el('button', { class: 'btn btn-primary', type: 'submit' }, 'Wirtschaftsgut anlegen'); form.append(submit);
+            form.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                try {
+                    await api.post('/tax/assets', { property_id: Number(prop.value), name: name.value, in_service_on: service.value,
+                        depreciable_basis: Number(basis.value), useful_life_years: Number(life.value), half_year_rule: half.checked,
+                        disposed_on: '', notes: '' });
+                    toast('Wirtschaftsgut angelegt', 'success'); render();
+                } catch (err) { toast(err.message, 'error'); }
+            });
+            section.append(form);
+        }
+        const list = el('div', { class: 'tax-ledger' });
+        if (!rep.assets.length) list.append(el('div', { class: 'card-meta' }, 'Noch keine Wirtschaftsgüter.'));
+        rep.assets.forEach((asset) => list.append(el('div', { class: 'tax-ledger-row' },
+            el('div', {}, el('b', {}, asset.name), el('small', {}, 'In Betrieb ' + asset.in_service_on + ' · ' + eur(asset.depreciable_basis)
+                + ' / ' + asset.useful_life_years + ' Jahre' + (rep.properties.length > 1 ? ' · ' + asset.property : ''))),
+            el('span', { class: 'v' }, eur(asset.year_depreciation) + ' AfA'))));
+        section.append(list);
+        return section;
+    }
+
+    function taxManagement(rep, garages) {
+        const wrap = document.createDocumentFragment();
+        const objects = el('details', { class: 'card tax-details' }, el('summary', {}, 'Steuerobjekte verwalten · ' + rep.properties.length));
+        const name = el('input', { required: true, maxlength: 500 });
+        const address = el('input', { maxlength: 500 });
+        const postalCode = el('input', { maxlength: 500 });
+        const eawz = el('input', { maxlength: 500, placeholder: 'optional' });
+        const garageChecks = garages.map((garage) => {
+            const cb = el('input', { type: 'checkbox', value: garage.id });
+            return { cb, node: el('label', { class: 'toggle-inline' }, cb, el('span', {}, garage.name)) };
+        });
+        let editingID = 0;
+        const submit = el('button', { class: 'btn btn-primary', type: 'submit' }, 'Steuerobjekt anlegen');
+        const cancel = el('button', { class: 'btn btn-ghost', type: 'button', hidden: true }, 'Abbrechen');
+        const setEditing = (property) => {
+            editingID = property?.id || 0;
+            name.value = property?.name || '';
+            address.value = property?.address || '';
+            postalCode.value = property?.postal_code || '';
+            eawz.value = property?.eawz || '';
+            garageChecks.forEach((item) => { item.cb.checked = !!property?.garage_ids?.some((id) => Number(id) === Number(item.cb.value)); });
+            submit.textContent = editingID ? 'Steuerobjekt speichern' : 'Steuerobjekt anlegen';
+            cancel.hidden = !editingID;
+        };
+        cancel.addEventListener('click', () => setEditing(null));
+        const objectList = el('div', { class: 'tax-ledger' }, ...rep.properties.map((p) => el('div', { class: 'tax-ledger-row' },
+            el('div', {}, el('b', {}, p.name), el('small', {}, [p.address, p.garages].filter(Boolean).join(' · ') || 'Noch keine Adresse/Halle zugeordnet')),
+            el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => setEditing(p) }, 'Bearbeiten'))));
+        objects.append(objectList);
+        const objectForm = el('form', { class: 'tax-form-grid' }, taxField('Name', name), taxField('Lageadresse', address),
+            taxField('Postleitzahl', postalCode), taxField('Einheitswert-Aktenzeichen', eawz),
+            el('fieldset', { class: 'tax-garages' }, el('legend', {}, 'Hallenbereiche'), ...garageChecks.map((x) => x.node)));
+        objectForm.append(el('div', { class: 'btn-row' }, submit, cancel));
+        objectForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            try {
+                const payload = { name: name.value, address: address.value, postal_code: postalCode.value, eawz: eawz.value,
+                    garage_ids: garageChecks.filter((x) => x.cb.checked).map((x) => Number(x.cb.value)) };
+                if (editingID) await api.put('/tax/properties/' + editingID, payload);
+                else await api.post('/tax/properties', payload);
+                toast(editingID ? 'Steuerobjekt gespeichert' : 'Steuerobjekt angelegt', 'success'); render();
+            } catch (err) { toast(err.message, 'error'); }
+        });
+        objects.append(objectForm); wrap.append(objects);
+
+        const settings = el('details', { class: 'card tax-details' }, el('summary', {}, 'Steuereinstellungen'));
+        const limit = el('input', { type: 'number', min: 1, step: '0.01', value: rep.settings.small_business_limit });
+        const warning = el('input', { type: 'number', min: 1, max: 100, step: 1, value: rep.settings.warning_percent });
+        const opted = el('input', { type: 'checkbox' }); opted.checked = !!rep.settings.vat_opted_in;
+        const form = el('form', { class: 'tax-form-grid' }, taxField('Kleinunternehmer-Grenze', limit), taxField('Warnung ab %', warning),
+            el('label', { class: 'switch' }, opted, el('span', { class: 'track' }), el('span', {}, 'Zur Umsatzsteuer optiert')));
+        const save = el('button', { class: 'btn btn-primary', type: 'submit' }, 'Einstellungen speichern'); form.append(save);
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            try {
+                await api.put('/tax/settings', { small_business_limit: Number(limit.value), warning_percent: Number(warning.value), vat_opted_in: opted.checked });
+                toast('Einstellungen gespeichert', 'success'); render();
+            } catch (err) { toast(err.message, 'error'); }
+        });
+        settings.append(form); wrap.append(settings);
+        return wrap;
+    }
+
+    // Full tax-book workspace.
     routes.taxyear = async (page) => {
         if (!isAdmin()) { page.innerHTML = ''; page.append(emptyState('shield', 'Nur für Administratoren.')); return; }
         const nowYear = new Date().getFullYear();
-        if (taxYear == null) taxYear = nowYear - 1; // die Erklärung betrifft meist das Vorjahr
-        const rep = await api.get('/reports/tax-year?year=' + taxYear);
+        if (taxYear == null) taxYear = nowYear - 1;
+        const [rep, garages] = await Promise.all([api.get('/reports/tax-year?year=' + taxYear), api.get('/garages')]);
         page.innerHTML = '';
         const yearSel = el('div', { class: 'pager', style: 'margin:0' },
             el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Vorheriges Jahr', disabled: taxYear <= 2000,
@@ -2639,51 +2886,103 @@
             el('span', { class: 'info' }, String(taxYear)),
             el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Nächstes Jahr', disabled: taxYear >= nowYear,
                 onclick: () => { taxYear++; render(); } }, '›'));
-        page.append(el('div', { class: 'page-head' }, el('h2', {}, 'Steuerjahr'),
-            el('div', { class: 'page-head-actions' }, yearSel)));
+        page.append(el('div', { class: 'page-head' }, el('h2', {}, 'Steuerjahr'), el('div', { class: 'page-head-actions' }, yearSel)));
 
-        const total = taxRule ? rep.total_with_rule : rep.total_by_date;
-        page.append(el('div', { class: 'stat-grid' },
-            stat(eur(total), taxRule ? 'Einnahmen mit 15-Tage-Regel' : 'Einnahmen nach Zahlungsdatum'),
-            stat(String(rep.count), 'Zahlungen · ' + rep.reversed_count + (rep.reversed_count === 1 ? ' Storno' : ' Stornos') + ' nicht enthalten')));
+        const income = taxRule ? rep.total_with_rule : rep.total_by_date;
+        const surplus = taxRule ? rep.surplus_with_rule : rep.surplus;
+        page.append(el('div', { class: 'stat-grid' }, stat(eur(income), taxRule ? 'Einnahmen mit 15-Tage-Regel' : 'Einnahmen nach Zuflussdatum'),
+            stat(eur(rep.expense_total + rep.depreciation_total), 'Werbungskosten inkl. AfA'), stat(eur(surplus), 'Überschuss ' + rep.year)));
 
-        if (rep.slider_count) {
-            page.append(el('div', { class: 'load-notice', role: 'status' },
-                el('span', {}, rep.slider_count + ' Zahlungen (' + eur(rep.slider_amount) + ') wurden über den „bezahlt“-Schalter gebucht. '
-                    + 'Ihr Datum ist der Tag der Buchung, nicht zwingend der Geldeingang. Bitte prüfen, besonders rund um den Jahreswechsel.')));
-        }
+        const lock = el('button', { class: 'btn ' + (rep.locked ? 'btn-ghost' : 'btn-primary') + ' btn-sm' }, rep.locked ? 'Jahr entsperren' : 'Jahr abschließen');
+        lock.addEventListener('click', async () => {
+            const title = rep.locked ? 'Steuerjahr entsperren?' : 'Steuerjahr abschließen?';
+            const message = rep.locked ? 'Danach sind wieder Änderungen an Buchungen und Zuflussdaten möglich.'
+                : 'Buchungen, Belege, AfA und Zuflussdaten dieses Jahres werden gegen Änderungen gesperrt.';
+            if (!await confirmDialog(title, message, rep.locked ? 'Entsperren' : 'Abschließen')) return;
+            try {
+                if (rep.locked) await api.del('/tax/years/' + rep.year + '/lock');
+                else await api.post('/tax/years/' + rep.year + '/lock', {});
+                toast(rep.locked ? 'Steuerjahr entsperrt' : 'Steuerjahr abgeschlossen', 'success'); render();
+            } catch (err) { toast(err.message, 'error'); }
+        });
+        page.append(el('div', { class: 'tax-toolbar' },
+            el('span', { class: 'badge ' + (rep.locked ? 'badge-ok' : '') }, rep.locked ? 'Abgeschlossen' : 'In Bearbeitung'), lock,
+            el('span', { class: 'card-meta' }, 'Keine Steuerberatung · Werte vor Abgabe prüfen.')));
 
-        const ruleCheck = el('input', { type: 'checkbox', id: 'tax_rule' });
-        ruleCheck.checked = taxRule;
+        const limit = Number(rep.settings.small_business_limit) || 55000;
+        const percent = Number(rep.small_business_percent) || 0;
+        const limitCard = el('div', { class: 'card tax-limit' },
+            el('div', { class: 'tax-limit-head' }, el('h3', {}, 'Kleinunternehmer-Grenze'), el('b', {}, percent.toFixed(1) + ' %')),
+            el('progress', { max: 100, value: Math.min(100, percent), 'aria-label': 'Auslastung der Kleinunternehmer-Grenze' }),
+            el('div', { class: 'card-meta' }, eur(rep.total_by_date) + ' von ' + eur(limit) + (rep.settings.vat_opted_in ? ' · Regelbesteuerung hinterlegt' : ' · Bruttoumsatz')));
+        if (rep.small_business_exceeded) limitCard.append(el('div', { class: 'load-notice danger' }, 'Grenze überschritten – umsatzsteuerliche Behandlung prüfen.'));
+        else if (percent >= Number(rep.settings.warning_percent || 90)) limitCard.append(el('div', { class: 'load-notice' }, 'Warnschwelle erreicht – Entwicklung prüfen.'));
+        page.append(limitCard);
+
+        const ruleCheck = el('input', { type: 'checkbox', id: 'tax_rule_full' }); ruleCheck.checked = taxRule;
         ruleCheck.addEventListener('change', () => { taxRule = ruleCheck.checked; render(); });
         const shifted = rep.shifted_in.length + rep.shifted_out.length;
-        page.append(el('div', { class: 'card' }, el('h3', {}, '15-Tage-Regel'),
+        page.append(el('details', { class: 'card tax-details' }, el('summary', {}, '15-Tage-Regel' + (shifted ? ' · ' + shifted + ' Prüfposten' : '')),
             el('label', { class: 'switch' }, ruleCheck, el('span', { class: 'track' }),
-                el('span', {}, 'Wiederkehrende Einnahmen am Jahreswechsel dem Jahr zurechnen, zu dem sie gehören')),
-            el('div', { class: 'card-meta' }, 'Gilt nur, wenn auch die Fälligkeit in den 15 Tagen um den Jahreswechsel liegt. '
-                + 'Das weiß Parkrr nicht, darum ist die Regel standardmäßig aus. Im Zweifel mit dem Steuerberater klären.'),
-            shifted ? taxShiftList(rep)
-                : el('div', { class: 'card-meta' }, 'Für ' + rep.year + ' betrifft die Regel keine Zahlung.'),
-            shifted ? el('div', { class: 'card-meta' }, 'Nach Zahlungsdatum: ' + eur(rep.total_by_date)
-                + ' · mit Regel: ' + eur(rep.total_with_rule)) : null));
+                el('span', {}, 'Wiederkehrende Einnahmen am Jahreswechsel dem Leistungsjahr zurechnen')),
+            el('p', { class: 'card-meta' }, 'Nur anwenden, wenn auch die Fälligkeit im 15-Tage-Fenster liegt. Parkrr schlägt vor; die Entscheidung bleibt bei dir.'),
+            shifted ? taxShiftList(rep) : el('div', { class: 'card-meta' }, 'Keine betroffene Zahlung.')));
 
         const monthCard = el('div', { class: 'chart-card' }, el('h3', {}, 'Einnahmen pro Monat · ' + rep.year));
-        monthCard.append(chartBars(rep.by_month, MONTHS, 'Einnahmen pro Monat', false));
-        page.append(monthCard);
+        monthCard.append(chartBars(rep.by_month, MONTHS, 'Einnahmen pro Monat', false)); page.append(monthCard);
         page.append(el('div', { class: 'tax-grid' },
-            el('div', { class: 'card' }, el('h3', {}, 'Nach Art'), taxRows(rep.by_kind, rep.total_by_date),
-                el('div', { class: 'card-meta' }, 'Über Rechnungen bezahltes Geld bleibt eine Gruppe: Rechnungspositionen tragen keine Art.')),
+            el('div', { class: 'card' }, el('h3', {}, 'Nach Art'), taxRows(rep.by_kind, rep.total_by_date)),
             el('div', { class: 'card' }, el('h3', {}, 'Nach Zahlungsart'), taxRows(rep.by_method, rep.total_by_date))));
 
+        if (rep.property_summaries.length) {
+            const grid = el('div', { class: 'tax-grid' });
+            rep.property_summaries.forEach((item) => grid.append(el('div', { class: 'card tax-property-summary' }, el('h3', {}, item.name),
+                item.address ? el('div', { class: 'card-meta' }, item.address) : null,
+                el('dl', { class: 'tax-kv' }, el('dt', {}, 'Einnahmen'), el('dd', {}, eur(taxRule ? item.income_with_rule : item.income_by_date)),
+                    el('dt', {}, 'Werbungskosten'), el('dd', {}, eur(item.expenses)), el('dt', {}, 'AfA'), el('dd', {}, eur(item.depreciation)),
+                    el('dt', {}, 'Überschuss'), el('dd', { class: 'strong' }, eur(taxRule ? item.surplus_with_rule : item.surplus))))));
+            page.append(el('section', { class: 'tax-section' }, el('h3', {}, rep.property_summaries.length > 1 ? 'Ergebnis je Steuerobjekt' : 'Steuerobjekt'), grid));
+        }
+
+        if (rep.review_payments.length) {
+            const reviewTitle = rep.properties.length > 1 ? 'Zuflussdaten & Objekte prüfen' : 'Zuflussdaten prüfen';
+            const review = el('details', { class: 'card tax-details' }, el('summary', {}, reviewTitle + ' · ' + rep.review_payments.length));
+            review.append(el('p', { class: 'card-meta' }, 'Die steuerliche Zuordnung wird separat gespeichert; die unveränderliche Zahlung bleibt bestehen.'));
+            const list = el('div', { class: 'tax-ledger' });
+            rep.review_payments.forEach((payment) => {
+                const date = el('input', { type: 'date', value: String(payment.paid_on).slice(0, 10), disabled: rep.locked || !payment.slider });
+                const prop = taxPropertySelect(rep, payment.property_id, { disabled: rep.locked || rep.properties.length === 1 });
+                const save = el('button', { class: 'btn btn-ghost btn-sm', disabled: rep.locked }, 'Speichern');
+                save.addEventListener('click', async () => {
+                    try { await api.put('/tax/payments/' + payment.id, { received_on: date.value, property_id: Number(prop.value) }); toast('Steuerzuordnung gespeichert', 'success'); render(); }
+                    catch (err) { toast(err.message, 'error'); }
+                });
+                list.append(el('div', { class: 'tax-ledger-row' }, el('div', {}, el('b', {}, payment.person),
+                    el('small', {}, eur(payment.amount) + ' · Buchung ' + new Date(payment.booked_on).toLocaleDateString('de-AT'))), date,
+                    rep.properties.length > 1 ? prop : null, save));
+            });
+            review.append(list); page.append(review);
+        }
+
+        page.append(taxExpenseBook(rep), taxRecurringBook(rep), taxAssetBook(rep));
+
+        const e1b = el('div', { class: 'card' }, el('h3', {}, 'E1b-Vorschau'));
+        rep.property_summaries.forEach((property) => {
+            if (rep.property_summaries.length > 1) e1b.append(el('h4', {}, property.name));
+            e1b.append(taxRows(rep.e1b.filter((item) => item.property_id === property.id)
+                .map((item) => ({ label: 'Kennzahl ' + item.code + ' · ' + item.label,
+                    amount: taxRule && item.code === '9460' ? property.income_with_rule : item.amount })), Math.max(1, income)));
+        });
+        e1b.append(el('p', { class: 'card-meta' }, 'Zuordnung nach dem amtlichen E1b-Schema; Sonderfälle und Verteilungen bitte fachlich prüfen.'));
+        page.append(e1b, taxManagement(rep, garages));
+
         const q = '?year=' + rep.year + (taxRule ? '&rule=1' : '');
-        page.append(el('div', { class: 'chart-card' },
-            el('h3', {}, 'Für den Steuerberater'),
-            el('div', { class: 'muted', style: 'font-size:.82rem;margin:-.35rem 0 .7rem' },
-                'Einnahmen für die Beilage E1b (Vermietung und Verpachtung). Werbungskosten erfasst Parkrr noch nicht.'),
-            el('div', { class: 'btn-row', style: 'flex-wrap:wrap;gap:.5rem' },
-                el('a', { class: 'btn btn-primary btn-sm', href: '/api/reports/tax-year.pdf' + q, download: '' }, icon('receipt', 15), ' Einnahmenaufstellung (PDF)'),
-                el('a', { class: 'btn btn-ghost btn-sm', href: '/api/reports/tax-year.csv' + q, download: '' }, icon('download', 15), ' Einnahmen ' + rep.year + ' (CSV)'),
-                el('a', { class: 'btn btn-ghost btn-sm', href: '/api/export/payments?year=' + rep.year, download: '' }, icon('download', 15), ' Alle Zahlungen ' + rep.year + ' (CSV)'))));
+        page.append(el('div', { class: 'chart-card' }, el('h3', {}, 'Für den Steuerberater'),
+            el('div', { class: 'muted tax-export-note' }, 'Einnahmen, Werbungskosten, AfA, E1b-Vorschau und Belege für Vermietung und Verpachtung.'),
+            el('div', { class: 'btn-row tax-export-actions' },
+                el('a', { class: 'btn btn-primary btn-sm', href: '/api/reports/tax-year.zip' + q, download: '' }, icon('download', 15), ' Komplettes Exportpaket (ZIP)'),
+                el('a', { class: 'btn btn-ghost btn-sm', href: '/api/reports/tax-year.pdf' + q, download: '' }, icon('receipt', 15), ' Jahresübersicht (PDF)'),
+                el('a', { class: 'btn btn-ghost btn-sm', href: '/api/reports/tax-year.csv' + q, download: '' }, icon('download', 15), ' Einnahmen (CSV)'))));
     };
 
     routes.billing = async (page) => {

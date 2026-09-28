@@ -2577,3 +2577,45 @@ button.portal-row { width:100%; border:0; border-bottom:1px solid var(--border);
 .tax-row .bar span { display: block; height: 100%; border-radius: 4px; background: var(--primary); }
 .tax-shift { display: grid; gap: 0.4rem; margin: 0.7rem 0; padding: 0; list-style: none; font-size: var(--text-sm); }
 .tax-shift li { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; }
+.tax-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:.65rem; margin:-.25rem 0 1rem; }
+.tax-limit { margin-bottom:1rem; }
+.tax-limit-head, .section-title { display:flex; align-items:center; justify-content:space-between; gap:1rem; }
+.tax-limit-head h3, .section-title h3 { margin:0; }
+.tax-limit progress { display:block; width:100%; height:10px; margin:.8rem 0 .55rem; accent-color:var(--primary); }
+.tax-section { margin:1rem 0; }
+.tax-section > h3 { margin:.2rem 0 .75rem; }
+.tax-details { margin-bottom:1rem; }
+.tax-details > summary { cursor:pointer; font-weight:700; list-style:none; min-height:44px; display:flex; align-items:center; }
+.tax-details > summary::-webkit-details-marker { display:none; }
+.tax-details > summary::after { content:'+'; margin-left:auto; color:var(--muted); font-size:1.2rem; }
+.tax-details[open] > summary::after { content:'−'; }
+.tax-details[open] > summary { margin-bottom:.85rem; }
+.tax-form-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:.75rem; align-items:end; margin:.75rem 0 1rem; }
+.tax-form-grid > .btn { min-height:44px; }
+.tax-field { display:grid; gap:.3rem; font-size:var(--text-sm); font-weight:650; }
+.tax-field input, .tax-field select { width:100%; }
+.tax-ledger { display:grid; gap:.55rem; }
+.tax-ledger-row { display:flex; align-items:center; flex-wrap:wrap; gap:.55rem 1rem; padding:.75rem 0; border-bottom:1px solid var(--border); }
+.tax-ledger-row:last-child { border-bottom:0; }
+.tax-ledger-row > div:first-child { min-width:min(260px,100%); flex:1; display:grid; gap:.2rem; }
+.tax-ledger-row small { color:var(--muted); font-weight:450; }
+.tax-ledger-row > .v { font-variant-numeric:tabular-nums; font-weight:700; white-space:nowrap; }
+.tax-ledger-row > .v.negative { color:var(--danger); }
+.tax-row-actions { flex-wrap:wrap; }
+.tax-receipts { display:flex; flex-wrap:wrap; gap:.4rem; }
+.tax-kv { display:grid; grid-template-columns:1fr auto; gap:.45rem 1rem; margin:.8rem 0 0; }
+.tax-kv dt, .tax-kv dd { margin:0; }
+.tax-kv dd { text-align:right; font-variant-numeric:tabular-nums; }
+.tax-kv .strong { font-weight:750; padding-top:.4rem; border-top:1px solid var(--border); }
+.tax-property-summary h3 { margin-bottom:.2rem; }
+.tax-garages { border:0; padding:0; margin:0; display:flex; flex-wrap:wrap; gap:.5rem .8rem; }
+.tax-garages legend { font-size:var(--text-sm); font-weight:650; margin-bottom:.4rem; }
+.tax-export-note { font-size:.82rem; margin:-.35rem 0 .7rem; }
+.tax-export-actions { flex-wrap:wrap; gap:.5rem; }
+
+@media (max-width: 640px) {
+    .tax-form-grid { grid-template-columns:1fr; }
+    .tax-ledger-row { align-items:stretch; }
+    .tax-ledger-row > input[type="date"], .tax-ledger-row > select { flex:1 1 150px; }
+    .tax-row-actions { width:100%; }
+}
