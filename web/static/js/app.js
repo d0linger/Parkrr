@@ -2627,24 +2627,29 @@
         rep.shifted_out.forEach((p) => item(p, '−', 'zählt zu ' + p.rule_year));
         return list;
     }
+    /** Wraps a tax form control with its label and optional help text. */
     function taxField(label, control, help) {
         const wrap = el('label', { class: 'tax-field' }, el('span', {}, label), control);
         if (help) wrap.append(el('small', { class: 'card-meta' }, help));
         return wrap;
     }
+    /** Builds a tax-property select from the current report data. */
     function taxPropertySelect(rep, value, attrs = {}) {
         return el('select', attrs, ...rep.properties.map((p) => el('option', {
             value: p.id, selected: Number(value || rep.properties[0]?.id) === Number(p.id),
         }, p.name)));
     }
+    /** Builds an expense-category select from the current report data. */
     function taxCategorySelect(rep, value, attrs = {}) {
         return el('select', attrs, ...rep.categories.map((c) => el('option', {
             value: c.id, selected: Number(value || rep.categories[0]?.id) === Number(c.id),
         }, c.label + ' · KZ ' + c.e1b_code)));
     }
+    /** Returns a valid default entry date within the selected tax year. */
     function taxYearDate(year) {
         return year === new Date().getFullYear() ? today() : year + '-12-31';
     }
+    /** Renders the expense ledger and its retry-safe receipt workflow. */
     function taxExpenseBook(rep) {
         const section = el('section', { class: 'tax-section' },
             el('div', { class: 'section-title' }, el('h3', {}, 'Werbungskosten'), el('span', { class: 'v' }, eur(rep.expense_total))));
@@ -2665,21 +2670,36 @@
                 taxField('Zahlungsart', method), taxField('Beleg (PDF/JPEG/PNG)', receipt));
             if (rep.properties.length > 1) form.prepend(taxField('Steuerobjekt', prop));
             const submit = el('button', { class: 'btn btn-primary', type: 'submit' }, 'Ausgabe buchen');
+            const bookedFields = [prop, cat, paid, desc, payee, amount, vat, method];
+            let createdExpenseID = null;
             form.append(submit);
             form.addEventListener('submit', async (e) => {
                 e.preventDefault(); submit.disabled = true;
+                const retryingReceipt = createdExpenseID !== null;
                 try {
-                    const created = await api.post('/tax/expenses', {
-                        property_id: Number(prop.value), category_id: Number(cat.value), paid_on: paid.value,
-                        description: desc.value, payee: payee.value, amount: Number(amount.value),
-                        vat_amount: Number(vat.value || 0), payment_method: method.value,
-                    });
+                    if (createdExpenseID === null) {
+                        const created = await api.post('/tax/expenses', {
+                            property_id: Number(prop.value), category_id: Number(cat.value), paid_on: paid.value,
+                            description: desc.value, payee: payee.value, amount: Number(amount.value),
+                            vat_amount: Number(vat.value || 0), payment_method: method.value,
+                        });
+                        createdExpenseID = created.id;
+                    }
                     if (receipt.files[0]) {
                         const fd = new FormData(); fd.append('file', receipt.files[0]);
-                        await api.upload('/tax/expenses/' + created.id + '/receipts', fd);
+                        await api.upload('/tax/expenses/' + createdExpenseID + '/receipts', fd);
                     }
-                    toast('Ausgabe gebucht', 'success'); render();
-                } catch (err) { toast(err.message, 'error'); submit.disabled = false; }
+                    toast(retryingReceipt ? 'Beleg gespeichert' : 'Ausgabe gebucht', 'success'); render();
+                } catch (err) {
+                    if (createdExpenseID !== null) {
+                        bookedFields.forEach((field) => { field.disabled = true; });
+                        submit.textContent = 'Beleg erneut hochladen';
+                        toast('Ausgabe wurde gebucht. Beleg konnte nicht gespeichert werden: ' + err.message, 'error');
+                    } else {
+                        toast(err.message, 'error');
+                    }
+                    submit.disabled = false;
+                }
             });
             section.append(el('details', { class: 'card tax-details' }, el('summary', {}, '+ Ausgabe erfassen'), form));
         }
@@ -2724,6 +2744,7 @@
         return section;
     }
 
+    /** Renders recurring tax-expense templates and booking actions. */
     function taxRecurringBook(rep) {
         const section = el('details', { class: 'card tax-details' },
             el('summary', {}, 'Wiederkehrende Ausgaben · ' + rep.recurring_expenses.length));
@@ -2774,6 +2795,7 @@
         return section;
     }
 
+    /** Renders the depreciation ledger and asset entry form. */
     function taxAssetBook(rep) {
         const section = el('details', { class: 'card tax-details' },
             el('summary', {}, 'Anlageverzeichnis · AfA ' + eur(rep.depreciation_total)));
@@ -2810,6 +2832,7 @@
         return section;
     }
 
+    /** Renders tax-object assignments, settings, and year-lock controls. */
     function taxManagement(rep, garages) {
         const wrap = document.createDocumentFragment();
         const objects = el('details', { class: 'card tax-details' }, el('summary', {}, 'Steuerobjekte verwalten · ' + rep.properties.length));
@@ -2817,6 +2840,7 @@
         const address = el('input', { maxlength: 500 });
         const postalCode = el('input', { maxlength: 500 });
         const eawz = el('input', { maxlength: 500, placeholder: 'optional' });
+        /** Builds the garage assignment checkboxes for the property editor. */
         const garageChecks = garages.map((garage) => {
             const cb = el('input', { type: 'checkbox', value: garage.id });
             return { cb, node: el('label', { class: 'toggle-inline' }, cb, el('span', {}, garage.name)) };
@@ -2824,6 +2848,7 @@
         let editingID = 0;
         const submit = el('button', { class: 'btn btn-primary', type: 'submit' }, 'Steuerobjekt anlegen');
         const cancel = el('button', { class: 'btn btn-ghost', type: 'button', hidden: true }, 'Abbrechen');
+        /** Loads one tax property into the editor, or resets it for creation. */
         const setEditing = (property) => {
             editingID = property?.id || 0;
             name.value = property?.name || '';

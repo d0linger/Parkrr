@@ -559,6 +559,7 @@ func (h *Handler) TaxYearPackage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// buildTaxPackagePDF renders the compact adviser summary included in the tax package.
 func buildTaxPackagePDF(rep taxYearReport, rule bool, now time.Time) ([]byte, error) {
 	pdf, tr := newPDF()
 	pdf.SetMargins(20, 18, 20)
@@ -608,6 +609,7 @@ func buildTaxPackagePDF(rep taxYearReport, rule bool, now time.Time) ([]byte, er
 	return out.Bytes(), nil
 }
 
+// writeTaxPackageCSVs adds income, expense, asset, and E1b CSV files to a tax package.
 func writeTaxPackageCSVs(zw *zip.Writer, rep taxYearReport, rule bool) error {
 	writeCSV := func(name string, header []string, rows [][]string) error {
 		entry, err := zw.Create(name)
@@ -675,6 +677,7 @@ func writeTaxPackageCSVs(zw *zip.Writer, rep taxYearReport, rule bool) error {
 	return writeCSV("e1b-vorschau.csv", []string{"steuerobjekt", "kennzahl", "bezeichnung", "betrag_eur"}, e1bRows)
 }
 
+// taxE1BAmount selects the 15-day-rule income amount when the export requests it.
 func taxE1BAmount(rep taxYearReport, line taxE1BLine, rule bool) float64 {
 	if !rule || line.Code != "9460" {
 		return line.Amount

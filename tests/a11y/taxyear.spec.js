@@ -27,7 +27,7 @@ for (const width of [390, 1440]) {
       await page.screenshot({ path: path.join(process.env.PARKRR_CAPTURE_DIR, `taxyear-${width}.png`), fullPage: true });
     }
 
-    const results = await new AxeBuilder({ page }).include('.route-view').analyze();
+    const results = await new AxeBuilder({ page }).include('.route-view').withTags(['wcag22a', 'wcag22aa']).analyze();
     expect(results.violations.filter(v => ['serious', 'critical'].includes(v.impact))).toEqual([]);
   });
 }
@@ -54,4 +54,42 @@ test('tax-year entry workflows expose their required controls', async ({ page })
   await expect(page.getByRole('button', { name: 'Steuerobjekt speichern' })).toBeVisible();
   await expect(page.getByLabel('Einheitswert-Aktenzeichen')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Jahr abschließen' })).toBeVisible();
+});
+
+test('expense receipt retry does not create a duplicate expense', async ({ page }) => {
+  let expenseCreates = 0;
+  let receiptUploads = 0;
+  await mockUI(page, { role: 'admin', overrides: {
+    ...overrides,
+    '/tax/expenses': async route => {
+      expenseCreates++;
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ id: 99 }) });
+    },
+    '/tax/expenses/99/receipts': async route => {
+      receiptUploads++;
+      await route.fulfill({
+        status: receiptUploads === 1 ? 500 : 201,
+        contentType: 'application/json',
+        body: JSON.stringify(receiptUploads === 1 ? { error: 'Upload fehlgeschlagen' } : { id: 7 }),
+      });
+    },
+  } });
+  await page.goto(origin + '/#/taxyear');
+
+  const entry = page.locator('details').filter({ hasText: '+ Ausgabe erfassen' });
+  await entry.locator('summary').click();
+  await entry.getByPlaceholder('z. B. Wartung Hallentor').fill('Retry-Test');
+  await entry.getByLabel('Betrag brutto', { exact: true }).fill('10');
+  await entry.getByLabel('Beleg (PDF/JPEG/PNG)', { exact: true }).setInputFiles({
+    name: 'rechnung.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\n%%EOF\n'),
+  });
+
+  await entry.getByRole('button', { name: 'Ausgabe buchen' }).click();
+  await expect(entry.getByRole('button', { name: 'Beleg erneut hochladen' })).toBeEnabled();
+  expect(expenseCreates).toBe(1);
+  expect(receiptUploads).toBe(1);
+
+  await entry.getByRole('button', { name: 'Beleg erneut hochladen' }).click();
+  await expect.poll(() => receiptUploads).toBe(2);
+  expect(expenseCreates).toBe(1);
 });

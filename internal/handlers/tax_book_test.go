@@ -15,6 +15,7 @@ import (
 	"time"
 )
 
+// TestAnnualTaxDepreciation covers the half-year rule, disposal, and basis cap.
 func TestAnnualTaxDepreciation(t *testing.T) {
 	date := func(s string) time.Time {
 		d, err := time.Parse("2006-01-02", s)
@@ -57,6 +58,7 @@ func TestAnnualTaxDepreciation(t *testing.T) {
 	}
 }
 
+// TestTaxE1BAmountUsesSelectedRule changes only income when the 15-day rule is selected.
 func TestTaxE1BAmountUsesSelectedRule(t *testing.T) {
 	rep := taxYearReport{PropertySummaries: []taxPropertySummary{{ID: 7, IncomeByDate: 100, IncomeWithRule: 80}}}
 	income := taxE1BLine{PropertyID: 7, Code: "9460", Amount: 100}
@@ -72,6 +74,102 @@ func TestTaxE1BAmountUsesSelectedRule(t *testing.T) {
 	}
 }
 
+// TestCreateTaxAssetRejectsAnyLockedAffectedYear covers bounded and open asset ranges.
+func TestCreateTaxAssetRejectsAnyLockedAffectedYear(t *testing.T) {
+	h := testHandler(t)
+	ctx := context.Background()
+	var propertyID int64
+	if err := h.Pool.QueryRow(ctx, `SELECT id FROM tax_properties ORDER BY is_default DESC,id LIMIT 1`).Scan(&propertyID); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name       string
+		lockedYear int
+		disposedOn string
+	}{
+		{name: "disposed range is inclusive", lockedYear: 2096, disposedOn: "2097-12-31"},
+		{name: "open asset has no upper disposal bound", lockedYear: 2097},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := h.Pool.Exec(ctx, `DELETE FROM tax_year_locks WHERE year=$1`, tc.lockedYear); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_, _ = h.Pool.Exec(context.Background(), `DELETE FROM tax_year_locks WHERE year=$1`, tc.lockedYear)
+			})
+			if _, err := h.Pool.Exec(ctx, `INSERT INTO tax_year_locks(year) VALUES($1)`, tc.lockedYear); err != nil {
+				t.Fatal(err)
+			}
+
+			rec := httptest.NewRecorder()
+			h.CreateTaxAsset(rec, taxJSONRequest(t, http.MethodPost, "/api/tax/assets", map[string]any{
+				"property_id": propertyID, "name": "Locked range test", "in_service_on": "2095-01-01",
+				"depreciable_basis": 1000.0, "useful_life_years": 10.0, "half_year_rule": true,
+				"disposed_on": tc.disposedOn, "notes": "",
+			}))
+			if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), strconv.Itoa(tc.lockedYear)) {
+				t.Fatalf("create asset with locked year %d: %d %s", tc.lockedYear, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestCreateTaxExpenseWaitsForConcurrentYearLock proves lock checks serialize with lock writes.
+func TestCreateTaxExpenseWaitsForConcurrentYearLock(t *testing.T) {
+	h := testHandler(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	const year = 2094
+	if _, err := h.Pool.Exec(ctx, `DELETE FROM tax_year_locks WHERE year=$1`, year); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = h.Pool.Exec(context.Background(), `DELETE FROM tax_year_locks WHERE year=$1`, year) })
+
+	var propertyID, categoryID int64
+	if err := h.Pool.QueryRow(ctx, `SELECT id FROM tax_properties ORDER BY is_default DESC,id LIMIT 1`).Scan(&propertyID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Pool.QueryRow(ctx, `SELECT id FROM tax_expense_categories ORDER BY id LIMIT 1`).Scan(&categoryID); err != nil {
+		t.Fatal(err)
+	}
+	blocker, err := h.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocker.Rollback(context.Background()) }()
+	if err := acquireTaxYearAdvisoryLock(ctx, blocker, year); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := blocker.Exec(ctx, `INSERT INTO tax_year_locks(year) VALUES($1)`, year); err != nil {
+		t.Fatal(err)
+	}
+
+	req := taxJSONRequest(t, http.MethodPost, "/api/tax/expenses", map[string]any{
+		"property_id": propertyID, "category_id": categoryID, "paid_on": "2094-04-01",
+		"amount": 1.0, "vat_amount": 0.0, "description": "concurrent lock", "payment_method": "bar",
+	}).WithContext(ctx)
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		h.CreateTaxExpense(rec, req)
+		done <- rec
+	}()
+	waitForLockWait(ctx, t, h, "%pg_advisory_xact_lock%")
+	if err := blocker.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case rec := <-done:
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("create after concurrent lock: %d %s", rec.Code, rec.Body.String())
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+}
+
+// taxJSONRequest creates a JSON handler request for tax-book tests.
 func taxJSONRequest(t *testing.T, method, target string, body any) *http.Request {
 	t.Helper()
 	b, err := json.Marshal(body)
@@ -83,6 +181,7 @@ func taxJSONRequest(t *testing.T, method, target string, body any) *http.Request
 	return req
 }
 
+// TestTaxBookFlow exercises the expense, receipt, asset, reversal, lock, and export lifecycle.
 func TestTaxBookFlow(t *testing.T) {
 	h := testHandler(t)
 	ctx := context.Background()
