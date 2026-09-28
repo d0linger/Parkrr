@@ -55,6 +55,22 @@ func TestLengthPredicates(t *testing.T) {
 		{"date max", validDateLength, rep(maxDateLen), true},
 		{"date max+1", validDateLength, rep(maxDateLen + 1), false},
 
+		// numeric query parameter: 0..maxNumericParamLen
+		{"numeric parameter empty", validNumericParamLength, "", true},
+		{"numeric parameter max", validNumericParamLength, rep(maxNumericParamLen), true},
+		{"numeric parameter max+1", validNumericParamLength, rep(maxNumericParamLen + 1), false},
+
+		// session handle: 0..maxSessionHandleLen
+		// Required-ness is checked by routing/database lookup.
+		{"session handle empty", validSessionHandleLength, "", true},
+		{"session handle max", validSessionHandleLength, rep(maxSessionHandleLen), true},
+		{"session handle max+1", validSessionHandleLength, rep(maxSessionHandleLen + 1), false},
+
+		// search query: 0..maxSearchQueryLen
+		{"search query empty", validSearchQueryLength, "", true},
+		{"search query max", validSearchQueryLength, rep(maxSearchQueryLen), true},
+		{"search query max+1", validSearchQueryLength, rep(maxSearchQueryLen + 1), false},
+
 		// cron: 0..maxCronLen
 		{"cron empty", validCronLength, "", true},
 		{"cron short", validCronLength, "0 0 * * *", true},
