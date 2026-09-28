@@ -414,8 +414,7 @@ func taxDateString(t *time.Time) any {
 
 // scanTaxID parses a positive resource ID from the request path.
 func scanTaxID(r *http.Request) (int64, bool) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	return id, err == nil && id > 0
+	return pathID(r)
 }
 
 // taxActorID returns the authenticated user ID for nullable audit columns.
@@ -1392,7 +1391,11 @@ func sameTaxDay(a, b time.Time) bool {
 
 // taxYearPath parses a supported tax year from the request path.
 func taxYearPath(r *http.Request) (int, bool) {
-	year, err := strconv.Atoi(r.PathValue("year"))
+	s := r.PathValue("year")
+	if !validNumericParamLength(s) {
+		return 0, false
+	}
+	year, err := strconv.Atoi(s)
 	return year, err == nil && year >= minTaxYear && year <= maxTaxYear
 }
 

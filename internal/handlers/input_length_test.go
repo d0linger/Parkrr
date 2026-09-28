@@ -387,6 +387,20 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "handle is too long",
 		},
+		{
+			name:       "ReverseTaxExpense: id parameter too long",
+			path:       "/api/tax/expenses/" + longNumericParam + "/reverse",
+			method:     "POST",
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "invalid id",
+		},
+		{
+			name:       "LockTaxYear: year parameter too long",
+			path:       "/api/tax/years/" + longNumericParam + "/lock",
+			method:     "POST",
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "Ungültiges Steuerjahr",
+		},
 	}
 
 	for _, tt := range tests {
@@ -453,6 +467,12 @@ func TestInputLengthValidation(t *testing.T) {
 			case "RevokeSession: handle parameter too long":
 				req.SetPathValue("handle", longSessionHandle)
 				ah.RevokeSession(w, req)
+			case "ReverseTaxExpense: id parameter too long":
+				req.SetPathValue("id", longNumericParam)
+				h.ReverseTaxExpense(w, req)
+			case "LockTaxYear: year parameter too long":
+				req.SetPathValue("year", longNumericParam)
+				h.LockTaxYear(w, req)
 			}
 
 			if w.Code != tt.wantStatus {
