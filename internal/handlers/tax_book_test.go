@@ -13,6 +13,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/preining/parkrr/internal/auth"
+	"github.com/preining/parkrr/internal/models"
 )
 
 // TestAnnualTaxDepreciation covers the half-year rule, disposal, and basis cap.
@@ -83,23 +86,30 @@ func TestCreateTaxAssetRejectsAnyLockedAffectedYear(t *testing.T) {
 		t.Fatal(err)
 	}
 	tests := []struct {
-		name       string
-		lockedYear int
-		disposedOn string
+		name        string
+		lockedYears []int
+		wantLocked  int
+		disposedOn  string
 	}{
-		{name: "disposed range is inclusive", lockedYear: 2096, disposedOn: "2097-12-31"},
-		{name: "open asset has no upper disposal bound", lockedYear: 2097},
+		{name: "bounded range returns first locked year", lockedYears: []int{2097, 2096}, wantLocked: 2096, disposedOn: "2097-12-31"},
+		{name: "open asset has no upper disposal bound", lockedYears: []int{2097}, wantLocked: 2097},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := h.Pool.Exec(ctx, `DELETE FROM tax_year_locks WHERE year=$1`, tc.lockedYear); err != nil {
-				t.Fatal(err)
+			for _, year := range tc.lockedYears {
+				if _, err := h.Pool.Exec(ctx, `DELETE FROM tax_year_locks WHERE year=$1`, year); err != nil {
+					t.Fatal(err)
+				}
 			}
 			t.Cleanup(func() {
-				_, _ = h.Pool.Exec(context.Background(), `DELETE FROM tax_year_locks WHERE year=$1`, tc.lockedYear)
+				for _, year := range tc.lockedYears {
+					_, _ = h.Pool.Exec(context.Background(), `DELETE FROM tax_year_locks WHERE year=$1`, year)
+				}
 			})
-			if _, err := h.Pool.Exec(ctx, `INSERT INTO tax_year_locks(year) VALUES($1)`, tc.lockedYear); err != nil {
-				t.Fatal(err)
+			for _, year := range tc.lockedYears {
+				if _, err := h.Pool.Exec(ctx, `INSERT INTO tax_year_locks(year) VALUES($1)`, year); err != nil {
+					t.Fatal(err)
+				}
 			}
 
 			rec := httptest.NewRecorder()
@@ -108,10 +118,95 @@ func TestCreateTaxAssetRejectsAnyLockedAffectedYear(t *testing.T) {
 				"depreciable_basis": 1000.0, "useful_life_years": 10.0, "half_year_rule": true,
 				"disposed_on": tc.disposedOn, "notes": "",
 			}))
-			if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), strconv.Itoa(tc.lockedYear)) {
-				t.Fatalf("create asset with locked year %d: %d %s", tc.lockedYear, rec.Code, rec.Body.String())
+			if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), strconv.Itoa(tc.wantLocked)) {
+				t.Fatalf("create asset with first locked year %d: %d %s", tc.wantLocked, rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+// TestCreateTaxExpenseIdempotency verifies replay, fingerprint, and actor scoping.
+func TestCreateTaxExpenseIdempotency(t *testing.T) {
+	h := testHandler(t)
+	ctx := context.Background()
+	const year = 2092
+	var propertyID, categoryID int64
+	if err := h.Pool.QueryRow(ctx, `SELECT id FROM tax_properties ORDER BY is_default DESC,id LIMIT 1`).Scan(&propertyID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Pool.QueryRow(ctx, `SELECT id FROM tax_expense_categories ORDER BY id LIMIT 1`).Scan(&categoryID); err != nil {
+		t.Fatal(err)
+	}
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	description := "Idempotency " + suffix
+	key := "tax-expense-" + suffix
+	actorIDs := make([]int64, 2)
+	t.Cleanup(func() {
+		_ = purgeExec(context.Background(), h.Pool, `DELETE FROM tax_expenses WHERE description=$1`, description)
+		_, _ = h.Pool.Exec(context.Background(), `DELETE FROM users WHERE id=ANY($1)`, actorIDs)
+		_, _ = h.Pool.Exec(context.Background(), `DELETE FROM tax_year_locks WHERE year=$1`, year)
+	})
+	if _, err := h.Pool.Exec(ctx, `DELETE FROM tax_year_locks WHERE year=$1`, year); err != nil {
+		t.Fatal(err)
+	}
+	for i := range actorIDs {
+		if err := h.Pool.QueryRow(ctx, `INSERT INTO users(username,password_hash) VALUES($1,'x') RETURNING id`,
+			"tax-idempotency-"+strconv.Itoa(i)+"-"+suffix).Scan(&actorIDs[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	create := func(actorID int64, amount float64) *httptest.ResponseRecorder {
+		req := taxJSONRequest(t, http.MethodPost, "/api/tax/expenses", map[string]any{
+			"property_id": propertyID, "category_id": categoryID, "paid_on": strconv.Itoa(year) + "-04-01",
+			"amount": amount, "vat_amount": 0.0, "description": description, "payment_method": "bar",
+		})
+		req.Header.Set("Idempotency-Key", key)
+		req = req.WithContext(auth.ContextWithUser(req.Context(), &models.User{ID: actorID, Username: "tax-idempotency"}))
+		rec := httptest.NewRecorder()
+		h.CreateTaxExpense(rec, req)
+		return rec
+	}
+
+	first := create(actorIDs[0], 10)
+	replay := create(actorIDs[0], 10)
+	if first.Code != http.StatusCreated || replay.Code != http.StatusCreated {
+		t.Fatalf("create/replay: %d %s / %d %s", first.Code, first.Body.String(), replay.Code, replay.Body.String())
+	}
+	var firstResult, replayResult struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &firstResult); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(replay.Body.Bytes(), &replayResult); err != nil {
+		t.Fatal(err)
+	}
+	if firstResult.ID == 0 || firstResult.ID != replayResult.ID || replay.Header().Get("Idempotent-Replayed") != "true" {
+		t.Fatalf("retry must replay the first expense: %+v / %+v", firstResult, replayResult)
+	}
+	if changed := create(actorIDs[0], 11); changed.Code != http.StatusConflict {
+		t.Fatalf("same key with a different request: %d %s", changed.Code, changed.Body.String())
+	}
+	otherActor := create(actorIDs[1], 10)
+	if otherActor.Code != http.StatusCreated {
+		t.Fatalf("same key for another actor: %d %s", otherActor.Code, otherActor.Body.String())
+	}
+	var otherResult struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(otherActor.Body.Bytes(), &otherResult); err != nil {
+		t.Fatal(err)
+	}
+	if otherResult.ID == 0 || otherResult.ID == firstResult.ID {
+		t.Fatalf("actor scope must create a distinct expense: %d vs %d", firstResult.ID, otherResult.ID)
+	}
+	var count int
+	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM tax_expenses WHERE description=$1`, description).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("idempotent retries must create two actor-scoped rows, got %d", count)
 	}
 }
 

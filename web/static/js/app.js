@@ -2671,6 +2671,7 @@
             if (rep.properties.length > 1) form.prepend(taxField('Steuerobjekt', prop));
             const submit = el('button', { class: 'btn btn-primary', type: 'submit' }, 'Ausgabe buchen');
             const bookedFields = [prop, cat, paid, desc, payee, amount, vat, method];
+            const expenseKey = idempotencyKey();
             let createdExpenseID = null;
             form.append(submit);
             form.addEventListener('submit', async (e) => {
@@ -2682,7 +2683,7 @@
                             property_id: Number(prop.value), category_id: Number(cat.value), paid_on: paid.value,
                             description: desc.value, payee: payee.value, amount: Number(amount.value),
                             vat_amount: Number(vat.value || 0), payment_method: method.value,
-                        });
+                        }, { 'Idempotency-Key': expenseKey });
                         createdExpenseID = created.id;
                     }
                     if (receipt.files[0]) {

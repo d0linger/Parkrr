@@ -56,14 +56,18 @@ test('tax-year entry workflows expose their required controls', async ({ page })
   await expect(page.getByRole('button', { name: 'Jahr abschließen' })).toBeVisible();
 });
 
-test('expense receipt retry does not create a duplicate expense', async ({ page }) => {
-  let expenseCreates = 0;
+test('expense and receipt retries reuse the original expense', async ({ page }) => {
+  const expenseKeys = [];
   let receiptUploads = 0;
   await mockUI(page, { role: 'admin', overrides: {
     ...overrides,
     '/tax/expenses': async route => {
-      expenseCreates++;
-      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ id: 99 }) });
+      expenseKeys.push(route.request().headers()['idempotency-key']);
+      await route.fulfill({
+        status: expenseKeys.length === 1 ? 503 : 201,
+        contentType: 'application/json',
+        body: JSON.stringify(expenseKeys.length === 1 ? { error: 'Antwort verloren' } : { id: 99 }),
+      });
     },
     '/tax/expenses/99/receipts': async route => {
       receiptUploads++;
@@ -85,11 +89,17 @@ test('expense receipt retry does not create a duplicate expense', async ({ page 
   });
 
   await entry.getByRole('button', { name: 'Ausgabe buchen' }).click();
+  await expect(entry.getByRole('button', { name: 'Ausgabe buchen' })).toBeEnabled();
+  expect(expenseKeys).toHaveLength(1);
+  expect(expenseKeys[0]).toBeTruthy();
+
+  await entry.getByRole('button', { name: 'Ausgabe buchen' }).click();
   await expect(entry.getByRole('button', { name: 'Beleg erneut hochladen' })).toBeEnabled();
-  expect(expenseCreates).toBe(1);
+  expect(expenseKeys).toHaveLength(2);
+  expect(expenseKeys[1]).toBe(expenseKeys[0]);
   expect(receiptUploads).toBe(1);
 
   await entry.getByRole('button', { name: 'Beleg erneut hochladen' }).click();
   await expect.poll(() => receiptUploads).toBe(2);
-  expect(expenseCreates).toBe(1);
+  expect(expenseKeys).toHaveLength(2);
 });

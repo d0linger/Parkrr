@@ -703,9 +703,9 @@ func validIdempotencyKey(key string) bool {
 	return true
 }
 
-// createIdempotency is the optional Idempotency-Key of a create endpoint (POST
-// /charges, POST /persons/{id}/recurring), scoped to the acting user like the
-// payment keys. An empty key means the header was absent: behave as before.
+// createIdempotency is the optional Idempotency-Key of a create endpoint, scoped
+// to the acting user like payment keys. An empty key means the header was absent:
+// behave as before.
 type createIdempotency struct {
 	key, fingerprint string
 	actor            *int64

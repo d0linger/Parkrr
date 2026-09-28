@@ -177,10 +177,25 @@ func (h *Handler) rejectLockedAssetYears(w http.ResponseWriter, r *http.Request,
 	if disposed != nil {
 		lastYear = min(disposed.Year(), maxTaxYear)
 	}
+	if firstYear > lastYear {
+		return false
+	}
 	for year := firstYear; year <= lastYear; year++ {
-		if h.rejectLockedYear(w, r, tx, year) {
+		if err := acquireTaxYearAdvisoryLock(r.Context(), tx, year); err != nil {
+			serverError(w, r, "Steuerjahrsperre konnte nicht geprüft werden", err)
 			return true
 		}
+	}
+	var lockedYear int
+	if err := tx.QueryRow(r.Context(), `
+		SELECT COALESCE(min(year), 0) FROM tax_year_locks WHERE year BETWEEN $1 AND $2`,
+		firstYear, lastYear).Scan(&lockedYear); err != nil {
+		serverError(w, r, "Steuerjahrsperre konnte nicht geprüft werden", err)
+		return true
+	}
+	if lockedYear != 0 {
+		writeError(w, http.StatusConflict, "Steuerjahr "+strconv.Itoa(lockedYear)+" ist gesperrt")
+		return true
 	}
 	return false
 }
@@ -651,6 +666,9 @@ type taxExpenseRequest struct {
 	PaymentMethod string  `json:"payment_method"`
 }
 
+const taxExpenseIdempotencyLookup = `SELECT id, request_fingerprint FROM tax_expenses
+  WHERE idempotency_actor IS NOT DISTINCT FROM $1 AND idempotency_key=$2`
+
 // validateTaxExpenseRequest normalizes an expense payload and returns its payment date.
 func validateTaxExpenseRequest(req *taxExpenseRequest) (time.Time, bool) {
 	d, err := parseTaxDate(req.PaidOn)
@@ -685,6 +703,30 @@ func (h *Handler) CreateTaxExpense(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Ungültige Ausgabe")
 		return
 	}
+	idem, ok := idempotencyFor(w, r, struct {
+		Endpoint      string  `json:"endpoint"`
+		PropertyID    int64   `json:"property_id"`
+		CategoryID    int64   `json:"category_id"`
+		PaidOn        string  `json:"paid_on"`
+		Amount        float64 `json:"amount"`
+		VATAmount     float64 `json:"vat_amount"`
+		Payee         string  `json:"payee"`
+		Description   string  `json:"description"`
+		PaymentMethod string  `json:"payment_method"`
+	}{"tax_expense", req.PropertyID, req.CategoryID, paidOn.Format("2006-01-02"), round2(req.Amount),
+		round2(req.VATAmount), req.Payee, req.Description, req.PaymentMethod})
+	if !ok {
+		return
+	}
+	if idem.key != "" {
+		if prior, found, err := idempotentRowID(r.Context(), h.Pool, taxExpenseIdempotencyLookup, idem); err != nil {
+			writeIdempotencyError(w, err)
+			return
+		} else if found {
+			writeIdempotentReplay(w, prior)
+			return
+		}
+	}
 	tx, err := h.Pool.Begin(r.Context())
 	if err != nil {
 		serverError(w, r, "Ausgabe konnte nicht gebucht werden", err)
@@ -695,10 +737,30 @@ func (h *Handler) CreateTaxExpense(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var id int64
-	if err := tx.QueryRow(r.Context(), `
-		INSERT INTO tax_expenses(tax_property_id,category_id,paid_on,amount,vat_amount,payee,description,payment_method,created_by)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, req.PropertyID, req.CategoryID, paidOn,
-		round2(req.Amount), round2(req.VATAmount), req.Payee, req.Description, req.PaymentMethod, taxActorID(r)).Scan(&id); err != nil {
+	if idem.key == "" {
+		err = tx.QueryRow(r.Context(), `
+			INSERT INTO tax_expenses(tax_property_id,category_id,paid_on,amount,vat_amount,payee,description,payment_method,created_by)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, req.PropertyID, req.CategoryID, paidOn,
+			round2(req.Amount), round2(req.VATAmount), req.Payee, req.Description, req.PaymentMethod, taxActorID(r)).Scan(&id)
+	} else {
+		err = tx.QueryRow(r.Context(), `
+			INSERT INTO tax_expenses(tax_property_id,category_id,paid_on,amount,vat_amount,payee,description,payment_method,
+			                         created_by,idempotency_actor,idempotency_key,request_fingerprint)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+			ON CONFLICT (COALESCE(idempotency_actor, 0), idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+			RETURNING id`, req.PropertyID, req.CategoryID, paidOn, round2(req.Amount), round2(req.VATAmount), req.Payee,
+			req.Description, req.PaymentMethod, taxActorID(r), idem.actor, idem.key, idem.fingerprint).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			prior, found, lookupErr := idempotentRowID(r.Context(), tx, taxExpenseIdempotencyLookup, idem)
+			if lookupErr != nil || !found {
+				writeIdempotencyError(w, lookupErr)
+				return
+			}
+			writeIdempotentReplay(w, prior)
+			return
+		}
+	}
+	if err != nil {
 		if taxConflict(w, err) {
 			return
 		}
