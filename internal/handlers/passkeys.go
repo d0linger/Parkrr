@@ -279,6 +279,22 @@ func (h *AuthHandler) DeletePasskey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+	var body struct {
+		Password string `json:"password"`
+	}
+	_ = decodeJSON(r, &body)
+
+	// Step-up re-authentication: deleting an active authentication factor requires
+	// a recent primary-factor login or password verification.
+	if !h.requireStepUp(w, r, u, body.Password) {
+		return
+	}
+	key, ip, ok := h.checkRateLimit(w, r, u.Username)
+	if !ok {
+		return
+	}
+	h.refundReauth(key, ip)
+
 	n, lastCredential, err := h.WebAuthn.DeleteCredentialSafely(r.Context(), u.ID, id, h.PasskeyOnly)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete passkey")
