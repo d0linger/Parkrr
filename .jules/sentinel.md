@@ -52,3 +52,8 @@
 *Vulnerability:* The audit log endpoint (`ListAudit`) accepted search query parameters (`q`, `action`, `entity`, `from`, `to`) without length checks. Large string payloads in `q` passed directly into complex `ILIKE` pattern evaluation in PostgreSQL, creating resource exhaustion and CPU/memory pressure risks.
 *Learning:* Query string parameters used in database search filters must be bounded at the API boundary, just like JSON body inputs, to prevent resource exhaustion and SQL processing overhead.
 *Prevention:* Enforce early length validation helpers (`validSearchQueryLength`, `validNameLength`, `validDateLength`) on all URL query parameters before building SQL query clauses.
+
+## 2026-07-20 - [Step-Up Re-Authentication and Rate Limiting on Passkey Deletion]
+*Vulnerability:* `DeletePasskey` (`DELETE /api/passkeys/{id}`) allowed deleting an enrolled authentication credential/passkey without verifying recent authentication (`requireStepUp`) or checking the active account rate limiter.
+*Learning:* All authentication factor lifecycle handlers (registration, setup, enablement, regeneration, and deletion) must apply consistent security boundaries (step-up verification and rate limiting), not just creation or disablement endpoints.
+*Prevention:* Ensure every factor management handler calls `checkRateLimit` and `requireStepUp` before performing mutations on user credentials.

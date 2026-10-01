@@ -397,3 +397,54 @@ func TestPasskeyRegisterBegin_BoundsCeremonyStartsWithoutFailures(t *testing.T) 
 		t.Error("ceremony throttling must not consume the per-account login budget")
 	}
 }
+
+func TestDeletePasskey_StepUpAndRateLimit(t *testing.T) {
+	wa, err := auth.NewWebAuthnService(nil, "example.com", "Example", []string{"https://example.com"})
+	if err != nil {
+		t.Fatalf("failed to create webauthn service: %v", err)
+	}
+
+	ah := &AuthHandler{
+		Handler:     &Handler{},
+		Auth:        &auth.Manager{},
+		WebAuthn:    wa,
+		Limiter:     auth.NewLoginLimiter(3, time.Minute, time.Minute),
+		UserLimiter: auth.NewStickyLoginLimiter(3, time.Minute, time.Minute),
+	}
+
+	u := &models.User{ID: 1, Username: "testuser"}
+
+	// 1. Without recent session and without password -> 403 reauth_required
+	req1 := httptest.NewRequest(http.MethodDelete, "/api/passkeys/1", nil)
+	req1.SetPathValue("id", "1")
+	req1 = req1.WithContext(auth.ContextWithUser(req1.Context(), u))
+	w1 := httptest.NewRecorder()
+
+	ah.DeletePasskey(w1, req1)
+	if w1.Code != http.StatusForbidden {
+		t.Errorf("expected status %d for missing step-up, got %d", http.StatusForbidden, w1.Code)
+	}
+
+	// 2. When user account is rate-limited -> 429 Too Many Requests
+	const ip = "192.0.2.1"
+	req2From := func() *http.Request {
+		r := httptest.NewRequest(http.MethodDelete, "/api/passkeys/1", nil)
+		r.SetPathValue("id", "1")
+		r.RemoteAddr = ip + ":1234"
+		return r.WithContext(auth.ContextWithUser(r.Context(), u))
+	}
+	// Consume rate limit budget for user
+	for i := 0; i < 3; i++ {
+		key, cip, ok := ah.checkRateLimit(httptest.NewRecorder(), req2From(), u.Username)
+		if !ok {
+			t.Fatalf("attempt %d should be allowed", i)
+		}
+		ah.recordReauthFailure(key, cip)
+	}
+
+	w2 := httptest.NewRecorder()
+	ah.DeletePasskey(w2, req2From())
+	if w2.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 when throttled, got %d", w2.Code)
+	}
+}
