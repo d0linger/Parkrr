@@ -136,6 +136,22 @@ func TestInputLengthValidation(t *testing.T) {
 			errMsg:     "E-Mail ist ungültig oder zu lang",
 		},
 		{
+			name:       "UpdatePerson: First Name too long",
+			path:       "/api/persons/1",
+			method:     "PUT",
+			body:       personRequest{FirstName: longName},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "Name ist zu lang",
+		},
+		{
+			name:       "CreateAgreement: Note too long",
+			path:       "/api/persons/1/agreements",
+			method:     "POST",
+			body:       agreementRequest{Amount: floatPtr(10.0), StartDate: "2023-01-01", Note: longNote},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "note is too long",
+		},
+		{
 			name:       "CreateAgreement: NewVehicles Label too long",
 			path:       "/api/persons/1/agreements",
 			method:     "POST",
@@ -387,6 +403,49 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "handle is too long",
 		},
+		{
+			name:   "CreateHandover: SignerName too long",
+			path:   "/api/vehicles/1/handovers",
+			method: "POST",
+			body: struct {
+				Direction  string `json:"direction"`
+				SignerName string `json:"signer_name"`
+			}{Direction: "einlagerung", SignerName: longName},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "Name zu lang",
+		},
+		{
+			name:       "CreateGarage: Name too long",
+			path:       "/api/garages",
+			method:     "POST",
+			body:       garageRequest{Name: longName},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "name is too long",
+		},
+		{
+			name:       "CreateHall: Name too long",
+			path:       "/api/garages/1/halls",
+			method:     "POST",
+			body:       hallRequest{Name: longName},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "name is too long",
+		},
+		{
+			name:       "CreateSpot: Label too long",
+			path:       "/api/halls/1/spots",
+			method:     "POST",
+			body:       spotRequest{Label: longName},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "label is too long",
+		},
+		{
+			name:       "CreateWallTemplate: Name too long",
+			path:       "/api/wall-templates",
+			method:     "POST",
+			body:       wallTemplateReq{Name: longName},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "name is too long",
+		},
 	}
 
 	for _, tt := range tests {
@@ -409,9 +468,25 @@ func TestInputLengthValidation(t *testing.T) {
 			case "UpdateUser: Email too long":
 				req.SetPathValue("id", "1")
 				h.UpdateUser(w, req)
-			case "CreateAgreement: NewVehicles Label too long", "CreateAgreement: NewVehicles LicensePlate too long", "CreateAgreement: EditVehicles Label too long", "CreateAgreement: EditVehicles LicensePlate too long":
+			case "UpdatePerson: First Name too long":
+				req.SetPathValue("id", "1")
+				h.UpdatePerson(w, req)
+			case "CreateAgreement: Note too long", "CreateAgreement: NewVehicles Label too long", "CreateAgreement: NewVehicles LicensePlate too long", "CreateAgreement: EditVehicles Label too long", "CreateAgreement: EditVehicles LicensePlate too long":
 				req.SetPathValue("id", "1")
 				h.CreateAgreement(w, req)
+			case "CreateHandover: SignerName too long":
+				req.SetPathValue("id", "1")
+				h.CreateHandover(w, req)
+			case "CreateGarage: Name too long":
+				h.CreateGarage(w, req)
+			case "CreateHall: Name too long":
+				req.SetPathValue("id", "1")
+				h.CreateHall(w, req)
+			case "CreateSpot: Label too long":
+				req.SetPathValue("id", "1")
+				h.CreateSpot(w, req)
+			case "CreateWallTemplate: Name too long":
+				h.CreateWallTemplate(w, req)
 			case "CreateRecurringCharge: Description too long":
 				req.SetPathValue("id", "1")
 				h.CreateRecurringCharge(w, req)
