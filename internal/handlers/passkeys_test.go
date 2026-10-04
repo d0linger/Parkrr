@@ -452,9 +452,9 @@ func TestDeletePasskey_StepUpAndRateLimit(t *testing.T) {
 	ah := &AuthHandler{
 		Handler:     h,
 		Auth:        mgr,
-		Limiter:     auth.NewLoginLimiter(1000, time.Minute, time.Minute),
+		Limiter:     auth.NewLoginLimiter(3, time.Minute, time.Minute),
 		IPLimiter:   auth.NewLoginLimiter(1000, time.Minute, time.Minute),
-		UserLimiter: auth.NewLoginLimiter(1000, time.Minute, time.Minute),
+		UserLimiter: auth.NewStickyLoginLimiter(3, time.Minute, time.Minute),
 		WebAuthn:    wa,
 	}
 
