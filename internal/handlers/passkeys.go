@@ -274,6 +274,22 @@ func (h *AuthHandler) DeletePasskey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, _ := auth.UserFrom(r.Context())
+	var body struct {
+		Password string `json:"password"`
+	}
+	_ = decodeJSON(r, &body)
+
+	// Step-up: deleting a credential requires a recent primary-factor login
+	// or the account password if that window has closed.
+	if !h.requireStepUp(w, r, u, body.Password) {
+		return
+	}
+	key, ip, ok := h.checkRateLimit(w, r, u.Username)
+	if !ok {
+		return
+	}
+	h.refundReauth(key, ip)
+
 	id, ok := pathID(r)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid id")

@@ -52,3 +52,8 @@
 *Vulnerability:* The audit log endpoint (`ListAudit`) accepted search query parameters (`q`, `action`, `entity`, `from`, `to`) without length checks. Large string payloads in `q` passed directly into complex `ILIKE` pattern evaluation in PostgreSQL, creating resource exhaustion and CPU/memory pressure risks.
 *Learning:* Query string parameters used in database search filters must be bounded at the API boundary, just like JSON body inputs, to prevent resource exhaustion and SQL processing overhead.
 *Prevention:* Enforce early length validation helpers (`validSearchQueryLength`, `validNameLength`, `validDateLength`) on all URL query parameters before building SQL query clauses.
+
+## 2026-07-20 - [Enforcing Step-Up Re-Authentication and Rate Limiting on Passkey Deletion]
+*Vulnerability:* The passkey deletion handler (`DELETE /api/passkeys/{id}`) omitted step-up re-authentication (`requireStepUp`) and rate limiting checks (`checkRateLimit`). An attacker with an active session (or via session hijacking/unattended access) could delete registered WebAuthn passkeys without re-authenticating or being blocked by account rate-limiting lockouts.
+*Learning:* Any endpoint that revokes, deletes, or modifies authentication credentials (passwords, MFA factors, passkeys) must enforce step-up re-authentication and rate limiting to prevent unauthorized credential removal.
+*Prevention:* Always invoke `requireStepUp` and `checkRateLimit` on all credential modification and deletion endpoints.

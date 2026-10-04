@@ -397,3 +397,124 @@ func TestPasskeyRegisterBegin_BoundsCeremonyStartsWithoutFailures(t *testing.T) 
 		t.Error("ceremony throttling must not consume the per-account login budget")
 	}
 }
+
+func TestDeletePasskey_StepUpUnit(t *testing.T) {
+	wa, err := auth.NewWebAuthnService(nil, "example.com", "Example", []string{"https://example.com"})
+	if err != nil {
+		t.Fatalf("failed to create webauthn service: %v", err)
+	}
+	limiter := auth.NewLoginLimiter(1000, time.Minute, time.Minute)
+	ah := &AuthHandler{
+		Handler:     &Handler{},
+		WebAuthn:    wa,
+		Limiter:     limiter,
+		IPLimiter:   limiter,
+		UserLimiter: limiter,
+	}
+
+	u := &models.User{ID: 1, Username: "testuser"}
+
+	// 1. Without password and without recent session -> 403 reauth_required
+	req := httptest.NewRequest(http.MethodDelete, "/api/passkeys/123", nil)
+	req.SetPathValue("id", "123")
+	req = req.WithContext(auth.ContextWithUser(req.Context(), u))
+	rec := httptest.NewRecorder()
+
+	ah.DeletePasskey(rec, req)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "reauth_required") {
+		t.Errorf("expected 403 reauth_required when step-up is required, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 2. Over-long password -> 403
+	long := strings.Repeat("a", 73)
+	req2 := httptest.NewRequest(http.MethodDelete, "/api/passkeys/123", strings.NewReader(`{"password":"`+long+`"}`))
+	req2.SetPathValue("id", "123")
+	req2 = req2.WithContext(auth.ContextWithUser(req2.Context(), u))
+	rec2 := httptest.NewRecorder()
+
+	ah.DeletePasskey(rec2, req2)
+	if rec2.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for over-long password, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+}
+
+func TestDeletePasskey_StepUpAndRateLimit(t *testing.T) {
+	h := testHandler(t)
+	ctx := context.Background()
+	mgr, err := auth.NewManager(h.Pool, auth.SessionConfig{MaxAge: 3600}, false, false, "a-sufficiently-long-test-secret")
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	wa, err := auth.NewWebAuthnService(h.Pool, "example.com", "Example", []string{"https://example.com"})
+	if err != nil {
+		t.Fatalf("NewWebAuthnService: %v", err)
+	}
+	ah := &AuthHandler{
+		Handler:     h,
+		Auth:        mgr,
+		Limiter:     auth.NewLoginLimiter(3, time.Minute, time.Minute),
+		IPLimiter:   auth.NewLoginLimiter(1000, time.Minute, time.Minute),
+		UserLimiter: auth.NewStickyLoginLimiter(3, time.Minute, time.Minute),
+		WebAuthn:    wa,
+	}
+
+	const uname, pw = "delpasskey-stepup", "correct-horse-battery"
+	hash, err := auth.HashPassword(pw)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	var uid int64
+	if err := h.Pool.QueryRow(ctx,
+		`INSERT INTO users (username, password_hash) VALUES ($1,$2) RETURNING id`, uname, hash).Scan(&uid); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	t.Cleanup(func() { _, _ = h.Pool.Exec(ctx, `DELETE FROM users WHERE username = $1`, uname) })
+	u := &models.User{ID: uid, Username: uname}
+
+	rec := httptest.NewRecorder()
+	if err := mgr.CreateSession(ctx, rec, httptest.NewRequest(http.MethodPost, "/login", nil), uid); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	var sessionCookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == auth.SessionCookie {
+			sessionCookie = c
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("no session cookie created")
+	}
+
+	reqWithSession := func(body string) *http.Request {
+		r := httptest.NewRequest(http.MethodDelete, "/api/passkeys/123", strings.NewReader(body))
+		r.SetPathValue("id", "123")
+		r.AddCookie(sessionCookie)
+		return r.WithContext(auth.ContextWithUser(r.Context(), u))
+	}
+
+	// 1) Backdate session so the recent auth window is expired.
+	if _, err := h.Pool.Exec(ctx,
+		`UPDATE sessions SET created_at = now() - interval '1 hour' WHERE user_id = $1`, uid); err != nil {
+		t.Fatalf("backdate session: %v", err)
+	}
+
+	// Without password when step-up is expired -> 403 reauth_required.
+	w1 := httptest.NewRecorder()
+	ah.DeletePasskey(w1, reqWithSession(""))
+	if w1.Code != http.StatusForbidden || !strings.Contains(w1.Body.String(), "reauth_required") {
+		t.Fatalf("expected 403 reauth_required when step-up is expired, got %d: %s", w1.Code, w1.Body.String())
+	}
+
+	// Lock out user rate limiter.
+	ah.UserLimiter.Consume(strings.ToLower(uname))
+	for i := 0; i < 5; i++ {
+		ah.UserLimiter.RecordFailure(strings.ToLower(uname))
+	}
+
+	// With valid password but user rate-limited -> 429 Too Many Requests.
+	w2 := httptest.NewRecorder()
+	ah.DeletePasskey(w2, reqWithSession(`{"password":"`+pw+`"}`))
+	if w2.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 when rate limited, got %d: %s", w2.Code, w2.Body.String())
+	}
+}
