@@ -445,13 +445,17 @@ func TestDeletePasskey_StepUpAndRateLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
+	wa, err := auth.NewWebAuthnService(h.Pool, "example.com", "Example", []string{"https://example.com"})
+	if err != nil {
+		t.Fatalf("NewWebAuthnService: %v", err)
+	}
 	ah := &AuthHandler{
 		Handler:     h,
 		Auth:        mgr,
 		Limiter:     auth.NewLoginLimiter(1000, time.Minute, time.Minute),
 		IPLimiter:   auth.NewLoginLimiter(1000, time.Minute, time.Minute),
 		UserLimiter: auth.NewLoginLimiter(1000, time.Minute, time.Minute),
-		WebAuthn:    &auth.WebAuthnService{},
+		WebAuthn:    wa,
 	}
 
 	const uname, pw = "delpasskey-stepup", "correct-horse-battery"
