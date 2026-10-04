@@ -210,7 +210,7 @@
         get: (p) => api.request('GET', p),
         post: (p, b, headers) => api.request('POST', p, b, headers),
         put: (p, b) => api.request('PUT', p, b),
-        del: (p) => api.request('DELETE', p),
+        del: (p, b) => api.request('DELETE', p, b),
     };
     // One Idempotency-Key per create dialog, so a retry after a lost response
     // returns the first result instead of booking twice. randomUUID needs a
@@ -9566,8 +9566,13 @@
     }
     async function delPasskey(c) {
         if (!await confirmDialog('Passkey entfernen?', `„${c.name}“ wird entfernt. Anmeldung mit diesem Gerät ist danach nicht mehr möglich; andere Passkeys und dein Passwort bleiben gültig.`, 'Entfernen')) return;
-        try { await api.del('/passkeys/' + c.id); toast('Passkey entfernt', 'success'); render(); }
-        catch (e) { toast(e.message, 'error'); }
+        try {
+            await withStepUp((pw) => api.del('/passkeys/' + c.id, { password: pw }));
+            toast('Passkey entfernt', 'success');
+            render();
+        } catch (e) {
+            if (!e || !e.cancelled) toast(e.message || 'Entfernen fehlgeschlagen', 'error');
+        }
     }
 
     // Der Sprunglink wird IMMER gebunden — auch auf dem Kundenportal, das den
