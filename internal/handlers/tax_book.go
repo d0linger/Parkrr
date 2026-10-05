@@ -126,7 +126,11 @@ type taxSettings struct {
 
 // parseTaxDate parses an ISO calendar date in the server's local timezone.
 func parseTaxDate(s string) (time.Time, error) {
-	return time.ParseInLocation("2006-01-02", strings.TrimSpace(s), time.Local)
+	trimmed := strings.TrimSpace(s)
+	if !validDateLength(trimmed) {
+		return time.Time{}, errors.New("date is too long")
+	}
+	return time.ParseInLocation("2006-01-02", trimmed, time.Local)
 }
 
 // validTaxText enforces the shared length limit and optional presence rule.
