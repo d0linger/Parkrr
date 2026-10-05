@@ -97,6 +97,42 @@ func TestPasskeyRegisterBegin_NameLength(t *testing.T) {
 	}
 }
 
+func TestDeletePasskey_StepUpAndRateLimit(t *testing.T) {
+	wa, err := auth.NewWebAuthnService(nil, "example.com", "Example", []string{"https://example.com"})
+	if err != nil {
+		t.Fatalf("failed to create webauthn service: %v", err)
+	}
+
+	ah := &AuthHandler{
+		Handler:     &Handler{},
+		WebAuthn:    wa,
+		Limiter:     auth.NewLoginLimiter(3, time.Minute, time.Minute),
+		IPLimiter:   auth.NewLoginLimiter(1000, time.Minute, time.Minute),
+		UserLimiter: auth.NewStickyLoginLimiter(1000, time.Minute, time.Minute),
+	}
+
+	u := &models.User{ID: 1, Username: "passkey-del-user"}
+
+	// Request without step-up session and without password
+	req := httptest.NewRequest(http.MethodDelete, "/api/passkeys/1", nil)
+	req.SetPathValue("id", "1")
+	req = req.WithContext(auth.ContextWithUser(req.Context(), u))
+
+	w := httptest.NewRecorder()
+	ah.DeletePasskey(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("got status %d, want %d (reauth_required)", w.Code, http.StatusForbidden)
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if resp["error"] != "reauth_required" {
+		t.Errorf("got error %q, want %q", resp["error"], "reauth_required")
+	}
+}
+
 func TestPasskeyRegisterFinish_PerAccountRateLimit(t *testing.T) {
 	ah := &AuthHandler{
 		Handler:     &Handler{},
