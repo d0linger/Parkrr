@@ -52,3 +52,8 @@
 *Vulnerability:* The audit log endpoint (`ListAudit`) accepted search query parameters (`q`, `action`, `entity`, `from`, `to`) without length checks. Large string payloads in `q` passed directly into complex `ILIKE` pattern evaluation in PostgreSQL, creating resource exhaustion and CPU/memory pressure risks.
 *Learning:* Query string parameters used in database search filters must be bounded at the API boundary, just like JSON body inputs, to prevent resource exhaustion and SQL processing overhead.
 *Prevention:* Enforce early length validation helpers (`validSearchQueryLength`, `validNameLength`, `validDateLength`) on all URL query parameters before building SQL query clauses.
+
+## 2026-07-20 - [Unbounded Date String Lengths in Tax Ledger Endpoints]
+*Vulnerability:* The `parseTaxDate` helper function parsed date strings using `time.ParseInLocation` without validating maximum string length first. Oversized date string payloads across tax endpoints (`req.PaidOn`, `req.StartOn`, `req.EndOn`, `req.InServiceOn`, `req.DisposedOn`, `req.ReceivedOn`) could cause computational resource exhaustion or memory pressure prior to rejection.
+*Learning:* Centralized parsing helpers for dates and formatted scalars must enforce string length bounds before invoking parsing routines like `time.Parse` / `time.ParseInLocation`.
+*Prevention:* Apply early length checks (e.g. `validDateLength`) at the top of parsing helper functions.

@@ -387,6 +387,30 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "handle is too long",
 		},
+		{
+			name:       "CreateTaxExpense: PaidOn too long",
+			path:       "/api/tax/expenses",
+			method:     "POST",
+			body:       taxExpenseRequest{PropertyID: 1, CategoryID: 1, PaidOn: longDate, Amount: 10, Description: "Valid"},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "Ungültige Ausgabe",
+		},
+		{
+			name:       "CreateTaxRecurring: StartOn too long",
+			path:       "/api/tax/recurring",
+			method:     "POST",
+			body:       taxRecurringRequest{PropertyID: 1, CategoryID: 1, Description: "Valid", Amount: 10, PaymentMethod: "bar", Frequency: "monthly", DueDay: 1, DueMonth: 1, StartOn: longDate},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "Ungültige wiederkehrende Ausgabe",
+		},
+		{
+			name:       "CreateTaxAsset: InServiceOn too long",
+			path:       "/api/tax/assets",
+			method:     "POST",
+			body:       taxAssetRequest{PropertyID: 1, Name: "Valid", InServiceOn: longDate, DepreciableBasis: 100, UsefulLifeYears: 5},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "Ungültiges Wirtschaftsgut",
+		},
 	}
 
 	for _, tt := range tests {
@@ -453,6 +477,12 @@ func TestInputLengthValidation(t *testing.T) {
 			case "RevokeSession: handle parameter too long":
 				req.SetPathValue("handle", longSessionHandle)
 				ah.RevokeSession(w, req)
+			case "CreateTaxExpense: PaidOn too long":
+				h.CreateTaxExpense(w, req)
+			case "CreateTaxRecurring: StartOn too long":
+				h.CreateTaxRecurring(w, req)
+			case "CreateTaxAsset: InServiceOn too long":
+				h.CreateTaxAsset(w, req)
 			}
 
 			if w.Code != tt.wantStatus {
