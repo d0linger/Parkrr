@@ -397,3 +397,52 @@ func TestPasskeyRegisterBegin_BoundsCeremonyStartsWithoutFailures(t *testing.T) 
 		t.Error("ceremony throttling must not consume the per-account login budget")
 	}
 }
+
+func TestDeletePasskey_StepUpAndRateLimit(t *testing.T) {
+	wa, err := auth.NewWebAuthnService(nil, "example.com", "Example", []string{"https://example.com"})
+	if err != nil {
+		t.Fatalf("failed to create webauthn service: %v", err)
+	}
+
+	ah := &AuthHandler{
+		Handler:     &Handler{},
+		WebAuthn:    wa,
+		Auth:        &auth.Manager{},
+		Limiter:     auth.NewLoginLimiter(1000, time.Minute, time.Minute),
+		IPLimiter:   auth.NewLoginLimiter(1000, time.Minute, time.Minute),
+		UserLimiter: auth.NewStickyLoginLimiter(3, time.Minute, time.Minute),
+	}
+
+	u := &models.User{ID: 10, Username: "victim"}
+
+	// 1. Stale session without password => 403 reauth_required
+	req := httptest.NewRequest(http.MethodDelete, "/api/passkeys/1", nil)
+	req.SetPathValue("id", "1")
+	req = req.WithContext(auth.ContextWithUser(context.Background(), u))
+	w := httptest.NewRecorder()
+
+	ah.DeletePasskey(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for stale session without password, got %d", w.Code)
+	}
+
+	// 2. Lockout active => checkRateLimit blocks even if password supplied
+	for i := 0; i < 3; i++ {
+		key, cip, ok := ah.checkRateLimit(httptest.NewRecorder(), req, u.Username)
+		if !ok {
+			t.Fatalf("attempt %d should be allowed", i)
+		}
+		ah.recordReauthFailure(key, cip)
+	}
+
+	body := []byte(`{"password":"somepassword"}`)
+	reqThrottled := httptest.NewRequest(http.MethodDelete, "/api/passkeys/1", bytes.NewReader(body))
+	reqThrottled.SetPathValue("id", "1")
+	reqThrottled = reqThrottled.WithContext(auth.ContextWithUser(context.Background(), u))
+	wThrottled := httptest.NewRecorder()
+
+	ah.DeletePasskey(wThrottled, reqThrottled)
+	if wThrottled.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 for throttled user, got %d", wThrottled.Code)
+	}
+}
