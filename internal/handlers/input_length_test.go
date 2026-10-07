@@ -353,7 +353,7 @@ func TestInputLengthValidation(t *testing.T) {
 		},
 		{
 			name:       "EndingSoon: days parameter too long",
-			path:       "/api/vehicles/ending-soon?days=" + longDate,
+			path:       "/api/vehicles/ending-soon?days=" + longNumericParam,
 			method:     "GET",
 			body:       nil,
 			wantStatus: http.StatusBadRequest,
