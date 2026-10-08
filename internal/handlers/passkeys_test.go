@@ -397,3 +397,34 @@ func TestPasskeyRegisterBegin_BoundsCeremonyStartsWithoutFailures(t *testing.T) 
 		t.Error("ceremony throttling must not consume the per-account login budget")
 	}
 }
+
+// TestDeletePasskey_StepUpAndRateLimit verifies that DeletePasskey enforces
+// step-up re-authentication and rate limiting before allowing credential deletion.
+func TestDeletePasskey_StepUpAndRateLimit(t *testing.T) {
+	wa, err := auth.NewWebAuthnService(nil, "example.com", "Example", []string{"https://example.com"})
+	if err != nil {
+		t.Fatalf("failed to create webauthn service: %v", err)
+	}
+
+	ah := &AuthHandler{
+		Handler:     &Handler{},
+		WebAuthn:    wa,
+		Limiter:     auth.NewLoginLimiter(1000, time.Minute, time.Minute),
+		IPLimiter:   auth.NewLoginLimiter(1000, time.Minute, time.Minute),
+		UserLimiter: auth.NewStickyLoginLimiter(1000, time.Minute, time.Minute),
+	}
+
+	u := &models.User{ID: 1, Username: "testuser"}
+	ctx := auth.ContextWithUser(context.Background(), u)
+
+	// 1) Stale session with no password -> 403 reauth_required
+	req := httptest.NewRequest(http.MethodDelete, "/api/passkeys/1", nil)
+	req.SetPathValue("id", "1")
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	ah.DeletePasskey(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("stale session without password: got status %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
