@@ -279,19 +279,38 @@ func (h *AuthHandler) DeletePasskey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+	var body struct {
+		Password string `json:"password"`
+	}
+	_ = decodeJSON(r, &body)
+
+	// Step-up re-authentication: deleting a credential requires a recent login
+	// or the account password if the window has closed.
+	if !h.requireStepUp(w, r, u, body.Password) {
+		return
+	}
+	key, ip, ok := h.checkRateLimit(w, r, u.Username)
+	if !ok {
+		return
+	}
+
 	n, lastCredential, err := h.WebAuthn.DeleteCredentialSafely(r.Context(), u.ID, id, h.PasskeyOnly)
 	if err != nil {
+		h.refundReauth(key, ip)
 		writeError(w, http.StatusInternalServerError, "could not delete passkey")
 		return
 	}
 	if lastCredential {
+		h.refundReauth(key, ip)
 		writeError(w, http.StatusConflict, "Im Passkey-only-Modus muss mindestens ein Passkey erhalten bleiben")
 		return
 	}
 	if n == 0 {
+		h.refundReauth(key, ip)
 		writeError(w, http.StatusNotFound, "passkey not found")
 		return
 	}
+	h.resetReauth(key, ip)
 	// Credential material is never read back — the trail records that a passkey of
 	// this user was removed, never the key itself.
 	h.auditDeleted(r, "passkey", id, u.Username+" removed a passkey",
