@@ -52,3 +52,8 @@
 *Vulnerability:* The audit log endpoint (`ListAudit`) accepted search query parameters (`q`, `action`, `entity`, `from`, `to`) without length checks. Large string payloads in `q` passed directly into complex `ILIKE` pattern evaluation in PostgreSQL, creating resource exhaustion and CPU/memory pressure risks.
 *Learning:* Query string parameters used in database search filters must be bounded at the API boundary, just like JSON body inputs, to prevent resource exhaustion and SQL processing overhead.
 *Prevention:* Enforce early length validation helpers (`validSearchQueryLength`, `validNameLength`, `validDateLength`) on all URL query parameters before building SQL query clauses.
+
+## 2026-07-20 - [Enforcing Rate-Limiter Lockout Checks on Passkey Deletion]
+*Vulnerability:* `DeletePasskey` lacked a `checkRateLimit` check, allowing an attacker or compromised session on a rate-limited/locked-out account to bypass lockout controls and delete WebAuthn passkeys.
+*Learning:* Secondary credential management endpoints must verify rate-limiter lockout status (`checkRateLimit`) before performing mutations, while using `refundReauth` so non-authentication operations do not consume the login attempt counter.
+*Prevention:* Always gate credential modification and deletion endpoints behind `checkRateLimit` and call `refundReauth` on success.

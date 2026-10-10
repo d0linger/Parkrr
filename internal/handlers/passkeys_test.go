@@ -397,3 +397,46 @@ func TestPasskeyRegisterBegin_BoundsCeremonyStartsWithoutFailures(t *testing.T) 
 		t.Error("ceremony throttling must not consume the per-account login budget")
 	}
 }
+
+func TestDeletePasskey_RateLimit(t *testing.T) {
+	wa, err := auth.NewWebAuthnService(nil, "example.com", "Example", []string{"https://example.com"})
+	if err != nil {
+		t.Fatalf("failed to create webauthn service: %v", err)
+	}
+
+	ah := &AuthHandler{
+		Handler:     &Handler{},
+		Auth:        &auth.Manager{},
+		WebAuthn:    wa,
+		Limiter:     auth.NewLoginLimiter(3, time.Minute, time.Minute),
+		IPLimiter:   auth.NewLoginLimiter(1000, time.Minute, time.Minute),
+		UserLimiter: auth.NewStickyLoginLimiter(1000, time.Minute, time.Minute),
+	}
+
+	u := &models.User{ID: 1, Username: "passkey-delete-user"}
+	reqFrom := func(ip string) *http.Request {
+		r := httptest.NewRequest(http.MethodDelete, "/api/passkeys/1", nil)
+		r.RemoteAddr = ip + ":1234"
+		r.SetPathValue("id", "1")
+		return r.WithContext(auth.ContextWithUser(context.Background(), u))
+	}
+
+	// Trip rate limit on user's IP
+	const ip = "192.0.2.50"
+	for i := 0; i < 3; i++ {
+		key, cip, ok := ah.checkRateLimit(httptest.NewRecorder(), reqFrom(ip), u.Username)
+		if !ok {
+			t.Fatalf("attempt %d should be allowed", i)
+		}
+		ah.recordReauthFailure(key, cip)
+	}
+
+	w := httptest.NewRecorder()
+	ah.DeletePasskey(w, reqFrom(ip))
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("DeletePasskey should be blocked when rate-limited, got status %d", w.Code)
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Error("throttled response should carry a Retry-After header")
+	}
+}

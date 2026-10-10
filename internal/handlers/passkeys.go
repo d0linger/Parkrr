@@ -274,6 +274,11 @@ func (h *AuthHandler) DeletePasskey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, _ := auth.UserFrom(r.Context())
+	key, ip, ok := h.checkRateLimit(w, r, u.Username)
+	if !ok {
+		return
+	}
+	h.refundReauth(key, ip)
 	id, ok := pathID(r)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid id")
