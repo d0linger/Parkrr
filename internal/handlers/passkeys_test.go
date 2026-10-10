@@ -397,3 +397,41 @@ func TestPasskeyRegisterBegin_BoundsCeremonyStartsWithoutFailures(t *testing.T) 
 		t.Error("ceremony throttling must not consume the per-account login budget")
 	}
 }
+
+func TestDeletePasskey_RateLimited(t *testing.T) {
+	wa, err := auth.NewWebAuthnService(nil, "example.com", "Example", []string{"https://example.com"})
+	if err != nil {
+		t.Fatalf("failed to create webauthn service: %v", err)
+	}
+
+	ah := &AuthHandler{
+		Handler:     &Handler{},
+		Auth:        &auth.Manager{},
+		WebAuthn:    wa,
+		Limiter:     auth.NewLoginLimiter(3, time.Minute, time.Minute),
+		IPLimiter:   auth.NewLoginLimiter(1000, time.Minute, time.Minute),
+		UserLimiter: auth.NewStickyLoginLimiter(1000, time.Minute, time.Minute),
+	}
+
+	u := &models.User{ID: 1, Username: "victim"}
+	req := httptest.NewRequest(http.MethodDelete, "/api/passkeys/1", nil)
+	req.SetPathValue("id", "1")
+	req.RemoteAddr = "1.1.1.1:1234"
+	req = req.WithContext(auth.ContextWithUser(context.Background(), u))
+
+	// Exhaust the rate limit for "victim"
+	for i := 0; i < 3; i++ {
+		key, cip, ok := ah.checkRateLimit(httptest.NewRecorder(), req, "victim")
+		if !ok {
+			t.Fatalf("attempt %d should be allowed", i)
+		}
+		ah.recordReauthFailure(key, cip)
+	}
+
+	w := httptest.NewRecorder()
+	ah.DeletePasskey(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected status 429 when rate limited, got %d", w.Code)
+	}
+}
