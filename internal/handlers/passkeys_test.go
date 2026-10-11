@@ -397,3 +397,44 @@ func TestPasskeyRegisterBegin_BoundsCeremonyStartsWithoutFailures(t *testing.T) 
 		t.Error("ceremony throttling must not consume the per-account login budget")
 	}
 }
+
+func TestDeletePasskey_RateLimit(t *testing.T) {
+	wa, err := auth.NewWebAuthnService(nil, "example.com", "Example", []string{"https://example.com"})
+	if err != nil {
+		t.Fatalf("failed to create webauthn service: %v", err)
+	}
+
+	ah := &AuthHandler{
+		Handler:     &Handler{},
+		Auth:        &auth.Manager{},
+		WebAuthn:    wa,
+		Limiter:     auth.NewLoginLimiter(3, time.Minute, time.Minute),
+		IPLimiter:   auth.NewLoginLimiter(1000, time.Minute, time.Minute),
+		UserLimiter: auth.NewStickyLoginLimiter(1000, time.Minute, time.Minute),
+	}
+
+	u := &models.User{ID: 1, Username: "testuser"}
+
+	req := func() *http.Request {
+		r := httptest.NewRequest(http.MethodDelete, "/api/auth/passkeys/1", nil)
+		r.SetPathValue("id", "1")
+		r.RemoteAddr = "192.0.2.1:1234"
+		return r.WithContext(auth.ContextWithUser(context.Background(), u))
+	}
+
+	// Trip the lock for the user/IP combination
+	key := "testuser|192.0.2.1"
+	for i := 0; i < 3; i++ {
+		ah.Limiter.RecordFailure(key)
+	}
+
+	rec := httptest.NewRecorder()
+	ah.DeletePasskey(rec, req())
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 Too Many Requests when rate limited, got %d", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Error("throttled response should carry a Retry-After header")
+	}
+}

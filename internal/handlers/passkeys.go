@@ -279,6 +279,12 @@ func (h *AuthHandler) DeletePasskey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
+	key, ip, ok := h.checkRateLimit(w, r, u.Username)
+	if !ok {
+		return
+	}
+	h.refundReauth(key, ip)
+
 	n, lastCredential, err := h.WebAuthn.DeleteCredentialSafely(r.Context(), u.ID, id, h.PasskeyOnly)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete passkey")
