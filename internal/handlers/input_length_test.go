@@ -41,6 +41,7 @@ func TestInputLengthValidation(t *testing.T) {
 	longPaddedDate := "2025-01-01" + strings.Repeat(" ", maxDateLen-9)
 	longSearchQuery := strings.Repeat("q", maxSearchQueryLen+1)
 	longSessionHandle := strings.Repeat("s", maxSessionHandleLen+1)
+	longHandoverContent := strings.Repeat("x", maxHandoverTemplateContent+1)
 	ah := &AuthHandler{Handler: h}
 
 	tests := []struct {
@@ -106,6 +107,38 @@ func TestInputLengthValidation(t *testing.T) {
 			body:       categoryRequest{Name: longName},
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "name is too long",
+		},
+		{
+			name:       "CreateHandoverTemplate: Name too long",
+			path:       "/api/handover-templates",
+			method:     "POST",
+			body:       handoverTemplateRequest{Name: longName, AppliesTo: "beide", Content: "Valid"},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "name is too long",
+		},
+		{
+			name:       "CreateHandoverTemplate: Content too long",
+			path:       "/api/handover-templates",
+			method:     "POST",
+			body:       handoverTemplateRequest{Name: "Valid", AppliesTo: "beide", Content: longHandoverContent},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "content is too long",
+		},
+		{
+			name:       "UpdateHandoverTemplate: Name too long",
+			path:       "/api/handover-templates/1",
+			method:     "PUT",
+			body:       handoverTemplateRequest{Name: longName, AppliesTo: "beide", Content: "Valid"},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "name is too long",
+		},
+		{
+			name:       "UpdateHandoverTemplate: Content too long",
+			path:       "/api/handover-templates/1",
+			method:     "PUT",
+			body:       handoverTemplateRequest{Name: "Valid", AppliesTo: "beide", Content: longHandoverContent},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "content is too long",
 		},
 		{
 			name:       "CreateServiceType: Name too long",
@@ -541,6 +574,11 @@ func TestInputLengthValidation(t *testing.T) {
 				h.CreateSpot(w, req)
 			case "CreateWallTemplate: Name too long":
 				h.CreateWallTemplate(w, req)
+			case "CreateHandoverTemplate: Name too long", "CreateHandoverTemplate: Content too long":
+				h.CreateHandoverTemplate(w, req)
+			case "UpdateHandoverTemplate: Name too long", "UpdateHandoverTemplate: Content too long":
+				req.SetPathValue("id", "1")
+				h.UpdateHandoverTemplate(w, req)
 			case "CreateRecurringCharge: Description too long":
 				req.SetPathValue("id", "1")
 				h.CreateRecurringCharge(w, req)
