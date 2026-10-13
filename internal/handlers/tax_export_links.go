@@ -36,7 +36,8 @@ func writeTaxAllocationCSV(ctx context.Context, q dbQuerier, dst io.Writer, ids 
 		if err := rows.Scan(&relation, &id, &paymentID, &kind, &refID, &period, &invoiceID, &number, &amount); err != nil {
 			return err
 		}
-		if err := writer.Write([]string{relation, strconv.FormatInt(id, 10), strconv.FormatInt(paymentID, 10), kind,
+		// csvSafe neutralizes potential spreadsheet formula injection (CWE-1236)
+		if err := writer.Write([]string{csvSafe(relation), strconv.FormatInt(id, 10), strconv.FormatInt(paymentID, 10), csvSafe(kind),
 			strconv.FormatInt(refID, 10), csvSafe(period), strconv.FormatInt(invoiceID, 10), csvSafe(number), csvMoney(amount)}); err != nil {
 			return err
 		}
