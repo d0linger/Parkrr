@@ -101,5 +101,5 @@ func (r *mockTaxAllocationRows) Scan(dest ...any) error {
 	return nil
 }
 
-func (r *mockTaxAllocationRows) Close() {}
+func (r *mockTaxAllocationRows) Close()     {}
 func (r *mockTaxAllocationRows) Err() error { return nil }
