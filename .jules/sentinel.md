@@ -52,3 +52,8 @@
 *Vulnerability:* The audit log endpoint (`ListAudit`) accepted search query parameters (`q`, `action`, `entity`, `from`, `to`) without length checks. Large string payloads in `q` passed directly into complex `ILIKE` pattern evaluation in PostgreSQL, creating resource exhaustion and CPU/memory pressure risks.
 *Learning:* Query string parameters used in database search filters must be bounded at the API boundary, just like JSON body inputs, to prevent resource exhaustion and SQL processing overhead.
 *Prevention:* Enforce early length validation helpers (`validSearchQueryLength`, `validNameLength`, `validDateLength`) on all URL query parameters before building SQL query clauses.
+
+## 2026-07-20 - [Rate-Limiter Refund Bypass on Disabled Account Passkey Logins]
+*Vulnerability:* In `PasskeyLoginFinish`, when a passkey assertion verified for a disabled user account (`u.Disabled`), the handler explicitly refunded the rate-limiter attempt budget via `h.Limiter.Refund(key)`. This allowed repeated passkey login attempts against disabled accounts to bypass IP-based throttling and avoid rate-limiting penalties.
+*Learning:* Authentication rejections due to account status (such as disabled accounts) represent failed login attempts and must retain their consumed rate-limit penalty rather than being treated like transient server/database errors.
+*Prevention:* Never refund rate-limiter reservations on account-status authentication failures; ensure disabled-account login attempts consume rate limiting consistently across all authentication methods.

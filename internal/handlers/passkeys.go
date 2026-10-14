@@ -444,10 +444,10 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 	// Sitzungszeile für ein Konto, dessen Sitzungen beim Sperren gerade gelöscht
 	// wurden, und das Protokoll behauptete eine Anmeldung, die nie gelten durfte.
 	// Dieselbe unspezifische Meldung wie oben — der Sperrzustand ist nichts, was ein
-	// Anmeldeversuch ausplaudern soll.
+	// Anmeldeversuch ausplaudern soll. Anmeldeversuche auf gesperrte Konten behalten
+	// die Drosselstrafe (kein Refund), um Schleifen/Hammering abzufangen (wie beim Passwort-Login).
 	if u.Disabled {
 		slog.Warn("passkey login rejected: account disabled", "user_id", uid)
-		h.Limiter.Refund(key)
 		writeError(w, http.StatusUnauthorized, "passkey login failed")
 		return
 	}

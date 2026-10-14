@@ -397,3 +397,46 @@ func TestPasskeyRegisterBegin_BoundsCeremonyStartsWithoutFailures(t *testing.T) 
 		t.Error("ceremony throttling must not consume the per-account login budget")
 	}
 }
+
+// TestPasskeyLoginDisabledAccountRetainsRateLimit verifies that passkey login
+// attempts against a disabled account retain the rate limiter consumption rather
+// than refunding it, ensuring consistent throttling across disabled accounts.
+func TestPasskeyLoginDisabledAccountRetainsRateLimit(t *testing.T) {
+	limiter := auth.NewLoginLimiter(2, time.Minute, time.Minute)
+	ah := &AuthHandler{
+		Handler: &Handler{},
+		Auth:    &auth.Manager{},
+		Limiter: limiter,
+	}
+
+	req := func() *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/api/auth/passkey/login/finish", nil)
+		r.RemoteAddr = "192.0.2.55:1234"
+		return r
+	}
+
+	// Simulate PasskeyLoginFinish handling a disabled account twice.
+	// consumePasskeyLogin consumes 1 attempt; on disabled account, it does NOT refund.
+	key, ok := ah.consumePasskeyLogin(httptest.NewRecorder(), req())
+	if !ok {
+		t.Fatal("first attempt should be allowed")
+	}
+	if key != "passkey|192.0.2.55" {
+		t.Fatalf("unexpected key %q", key)
+	}
+
+	// Second attempt against disabled account
+	_, ok = ah.consumePasskeyLogin(httptest.NewRecorder(), req())
+	if !ok {
+		t.Fatal("second attempt should be allowed")
+	}
+
+	// The third attempt from the same IP must now be throttled (429)
+	rec := httptest.NewRecorder()
+	if _, ok := ah.consumePasskeyLogin(rec, req()); ok {
+		t.Error("third attempt should be throttled after 2 attempts against disabled user")
+	}
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 Too Many Requests, got %d", rec.Code)
+	}
+}
