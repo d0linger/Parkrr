@@ -2475,6 +2475,25 @@ a.portal-row.link:hover { color: var(--primary-ink); }
 .quick-price-field{display:grid;gap:.25rem;font-size:var(--text-sm);color:var(--text-muted)}
 .quick-price-out{margin-top:.8rem;display:grid;gap:.35rem;justify-items:start}
 .quick-price-total{font:800 var(--text-xl) var(--font-head);color:var(--text);font-variant-numeric:tabular-nums}
+/* Mail-Warteschlange, Sammel-Erinnerung, Rechnungslauf-Vorschau (Ausbau 1, 19, 20, 26, 36) */
+.outbox-row{display:grid;gap:.25rem;padding:.45rem 0;border-top:1px solid var(--border)}
+.outbox-row:first-of-type{border-top:0}
+.outbox-row .btn{justify-self:start}
+.outbox-error{color:var(--danger-hover);overflow-wrap:anywhere}
+.remind-list{display:grid;gap:.35rem;max-height:50vh;overflow:auto}
+.remind-row{display:grid;grid-template-columns:auto 1fr;gap:.6rem;align-items:start;padding:.4rem .5rem;border:1px solid var(--border);border-radius:8px;cursor:pointer}
+.remind-row > span{display:grid;gap:.1rem;min-width:0}
+.remind-out{margin-top:.6rem}
+.preview-person{border:1px solid var(--border);border-radius:8px;padding:.5rem .7rem;margin-bottom:.45rem}
+.preview-person.has-warn{border-color:var(--warning)}
+.preview-person summary{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;cursor:pointer}
+.preview-total{margin-left:auto;font-variant-numeric:tabular-nums;font-weight:600}
+.preview-lines{list-style:none;margin:.5rem 0;padding:0;display:grid;gap:.25rem;font-size:var(--text-sm)}
+.preview-lines li{display:flex;justify-content:space-between;gap:1rem}
+.preview-lines li span:last-child{font-variant-numeric:tabular-nums;white-space:nowrap}
+.person-no-dunning{margin:-.2rem 0 .6rem}
+.mail-automation{margin-top:1rem;display:grid;gap:.6rem}
+.mail-feedback{margin:0;color:var(--text-muted)}
 .dash-spark-wrap{margin-top:.5rem}
 .dash-spark{display:block;overflow:visible}
 .dash-spark-line{fill:none;stroke:var(--primary-ink);stroke-width:1.8;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}

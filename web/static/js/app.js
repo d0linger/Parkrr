@@ -2683,6 +2683,16 @@ import { createRevenueChart } from './revenue-chart.js';
                 invoices.length ? el('span', { class: 'sec-count' }, invoices.length) : null));
         if (canBill()) rz.append(el('button', { class: 'btn-sect', type: 'button', onclick: (e) => createInvoiceFor(id, e.currentTarget) }, '+ Rechnung'));
         page.append(rz);
+        // Ausbau 20: diese Person von automatischen Mahnungen ausnehmen.
+        if (canBill()) {
+            const pr = state.persons.find((x) => x.id === Number(id));
+            const nd = el('input', { type: 'checkbox', id: 'p_no_dunning' }); nd.checked = !!(pr && pr.no_dunning);
+            nd.addEventListener('change', async () => {
+                try { await api.put('/persons/' + id + '/dunning', { no_dunning: nd.checked }); if (pr) pr.no_dunning = nd.checked; toast(nd.checked ? 'Keine automatischen Mahnungen mehr' : 'Automatische Mahnungen wieder an', 'success'); }
+                catch (e) { nd.checked = !nd.checked; toast(e.message || 'Nicht gespeichert', 'error'); }
+            });
+            page.append(el('label', { class: 'switch person-no-dunning' }, nd, el('span', { class: 'track' }), el('span', {}, 'Nicht automatisch mahnen')));
+        }
         if (!invoices.length) page.append(el('p', { class: 'muted' }, 'Noch keine Rechnungen. „+ Rechnung" erstellt eine aus den offenen Einzelposten.'));
         else page.append(collapsibleRows(invoices, (iv) => invoiceRow(iv)));
 
@@ -3130,7 +3140,9 @@ import { createRevenueChart } from './revenue-chart.js';
                     seg.append(b);
                     return b;
                 });
-                return [seg];
+                const extra = [];
+                if (canBill() && state.capabilities.mail && items.some(invOverdue)) extra.push(el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => remindOverdueDialog(items) }, icon('mail', 15), ' Überfällige erinnern'));
+                return [seg, ...extra];
             },
             extraFilter: (iv, cs) => !cs.status
                 || (cs.status === 'open' && invOpen(iv))
@@ -3139,6 +3151,9 @@ import { createRevenueChart } from './revenue-chart.js';
             render: (iv) => invoiceRow(iv, { person: true }),
         });
         const head = page.querySelector(':scope > .page-head');
+        // Im Kopf, nicht in der Werkzeugleiste: die verschwindet ohne Rechnungen, und
+        // gerade vor der ersten Rechnung ist die Vorschau am nützlichsten.
+        if (head && canBill()) head.append(el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => invoiceRunPreview() }, 'Vorschau Rechnungslauf'));
         if (head) head.after(el('p', { class: 'page-context' }, 'Alle Rechnungen aller Personen. Eine neue Rechnung erstellst du auf der Personenseite.'));
     }
     routes.invoices = async (page, id) => {
@@ -3156,6 +3171,9 @@ import { createRevenueChart } from './revenue-chart.js';
                 // SMTP is configured (capability flag), so the button never dead-ends.
                 (canBill() && (iv.status === 'offen' || iv.status === 'teilbezahlt') && state.capabilities.mail)
                     ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => remindInvoice(iv) }, icon('mail', 15), ' Erinnerung') : null,
+                // Ausbau 19: die Rechnung selbst als PDF per Mail, über die Warteschlange.
+                (canBill() && !iv.canceled && iv.status !== 'storno' && state.capabilities.mail)
+                    ? el('button', { class: 'btn btn-ghost btn-sm', onclick: () => sendInvoiceMail(iv) }, icon('mail', 15), ' Per Mail') : null,
                 // Server-rendered A4 PDF (authoritative deliverable). A plain GET anchor
                 // carries the session cookie and opens the document inline.
                 el('div', { class: 'invoice-document-actions', role: 'group', 'aria-label': 'Rechnungsdokument' },
@@ -3181,7 +3199,108 @@ import { createRevenueChart } from './revenue-chart.js';
         documentView.before(workspace); workspace.append(documentView);
         const paymentCard = page.querySelector(':scope > .card.no-print');
         if (paymentCard) workspace.append(paymentCard);
+        // Versand und Mahnungen aus der Mail-Warteschlange (Ausbau 19, 20, 36).
+        const mailCard = el('div', { class: 'card no-print invoice-mailings', hidden: true },
+            el('h3', { style: 'margin-top:0' }, 'Versand'));
+        workspace.append(mailCard);
+        api.get('/invoices/' + iv.id + '/mailings').then((list) => {
+            if (!list || !list.length) return;
+            mailCard.hidden = false;
+            list.forEach((m) => mailCard.append(outboxRow(m)));
+        }).catch(() => { /* Versandstand ist Zusatz */ });
     };
+
+    // Eine Zeile der Mail-Warteschlange: was, an wen, in welchem Zustand.
+    const OUTBOX_STATUS = { queued: ['wartet', 'badge-reserved'], sending: ['wird gesendet', 'badge-reserved'], sent: ['zugestellt', 'badge-stored'], failed: ['fehlgeschlagen', 'badge-cancelled'] };
+    function outboxRow(m) {
+        const [label, cls] = OUTBOX_STATUS[m.status] || [m.status, ''];
+        const what = m.kind === 'invoice' ? 'Rechnung als PDF' : (m.level === 1 ? 'Zahlungserinnerung' : m.level === 2 ? '1. Mahnung' : '2. Mahnung') + ' (automatisch)';
+        const when = m.sent_at ? 'zugestellt ' + fmtDateTime(m.sent_at) : m.status === 'queued' && m.attempts ? 'nächster Versuch ' + fmtDateTime(m.next_attempt_at) : 'eingereiht ' + fmtDateTime(m.created_at);
+        const row = el('div', { class: 'outbox-row' },
+            el('div', {}, el('strong', {}, what), ' ', el('span', { class: 'badge ' + cls }, label),
+                el('div', { class: 'card-meta' }, 'an ' + esc(m.recipient) + ' · ' + when + (m.attempts > 1 ? ' · ' + m.attempts + ' Versuche' : ''))),
+            m.last_error ? el('div', { class: 'card-meta outbox-error' }, esc(m.last_error)) : null);
+        if (m.status === 'failed' && canBill() && m.recipient !== 'anonymisiert') {
+            row.append(el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: async (e) => {
+                e.currentTarget.disabled = true;
+                try { await api.post('/mail-outbox/' + m.id + '/retry', {}); toast('Erneut eingereiht', 'success'); render(); }
+                catch (err) { toast(err.message || 'Nicht möglich', 'error'); e.currentTarget.disabled = false; }
+            } }, 'Erneut senden'));
+        }
+        return row;
+    }
+    async function sendInvoiceMail(iv) {
+        if (!await confirmDialog('Rechnung per E-Mail senden?', 'Die Rechnung ' + iv.number + ' geht als PDF an die hinterlegte Adresse der Person. Der Versand läuft im Hintergrund; den Stand siehst du unter „Versand“.', 'Senden', { tone: 'neutral' })) return;
+        try {
+            const res = await api.post('/invoices/' + iv.id + '/send', {});
+            toast('Versand eingereiht' + (res && res.to ? ' an ' + res.to : ''), 'success');
+            render();
+        } catch (e) { toast(e.message || 'Versand nicht möglich', 'error'); }
+    }
+
+    // Sammel-Erinnerung (Ausbau 1): alle überfälligen auf einmal, je Rechnung mit der
+    // Stufe, die der Server danach verschicken würde. Gesendet wird in Zehnerpaketen.
+    async function remindOverdueDialog(items) {
+        const due = items.filter(invOverdue);
+        if (!due.length) { toast('Keine überfälligen Rechnungen'); return; }
+        const levelName = (n) => n === 1 ? 'Zahlungserinnerung' : n === 2 ? '1. Mahnung' : '2. Mahnung';
+        contentModal('Überfällige erinnern', (body, close) => {
+            const boxes = new Map();
+            body.append(el('p', { class: 'card-meta', style: 'margin-top:0' }, 'Jede Rechnung bekommt ihre nächste Stufe, genau wie über den Knopf an der Rechnung. Ohne hinterlegte Adresse wird übersprungen.'));
+            const list = el('div', { class: 'remind-list' });
+            due.forEach((iv) => {
+                const cb = el('input', { type: 'checkbox', id: 'rm_' + iv.id, checked: true });
+                boxes.set(iv.id, cb);
+                list.append(el('label', { class: 'remind-row', for: 'rm_' + iv.id }, cb,
+                    el('span', {}, el('strong', {}, esc(iv.person_name || '') + ' · ' + esc(iv.number)),
+                        el('span', { class: 'card-meta' }, eur(iv.open_amount) + ' offen · ' + levelName(Math.min((iv.reminder_count || 0) + 1, 3))))));
+            });
+            const out = el('div', { class: 'remind-out', role: 'status', 'aria-live': 'polite' });
+            const go = el('button', { class: 'btn btn-primary', type: 'button' }, 'Senden');
+            go.addEventListener('click', async () => {
+                const ids = [...boxes].filter(([, cb]) => cb.checked).map(([id]) => id);
+                if (!ids.length) { out.textContent = 'Keine Rechnung gewählt.'; return; }
+                go.disabled = true; let sent = 0; const failed = [];
+                for (let i = 0; i < ids.length; i += 10) {
+                    out.textContent = 'Sende ' + Math.min(i + 10, ids.length) + ' von ' + ids.length + ' …';
+                    try {
+                        const res = await api.post('/invoices/remind', { ids: ids.slice(i, i + 10) });
+                        sent += res.sent || 0;
+                        (res.results || []).filter((x) => !x.sent).forEach((x) => failed.push(x));
+                    } catch (e) { ids.slice(i, i + 10).forEach((id) => failed.push({ invoice_id: id, error: e.message })); }
+                }
+                out.textContent = '';
+                out.append(el('p', {}, sent + ' von ' + ids.length + ' versendet.'));
+                if (failed.length) out.append(el('ul', { class: 'import-errors' }, ...failed.map((x) => {
+                    const iv = due.find((d) => d.id === x.invoice_id);
+                    return el('li', {}, el('b', {}, (iv ? iv.number : '#' + x.invoice_id) + ': '), x.error || 'fehlgeschlagen');
+                })));
+                go.textContent = 'Fertig'; go.disabled = false;
+                go.onclick = () => { close(); render(); };
+            });
+            body.append(list, el('div', { class: 'btn-row', style: 'margin-top:.8rem;gap:.5rem' }, go), out);
+        });
+    }
+
+    // Vorschau für den Rechnungslauf (Ausbau 26): was fakturiert würde, ohne Nummer.
+    async function invoiceRunPreview() {
+        let data;
+        try { data = await api.get('/invoices/preview'); } catch (e) { toast(e.message || 'Vorschau nicht möglich', 'error'); return; }
+        contentModal('Vorschau Rechnungslauf', (body) => {
+            const persons = (data && data.persons) || [];
+            if (!persons.length) { body.append(el('p', { class: 'muted' }, 'Zurzeit gibt es nichts zu fakturieren.')); return; }
+            body.append(el('p', { class: 'card-meta', style: 'margin-top:0' }, persons.length + ' Rechnungen über zusammen ' + eur(data.total) + ' (Stand ' + fmtDateTime(data.as_of) + '). Nur abgeschlossene Perioden; nichts wird gespeichert, keine Nummer vergeben.'));
+            persons.forEach((pp) => {
+                const det = el('details', { class: 'preview-person' + (pp.warnings.length ? ' has-warn' : '') },
+                    el('summary', {}, el('strong', {}, esc(pp.name)), el('span', { class: 'preview-total' }, eur(pp.total)),
+                        pp.warnings.length ? el('span', { class: 'badge badge-reserved' }, pp.warnings.length === 1 ? '1 Hinweis' : pp.warnings.length + ' Hinweise') : null));
+                det.append(el('ul', { class: 'preview-lines' }, ...pp.lines.map((ln) => el('li', {}, el('span', {}, esc(ln.label)), el('span', {}, eur(ln.amount))))));
+                pp.warnings.forEach((w) => det.append(el('p', { class: 'card-meta outbox-error' }, esc(w))));
+                if (canBill()) det.append(el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: (e) => createInvoiceFor(pp.person_id, e.currentTarget) }, 'Rechnung erstellen'));
+                body.append(det);
+            });
+        });
+    }
 
     // ---------- Rechnungs-Einstellungen (admin) ----------
     // ---------- Steuerjahr (Einnahmenaufstellung) ----------
@@ -3696,7 +3815,36 @@ import { createRevenueChart } from './revenue-chart.js';
         form.append(el('div', { class: 'billing-grid' }, el('div', { class: 'billing-col' }, seller, tax), el('div', { class: 'billing-col' }, numbering, banking)),
             el('div', { class: 'form-savebar' }, saveBtn, feedback));
         page.append(form);
+        page.append(await mailAutomationCard());
     };
+
+    // Mail-Automatik (Ausbau 19 und 20): beides aus, bis es bewusst eingeschaltet wird.
+    async function mailAutomationCard() {
+        let m = { auto_send_invoices: false, auto_dunning: false, dunning_days: 14 };
+        try { m = (await api.get('/mail-automation')) || m; } catch (e) { /* Standard zeigen */ }
+        const send = el('input', { type: 'checkbox', id: 'ma_send' }); send.checked = !!m.auto_send_invoices;
+        const dun = el('input', { type: 'checkbox', id: 'ma_dunning' }); dun.checked = !!m.auto_dunning;
+        const days = el('input', { type: 'number', id: 'ma_days', min: '3', max: '90', value: m.dunning_days || 14, 'aria-describedby': 'ma_days_help' });
+        // Eigene Klasse: .save-feedback gehört dem Formular darüber (eine Statuszeile je Seite).
+        const fb = el('p', { class: 'mail-feedback', role: 'status', 'aria-live': 'polite' });
+        const btn = el('button', { class: 'btn btn-primary', type: 'button' }, 'Mail-Automatik speichern');
+        btn.addEventListener('click', async () => {
+            btn.disabled = true; fb.textContent = '';
+            try {
+                await api.put('/mail-automation', { auto_send_invoices: send.checked, auto_dunning: dun.checked, dunning_days: Number(days.value) || 14 });
+                fb.textContent = 'Gespeichert.'; toast('Mail-Automatik gespeichert', 'success');
+            } catch (e) { fb.textContent = 'Nicht gespeichert: ' + e.message; toast(e.message, 'error'); }
+            finally { btn.disabled = false; }
+        });
+        return el('section', { class: 'card mail-automation', 'aria-labelledby': 'ma-title' },
+            el('h3', { id: 'ma-title' }, 'Mail-Automatik'),
+            el('p', { class: 'card-meta' }, state.capabilities.mail ? 'Mails gehen über eine Warteschlange und werden bei Störungen wiederholt.' : 'E-Mail ist nicht eingerichtet: Einstellungen werden gespeichert, verschickt wird erst mit SMTP.'),
+            el('label', { class: 'switch' }, send, el('span', { class: 'track' }), el('span', {}, 'Rechnungen aus dem automatischen Lauf per Mail senden')),
+            el('label', { class: 'switch' }, dun, el('span', { class: 'track' }), el('span', {}, 'Automatisch mahnen (Zahlungserinnerung, 1. und 2. Mahnung)')),
+            el('div', { class: 'bill-field' }, el('label', { for: 'ma_days' }, 'Tage bis zur nächsten Stufe'), days,
+                el('div', { class: 'card-meta', id: 'ma_days_help' }, 'Ab Fälligkeit bzw. ab der letzten Mahnung. Die Stufe zählt erst, wenn die Mail zugestellt ist. Personen lassen sich einzeln ausnehmen.')),
+            el('div', { class: 'form-savebar' }, btn, fb));
+    }
 
     // ================= VEHICLES =================
     // Bulk-Aktionen für Gefährte (Hundert 54): mehrere auf einmal abholen oder
@@ -6859,9 +7007,16 @@ import { createRevenueChart } from './revenue-chart.js';
     // E-Mail-Versandprotokoll (Hundert 86): "Hat der Kunde die Mahnung bekommen?"
     // hat eine Anlaufstelle — jeder Versuch, Erfolg wie Fehlschlag, mit Grund.
     async function showMailLog() {
-        let entries = [];
-        try { entries = await api.get('/mail-log'); } catch (e) { toast(e.message, 'error'); return; }
+        let entries = [], queue = [];
+        try { [entries, queue] = await Promise.all([api.get('/mail-log'), api.get('/mail-outbox').catch(() => [])]); } catch (e) { toast(e.message, 'error'); return; }
         contentModal('E-Mail-Versand', (body, close) => {
+            // Warteschlange (Ausbau 36): was noch wartet oder fehlgeschlagen ist, zuerst.
+            const open = (queue || []).filter((m) => m.status !== 'sent');
+            if (open.length) {
+                body.append(el('h4', { style: 'margin:.2rem 0 .4rem' }, 'Warteschlange'));
+                open.forEach((m) => body.append(el('div', { class: 'card' }, outboxRow(m))));
+                body.append(el('h4', { style: 'margin:1rem 0 .4rem' }, 'Protokoll'));
+            }
             if (!entries.length) { body.append(el('p', { class: 'muted' }, 'Noch kein Versand protokolliert.')); return; }
             // Sagen, wenn es mehr gibt als hier steht. Der Server liefert ohne Angabe die
             // neuesten 200 (pageParams in mail_log.go), dieses Fenster hat aber weder

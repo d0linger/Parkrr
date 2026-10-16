@@ -73,6 +73,15 @@ func New(cfg Config) Sender {
 }
 
 func (s *smtpSender) Send(ctx context.Context, to []string, subject, body string) error {
+	return s.deliver(ctx, to, func(rcpts []string) []byte {
+		return buildMessage(s.cfg.From, s.cfg.FromName, rcpts, subject, body)
+	})
+}
+
+// deliver runs the SMTP exchange for one message; build renders it for the cleaned
+// recipient list. Shared by Send and SendWithAttachments, so both take the same
+// TLS, auth and header-injection guards.
+func (s *smtpSender) deliver(ctx context.Context, to []string, build func(rcpts []string) []byte) error {
 	rcpts := cleanAddrs(to)
 	if len(rcpts) == 0 {
 		return errors.New("mail: no recipients")
@@ -82,7 +91,7 @@ func (s *smtpSender) Send(ctx context.Context, to []string, subject, body string
 		return errors.New("mail: no From address configured")
 	}
 
-	msg := buildMessage(s.cfg.From, s.cfg.FromName, rcpts, subject, body)
+	msg := build(rcpts)
 	addr := net.JoinHostPort(s.cfg.Host, strconv.Itoa(s.cfg.Port))
 	dialer := net.Dialer{Timeout: s.cfg.Timeout}
 

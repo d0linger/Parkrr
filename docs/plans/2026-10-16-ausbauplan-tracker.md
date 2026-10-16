@@ -34,11 +34,11 @@ Legende: `[x]` umgesetzt · `[~]` teilweise (Grund dahinter) · `[ ]` offen · `
 
 ## B4 Abrechnung und Mail
 
-- [ ] 1 Sammel-Erinnerung für überfällige Rechnungen
-- [ ] 36 Mail-Warteschlange mit Wiederholung
-- [ ] 19 Rechnungsversand per Mail mit PDF
-- [ ] 20 Automatische Mahnstufen (Standard aus)
-- [ ] 26 Vorschau für den Rechnungslauf
+- [x] 1 Sammel-Erinnerung (`POST /api/invoices/remind`, je Rechnung derselbe Handler wie der Knopf; höchstens 10 je Aufruf, die Oberfläche schickt Zehnerpakete)
+- [x] 36 Mail-Warteschlange (Migration 082, Lauf alle 30 s, Wiederholung 1 min bis 6 h; hängengebliebene Sendungen werden „Zustellung unklar“, nicht doppelt verschickt; Anonymisieren leert sie). Manuelle Erinnerungen bleiben bewusst synchron.
+- [x] 19 Rechnung per Mail mit PDF (`POST /api/invoices/{id}/send`, Versandstand an der Rechnung; optional nach dem automatischen Lauf, Standard aus)
+- [x] 20 Automatische Mahnstufen (Standard aus; Stufe erst bei Zustellung gebucht, unter derselben Sperre wie der Knopf; „nicht automatisch mahnen“ je Person)
+- [x] 26 Vorschau Rechnungslauf (`GET /api/invoices/preview`, rein lesend mit derselben Positionsermittlung; keine Nummer, keine Sperre)
 
 ## B5 Saison und Kunden
 
@@ -68,4 +68,7 @@ Legende: `[x]` umgesetzt · `[~]` teilweise (Grund dahinter) · `[ ]` offen · `
 
 ## Danach
 
-- [ ] Ruhezeit („Kurz weg“): Vorschlag im Artifact „Parkrr Ruhezeit“, Umsetzung nach den Entscheidungen dort
+- [ ] Ruhezeit („Kurz weg“): Entscheidungen vom 16.10.2026 (Artifact „Parkrr Ruhezeit“):
+  Platz je Ruhezeit wählbar, Standard „halten“; Haltegebühr 0 %; gekürzt ab dem ersten Tag;
+  Pauschale bleibt, Ruhezeit wird nur vermerkt; vorab bezahlt: „bezahlt bis“ verschiebt sich;
+  gebundene Nebenkosten ruhen mit; Kunden können die Ruhezeit im Portal anfragen.

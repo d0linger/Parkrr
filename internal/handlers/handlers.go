@@ -46,6 +46,9 @@ type Handler struct {
 	// den Start, wenn dabei kein WebAuthn eingerichtet ist — sonst käme niemand
 	// mehr hinein.
 	PasskeyOnly bool
+	// OutboxKick weckt den Versandlauf der Mail-Warteschlange (Ausbau 36) sofort,
+	// statt bis zum nächsten Takt zu warten. Nil: kein Lauf angeschlossen (Tests).
+	OutboxKick chan struct{}
 	// TaxWritesEnabled is configured once before serving requests. Its zero value
 	// keeps the optional tax ledger read-only without disabling ordinary payments.
 	TaxWritesEnabled bool

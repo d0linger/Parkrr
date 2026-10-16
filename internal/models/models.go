@@ -175,6 +175,10 @@ type Person struct {
 
 	// Derived (not stored): whether the person has any Pauschale.
 	HasFlatRate bool `json:"has_flat_rate"`
+
+	// NoDunning nimmt die Person von automatischen Mahnungen aus (Ausbau 20);
+	// manuelle Erinnerungen bleiben möglich.
+	NoDunning bool `json:"no_dunning"`
 }
 
 // FlatRatePeriod is a dated flat-rate agreement ("Pauschale-Eintrag"): one
