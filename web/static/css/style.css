@@ -1943,7 +1943,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-planwrap{overflow:auto;scrollbar-gutter:stable;padding:40px;display:flex;justify-content:safe center;align-items:safe center;border-radius:12px;background:#060b11;border:1px solid var(--gpline);box-shadow:inset 0 0 60px -20px #000}
 .gp-plan{position:relative;margin:0;flex:none;touch-action:none}
 .gp-floor{position:absolute;inset:0;z-index:0;overflow:visible}
-.gp-gridline{stroke:rgba(255,255,255,.06);stroke-width:1}
+.gp-gridline{stroke:var(--gpglass2);stroke-width:1}
 .gp-floorfill{fill:#0c1a14}
 .gp-floorstroke{fill:none;stroke:rgba(46,230,207,.4);stroke-width:2}
 /* Auto-Parkfläche: the wall-enclosed area, shaded green + centred m² label */
@@ -2011,7 +2011,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-edge{stroke:rgba(46,230,207,.55);stroke-width:2}
 .gp-edge.sel{stroke:var(--gpteal);stroke-width:3.5}
 .gp-edgelab{fill:rgba(255,255,255,.5);font-size:10px}
-.gp-edgelab.sel{fill:#bff3ec}
+.gp-edgelab.sel{fill:var(--gpchipfg)}
 .gp-layer{position:absolute;inset:0;z-index:1;overflow:visible}
 .gp-labels{position:absolute;inset:0;z-index:2;overflow:visible;pointer-events:none}
 
@@ -2022,13 +2022,13 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-block .gp-dim{font-size:.57rem;color:rgba(255,255,255,.8)}
 /* Rand in der Schriftfarbe, nicht in der Blockfarbe: sonst verschwindet die
    Warnung genau auf den Bloecken, die sie meldet. */
-.gp-block .gp-warnb{position:absolute;top:3px;right:4px;z-index:2;font-size:.57rem;background:#2a1211;color:#ffb4ad;border:1px solid #ffb4ad;border-radius:5px;padding:0 4px;font-weight:700}
-.gp-block::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(255,255,255,.06),rgba(0,0,0,.05) 30%,rgba(0,0,0,.55));pointer-events:none}
+.gp-block .gp-warnb{position:absolute;top:3px;right:4px;z-index:2;font-size:.57rem;background:#2a1211;color:var(--gpdangerfg);border:1px solid var(--gpdangerfg);border-radius:5px;padding:0 4px;font-weight:700}
+.gp-block::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,var(--gpglass2),rgba(0,0,0,.05) 30%,rgba(0,0,0,.55));pointer-events:none}
 .gp-block.veh.busy{background:var(--gpoccupied)}
 .gp-block.veh.resv{background:var(--gpresv)}
 .gp-block.veh.move{background:var(--gpmove)}
 .gp-block.excl{cursor:grab}
-.gp-block.excl::after{background:linear-gradient(180deg,rgba(255,255,255,.04),transparent)}
+.gp-block.excl::after{background:linear-gradient(180deg,var(--gpglass),transparent)}
 .gp-block.excl .gp-who{color:#eaf1f8;text-shadow:none;font-size:var(--text-2xs);font-weight:700;text-transform:uppercase;letter-spacing:.04em}
 .gp-block.excl.lane{background:#16222f;background-image:repeating-linear-gradient(45deg,#243547 0 12px,#151f2b 12px 24px)}
 .gp-block.excl.exit{background:#0f3a20;border:1px solid var(--gphall)}
@@ -2037,7 +2037,7 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-block.excl.maint .gp-who{color:#f0d194}
 .gp-block.excl.wall{background:#0c141d;border:1px solid #2a3b4d}
 /* Mauertypen — solide „bauliche" Füllungen, je Typ ein eigener Farbton (Dicke = kurze Kante). */
-.gp-block.excl.wall_ext{background:#26313d;border:1px solid #3c4a5a;box-shadow:inset 0 0 0 1px rgba(255,255,255,.04)}
+.gp-block.excl.wall_ext{background:#26313d;border:1px solid #3c4a5a;box-shadow:inset 0 0 0 1px var(--gpglass)}
 .gp-block.excl.wall_load{background:#3a2c22;border:1px solid #5a4433;background-image:repeating-linear-gradient(90deg,rgba(0,0,0,.18) 0 6px,transparent 6px 12px)}
 .gp-block.excl.wall_part{background:#2b3540;border:1px dashed #5b6b7d}
 .gp-block.excl.wall_fire{background:#3a1c1c;border:1px solid #8a3030;background-image:repeating-linear-gradient(45deg,rgba(220,80,70,.22) 0 7px,transparent 7px 14px)}

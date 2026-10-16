@@ -1,9 +1,12 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // ReadinessConfig contains non-secret runtime facts used by the admin checklist.
@@ -70,6 +73,15 @@ func (h *Handler) OperationalReadiness(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, "could not check operational readiness", err)
 		return
 	}
+	// restore_tested_at: wann zuletzt eine Sicherung entschlüsselt und ihr Inhalt
+	// gelesen wurde (jede geprüfte Volume-Sicherung setzt es). Fehlt die Zeile,
+	// gilt das wie „nie“.
+	var restoreTested *time.Time
+	if err := h.Pool.QueryRow(r.Context(),
+		`SELECT restore_tested_at FROM backup_status WHERE id=1`).Scan(&restoreTested); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		serverError(w, r, "could not check operational readiness", err)
+		return
+	}
 
 	billingReady := strings.TrimSpace(billing.SellerName) != "" && strings.TrimSpace(billing.SellerAddress) != "" &&
 		(billing.Kleinunternehmer || strings.TrimSpace(billing.SellerUID) != "")
@@ -115,7 +127,36 @@ func (h *Handler) OperationalReadiness(w http.ResponseWriter, r *http.Request) {
 		items[5].Reason = "Zeitplan ist aktiv, aber die Rechnungsdaten sind unvollständig."
 	}
 
+	// Direkt hinter „Datensicherung“ einreihen; die festen Indizes oben gelten bis hier.
+	restore := restoreCheckItem(backupConfigured, restoreTested, h.now())
+	items = append(items[:4], append([]readinessItem{restore}, items[4:]...)...)
+
 	writeJSON(w, http.StatusOK, readinessResponse{
 		State: readinessOverall(items), CheckedAt: h.now(), Items: items,
 	})
+}
+
+// restoreStaleAfter: so lange darf die letzte geprüfte Sicherung zurückliegen. Bei
+// einem wöchentlichen Zeitplan sind das zwei verpasste Läufe.
+const restoreStaleAfter = 14 * 24 * time.Hour
+
+// restoreCheckItem bewertet, ob eine Sicherung zuletzt tatsächlich entschlüsselt und
+// gelesen wurde. Ein konfiguriertes Ziel allein beweist nicht, dass sich die Dateien
+// im Ernstfall einspielen lassen.
+func restoreCheckItem(configured bool, testedAt *time.Time, now time.Time) readinessItem {
+	item := readinessItem{ID: "restore", Label: "Sicherung geprüft", State: "ready", Href: "#/backup"}
+	switch {
+	case !configured:
+		item.State = "warning"
+		item.Reason = "Erst prüfbar, wenn eine Datensicherung eingerichtet ist."
+	case testedAt == nil:
+		item.State = "warning"
+		item.Reason = "Noch keine Sicherung wurde entschlüsselt und auf Lesbarkeit geprüft."
+	case now.Sub(*testedAt) > restoreStaleAfter:
+		item.State = "warning"
+		item.Reason = "Letzte geprüfte Sicherung vom " + testedAt.In(time.Local).Format("02.01.2006") + ", älter als 14 Tage."
+	default:
+		item.Reason = "Zuletzt am " + testedAt.In(time.Local).Format("02.01.2006") + " entschlüsselt und geprüft."
+	}
+	return item
 }

@@ -1,7 +1,12 @@
 # syntax=docker/dockerfile:1
 
 # ---------- Build stage ----------
-FROM golang:1.27-alpine AS build
+# Exakt die Go-Version, gegen die CI testet (go.mod toolchain, setup-go in allen
+# Workflows). Das offizielle Image setzt GOTOOLCHAIN=local, ein schwebendes
+# "1.27-alpine" baute also mit einem Compiler, gegen den kein Test lief.
+# scripts/check-go-version.cjs hält alle Stellen gleich; ein Update ändert sie
+# gemeinsam in einem Commit.
+FROM golang:1.26.9-alpine AS build
 
 WORKDIR /src
 

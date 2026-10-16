@@ -167,6 +167,10 @@ jobs:
             exit 1
           fi
           echo "All external actions are SHA-pinned."
+      # Geprüft = ausgeliefert: go.mod-Toolchain, jede setup-go-Version und das
+      # Build-Image im Dockerfile müssen dieselbe Go-Version nennen.
+      - name: Verify one Go version across go.mod, workflows and Dockerfile
+        run: node scripts/check-go-version.cjs
 
   geometry:
     name: Frontend unit tests
