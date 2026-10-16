@@ -24,13 +24,13 @@ Legende: `[x]` umgesetzt · `[~]` teilweise (Grund dahinter) · `[ ]` offen · `
 
 ## B3 Betrieb
 
-- [ ] 13 Unvollständige Gefährte in der Heute-Liste
-- [ ] 8 Stromanschluss am Stellplatz, Abgleich mit dem Ladebedarf
-- [ ] 12 Etikettenbogen je Halle
-- [ ] 11 Wochenliste der Abholungen als PDF
-- [ ] 10 Kalender-Abo für Termine
-- [ ] 9 Gefährte per CSV importieren
-- [ ] 14 Schnellpreis für Anfragen
+- [x] 13 Unvollständige Gefährte in der Heute-Liste (`GET /api/vehicles/incomplete`: ohne Maße, ohne Kennzeichen; Filter `?missing=`)
+- [x] 8 Strom: neue Planer-Zone „Strom“ (markiert, nicht sperrend), da Stellplätze erst beim Platzieren entstehen. Ladebedarf mit Mitte außerhalb jeder Stromzone warnt im Planer und in der Heute-Liste, nur in Hallen mit Stromzonen. Gleiche Rechnung in `geometry.js` und Go.
+- [x] 12 Etikettenbogen je Halle (`GET /api/halls/{id}/labels`, A4, zehn je Seite)
+- [x] 11 Wochenliste als PDF (`GET /api/reports/week.pdf`, Abholungen, Einlagerungen, Abholwünsche; Knopf im Kalender)
+- [x] 10 Kalender-Abo (`/ical/{token}`, Migration 081; nur Hash gespeichert, ohne Namen und Beträge, widerrufbar, Pfad im Zugriffsprotokoll geschwärzt)
+- [x] 9 Gefährte per CSV importieren (`POST /api/import/vehicles` + Vorlage; gleiche Prüfung und Anlage wie das Formular; Fehlerzeilen im Dialog)
+- [x] 14 Schnellpreis im Tarife-Reiter (rechnet mit `vehicleRentalTotal`; „Als Gefährt anlegen“, bei Beginn in der Zukunft als Reservierung)
 
 ## B4 Abrechnung und Mail
 

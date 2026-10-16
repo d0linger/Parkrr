@@ -1785,7 +1785,7 @@ import { createRevenueChart } from './revenue-chart.js';
         return wrap;
     }
 
-    function todayWorklist({ overdue, ending, portalRequests, occ, readiness }) {
+    function todayWorklist({ overdue, ending, portalRequests, occ, readiness, incomplete }) {
         const items = [];
         (overdue || []).forEach((invoice) => items.push({
             priority: 0, tone: 'critical', title: invoice.person_name + ' · Rechnung ' + invoice.number,
@@ -1806,6 +1806,21 @@ import { createRevenueChart } from './revenue-chart.js';
         const unplaced = occ ? Math.max(0, Number(occ.active || 0) - Number(occ.placed || 0)) : 0;
         if (unplaced) items.push({ priority: 2, tone: 'normal', title: unplaced + ' aktive Gefährte ohne Platz',
             meta: 'Hallenzuordnung fehlt · Disposition', href: '#/vehicles?unplaced=1', action: 'Gefährte anzeigen' });
+        // Ladebedarf ohne Strom ist ein echtes Problem (leere Batterie im Frühjahr);
+        // fehlende Maße und Kennzeichen sind Datenpflege und stehen weiter hinten.
+        const pm = incomplete && Array.isArray(incomplete.power_missing) ? incomplete.power_missing : [];
+        if (pm.length) {
+            const halls = [...new Set(pm.map((x) => x.hall_id))];
+            items.push({ priority: 1, tone: 'attention', title: pm.length + (pm.length === 1 ? ' Gefährt' : ' Gefährte') + ' mit Ladebedarf ohne Strom',
+                meta: (halls.length === 1 ? pm[0].hall_name + ' · ' : '') + 'nicht in einer Stromzone · Disposition',
+                href: halls.length === 1 ? '#/hall/' + halls[0] : '#/vehicles?missing=power', action: halls.length === 1 ? 'Planer öffnen' : 'Gefährte anzeigen' });
+        }
+        const nd = incomplete ? Number(incomplete.no_dimensions) || 0 : 0;
+        if (nd) items.push({ priority: 3, tone: 'normal', title: nd + (nd === 1 ? ' Gefährt' : ' Gefährte') + ' ohne Maße',
+            meta: 'Der Planer kann die Passung nicht prüfen · Stammdaten', href: '#/vehicles?missing=dims', action: 'Gefährte anzeigen' });
+        const np = incomplete ? Number(incomplete.no_plate) || 0 : 0;
+        if (np) items.push({ priority: 3, tone: 'normal', title: np + (np === 1 ? ' Gefährt' : ' Gefährte') + ' ohne Kennzeichen',
+            meta: 'Etikett und Suche bleiben unvollständig · Stammdaten', href: '#/vehicles?missing=plate', action: 'Gefährte anzeigen' });
         // Optional setup is not a daily emergency. A blocked backup remains visible.
         if (readiness && Array.isArray(readiness.items)) readiness.items.filter((item) => item.state !== 'ready').forEach((item) => items.push({
             priority: item.id === 'backup' && item.state === 'blocked' ? 0 : 3,
@@ -1865,13 +1880,14 @@ import { createRevenueChart } from './revenue-chart.js';
             return fallback;
         });
         // These independent reads share one network round trip, instead of five.
-        const [ov, occ, overdue, ending, portalRequests, readiness] = await Promise.all([
+        const [ov, occ, overdue, ending, portalRequests, readiness, incomplete] = await Promise.all([
             api.get('/overview' + (dashYear ? '?year=' + dashYear : '')),
             optional('/occupancy', 'Belegung', null),
             optional('/invoices/overdue', 'Überfällige Rechnungen', []),
             optional('/vehicles/ending-soon?days=30', 'Auslaufende Verträge', []),
             canManage() ? optional('/portal-requests', 'Kundenwünsche', []) : Promise.resolve([]),
             isAdmin() ? optional('/admin/readiness', 'Betriebsbereitschaft', null) : Promise.resolve(null),
+            optional('/vehicles/incomplete', 'Unvollständige Gefährte', null),
         ]);
         const prCard = portalRequestsCard(portalRequests);
         dashYear = ov.year;
@@ -1906,7 +1922,7 @@ import { createRevenueChart } from './revenue-chart.js';
             return;
         }
 
-        page.append(todayWorklist({ overdue, ending, portalRequests, occ, readiness }));
+        page.append(todayWorklist({ overdue, ending, portalRequests, occ, readiness, incomplete }));
 
         // Money first — "Offen gesamt" is the operator's lead metric, shown as a
         // gradient hero; Umsatz (with a YoY delta) and Bezahlt sit beside it.
@@ -2313,7 +2329,17 @@ import { createRevenueChart } from './revenue-chart.js';
     }
 
     // Import dialog: offer an example-file download or pick a CSV to import.
-    async function importPersonsDialog() {
+    // CSV-Import (Personen, und seit Ausbau 9 auch Gefährte). Ein Dialog für beide:
+    // Beispiel-Datei holen, Datei wählen, Ergebnis lesen. Fehlerhafte Zeilen werden
+    // mit Zeilennummer aufgelistet, damit man sie in der Datei findet.
+    const IMPORT_KINDS = {
+        persons: { title: 'Personen importieren', endpoint: '/import/persons', template: 'parkrr-personen-vorlage.csv',
+            help: 'CSV mit den Spalten vorname, nachname, email, telefon, adresse (optional notiz). Trennzeichen ; oder , — erste Zeile ist die Kopfzeile. Doppelte E-Mails und ungültige Zeilen werden übersprungen.' },
+        vehicles: { title: 'Gefährte importieren', endpoint: '/import/vehicles', template: 'parkrr-gefaehrte-vorlage.csv',
+            help: 'CSV mit email oder person, kategorie (Name des Tarifs) und beginn; optional bezeichnung, kennzeichen, ende, abrechnung, preis, status, länge, breite, höhe, ladebedarf, notiz. Personen müssen schon angelegt sein. Ein Kennzeichen, das es schon gibt, wird übersprungen.' },
+    };
+    async function importCsvDialog(kind) {
+        const cfg = IMPORT_KINDS[kind];
         const csvIn = el('input', { type: 'file', accept: '.csv,text/csv', style: 'display:none' });
         csvIn.addEventListener('change', async () => {
             const f = csvIn.files[0];
@@ -2323,7 +2349,7 @@ import { createRevenueChart } from './revenue-chart.js';
             fd.append('file', f);
             let res;
             try {
-                res = await api.upload('/import/persons', fd);
+                res = await api.upload(cfg.endpoint, fd);
             } catch (e) {
                 toast('Import fehlgeschlagen: ' + (e.message || e), 'error');
                 return;
@@ -2336,22 +2362,29 @@ import { createRevenueChart } from './revenue-chart.js';
             toast(parts.join(' · '), res.failed ? 'error' : 'success');
             $('#modal-cancel').click();
             render();
+            if (res.failed && Array.isArray(res.errors) && res.errors.length) {
+                contentModal('Nicht importierte Zeilen', (body) => {
+                    body.append(el('p', { class: 'card-meta', style: 'margin-top:0' }, res.imported + ' Zeilen wurden übernommen. Diese ' + res.failed + ' nicht:'),
+                        el('ul', { class: 'import-errors' }, ...res.errors.map((er) => el('li', {}, el('b', {}, 'Zeile ' + er.row + ': '), er.message))),
+                        res.failed > res.errors.length ? el('p', { class: 'card-meta' }, 'Weitere ' + (res.failed - res.errors.length) + ' Zeilen sind ebenfalls fehlerhaft.') : null);
+                });
+            }
         });
         await formModal({
-            title: 'Personen importieren',
+            title: cfg.title,
             submitLabel: 'Schließen',
             fields: [],
             onRender: (body) => {
-                body.append(el('p', { class: 'muted', style: 'margin-top:0;font-size:var(--text-base)' },
-                    'CSV mit den Spalten vorname, nachname, email, telefon, adresse (optional notiz). Trennzeichen ; oder , — erste Zeile ist die Kopfzeile. Doppelte E-Mails und ungültige Zeilen werden übersprungen.'));
+                body.append(el('p', { class: 'muted', style: 'margin-top:0;font-size:var(--text-base)' }, cfg.help));
                 body.append(el('div', { class: 'btn-row', style: 'gap:.5rem;flex-wrap:wrap;margin-top:.3rem' },
-                    el('a', { class: 'btn btn-ghost btn-sm', href: '/api/import/persons/template', download: 'parkrr-personen-vorlage.csv' }, icon('download', 14), ' Beispiel-Datei'),
+                    el('a', { class: 'btn btn-ghost btn-sm', href: '/api' + cfg.endpoint + '/template', download: cfg.template }, icon('download', 14), ' Beispiel-Datei'),
                     el('button', { type: 'button', class: 'btn btn-primary btn-sm', onclick: () => csvIn.click() }, icon('upload', 14), ' Datei wählen …'),
                     csvIn));
             },
             save: null,
         });
     }
+    const importPersonsDialog = () => importCsvDialog('persons');
 
     // Absolute, copy-paste-able URL: the backend returns an absolute link when
     // PARKRR_PUBLIC_BASE_URL is set, otherwise a relative "/#/portal/…" that we
@@ -3727,6 +3760,15 @@ import { createRevenueChart } from './revenue-chart.js';
         return wrap;
     }
 
+    // Gleiche Regel wie GET /api/vehicles/incomplete: nur aktive Gefährte zählen.
+    function vehicleMissing(v, cs) {
+        if (v.archived || !(v.status === 'stored' || v.status === 'reserved')) return cs.missing === 'power' && cs.powerIds && cs.powerIds.has(v.id);
+        if (cs.missing === 'dims') return v.length_m == null || v.width_m == null;
+        if (cs.missing === 'plate') return !String(v.license_plate || '').trim();
+        if (cs.missing === 'power') return !!(cs.powerIds && cs.powerIds.has(v.id));
+        return true;
+    }
+
     routes.vehicles = async (page, _id, query = new URLSearchParams()) => {
         await refreshLookups();
         const vehicles = await api.get('/vehicles');
@@ -3738,6 +3780,15 @@ import { createRevenueChart } from './revenue-chart.js';
         vehicleListState.controlState.activeOnly = query.get('active') === '1';
         vehicleListState.controlState.unplacedOnly = query.get('unplaced') === '1';
         vehicleListState.controlState.endingDays = Number(query.get('ending')) || 0;
+        // Fehlende Angaben aus der Heute-Liste (Ausbau 13 und 8). "power" braucht die
+        // Planer-Geometrie und kommt deshalb als Liste vom Server.
+        const missing = ['dims', 'plate', 'power'].includes(query.get('missing')) ? query.get('missing') : '';
+        vehicleListState.controlState.missing = missing;
+        vehicleListState.controlState.powerIds = null;
+        if (missing === 'power') {
+            try { vehicleListState.controlState.powerIds = new Set(((await api.get('/vehicles/incomplete')).power_missing || []).map((x) => x.vehicle_id)); }
+            catch (e) { vehicleListState.controlState.powerIds = new Set(); toast('Strom-Prüfung konnte nicht geladen werden', 'error'); }
+        }
         listState.set('vehicles', vehicleListState);
         // Die Leiste MUSS vor mountList entstehen: mountList zeichnet die Liste noch im
         // selben Zug (refresh() laeuft synchron), und die Rueckrufe unten greifen auf
@@ -3817,9 +3868,12 @@ import { createRevenueChart } from './revenue-chart.js';
                 // Die Filter liegen dort hinter "Filter (n)"; am Desktop löst sich die Gruppe
                 // per display:contents auf und alles steht wie bisher in der Leiste. Der
                 // Offen-Zustand überlebt das Neuzeichnen nach jedem Filterwechsel.
-                const active = [cs.status, cs.person, cs.activeOnly, cs.unplacedOnly, cs.endingDays, cs.showArchived].filter(Boolean).length;
+                const MISSING_LABEL = { dims: 'Ohne Maße', plate: 'Ohne Kennzeichen', power: 'Ladebedarf ohne Strom' };
+                const missingBtn = cs.missing ? el('button', { class: 'btn btn-sm btn-primary', type: 'button', 'aria-pressed': 'true',
+                    title: 'Filter aufheben', onclick: () => updateRouteQuery({ missing: null }) }, MISSING_LABEL[cs.missing] + ' ×') : null;
+                const active = [cs.status, cs.person, cs.activeOnly, cs.unplacedOnly, cs.endingDays, cs.showArchived, cs.missing].filter(Boolean).length;
                 const group = el('div', { class: 'filter-group' + (vehFiltersOpen ? ' open' : ''), id: 'veh-filters', role: 'group', 'aria-label': 'Filter' },
-                    stSel, peSel, activeBtn, unplacedBtn, endingBtn, arLabel);
+                    stSel, peSel, activeBtn, unplacedBtn, endingBtn, missingBtn, arLabel);
                 const filterBtn = el('button', { class: 'btn btn-ghost btn-sm filter-toggle', type: 'button', 'aria-expanded': String(vehFiltersOpen), 'aria-controls': 'veh-filters' },
                     'Filter', el('span', { class: 'filter-count' + (active ? ' on' : ''), 'aria-label': active + ' aktiv' }, String(active)));
                 filterBtn.addEventListener('click', () => {
@@ -3827,7 +3881,9 @@ import { createRevenueChart } from './revenue-chart.js';
                     group.classList.toggle('open', vehFiltersOpen);
                     filterBtn.setAttribute('aria-expanded', String(vehFiltersOpen));
                 });
-                return [filterBtn, group, bulkBtn];
+                const importBtn = canManage() ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button',
+                    title: 'Gefährte aus CSV importieren', onclick: () => importCsvDialog('vehicles') }, icon('upload'), ' Import') : null;
+                return [filterBtn, group, bulkBtn, importBtn];
             },
             // Hide archived (closed) vehicles unless the Archiv toggle is on.
             extraFilter: (v, cs) => (cs.showArchived || !v.archived) &&
@@ -3835,7 +3891,8 @@ import { createRevenueChart } from './revenue-chart.js';
                 (!cs.activeOnly || (!v.archived && (v.status === 'stored' || v.status === 'reserved'))) &&
                 (!cs.unplacedOnly || (!v.archived && !v.spot_id)) &&
                 (!cs.endingDays || (v.end_date && new Date(v.end_date) >= new Date(today() + 'T00:00:00') &&
-                    new Date(v.end_date) <= new Date(Date.now() + cs.endingDays * 86400000))),
+                    new Date(v.end_date) <= new Date(Date.now() + cs.endingDays * 86400000))) &&
+                (!cs.missing || vehicleMissing(v, cs)),
             // Was der Filter ausblendet, faellt aus der Auswahl. bulkSel lebte als
             // Modulzustand neben der Liste und wurde nie abgeglichen: wer auf Seite 1
             // zwoelf Gefaehrte anhakte, weiterblaetterte und dann nach Person filterte,
@@ -4924,14 +4981,14 @@ import { createRevenueChart } from './revenue-chart.js';
         syncCategory(); updateTotal();
     }
 
-    async function vehicleForm(existing, presetPerson) {
+    async function vehicleForm(existing, presetPerson, preset = null) {
         if (!state.persons.length) { toast('Zuerst eine Person anlegen', 'error'); return; }
         if (!state.categories.length) { toast('Zuerst einen Tarif anlegen', 'error'); return; }
         // The price is seeded from the Tarif but then locked onto the vehicle, so
         // a later Tarif change never re-prices it.
         const catDefault = (cid, period) => { const c = state.categories.find((x) => x.id === Number(cid)); return c ? (period === 'yearly' ? c.default_yearly_cost : c.default_monthly_cost) : 0; };
-        const initCat = existing?.category_id ?? state.categories[0].id;
-        const initPeriod = existing?.billing_period || 'monthly';
+        const initCat = existing?.category_id ?? preset?.category_id ?? state.categories[0].id;
+        const initPeriod = existing?.billing_period || preset?.billing_period || 'monthly';
         // Legacy rows can still carry rate=0 as "not backfilled". The API's
         // effective_rate is what operators have actually been billed and keeps
         // a harmless note-only edit from accidentally turning them into free rows.
@@ -4939,7 +4996,7 @@ import { createRevenueChart } from './revenue-chart.js';
             ? (Number(existing.rate) !== 0
                 ? existing.rate
                 : (existing.effective_rate ?? existing.rate ?? catDefault(initCat, initPeriod)))
-            : catDefault(initCat, initPeriod);
+            : (preset?.rate ?? catDefault(initCat, initPeriod));
         let customIcons = []; try { customIcons = await api.get('/planner-icons'); } catch (e) { /* optional */ }
         await formModal({
             title: existing ? 'Gefährt bearbeiten' : 'Neues Gefährt',
@@ -4950,8 +5007,8 @@ import { createRevenueChart } from './revenue-chart.js';
                 // was man vom Fahrzeug abliest. Die Bezeichnung bleibt optional.
                 { name: 'license_plate', label: 'Kennzeichen', value: existing?.license_plate, placeholder: 'z. B. W 12345 K' },
                 { name: 'label', label: 'Bezeichnung', value: existing?.label, placeholder: 'z. B. Wohnwagen Hobby', optional: 'Fahrzeugdetails' },
-                { name: 'start_date', label: 'Einstelldatum', type: 'date', required: true, value: existing?.start_date ? existing.start_date.slice(0, 10) : today() },
-                { name: 'end_date', label: 'Abholdatum (optional)', type: 'date', value: existing?.end_date ? existing.end_date.slice(0, 10) : '', help: 'Leer lassen für laufende Miete.' },
+                { name: 'start_date', label: 'Einstelldatum', type: 'date', required: true, value: existing?.start_date ? existing.start_date.slice(0, 10) : (preset?.start_date || today()) },
+                { name: 'end_date', label: 'Abholdatum (optional)', type: 'date', value: existing?.end_date ? existing.end_date.slice(0, 10) : (preset?.end_date || ''), help: 'Leer lassen für laufende Miete.' },
                 { name: 'billing_period', label: 'Abrechnung', type: 'select', value: initPeriod, options: [{ value: 'monthly', label: 'monatlich' }, { value: 'yearly', label: 'jährlich' }] },
                 { name: 'rate', label: 'Preis (€)', type: 'number', step: '0.01', min: 0, required: true, value: initRate, help: 'Fest vereinbart; bleibt bei Tarifänderungen erhalten.' },
                 { name: 'notes', label: 'Notizen', type: 'textarea', value: existing?.notes, optional: 'Notizen & Planer-Details' },
@@ -4974,9 +5031,11 @@ import { createRevenueChart } from './revenue-chart.js';
                     start_date: data.start_date,
                     // Abholdatum (end_date) is editable here so it can be corrected
                     // retroactively; status/reservation stay slider-managed.
-                    status: existing?.status || 'stored',
+                    // Nur aus dem Schnellpreis (preset) mit Beginn in der Zukunft: als Reservierung.
+                    // Das normale Formular legt wie bisher eingelagert an.
+                    status: existing?.status || (preset && data.start_date > today() ? 'reserved' : 'stored'),
                     end_date: data.end_date === '' ? null : data.end_date,
-                    reserved_from: existing?.reserved_from ? existing.reserved_from.slice(0, 10) : null,
+                    reserved_from: existing?.reserved_from ? existing.reserved_from.slice(0, 10) : (!existing && preset && data.start_date > today() ? data.start_date : null),
                     reserved_until: existing?.reserved_until ? existing.reserved_until.slice(0, 10) : null,
                     needs_power: !!data.needs_power,
                     planner_symbol: data.planner_symbol || null,
@@ -5802,6 +5861,62 @@ import { createRevenueChart } from './revenue-chart.js';
 
     // ================= TARIFFS (categories + services) =================
     let tariffTab = 'categories';
+    // Schnellpreis (Ausbau 14): "Was kostet ein Wohnwagen von November bis März?" Rechnet
+    // mit vehicleRentalTotal, also exakt wie die Abrechnung (jeder Monat mit seiner
+    // echten Länge, Teilmonate auf den Cent). Keine zweite Preislogik.
+    let quickPrice = null;
+    function rentalBreakdown(rate, period, start, endIncl) {
+        const from = parseYMDUTC(start), last = parseYMDUTC(endIncl);
+        if (!from || !last || last < from) return null;
+        const to = new Date(last); to.setUTCDate(to.getUTCDate() + 1);
+        let full = 0, partialDays = 0;
+        let cur = period === 'yearly' ? new Date(Date.UTC(from.getUTCFullYear(), 0, 1)) : new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), 1));
+        while (cur < to) {
+            const next = period === 'yearly' ? new Date(Date.UTC(cur.getUTCFullYear() + 1, 0, 1)) : new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() + 1, 1));
+            const used = Math.round(((to < next ? to : next) - (from > cur ? from : cur)) / 86400000);
+            if (used === Math.round((next - cur) / 86400000)) full++; else if (used > 0) partialDays += used;
+            cur = next;
+        }
+        return { total: vehicleRentalTotal(rate, period, start, endIncl), full, partialDays, days: Math.round((to - from) / 86400000) };
+    }
+    function quickPriceCard() {
+        const cats = state.categories.filter((c) => !c.archived);
+        if (!cats.length) return null;
+        if (!quickPrice || !cats.some((c) => c.id === quickPrice.cat)) {
+            const y = new Date().getFullYear();
+            quickPrice = { cat: cats[0].id, period: 'monthly', from: y + '-11-01', to: (y + 1) + '-03-31' };
+        }
+        const q = quickPrice;
+        const det = persistDetails('quick-price', 'card quick-price', el('span', { class: 'fold-sum' }, foldChev(),
+            el('span', { class: 'fold-title' }, 'Schnellpreis'), el('span', { class: 'fold-meta' }, 'für eine Anfrage am Telefon')), false, { remember: true });
+        const out = el('div', { class: 'quick-price-out', role: 'status', 'aria-live': 'polite' });
+        const catSel = el('select', { id: 'qp-cat' }, ...cats.map((c) => el('option', { value: c.id, selected: c.id === q.cat }, c.name)));
+        const perSel = el('select', { id: 'qp-period' }, el('option', { value: 'monthly', selected: q.period === 'monthly' }, 'monatlich'), el('option', { value: 'yearly', selected: q.period === 'yearly' }, 'jährlich'));
+        const fromIn = el('input', { id: 'qp-from', type: 'date', value: q.from });
+        const toIn = el('input', { id: 'qp-to', type: 'date', value: q.to });
+        const field = (id, label, input) => el('label', { class: 'quick-price-field', for: id }, el('span', {}, label), input);
+        const draw = () => {
+            q.cat = Number(catSel.value); q.period = perSel.value; q.from = fromIn.value; q.to = toIn.value;
+            const c = cats.find((x) => x.id === q.cat);
+            const rate = q.period === 'yearly' ? c.default_yearly_cost : c.default_monthly_cost;
+            const b = rentalBreakdown(rate, q.period, q.from, q.to);
+            out.innerHTML = '';
+            if (!b) { out.append(el('p', { class: 'card-meta' }, 'Bitte einen gültigen Zeitraum wählen (bis nicht vor von).')); return; }
+            const unit = q.period === 'yearly' ? 'Jahr' : 'Monat';
+            const parts = [];
+            if (b.full) parts.push(b.full + ' ' + (q.period === 'yearly' ? (b.full === 1 ? 'volles Jahr' : 'volle Jahre') : (b.full === 1 ? 'voller Monat' : 'volle Monate')));
+            if (b.partialDays) parts.push(b.partialDays + (b.partialDays === 1 ? ' Tag' : ' Tage') + ' anteilig');
+            out.append(el('div', { class: 'quick-price-total' }, eur(b.total)),
+                el('p', { class: 'card-meta' }, c.name + ', ' + eur(rate) + ' je ' + unit + ' · ' + b.days + ' Tage: ' + parts.join(', ') + '.'));
+            if (canManage()) out.append(el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => vehicleForm(null, null,
+                { category_id: q.cat, billing_period: q.period, start_date: q.from, end_date: q.to, rate }) }, icon('plus', 14), ' Als Gefährt anlegen'));
+        };
+        [catSel, perSel, fromIn, toIn].forEach((n) => n.addEventListener('change', draw));
+        det.append(el('div', { class: 'quick-price-grid' }, field('qp-cat', 'Tarif', catSel), field('qp-period', 'Abrechnung', perSel), field('qp-from', 'Von', fromIn), field('qp-to', 'Bis einschließlich', toIn)), out);
+        draw();
+        return det;
+    }
+
     routes.tariffs = async (page) => {
         await refreshLookups();
         const isCat = tariffTab === 'categories';
@@ -5814,6 +5929,7 @@ import { createRevenueChart } from './revenue-chart.js';
         page.append(el('p', { class: 'muted', style: 'margin:.2rem 0 .7rem' },
             isCat ? 'Zentrale Gefährt-Typen mit Standardpreisen (beim Gefährt überschreibbar).'
                 : 'Katalog für Zusatzleistungen (Strom, Reinigung …).'));
+        if (isCat) { const qp = quickPriceCard(); if (qp) page.append(qp); }
 
         const list = el('div', {});
         // "Neuer Tarif/Dienst" opens a blank, already-expanded inline card at the top.
@@ -6897,6 +7013,45 @@ import { createRevenueChart } from './revenue-chart.js';
     };
 
     // ================= SETTINGS (profile / 2FA / sessions) =================
+    // Kalender-Abo (Ausbau 10): Abholungen, Einlagerungen und Abholwünsche im eigenen
+    // Kalender. Die Adresse ist ein Schlüssel; sie wird nur einmal angezeigt.
+    function calendarFeedCard() {
+        const card = el('div', { class: 'card cal-feed' }, el('h3', {}, 'Kalender-Abo'));
+        const body = el('div', {});
+        card.append(el('p', { class: 'card-meta' }, 'Abholungen, Einlagerungen und Abholwünsche als Abo in Google, Apple oder Outlook. Ohne Namen und Beträge; nur Gefährt, Kennzeichen und Halle.'), body);
+        const showUrl = (url) => {
+            body.innerHTML = '';
+            const input = el('input', { class: 'cal-feed-url', type: 'text', readonly: true, value: url, 'aria-label': 'Abo-Adresse' });
+            body.append(el('div', { class: 'cal-feed-row' }, input,
+                el('button', { class: 'btn btn-primary btn-sm', type: 'button', onclick: () => copyToClipboard(url, 'Abo-Adresse kopiert') }, 'Kopieren')),
+            el('p', { class: 'card-meta' }, 'Diese Adresse wird nur jetzt angezeigt. Wer sie kennt, sieht die Termine; bei Verlust einfach neu erzeugen.'));
+            input.addEventListener('focus', () => input.select());
+        };
+        const draw = (st) => {
+            body.innerHTML = '';
+            const create = async (replace) => {
+                if (replace && !await confirmDialog('Neue Abo-Adresse?', 'Die bisherige Adresse wird sofort ungültig. Kalender, die sie nutzen, bekommen keine Termine mehr.', 'Neu erzeugen', { tone: 'neutral' })) return;
+                try { const res = await api.post('/calendar/feed'); showUrl(res.url); toast('Abo-Adresse erzeugt', 'success'); }
+                catch (e) { toast(e.message || 'Abo konnte nicht erzeugt werden', 'error'); }
+            };
+            if (!st || !st.active) {
+                body.append(el('button', { class: 'btn btn-ghost btn-block', type: 'button', onclick: () => create(false) }, 'Abo-Adresse erzeugen'));
+                return;
+            }
+            body.append(el('div', { class: 'balance' }, el('span', {}, 'Aktiv seit'), el('span', {}, fmtDate(st.created_at))),
+                el('div', { class: 'btn-row', style: 'flex-wrap:wrap;gap:.5rem;margin-top:.6rem' },
+                    el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => create(true) }, 'Neue Adresse'),
+                    el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: async () => {
+                        if (!await confirmDialog('Kalender-Abo widerrufen?', 'Die Abo-Adresse wird ungültig; Kalender zeigen danach keine Parkrr-Termine mehr.', 'Widerrufen')) return;
+                        try { await api.del('/calendar/feed'); toast('Kalender-Abo widerrufen', 'success'); draw({ active: false }); }
+                        catch (e) { toast(e.message || 'Widerrufen fehlgeschlagen', 'error'); }
+                    } }, 'Widerrufen')));
+        };
+        body.append(el('p', { class: 'card-meta' }, 'Lädt …'));
+        api.get('/calendar/feed').then(draw).catch(() => { body.innerHTML = ''; body.append(el('p', { class: 'card-meta' }, 'Status konnte nicht geladen werden.')); });
+        return card;
+    }
+
     routes.settings = async (page) => {
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' }, el('button', { class: 'back-btn', onclick: () => navigate('dashboard') }, '‹'), el('h2', { style: 'margin:0' }, 'Einstellungen')));
@@ -7009,6 +7164,7 @@ import { createRevenueChart } from './revenue-chart.js';
                     el('div', { class: 't-time' }, (s.ip || '?') + ' · zuletzt ' + fmtDateTime(s.last_seen))),
                 s.current ? null : el('button', { class: 'btn btn-ghost btn-sm', onclick: () => revokeSession(s.token) }, 'Abmelden')));
         }
+        colB.append(calendarFeedCard());
         if (canManage()) colB.append(el('div', { class: 'card template-links' }, el('h3', {}, 'Arbeitsvorlagen'),
             el('a', { href: '#/handover-templates' }, 'Übergabeprotokolle', el('span', { 'aria-hidden': 'true' }, '›'))));
         if (isAdmin()) {
@@ -7234,6 +7390,9 @@ import { createRevenueChart } from './revenue-chart.js';
         window:    { label: 'Fenster', w: 1.4, h: 0.3, cat: 'open' },
         // Flächen & Zonen
         stell:     { label: 'Stellfläche', w: 5, h: 2.5, cat: 'zone', zone: true }, // markiert, nicht sperrend
+        // Stromzone (Ausbau 8): Plätze mit Steckdose. Markiert, nicht sperrend; ein Gefährt mit
+        // Ladebedarf, dessen Mitte in keiner Stromzone steht, bekommt eine weiche Warnung.
+        power:     { label: 'Strom',       w: 3, h: 2.5, cat: 'zone', zone: true },
         lane:      { label: 'Fahrstraße',  w: 6, h: 2,   cat: 'zone' },
         maint:     { label: 'Wartung',     w: 4, h: 3,   cat: 'zone' },
         exit:      { label: 'Notausgang',  w: 2, h: 1,   cat: 'zone' },
@@ -7262,7 +7421,7 @@ import { createRevenueChart } from './revenue-chart.js';
     const isZoneTool = (k) => !!(EXCL[k] && EXCL[k].cat === 'zone'); // lane/maint/exit/stell → rubber-band draw
     const WALLCOL = { wall_ext: '#8aa0b6', wall_load: '#b08968', wall_part: '#9fb2c4', wall_fire: '#d06a63' };
     const OPENCOL = { gate: '#4ea8f5', door: '#5adcb4', window: '#7ec8ff' };
-    const ZONECOL = { lane: '#e0a94a', maint: '#e0b452', exit: '#3ddc97', stell: '#2bb47a' };
+    const ZONECOL = { lane: '#e0a94a', maint: '#e0b452', exit: '#3ddc97', stell: '#2bb47a', power: '#ffd35b' };
     const normalizeWalls = (w) => {
         const nodes = Array.isArray(w && w.nodes) ? w.nodes.map((n) => ({ x: num(n.x, 0), y: num(n.y, 0) })) : [];
         const okWall = (k) => EXCL[k] && EXCL[k].cat === 'wall' && k !== 'column' && k !== 'wall';
@@ -7421,7 +7580,9 @@ import { createRevenueChart } from './revenue-chart.js';
             el('div', { class: 'calendar-navigation', role: 'group', 'aria-label': 'Monat wählen' },
             el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Voriger Monat', onclick: () => nav(-1) }, '‹'),
             el('button', { class: 'btn btn-ghost btn-sm', onclick: () => { calMonth = null; render(); } }, 'Heute'),
-            el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Nächster Monat', onclick: () => nav(1) }, '›')));
+            el('button', { class: 'btn btn-ghost btn-sm', 'aria-label': 'Nächster Monat', onclick: () => nav(1) }, '›')),
+            // Wochenliste (Ausbau 11): diese Woche als PDF zum Mitnehmen in die Halle.
+            el('a', { class: 'btn btn-ghost btn-sm', href: '/api/reports/week.pdf', download: '', title: 'Abholungen, Einlagerungen und Abholwünsche dieser Woche, sortiert nach Halle und Platz' }, icon('download', 15), ' Woche als PDF'));
         page.append(calendarHead);
 
         let vehicles = [], overdue = [], requests = [];
@@ -7604,6 +7765,9 @@ import { createRevenueChart } from './revenue-chart.js';
                         el('h3', {}, el('a', { class: 'record-link', href: '#/hall/' + hl.id }, hl.name)),
                         el('div', { class: 'card-meta' }, (hl.spot_count || 0) + (hl.spot_count === 1 ? ' Gefährt' : ' Gefährte') + (area ? ' · ' + Math.round(area).toLocaleString('de-DE') + ' m²' : ''))),
                     el('div', { class: 'card-actions' },
+                        // Etikettenbogen (Ausbau 12): alle platzierten Gefährte der Halle auf A4.
+                        hl.spot_count ? el('a', { class: 'btn btn-ghost btn-sm', href: '/api/halls/' + hl.id + '/labels', target: '_blank', rel: 'noopener',
+                            title: 'Etiketten mit QR-Code für alle Gefährte dieser Halle', 'aria-label': 'Etiketten für ' + hl.name + ' drucken' }, '🖶 Etiketten') : null,
                         canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Umbenennen', 'aria-label': hl.name + ' umbenennen', onclick: () => hallForm(id, hl) }, icon('edit')),
                         canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: 'Löschen', 'aria-label': hl.name + ' löschen', onclick: (e) => delHall(hl, e.currentTarget.closest('.card')) }, icon('trash'))),
                     cardChev())));
@@ -8421,6 +8585,7 @@ import { createRevenueChart } from './revenue-chart.js';
         }
         function drawBlocks() {
             layer.innerHTML = '';
+            const powerZones = P.excl.filter((e) => e.kind === 'power');
             P.spots.forEach((b) => {
                 const ctx = !interactive(b), st = GPSTAT[b.status] || GPSTAT.busy;
                 let eff = P.render || 'symbol'; if (eff === 'foto' && !b.photoUrl) eff = 'symbol'; // fallback chain: no photo → symbol
@@ -8445,7 +8610,12 @@ import { createRevenueChart } from './revenue-chart.js';
                     if (warnTxt) d.append(el('span', { class: 'gp-warnb' }, warnTxt));
                     d.append(el('span', { class: 'gp-lab' }, el('span', { class: 'gp-who' }, nameTxt), el('span', { class: 'gp-dim' }, dimText(b))));
                 }
-                if (b.needsPower) d.append(el('span', { class: 'gp-power', title: 'Ladebedarf (Strom)' }, '⚡'));
+                if (b.needsPower) {
+                    // Warnen nur, wenn die Halle Stromzonen kennt: ohne eingezeichnete
+                    // Steckdosen wäre jedes Gefährt mit Ladebedarf ein Fehlalarm.
+                    const miss = powerZones.length > 0 && !powerZones.some((z) => PG.pointInBlock(...PG.blockCenter(b), z));
+                    d.append(el('span', { class: 'gp-power' + (miss ? ' gp-power-miss' : ''), title: miss ? 'Ladebedarf, aber nicht in einer Stromzone' : 'Ladebedarf (Strom)' }, miss ? '⚡ ohne Strom' : '⚡'));
+                }
                 if (b._id === P.sel && interactive(b) && canManageNow) addHandles(d, b._id);
                 positionBlock(d, b);
                 layer.append(d);
@@ -9177,7 +9347,7 @@ import { createRevenueChart } from './revenue-chart.js';
                 return b.w * b.h * hit / (sx * sy); };
             P.excl.forEach((b) => { const c = (EXCL[b.kind] || {}).cat;
                 if (c === 'wall') colA += b.w * b.h;
-                else if (c === 'zone' && b.kind !== 'stell') zoneA += zoneEncArea(b);
+                else if (c === 'zone' && !isZoneKind(b.kind)) zoneA += zoneEncArea(b); // markierte Zonen (Stellfläche, Strom) bleiben Stellfläche
             }); P.spots.forEach((b) => ve += b.w * b.h);
             // Hall dimensions = the ACTUAL floor polygon's bounding box (same source as the
             // Breite/Tiefe readout), not the P.Wm×P.Hm canvas grid — after „Form bearbeiten"
@@ -9491,7 +9661,7 @@ import { createRevenueChart } from './revenue-chart.js';
                 const xs = sw.map((p) => p[0]), ys = sw.map((p) => p[1]); // swing quad → AABB block for the packer
                 doorZones.push({ kind: 'doorswing', x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys), rot: 0 });
             }));
-            const baseObs = wallRects().concat(P.excl.filter((e) => e.kind !== 'stell')).concat(doorZones);
+            const baseObs = wallRects().concat(P.excl.filter((e) => !isZoneKind(e.kind))).concat(doorZones);
             // Routing targets (drive-to) = Fahrstraße/Notausgang zones + gate/door openings.
             const gates = P.excl.filter((e) => e.kind === 'lane' || e.kind === 'exit').map((e) => ({ x: e.x, y: e.y, w: e.w, h: e.h, rot: e.rot || 0 }));
             P.walls.edges.forEach((e) => { const v = edgeVec(e); (e.ops || []).forEach((o) => { if (o.kind !== 'gate' && o.kind !== 'door') return;

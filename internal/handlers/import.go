@@ -88,56 +88,8 @@ func (h *Handler) ImportTemplate(w http.ResponseWriter, r *http.Request) {
 // rows are skipped and reported and duplicate e-mails are skipped — the import
 // is best-effort per row, not all-or-nothing.
 func (h *Handler) ImportPersons(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxImportBytes+1024)
-	// #nosec G120 -- the request body is capped by MaxBytesReader above, so the
-	// multipart parse is bounded and cannot exhaust memory.
-	if err := r.ParseMultipartForm(maxImportBytes + 1024); err != nil {
-		writeMultipartError(w, err, "Datei zu groß")
-		return
-	}
-	file, _, err := r.FormFile("file")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "missing 'file' field")
-		return
-	}
-	defer file.Close()
-	raw, err := io.ReadAll(io.LimitReader(file, maxImportBytes+1))
-	if err != nil || len(raw) > maxImportBytes {
-		writeError(w, http.StatusRequestEntityTooLarge, "Datei zu groß")
-		return
-	}
-
-	raw = bytes.TrimPrefix(raw, []byte{0xEF, 0xBB, 0xBF}) // UTF-8 BOM
-	if len(bytes.TrimSpace(raw)) == 0 {
-		writeError(w, http.StatusBadRequest, "leere Datei")
-		return
-	}
-
-	// Detect the delimiter from the header line: ';' (German Excel) else ','.
-	firstLine := raw
-	if i := bytes.IndexByte(raw, '\n'); i >= 0 {
-		firstLine = raw[:i]
-	}
-	comma := ','
-	if bytes.Count(firstLine, []byte{';'}) > bytes.Count(firstLine, []byte{','}) {
-		comma = ';'
-	}
-
-	cr := csv.NewReader(bytes.NewReader(raw))
-	cr.Comma = comma
-	cr.FieldsPerRecord = -1 // tolerate ragged rows; we index defensively
-	cr.TrimLeadingSpace = true
-	records, err := cr.ReadAll()
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "CSV konnte nicht gelesen werden")
-		return
-	}
-	if len(records) == 0 {
-		writeError(w, http.StatusBadRequest, "leere Datei")
-		return
-	}
-	if len(records) > maxImportRows+1 {
-		writeError(w, http.StatusRequestEntityTooLarge, "zu viele Zeilen")
+	records, ok := readImportCSV(w, r)
+	if !ok {
 		return
 	}
 
@@ -157,6 +109,87 @@ func (h *Handler) ImportPersons(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	res, ok := h.importPersonRows(w, r, records, col)
+	if !ok {
+		return
+	}
+	h.audit(r, "import", "person", 0,
+		fmt.Sprintf("CSV-Import: %d angelegt, %d übersprungen, %d Fehler", res.Imported, res.Skipped, res.Failed))
+	writeJSON(w, http.StatusOK, res)
+}
+
+// readImportCSV reads the uploaded multipart "file" as CSV: size-capped, UTF-8 BOM
+// stripped, delimiter (';' or ',') detected from the header line, at most
+// maxImportRows data rows. On failure it has already written the error response.
+func readImportCSV(w http.ResponseWriter, r *http.Request) ([][]string, bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxImportBytes+1024)
+	// #nosec G120 -- the request body is capped by MaxBytesReader above, so the
+	// multipart parse is bounded and cannot exhaust memory.
+	if err := r.ParseMultipartForm(maxImportBytes + 1024); err != nil {
+		writeMultipartError(w, err, "Datei zu groß")
+		return nil, false
+	}
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "missing 'file' field")
+		return nil, false
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(io.LimitReader(file, maxImportBytes+1))
+	if err != nil || len(raw) > maxImportBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "Datei zu groß")
+		return nil, false
+	}
+
+	raw = bytes.TrimPrefix(raw, []byte{0xEF, 0xBB, 0xBF}) // UTF-8 BOM
+	if len(bytes.TrimSpace(raw)) == 0 {
+		writeError(w, http.StatusBadRequest, "leere Datei")
+		return nil, false
+	}
+
+	// Detect the delimiter from the header line: ';' (German Excel) else ','.
+	firstLine := raw
+	if i := bytes.IndexByte(raw, '\n'); i >= 0 {
+		firstLine = raw[:i]
+	}
+	comma := ','
+	if bytes.Count(firstLine, []byte{';'}) > bytes.Count(firstLine, []byte{','}) {
+		comma = ';'
+	}
+
+	cr := csv.NewReader(bytes.NewReader(raw))
+	cr.Comma = comma
+	cr.FieldsPerRecord = -1 // tolerate ragged rows; we index defensively
+	cr.TrimLeadingSpace = true
+	records, err := cr.ReadAll()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "CSV konnte nicht gelesen werden")
+		return nil, false
+	}
+	if len(records) == 0 {
+		writeError(w, http.StatusBadRequest, "leere Datei")
+		return nil, false
+	}
+	if len(records) > maxImportRows+1 {
+		writeError(w, http.StatusRequestEntityTooLarge, "zu viele Zeilen")
+		return nil, false
+	}
+	return records, true
+}
+
+// rowBlank reports a CSV row with only empty cells (ignored silently).
+func rowBlank(rec []string) bool {
+	for _, c := range rec {
+		if trim(c) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// importPersonRows imports the data rows in one transaction. On a database error it
+// has already written the response and reports ok=false.
+func (h *Handler) importPersonRows(w http.ResponseWriter, r *http.Request, records [][]string, col map[string]int) (importResult, bool) {
 	get := func(rec []string, field string) string {
 		if idx, ok := col[field]; ok && idx < len(rec) {
 			return csvUnguard(trim(rec[idx]))
@@ -172,21 +205,14 @@ func (h *Handler) ImportPersons(w http.ResponseWriter, r *http.Request) {
 	tx, err := h.Pool.Begin(ctx)
 	if err != nil {
 		serverError(w, r, "Import fehlgeschlagen – nichts wurde übernommen", err)
-		return
+		return importResult{}, false
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	for i := 1; i < len(records); i++ {
 		rec := records[i]
 		rowNo := i + 1 // 1-based including the header row
 
-		blank := true
-		for _, c := range rec {
-			if trim(c) != "" {
-				blank = false
-				break
-			}
-		}
-		if blank {
+		if rowBlank(rec) {
 			continue // ignore empty lines silently
 		}
 
@@ -217,7 +243,7 @@ func (h *Handler) ImportPersons(w http.ResponseWriter, r *http.Request) {
 			if err := tx.QueryRow(ctx,
 				`SELECT EXISTS(SELECT 1 FROM persons WHERE lower(email) = lower($1))`, req.Email).Scan(&exists); err != nil {
 				serverError(w, r, "Import fehlgeschlagen – nichts wurde übernommen", err)
-				return
+				return importResult{}, false
 			} else if exists {
 				res.Skipped++
 				continue
@@ -228,16 +254,13 @@ func (h *Handler) ImportPersons(w http.ResponseWriter, r *http.Request) {
 			 VALUES ($1,$2,$3,$4,$5,$6)`,
 			req.FirstName, req.LastName, req.Email, req.Phone, req.Address, req.Notes); err != nil {
 			serverError(w, r, "Import fehlgeschlagen – nichts wurde übernommen", err)
-			return
+			return importResult{}, false
 		}
 		res.Imported++
 	}
 	if err := tx.Commit(ctx); err != nil {
 		serverError(w, r, "Import fehlgeschlagen – nichts wurde übernommen", err)
-		return
+		return res, false
 	}
-
-	h.audit(r, "import", "person", 0,
-		fmt.Sprintf("CSV-Import: %d angelegt, %d übersprungen, %d Fehler", res.Imported, res.Skipped, res.Failed))
-	writeJSON(w, http.StatusOK, res)
+	return res, true
 }

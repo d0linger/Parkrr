@@ -503,7 +503,17 @@
         return false;
     }
 
-    const PG = { ringAreaS, pointInPoly, segCross, polySelfIntersects, insetRing, roomAreas, arcPts, parseDXF, rectsCollide, packRects, hasExitPath };
+    // Liegt der Punkt (px, py) im Block {x,y,w,h,rot}? x/y ist die linke obere Ecke des
+    // ungedrehten Rechtecks, gedreht wird um die Mitte (wie _quad). Die Stromzone fragt so,
+    // ob die Mitte eines Gefährts in ihr steht (Ausbau 8); internal/handlers nutzt dieselbe Rechnung.
+    const pointInBlock = (px, py, b) => {
+        const cx = b.x + b.w / 2, cy = b.y + b.h / 2, r = (b.rot || 0) * Math.PI / 180, c = Math.cos(r), s = Math.sin(r);
+        const dx = px - cx, dy = py - cy, lx = dx * c + dy * s, ly = -dx * s + dy * c, e = 1e-9;
+        return Math.abs(lx) <= b.w / 2 + e && Math.abs(ly) <= b.h / 2 + e;
+    };
+    const blockCenter = (b) => [b.x + b.w / 2, b.y + b.h / 2];
+
+    const PG = { ringAreaS, pointInPoly, segCross, polySelfIntersects, insetRing, roomAreas, arcPts, parseDXF, rectsCollide, packRects, hasExitPath, pointInBlock, blockCenter };
     if (typeof module !== 'undefined' && module.exports) module.exports = PG;
     if (root) root.PG = PG;
 })(typeof window !== 'undefined' ? window : null);

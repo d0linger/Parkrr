@@ -481,3 +481,15 @@ test('packRects — a MaxRects placement never lands on a preplaced vehicle', ()
     }
     // Either it found the clear corner or it declined; both are correct, stacking is not.
 });
+
+test('pointInBlock: Mitte, Rand und Drehung um die Blockmitte (Stromzone, Ausbau 8)', () => {
+  const zone = { x: 0, y: 0, w: 4, h: 2, rot: 0 };
+  assert.ok(PG.pointInBlock(2, 1, zone), 'Mitte liegt drin');
+  assert.ok(PG.pointInBlock(4, 2, zone), 'Ecke zählt als drin');
+  assert.ok(!PG.pointInBlock(4.01, 1, zone), 'knapp rechts daneben liegt draußen');
+  // Um 90° gedreht: aus 4×2 wird um die Mitte (2,1) ein stehendes 2×4.
+  const turned = { ...zone, rot: 90 };
+  assert.ok(PG.pointInBlock(2, 2.9, turned), 'unten im gedrehten Block');
+  assert.ok(!PG.pointInBlock(3.5, 1, turned), 'rechts außerhalb nach der Drehung');
+  assert.deepStrictEqual(PG.blockCenter({ x: 1, y: 2, w: 4, h: 2, rot: 45 }), [3, 3]);
+});

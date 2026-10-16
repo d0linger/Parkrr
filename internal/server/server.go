@@ -95,6 +95,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	// Der einzige öffentliche SCHREIBWEG: ein Briefkasten, kein Stift. Wünsche
 	// (Kontaktdaten, Abholtermin) landen als Anfrage beim Betreiber (Hundert 85/87).
 	mux.HandleFunc("POST /api/portal/requests", h.PortalCreateRequest)
+	mux.HandleFunc("GET /ical/{token}", h.CalendarFeed)
 
 	// --- Auth (protected) ---
 	mux.Handle("POST /api/auth/logout", authMgr.RequireLogout(hf(ah.Logout)))
@@ -129,6 +130,8 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/persons", editor(hf(h.CreatePerson)))
 	mux.Handle("POST /api/import/persons", editor(hf(h.ImportPersons)))
 	mux.Handle("GET /api/import/persons/template", editor(hf(h.ImportTemplate)))
+	mux.Handle("POST /api/import/vehicles", editor(hf(h.ImportVehicles)))
+	mux.Handle("GET /api/import/vehicles/template", editor(hf(h.VehicleImportTemplate)))
 	mux.Handle("POST /api/persons/{id}/portal-link", editor(hf(h.CreatePortalLink)))
 	mux.Handle("GET /api/persons/{id}/portal-links", editor(hf(h.ListPortalLinks)))
 	mux.Handle("POST /api/persons/{id}/portal-link/revoke", editor(hf(h.RevokePortalLinks)))
@@ -174,6 +177,12 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/invoices/overdue", authed(hf(h.OverdueInvoices)))
 	// Offene-Posten-Liste als druckfertiges Dokument mit Stichtag (Hundert 17).
 	mux.Handle("GET /api/reports/outstanding.pdf", authed(hf(h.OutstandingReportPDF)))
+	mux.Handle("GET /api/reports/week.pdf", authed(hf(h.WeekSchedulePDF)))
+	// Kalender-Abo (Ausbau 10): Verwaltung angemeldet, der Feed selbst öffentlich über
+	// einen widerrufbaren Schlüssel im Pfad (siehe handlers/schedule.go, server.logPath).
+	mux.Handle("GET /api/calendar/feed", authed(hf(h.CalendarFeedStatus)))
+	mux.Handle("POST /api/calendar/feed", authed(hf(h.CalendarFeedCreate)))
+	mux.Handle("DELETE /api/calendar/feed", authed(hf(h.CalendarFeedRevoke)))
 	// Steuerjahr (Einnahmenaufstellung): admin-only, like the invoice settings.
 	mux.Handle("GET /api/reports/tax-year", admin(hf(h.TaxYear)))
 	mux.Handle("GET /api/reports/tax-year.csv", admin(hf(h.TaxYearCSV)))
@@ -231,6 +240,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/vehicles/{id}/duplicate", editor(hf(h.DuplicateVehicle)))
 	mux.Handle("GET /api/vehicles/{id}/history", authed(hf(h.VehicleHistory)))
 	mux.Handle("GET /api/vehicles/{id}/label", authed(hf(h.VehicleLabel)))
+	mux.Handle("GET /api/halls/{id}/labels", authed(hf(h.HallLabels)))
 	// Literal segment beats the {id} pattern in Go's ServeMux, so this is safe.
 	mux.Handle("GET /api/vehicles/unassigned", authed(hf(h.ListUnassignedVehicles)))
 
@@ -316,6 +326,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/overview/forecast", authed(hf(h.OverviewForecast)))
 	mux.Handle("GET /api/occupancy", authed(hf(h.Occupancy)))
 	mux.Handle("GET /api/vehicles/ending-soon", authed(hf(h.EndingSoon)))
+	mux.Handle("GET /api/vehicles/incomplete", authed(hf(h.IncompleteVehicles)))
 
 	// --- CSV export (outstanding | payments | persons | vehicles) ---
 	mux.Handle("GET /api/export/{entity}", authed(hf(h.ExportCSV)))

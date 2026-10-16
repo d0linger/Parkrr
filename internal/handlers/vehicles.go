@@ -241,6 +241,12 @@ func (h *Handler) parseVehicleRequest(r *http.Request) (*parsedVehicle, error) {
 	if err := decodeJSON(r, &req); err != nil {
 		return nil, errors.New("invalid request body")
 	}
+	return h.validateVehicleRequest(r.Context(), req)
+}
+
+// validateVehicleRequest normalizes and checks a vehicle request. Shared by the JSON
+// endpoints and the CSV import, so an imported Gefährt passes the same rules.
+func (h *Handler) validateVehicleRequest(ctx context.Context, req vehicleRequest) (*parsedVehicle, error) {
 	req.Label = trim(req.Label)
 	req.LicensePlate = trim(req.LicensePlate)
 	req.Notes = trim(req.Notes)
@@ -304,7 +310,7 @@ func (h *Handler) parseVehicleRequest(r *http.Request) (*parsedVehicle, error) {
 	} else if err != nil {
 		return nil, errors.New("reserved_until must be YYYY-MM-DD")
 	}
-	sym, err := h.normPlannerSymbol(r.Context(), req.PlannerSymbol)
+	sym, err := h.normPlannerSymbol(ctx, req.PlannerSymbol)
 	if err != nil {
 		return nil, err
 	}
@@ -453,50 +459,20 @@ func (h *Handler) CreateVehicle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
-	var fallback float64
-	if pv.req.Rate == nil && pv.req.CostOverride == nil {
-		def, derr := categoryDefaultRate(r.Context(), tx, pv.req.CategoryID, pv.req.BillingPeriod)
-		if derr != nil {
-			if errors.Is(derr, pgx.ErrNoRows) {
-				writeError(w, http.StatusBadRequest, "category does not exist")
-				return
-			}
-			writeError(w, http.StatusInternalServerError, "could not create vehicle")
-			return
-		}
-		fallback = def
-	}
-	rate := effectiveRate(pv.req, fallback)
-	// A zero Tarif is also a deliberately free booking. Mark it now so a later
-	// edit of the Tarif cannot re-price this already locked vehicle.
-	costOverride := markZeroRate(rate, persistedCostOverride(pv.req, nil))
-	var id int64
-	err = tx.QueryRow(r.Context(),
-		`INSERT INTO vehicles (person_id, category_id, label, license_plate, notes,
-		        billing_period, rate, cost_override, start_date, end_date, status,
-		        reserved_from, reserved_until, needs_power, planner_symbol)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
-		pv.req.PersonID, pv.req.CategoryID, pv.req.Label, pv.req.LicensePlate,
-		pv.req.Notes, pv.req.BillingPeriod, rate, costOverride,
-		pv.startDate, pv.endDate, pv.req.Status, pv.reservedFrom, pv.reservedUntil, pv.req.NeedsPower, pv.req.PlannerSymbol,
-	).Scan(&id)
+	id, err := h.insertVehicleTx(r, tx, pv)
 	if err != nil {
-		if isForeignKeyViolation(err) {
+		switch {
+		case errors.Is(err, errVehicleCategoryMissing):
+			writeError(w, http.StatusBadRequest, "category does not exist")
+		case isForeignKeyViolation(err):
 			writeError(w, http.StatusBadRequest, "person or category does not exist")
-			return
+		default:
+			writeError(w, http.StatusInternalServerError, "could not create vehicle")
 		}
-		writeError(w, http.StatusInternalServerError, "could not create vehicle")
-		return
-	}
-	if err := h.recordStatusTx(r, tx, id, "", pv.req.Status, "angelegt"); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not create vehicle")
 		return
 	}
 	if err := h.auditCreatedTx(r.Context(), tx, r, "vehicle", id, "created vehicle "+vehicleLabel(pv.req.Label, pv.req.LicensePlate),
-		map[string]any{"label": pv.req.Label, "license_plate": pv.req.LicensePlate,
-			"person_id": pv.req.PersonID, "category_id": pv.req.CategoryID,
-			"status": pv.req.Status, "billing_period": pv.req.BillingPeriod,
-			"start_date": pv.req.StartDate}); err != nil {
+		vehicleCreatedSnapshot(pv)); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create vehicle")
 		return
 	}
@@ -505,6 +481,53 @@ func (h *Handler) CreateVehicle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeVehicle(w, r.Context(), id, http.StatusCreated)
+}
+
+var errVehicleCategoryMissing = errors.New("category does not exist")
+
+// vehicleCreatedSnapshot is the audit snapshot of a newly created vehicle.
+func vehicleCreatedSnapshot(pv *parsedVehicle) map[string]any {
+	return map[string]any{"label": pv.req.Label, "license_plate": pv.req.LicensePlate,
+		"person_id": pv.req.PersonID, "category_id": pv.req.CategoryID,
+		"status": pv.req.Status, "billing_period": pv.req.BillingPeriod,
+		"start_date": pv.req.StartDate}
+}
+
+// insertVehicleTx creates a validated vehicle inside tx: locks the price (Tarif
+// default unless a rate was given) and writes the first status entry. Shared by
+// CreateVehicle and the CSV import; each caller writes its own audit entry.
+func (h *Handler) insertVehicleTx(r *http.Request, tx pgx.Tx, pv *parsedVehicle) (int64, error) {
+	var fallback float64
+	if pv.req.Rate == nil && pv.req.CostOverride == nil {
+		def, derr := categoryDefaultRate(r.Context(), tx, pv.req.CategoryID, pv.req.BillingPeriod)
+		if derr != nil {
+			if errors.Is(derr, pgx.ErrNoRows) {
+				return 0, errVehicleCategoryMissing
+			}
+			return 0, derr
+		}
+		fallback = def
+	}
+	rate := effectiveRate(pv.req, fallback)
+	// A zero Tarif is also a deliberately free booking. Mark it now so a later
+	// edit of the Tarif cannot re-price this already locked vehicle.
+	costOverride := markZeroRate(rate, persistedCostOverride(pv.req, nil))
+	var id int64
+	if err := tx.QueryRow(r.Context(),
+		`INSERT INTO vehicles (person_id, category_id, label, license_plate, notes,
+		        billing_period, rate, cost_override, start_date, end_date, status,
+		        reserved_from, reserved_until, needs_power, planner_symbol)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+		pv.req.PersonID, pv.req.CategoryID, pv.req.Label, pv.req.LicensePlate,
+		pv.req.Notes, pv.req.BillingPeriod, rate, costOverride,
+		pv.startDate, pv.endDate, pv.req.Status, pv.reservedFrom, pv.reservedUntil, pv.req.NeedsPower, pv.req.PlannerSymbol,
+	).Scan(&id); err != nil {
+		return 0, err
+	}
+	if err := h.recordStatusTx(r, tx, id, "", pv.req.Status, "angelegt"); err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
 // UpdateVehicle edits a vehicle.
