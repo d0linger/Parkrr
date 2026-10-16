@@ -1134,11 +1134,11 @@ import { createRevenueChart } from './revenue-chart.js';
         const head = el('div', { class: 'page-head' }, el('h2', {}, opts.title));
         if (opts.onAdd && opts.canAdd !== false) {
             // Name statt "+ Neu": auf dem Telefon schwebt der Knopf ohne Seitenkopf (btn-add).
-            head.append(el('button', { class: 'btn btn-primary btn-sm btn-add', onclick: opts.onAdd }, opts.addLabel || '+ Neu'));
+            head.append(el('button', { class: 'btn btn-primary btn-sm btn-add', 'aria-keyshortcuts': 'N', onclick: opts.onAdd }, opts.addLabel || '+ Neu'));
         }
         page.append(head);
 
-        const search = el('input', { class: 'search', type: 'search', placeholder: 'Suche …', value: qRaw, 'aria-label': 'In ' + (opts.title || 'Liste') + ' suchen' });
+        const search = el('input', { class: 'search', type: 'search', placeholder: 'Suche …', value: qRaw, 'aria-label': 'In ' + (opts.title || 'Liste') + ' suchen', 'aria-keyshortcuts': '/' });
         const sortSel = el('select', { 'aria-label': 'Sortierung' }, ...opts.sorts.map((s, i) => el('option', { value: i, selected: i === sortIdx }, s.label)));
         const toolbar = el('div', { class: 'toolbar' }, el('div', { class: 'toolbar-primary' }, search, sortSel));
         // Der Filterzustand der Werkzeugleiste gehoert zum Listenzustand wie Suche,
@@ -1163,6 +1163,25 @@ import { createRevenueChart } from './revenue-chart.js';
         page.append(toolbar);
 
         const listEl = el('div', {});
+        // Gespeicherte Ansichten und kompakte Darstellung (Ausbau 5 und 6): beides
+        // Gerätewunsch, kein Datensatz; deshalb im Browser gemerkt.
+        if (opts.views) toolbar.append(savedViewsSelect(stateKey, opts.views));
+        if (opts.density) {
+            const dk = 'parkrr-density-' + stateKey;
+            let compact = false;
+            try { compact = localStorage.getItem(dk) === 'compact'; } catch (e) { /* storage blocked */ }
+            listEl.classList.toggle('list-compact', compact);
+            const dBtn = el('button', { class: 'btn btn-sm ' + (compact ? 'btn-primary' : 'btn-ghost'), type: 'button',
+                'aria-pressed': String(compact), title: 'Dichtere Zeilen für lange Listen' }, 'Kompakt');
+            dBtn.addEventListener('click', () => {
+                compact = !compact;
+                listEl.classList.toggle('list-compact', compact);
+                dBtn.classList.toggle('btn-primary', compact); dBtn.classList.toggle('btn-ghost', !compact);
+                dBtn.setAttribute('aria-pressed', String(compact));
+                try { localStorage.setItem(dk, compact ? 'compact' : 'cards'); } catch (e) { /* storage blocked */ }
+            });
+            toolbar.append(dBtn);
+        }
         const pagerEl = el('div', {});
         const countEl = el('p', { class: 'list-summary', role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true' });
         // Warnt, wenn der Server MEHR Datensätze hat, als er geliefert hat. Ohne das
@@ -1280,6 +1299,57 @@ import { createRevenueChart } from './revenue-chart.js';
         opts.refresh = refresh;
         refresh();
         return opts;
+    }
+
+    // Gespeicherte Filteransichten (Ausbau 5). Eine Ansicht ist der Suchteil der Route
+    // (?status=…&person=…), den die Listen ohnehin schreiben; gespeichert wird er unter
+    // einem Namen im Browser. Mitgelieferte Ansichten zeigen, wofür das gut ist.
+    const VIEW_KEY = (listKey) => 'parkrr-views-' + listKey;
+    function loadViews(listKey) {
+        try {
+            const v = JSON.parse(localStorage.getItem(VIEW_KEY(listKey)) || '[]');
+            return Array.isArray(v) ? v.filter((x) => x && typeof x.name === 'string' && typeof x.q === 'string').slice(0, 30) : [];
+        } catch (e) { return []; }
+    }
+    function storeViews(listKey, views) {
+        try { localStorage.setItem(VIEW_KEY(listKey), JSON.stringify(views)); return true; } catch (e) { return false; }
+    }
+    const canonicalQuery = (params) => [...params.entries()].filter(([k, v]) => k && v !== '')
+        .sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(v)).join('&');
+    function savedViewsSelect(listKey, { base, system = [] }) {
+        const views = loadViews(listKey);
+        const curQ = canonicalQuery(parseHash().query);
+        const all = system.map((s) => ({ ...s, system: true })).concat(views);
+        const match = all.find((v) => v.q === curQ && curQ);
+        const sel = el('select', { class: 'views-select', 'aria-label': 'Gespeicherte Ansichten' },
+            el('option', { value: '' }, match ? 'Ansicht: ' + match.name : 'Ansichten …'),
+            ...all.map((v, i) => el('option', { value: 'v' + i, disabled: v === match || null }, (v.system ? '' : '★ ') + v.name)),
+            curQ && !match ? el('option', { value: 'save' }, 'Aktuelle Filter speichern …') : null,
+            match && !match.system ? el('option', { value: 'del' }, '„' + match.name + '“ entfernen …') : null,
+            curQ ? el('option', { value: 'reset' }, 'Alle Filter aufheben') : null);
+        sel.addEventListener('change', async () => {
+            const v = sel.value; sel.value = '';
+            if (v.startsWith('v')) { const view = all[Number(v.slice(1))]; if (view) navigate(base + (view.q ? '?' + view.q : '')); return; }
+            if (v === 'reset') { navigate(base); return; }
+            if (v === 'save') {
+                await formModal({ title: 'Ansicht speichern', submitLabel: 'Speichern',
+                    fields: [{ name: 'name', label: 'Name', required: true, help: 'Zum Beispiel „Halle B, endet bald“. Gespeichert in diesem Browser.' }],
+                    save: async (data) => {
+                        const name = String(data.name || '').trim().slice(0, 40);
+                        if (!name) throw new Error('Bitte einen Namen angeben.');
+                        const next = loadViews(listKey).filter((x) => x.name !== name).concat([{ name, q: curQ }]);
+                        if (!storeViews(listKey, next)) throw new Error('Dieser Browser erlaubt das Speichern nicht.');
+                        toast('Ansicht „' + name + '“ gespeichert', 'success'); render();
+                    } });
+                return;
+            }
+            if (v === 'del' && match) {
+                if (!await confirmDialog('Ansicht entfernen?', '„' + match.name + '“ wird aus diesem Browser entfernt. Die Daten bleiben unverändert.', 'Entfernen', { tone: 'danger' })) return;
+                storeViews(listKey, loadViews(listKey).filter((x) => x.name !== match.name));
+                toast('Ansicht entfernt', 'success'); render();
+            }
+        });
+        return sel;
     }
 
     // collapsibleRows renders the first `limit` items and tucks the rest behind a
@@ -1968,15 +2038,20 @@ import { createRevenueChart } from './revenue-chart.js';
                     el('div', { class: 'muted', style: 'font-size:var(--text-xs);margin:.4rem 0 .12rem' }, 'Trend · platziert (letzte ' + n + ' Aufnahmen, max ' + mx + ')'), spark));
             }
             // UX4 — per-hall occupancy as a small proportional bar chart (inline SVG-free, CSP-safe).
-            const halls = (occ.halls || []).filter((hh) => hh.placed > 0);
+            // Jede Halle ist ein Weg in ihren Planer, auch eine leere: gerade die freie
+            // Halle ist die Antwort auf "wo stelle ich das nächste Gefährt hin?".
+            const halls = occ.halls || [];
             const maxP = Math.max(1, ...halls.map((hh) => hh.placed || 0));
             halls.forEach((hh) => {
-                occCard.append(el('div', { class: 'status-row dash-occrow' },
-                    el('div', { class: 'status-name' },
+                const n = hh.placed || 0;
+                occCard.append(el('button', { class: 'status-row dash-occrow dash-occrow-btn', type: 'button',
+                    'aria-label': hh.name + ' (' + hh.garage_name + ') im Planer öffnen, ' + (n ? n + ' platziert' : 'leer'),
+                    onclick: () => navigate('hall/' + hh.hall_id) },
+                    el('span', { class: 'status-name' },
                         el('span', { class: 'occ-hallnm' }, esc(hh.name)),
                         el('span', { class: 'muted occ-garnm', style: 'font-weight:400;font-size:var(--text-xs);margin-left:.4rem' }, esc(hh.garage_name))),
-                    el('div', { class: 'dash-bar', title: hh.placed + ' platziert' }, el('div', { class: 'dash-bar-fill', style: 'width:' + Math.round((hh.placed || 0) / maxP * 100) + '%' })),
-                    el('div', { class: 'bar-val' }, String(hh.placed))));
+                    el('span', { class: 'dash-bar', title: n ? n + ' platziert' : 'leer' }, n ? el('span', { class: 'dash-bar-fill', style: 'width:' + Math.round(n / maxP * 100) + '%' }) : null),
+                    el('span', { class: 'bar-val' + (n ? '' : ' muted') }, n ? String(n) : 'leer')));
             });
             page.append(occCard);
         }
@@ -2068,6 +2143,11 @@ import { createRevenueChart } from './revenue-chart.js';
         mountList(page, {
             stateKey: 'persons', // fester Schluessel, unabhaengig vom Anzeigetitel
             title: 'Personen', emptyIcon: 'users', emptyText: 'Noch keine Personen.', sourcePath: '/persons',
+            density: true,
+            views: { base: 'persons', system: [
+                { name: 'Mit offenem Saldo', q: 'owed=1' },
+                { name: 'Überfällige Rechnung', q: 'overdue=1' },
+            ] },
             onAdd: canManage() ? () => personForm() : null, addLabel: '+ Person', firstLabel: '+ Erste Person',
             items: state.persons,
             searchText: (p) => norm(personName(p) + ' ' + p.email + ' ' + p.phone),
@@ -3668,6 +3748,12 @@ import { createRevenueChart } from './revenue-chart.js';
         mountList(page, {
             stateKey: 'vehicles', // fester Schluessel, unabhaengig vom Anzeigetitel
             title: 'Gefährte', emptyIcon: 'car', emptyText: 'Keine Gefährte in dieser Ansicht.', sourcePath: '/vehicles',
+            density: true,
+            views: { base: 'vehicles', system: [
+                { name: 'Aktiv, ohne Platz', q: 'active=1&unplaced=1' },
+                { name: 'Reserviert', q: 'status=reserved' },
+                { name: 'Endet in 30 Tagen', q: 'ending=30' },
+            ] },
             onAdd: canManage() ? () => vehicleForm() : null, addLabel: '+ Gefährt', firstLabel: '+ Erstes Gefährt',
             firstText: 'Noch keine Gefährte. Ein neues Gefährt steht danach hier und im Planer unter „Nicht platziert“.',
             items: vehicles,
@@ -3902,7 +3988,7 @@ import { createRevenueChart } from './revenue-chart.js';
             plateChip(v),
             el('div', { class: 'card-meta' }, el('span', { class: 'badge badge-cat' }, esc(v.category_name)), ' ', esc(v.person_name),
                 v.photo_count ? el('span', { class: 'muted' }, '  ', icon('camera', 13), ' ' + v.photo_count) : null),
-            el('div', { class: 'card-meta' }, rateLine),
+            el('div', { class: 'card-meta veh-rate' }, rateLine),
             accruedLine);
         // Bound extra costs attributed to this Gefährt (also shown when nested under
         // a Pauschale), so the total picture is visible without opening the detail.
@@ -11111,7 +11197,20 @@ import { createRevenueChart } from './revenue-chart.js';
         { label: 'Backup', sub: 'Sicherung', url: '#/backup', kw: 'sicherung archiv wiederherstellen s3' },
     ];
     const CMDK_KIND = { person: 'Person', vehicle: 'Gefährt', invoice: 'Rechnung', garage: 'Garage',
-        hall: 'Halle', category: 'Tarif', service: 'Dienst', nav: 'Gehe zu' };
+        hall: 'Halle', category: 'Tarif', service: 'Dienst', nav: 'Gehe zu', action: 'Aktion' };
+    // Aktionen der Palette (Ausbau 4). Jede öffnet nur einen vorhandenen Dialog; keine
+    // eigene Fachlogik. Rollen wie bei den Knöpfen: Leser sehen nur die neutralen.
+    const withLookups = (fn) => async () => {
+        if (!state.persons.length || !state.categories.length) { try { await refreshLookups(); } catch (e) { /* Formular meldet selbst, was fehlt */ } }
+        fn();
+    };
+    const CMDK_ACTIONS = () => [
+        canManage() && { label: 'Person anlegen', sub: 'Neue Stammdaten', kw: 'neu neue person kunde mieter anlegen erstellen', run: () => personForm() },
+        canManage() && { label: 'Gefährt einlagern', sub: 'Neues Gefährt mit Tarif', kw: 'neu neues gefaehrt fahrzeug einlagern einstellen anlegen auto wohnwagen wohnmobil', run: withLookups(() => vehicleForm()) },
+        canBill() && { label: 'Zusatzkosten buchen', sub: 'Leistung erfassen', kw: 'neu neue position zusatzkosten leistung buchen strom reinigung', run: withLookups(() => chargeForm()) },
+        { label: 'Tastenkürzel', sub: 'Übersicht', kw: 'tastatur kuerzel shortcut hilfe taste', run: () => showShortcutHelp() },
+        { label: 'Hell oder dunkel', sub: 'Darstellung umschalten', kw: 'theme dunkel hell modus farbe darstellung', run: () => toggleTheme() },
+    ].filter(Boolean);
 
     // Globale Befehlspalette (⌘K / Lupe): springt zu Personen, Gefährten, Rechnungen,
     // Garagen, Hallen, Tarifen und Diensten.
@@ -11155,11 +11254,16 @@ import { createRevenueChart } from './revenue-chart.js';
         overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
         // EIN Weg zum Ziel für Klick und Enter. navigate() statt location.href, damit
         // ein Sprung auf die bereits offene Adresse trotzdem neu zeichnet.
-        const go = (it) => { close(); navigate(String(it.url).replace(/^#\/?/, '')); };
+        const go = (it) => { close(); if (it.run) it.run(); else navigate(String(it.url).replace(/^#\/?/, '')); };
 
         const navHits = (q) => CMDK_NAV.concat(isAdmin() ? CMDK_NAV_ADMIN : [])
             .filter((c) => norm(c.label + ' ' + c.sub + ' ' + c.kw).includes(q))
             .map((c) => ({ kind: 'nav', label: c.label, sub: c.sub, url: c.url }));
+        // Aktionen zuerst: "neu" oder "anlegen" soll sofort zum Dialog führen. Ohne
+        // Eingabe stehen alle Aktionen da, so ist die Palette auch ohne Suchbegriff nützlich.
+        const actionHits = (q) => CMDK_ACTIONS()
+            .filter((c) => !q || norm(c.label + ' ' + c.sub + ' ' + c.kw).includes(q))
+            .map((c) => ({ kind: 'action', label: c.label, sub: c.sub, url: '#', run: c.run }));
 
         const rowId = (i) => 'cmdk-opt-' + i;
         // Leerer Hinweis heißt weg, nicht "leere Zeile mit Innenabstand".
@@ -11226,10 +11330,10 @@ import { createRevenueChart } from './revenue-chart.js';
             // seq MUSS auch hier hochzählen: sonst füllt eine noch laufende Antwort zur
             // vorigen, längeren Eingabe die Liste wieder — mit Treffern zu einem Text,
             // den der Benutzer gerade weggelöscht hat.
-            if (raw.length < 2) { seq++; show([]); return; }
+            if (raw.length < 2) { seq++; show(raw ? [] : actionHits('')); return; }
             // Die Sprungziele stehen sofort da, die Datentreffer kommen nach; sonst
             // flackert die Liste bei jedem Tastendruck auf leer.
-            const local = navHits(norm(raw));
+            const local = actionHits(norm(raw)).concat(navHits(norm(raw)));
             show(local, true);
             const mine = ++seq;
             timer = setTimeout(async () => {
@@ -11247,7 +11351,8 @@ import { createRevenueChart } from './revenue-chart.js';
         };
         document.addEventListener('keydown', onKey, true);
         input.addEventListener('input', run);
-        show([]);
+        show(actionHits(''));
+        setHint('Tippen zum Suchen · ↑↓ wählen · Enter öffnen · Esc schließen');
     }
 
     // Public self-service portal (no login): rendered when the hash is
@@ -11607,8 +11712,41 @@ import { createRevenueChart } from './revenue-chart.js';
             if (sb) sb.title = 'Suche · Strg K';
         }
         document.addEventListener('keydown', (e) => {
-            if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K') && state.user) { e.preventDefault(); openCommandPalette(); }
+            if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K') && state.user) { e.preventDefault(); openCommandPalette(); return; }
+            handleAppShortcut(e);
         });
+    }
+
+    // App-weite Tastenkürzel (Ausbau 7). EINE Tabelle: aus ihr entstehen die Hilfe auf
+    // „?“ und das Verhalten, damit beides nicht auseinanderläuft. Der Hallenplaner hat
+    // eigene Kürzel und eine eigene „?“-Hilfe; dort greift diese Tabelle nicht.
+    const IS_MAC = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || '');
+    const APP_SHORTCUTS = [
+        { keys: IS_MAC ? '⌘ K' : 'Strg K', label: 'Suche und Befehle öffnen' },
+        { keys: '/', label: 'Ins Suchfeld der Liste springen', key: '/', run: () => {
+            const s = $('#page input.search'); if (!s || s.closest('[hidden]')) return false; s.focus(); s.select(); return true; } },
+        { keys: 'N', label: 'Neuen Eintrag in dieser Liste anlegen', key: 'n', run: () => {
+            const b = $('#page .btn-add'); if (!b || b.disabled || !b.offsetParent) return false; b.click(); return true; } },
+        { keys: '?', label: 'Diese Übersicht öffnen', key: '?', run: () => { showShortcutHelp(); return true; } },
+        { keys: 'Esc', label: 'Dialog oder Menü schließen' },
+    ];
+    function showShortcutHelp() {
+        contentModal('Tastaturkürzel', (body) => {
+            const list = el('dl', { class: 'kbd-help' });
+            for (const s of APP_SHORTCUTS) list.append(el('dt', {}, el('kbd', {}, s.keys)), el('dd', {}, s.label));
+            body.append(list, el('p', { class: 'card-meta', style: 'margin-top:.9rem' }, 'Im Hallenplaner zeigt „?“ die Kürzel des Planers.'));
+        });
+    }
+    function handleAppShortcut(e) {
+        if (!state.user || e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
+        const t = e.target;
+        if (t && t.closest && t.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]')) return;
+        if (document.querySelector('dialog[open]') || !$('#portal-view').hidden) return;
+        const route = parseHash().name;
+        if (route === 'hall' || route === 'garage') return;
+        const k = e.key === '?' ? '?' : (e.key || '').toLowerCase();
+        const sc = APP_SHORTCUTS.find((s) => s.key === k);
+        if (sc && sc.run() !== false) e.preventDefault();
     }
     document.addEventListener('DOMContentLoaded', init);
 })();

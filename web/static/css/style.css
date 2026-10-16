@@ -2445,6 +2445,23 @@ a.portal-row.link:hover { color: var(--primary-ink); }
 .dash-occrow .occ-garnm{flex:none}
 .dash-bar{flex:1;min-width:60px;height:8px;border-radius:6px;background:var(--bg-elev-2);overflow:hidden}
 .dash-bar-fill{height:100%;border-radius:6px;background:var(--primary);min-width:3px}
+/* Hallenzeile als Weg in den Planer (Ausbau 3): ganze Zeile tippbar, leere Hallen sichtbar. */
+.dash-occrow-btn{width:100%;background:none;border:0;border-radius:8px;padding:.3rem .4rem;font:inherit;color:inherit;text-align:left;cursor:pointer}
+.dash-occrow-btn:hover{background:var(--bg-elev-2)}
+.dash-occrow-btn .dash-bar,.dash-occrow-btn .dash-bar-fill{display:block}
+/* Tastenkürzel-Übersicht (Ausbau 7) */
+.kbd-help{display:grid;grid-template-columns:auto 1fr;gap:.55rem 1rem;align-items:center;margin:0}
+.kbd-help dt{margin:0}.kbd-help dd{margin:0}
+.kbd-help kbd{display:inline-block;min-width:2.2em;text-align:center;font:600 var(--text-sm) var(--font-mono);padding:.1rem .45rem;border:1px solid var(--border);border-bottom-width:2px;border-radius:6px;background:var(--bg-elev-2);color:var(--text)}
+/* Kompakte Listen (Ausbau 6): dieselben Karten und Aktionen, nur dichter. Am Desktop
+   stehen Schieber und Status neben dem Namen statt darunter. */
+.list-compact .card{padding:.5rem .8rem;margin-bottom:.4rem}
+.list-compact .card h3{font-size:var(--text-md);margin:0}
+.list-compact .card .card-meta{margin-top:0!important}
+.list-compact .card .veh-rate{display:none}
+.list-compact .card .controls-row{margin-top:.35rem}
+@media (min-width:900px){.list-compact .card:has(> .controls-row){display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:1rem;align-items:center}.list-compact .card > .controls-row{margin-top:0;justify-content:flex-end}}
+.views-select{max-width:14rem}
 .dash-spark-wrap{margin-top:.5rem}
 .dash-spark{display:block;overflow:visible}
 .dash-spark-line{fill:none;stroke:var(--primary-ink);stroke-width:1.8;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}

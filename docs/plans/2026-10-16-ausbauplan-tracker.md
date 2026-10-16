@@ -16,11 +16,11 @@ Legende: `[x]` umgesetzt · `[~]` teilweise (Grund dahinter) · `[ ]` offen · `
 
 ## B2 Bedienung
 
-- [ ] 3 Hallen-Belegung anklickbar, mit Auslastung und leeren Hallen
-- [ ] 7 Tastenkürzel-Übersicht auf „?“
-- [ ] 4 Befehlspalette mit Aktionen
-- [ ] 6 Kompakte Listenansicht
-- [ ] 5 Gespeicherte Filteransichten
+- [~] 3 Hallen-Belegung: jede Halle (auch leer) öffnet ihren Planer. Auslastung in Prozent bewusst nicht: Plätze entstehen im Planer erst beim Platzieren, eine Platzzahl wäre irreführend; Flächenauslastung folgt mit Nr. 38.
+- [x] 7 Tastenkürzel-Übersicht auf „?“ (Tabelle `APP_SHORTCUTS`; `/` Suche, `N` neu; im Planer gilt dessen eigene Hilfe)
+- [x] 4 Befehlspalette mit Aktionen (Person, Gefährt, Zusatzkosten, Kürzel, Hell/Dunkel; rollenabhängig)
+- [x] 6 Kompakte Listenansicht (Gefährte, Personen; Schalter „Kompakt“, im Browser gemerkt)
+- [x] 5 Gespeicherte Filteransichten (Gefährte, Personen; mitgelieferte und eigene, im Browser)
 
 ## B3 Betrieb
 
