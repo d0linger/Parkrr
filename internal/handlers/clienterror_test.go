@@ -32,4 +32,17 @@ func TestClientError(t *testing.T) {
 	if got := call(`{"message":"` + strings.Repeat("A", 9000) + `"}`); got != http.StatusBadRequest {
 		t.Errorf("oversized body: got %d, want 400", got)
 	}
+	// unknown fields in body should be rejected with 400 via decodeJSON.
+	if got := call(`{"message":"boom","unknown_field":"value"}`); got != http.StatusBadRequest {
+		t.Errorf("unknown field in body: got %d, want 400", got)
+	}
+
+	// invalid Content-Type should be rejected with 400 via decodeJSON.
+	r := httptest.NewRequest("POST", "/api/client-error", strings.NewReader(`{"message":"boom"}`))
+	r.Header.Set("Content-Type", "text/plain")
+	w := httptest.NewRecorder()
+	h.ClientError(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("invalid content-type: got %d, want 400", w.Code)
+	}
 }
