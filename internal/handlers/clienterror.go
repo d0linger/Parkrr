@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"log/slog"
 	"net/http"
 )
@@ -19,7 +18,7 @@ func (h *Handler) ClientError(w http.ResponseWriter, r *http.Request) {
 		Version string `json:"version"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := decodeJSON(r, &in); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
