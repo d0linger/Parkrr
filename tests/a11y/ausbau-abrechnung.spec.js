@@ -97,7 +97,7 @@ test('Einstellungen: Mail-Automatik speichern; Person: nicht automatisch mahnen'
   await card.locator('#ma_days').fill('21');
   await card.getByRole('button', { name: 'Mail-Automatik speichern' }).click();
   await expect(card.locator('.mail-feedback')).toHaveText('Gespeichert.');
-  expect(puts[0]).toEqual({ auto_send_invoices: false, auto_dunning: true, dunning_days: 21 });
+  expect(puts[0]).toEqual({ auto_send_invoices: false, auto_dunning: true, dunning_days: 21, end_reminder_days: 0 });
   await open(page, 'persons/1');
   await page.getByText('Nicht automatisch mahnen').click();
   await expect.poll(() => puts.length).toBe(2);

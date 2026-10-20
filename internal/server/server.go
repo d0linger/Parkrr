@@ -95,6 +95,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	// Der einzige öffentliche SCHREIBWEG: ein Briefkasten, kein Stift. Wünsche
 	// (Kontaktdaten, Abholtermin) landen als Anfrage beim Betreiber (Hundert 85/87).
 	mux.HandleFunc("POST /api/portal/requests", h.PortalCreateRequest)
+	mux.HandleFunc("GET /api/portal/pickup-slots", h.PortalPickupSlots)
 	mux.HandleFunc("GET /ical/{token}", h.CalendarFeed)
 
 	// --- Auth (protected) ---
@@ -182,6 +183,15 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("GET /api/mail-automation", admin(hf(h.GetMailAutomation)))
 	mux.Handle("PUT /api/mail-automation", admin(hf(h.SaveMailAutomation)))
 	mux.Handle("PUT /api/persons/{id}/dunning", editor(hf(h.SetPersonDunning)))
+	// Saison und Kunden (Ausbau 21–23, 31).
+	mux.Handle("GET /api/pickup-windows", editor(hf(h.GetPickupWindows)))
+	mux.Handle("PUT /api/pickup-windows", editor(hf(h.SavePickupWindows)))
+	mux.Handle("GET /api/waitlist", editor(hf(h.ListWaitlist)))
+	mux.Handle("GET /api/waitlist/summary", authed(hf(h.WaitlistSummary)))
+	mux.Handle("POST /api/waitlist", editor(hf(h.CreateWaitlist)))
+	mux.Handle("PUT /api/waitlist/{id}", editor(hf(h.UpdateWaitlist)))
+	mux.Handle("DELETE /api/waitlist/{id}", editor(hf(h.DeleteWaitlist)))
+	mux.Handle("POST /api/waitlist/{id}/convert", editor(hf(h.ConvertWaitlist)))
 	mux.Handle("POST /api/invoices/{id}/cancel", editor(hf(h.CancelInvoice)))
 	mux.Handle("POST /api/persons/{id}/pay-invoices", editor(hf(h.PayInvoices)))
 	mux.Handle("GET /api/invoices/overdue", authed(hf(h.OverdueInvoices)))
@@ -719,6 +729,9 @@ var expirySweeps = []struct {
 	// Abgelaufene Sitzungen; identisch zu auth.CleanupExpired, hier nur der Vollständigkeit
 	// halber NICHT aufgeführt — die läuft weiter über den Manager (eigener Pool-Zugriff).
 	{"webauthn_ceremonies", `DELETE FROM webauthn_ceremonies WHERE expires_at < now()`},
+	// Warteliste (Ausbau 31): die Einwilligung gilt für ein Jahr, danach geht der
+	// Eintrag, gleich ob offen, übernommen oder abgesagt.
+	{"waitlist", `DELETE FROM waitlist WHERE created_at < now() - interval '12 months'`},
 	// 30 Tage Nachlauf: ein gerade abgelaufener ODER widerrufener Link soll in der
 	// Verwaltung noch als "abgelaufen"/"widerrufen" sichtbar sein, statt spurlos zu
 	// verschwinden.

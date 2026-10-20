@@ -307,8 +307,12 @@ func (h *Handler) RevokePortalLinks(w http.ResponseWriter, r *http.Request) {
 }
 
 type portalVehicle struct {
-	Label  string `json:"label"`
-	Status string `json:"status"`
+	// ID und Vertragsende braucht der Verlängerungswunsch (Ausbau 22); beides nur für
+	// die eigenen Gefährte der Person hinter dem Link.
+	ID      int64      `json:"id"`
+	Label   string     `json:"label"`
+	Status  string     `json:"status"`
+	EndDate *time.Time `json:"end_date,omitempty"`
 }
 
 type portalInvoice struct {
@@ -372,7 +376,7 @@ func (h *Handler) PortalSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	vrows, err := h.Pool.Query(r.Context(),
-		`SELECT COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), cat.name, 'Gefährt'), v.status
+		`SELECT v.id, COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), cat.name, 'Gefährt'), v.status, v.end_date
 		   FROM vehicles v JOIN categories cat ON cat.id = v.category_id
 		  WHERE v.person_id=$1 AND NOT v.archived
 		  ORDER BY v.id`, pid)
@@ -383,7 +387,7 @@ func (h *Handler) PortalSummary(w http.ResponseWriter, r *http.Request) {
 	defer vrows.Close()
 	for vrows.Next() {
 		var pv portalVehicle
-		if err := vrows.Scan(&pv.Label, &pv.Status); err != nil {
+		if err := vrows.Scan(&pv.ID, &pv.Label, &pv.Status, &pv.EndDate); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan failed")
 			return
 		}

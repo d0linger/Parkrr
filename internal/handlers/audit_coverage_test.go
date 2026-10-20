@@ -191,6 +191,11 @@ var auditIgnoredColumns = map[string]bool{
 // wrong for a column that is a side effect in one handler and the user's actual
 // change in another — a blanket entry would silently license omitting it for good.
 var auditIgnoredPerFunc = map[string]map[string]bool{
+	// UpdateWaitlist: Kontaktdaten eines Interessenten (noch keine Person). Die
+	// Warteliste löscht sich nach 12 Monaten, weil die Einwilligung nur dafür gilt;
+	// Vorher/Nachher-Werte im Änderungsprotokoll würden diese Frist unterlaufen. Der
+	// Eintrag vermerkt deshalb nur „Kontaktdaten geändert“, die Sachfelder stehen im Diff.
+	"UpdateWaitlist": {"name": true, "email": true, "phone": true, "note": true},
 	// DeletePayment reverses a payment and clears `paid` on the vehicles/charges that
 	// payment had stamped. That is the mechanical cascade of un-booking it, not an edit
 	// of those records — the payment's own entry is the trail. Everywhere else `paid` is

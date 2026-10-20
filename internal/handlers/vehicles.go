@@ -1233,6 +1233,11 @@ func (h *Handler) vehicleDesc(r *http.Request, id int64) string {
 
 type duplicateRequest struct {
 	StartDate string `json:"start_date"`
+	// Saisonwechsel (Ausbau 21), beide optional und standardmäßig aus:
+	// CurrentTariff nimmt den heutigen Tarifpreis statt des vereinbarten Preises,
+	// Reserve legt die Kopie als Reservierung ab dem Beginn an statt eingelagert.
+	CurrentTariff bool `json:"current_tariff"`
+	Reserve       bool `json:"reserve"`
 }
 
 // DuplicateVehicle re-stores a vehicle for a new period, reusing all master
@@ -1293,16 +1298,32 @@ func (h *Handler) DuplicateVehicle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	costOverride := markZeroRate(rate, sourceOverride)
+	if req.CurrentTariff {
+		// Der heutige Tarif statt des Vorjahrespreises; wie beim Anlegen festgeschrieben.
+		def, derr := categoryDefaultRate(ctx, tx, categoryID, period)
+		if derr != nil {
+			serverError(w, r, "could not resolve tariff", derr)
+			return
+		}
+		rate = def
+		costOverride = markZeroRate(rate, nil)
+	}
+	status := models.StatusStored
+	var reservedFrom *time.Time
+	if req.Reserve {
+		status = models.StatusReserved
+		reservedFrom = &start
+	}
 	var newID int64
 	err = tx.QueryRow(ctx,
 		`INSERT INTO vehicles (person_id, category_id, label, license_plate, notes,
-		        billing_period, rate, cost_override, start_date, status,
+		        billing_period, rate, cost_override, start_date, status, reserved_from,
 		        length_m, width_m, height_m, weight_t, needs_power, planner_symbol)
 		 SELECT person_id, category_id, label, license_plate, notes,
-		        billing_period, $3, $4, $2, 'stored',
+		        billing_period, $3, $4, $2, $5, $6,
 		        length_m, width_m, height_m, weight_t, needs_power, planner_symbol
 		 FROM vehicles WHERE id = $1
-		 RETURNING id`, id, start, rate, costOverride).Scan(&newID)
+		 RETURNING id`, id, start, rate, costOverride, status, reservedFrom).Scan(&newID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "vehicle not found")
@@ -1320,12 +1341,12 @@ func (h *Handler) DuplicateVehicle(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, "could not copy vehicle photos", err)
 		return
 	}
-	if err := h.recordStatusTx(r, tx, newID, "", models.StatusStored, "erneut eingestellt"); err != nil {
+	if err := h.recordStatusTx(r, tx, newID, "", status, "erneut eingestellt"); err != nil {
 		serverError(w, r, "could not copy vehicle history", err)
 		return
 	}
 	if err := h.auditCreatedTx(ctx, tx, r, "vehicle", newID, "re-stored vehicle from #"+strconv.FormatInt(id, 10),
-		map[string]any{"restored_from_vehicle_id": id, "status": models.StatusStored}); err != nil {
+		map[string]any{"restored_from_vehicle_id": id, "status": status, "rate": rate, "current_tariff": req.CurrentTariff}); err != nil {
 		serverError(w, r, "could not record vehicle copy", err)
 		return
 	}

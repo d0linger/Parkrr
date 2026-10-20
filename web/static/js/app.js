@@ -1393,7 +1393,7 @@ import { createRevenueChart } from './revenue-chart.js';
     // garage/hall sind Unteransichten des Planers und markieren denselben Reiter.
     // Kalender öffnet die Übersicht, Übergabevorlagen gehören zu den Gefährten.
     const TAB_FOR = { dashboard: 'dashboard', persons: 'persons', person: 'persons', vehicles: 'vehicles', vehicle: 'vehicles', tariffs: 'tariffs',
-        garages: 'garages', garage: 'garages', hall: 'garages', calendar: 'dashboard', 'handover-templates': 'vehicles' };
+        garages: 'garages', garage: 'garages', hall: 'garages', calendar: 'dashboard', 'handover-templates': 'vehicles', waitlist: 'persons' };
     // Ziele, die nur im Menü (☰) stehen: dort markiert, und ☰ selbst zeigt an, dass
     // die aktuelle Seite darin liegt — bisher war auf diesen Seiten nichts markiert.
     const MENU_ROUTES = new Set(['invoices', 'billing', 'finance', 'taxyear', 'settings', 'users', 'audit', 'backup', 'help']);
@@ -1736,7 +1736,7 @@ import { createRevenueChart } from './revenue-chart.js';
         if (!open.length) return null;
         const card = el('div', { class: 'card' },
             el('h3', {}, 'Kundenwünsche ', el('span', { class: 'sec-count' }, String(open.length))));
-        const KIND = { contact_update: 'Kontaktdaten', pickup: 'Abholung' };
+        const KIND = { contact_update: 'Kontaktdaten', pickup: 'Abholung', extend: 'Verlängerung' };
         const resolve = async (req, action, node) => {
             try {
                 await api.post('/portal-requests/' + req.id + '/resolve', { action });
@@ -1747,9 +1747,12 @@ import { createRevenueChart } from './revenue-chart.js';
         };
         open.forEach((rq) => {
             const pl = asObj(rq.payload);
+            const dd = (v) => v ? new Date(v).toLocaleDateString('de-DE') : '?';
             const detail = rq.kind === 'pickup'
-                ? ('Wunschtermin ' + (pl.date ? new Date(pl.date).toLocaleDateString('de-DE') : '?') + (pl.note ? ' — ' + pl.note : ''))
-                : Object.entries(pl).map(([k, v]) => (k === 'email' ? 'E-Mail' : k === 'phone' ? 'Telefon' : 'Adresse') + ': ' + v).join(' · ');
+                ? ('Wunschtermin ' + dd(pl.date) + (pl.time ? ' um ' + pl.time : '') + (pl.note ? ' — ' + pl.note : ''))
+                : rq.kind === 'extend'
+                    ? ((pl.vehicle || 'Gefährt') + ' bis ' + dd(pl.until) + (pl.previous_end ? ' (bisher ' + dd(pl.previous_end) + ')' : '') + (pl.note ? ' — ' + pl.note : ''))
+                    : Object.entries(pl).map(([k, v]) => (k === 'email' ? 'E-Mail' : k === 'phone' ? 'Telefon' : 'Adresse') + ': ' + v).join(' · ');
             const row = el('div', { class: 'pr-row' },
                 el('div', { class: 'pay-main' },
                     el('div', { class: 'pay-method' },
@@ -1758,11 +1761,32 @@ import { createRevenueChart } from './revenue-chart.js';
                 el('div', { class: 'card-actions' },
                     rq.kind === 'contact_update'
                         ? el('button', { class: 'btn btn-primary btn-sm', title: 'Gewünschte Kontaktdaten in die Stammdaten übernehmen', onclick: (e) => resolve(rq, 'apply', e.currentTarget.closest('.pr-row')) }, 'Übernehmen')
-                        : el('button', { class: 'btn btn-primary btn-sm', title: 'Termin vereinbart — Wunsch schließen', onclick: (e) => resolve(rq, 'done', e.currentTarget.closest('.pr-row')) }, 'Erledigt'),
+                        : rq.kind === 'extend'
+                            ? el('button', { class: 'btn btn-primary btn-sm', title: 'Neues Ende am Gefährt eintragen und den Wunsch schließen', onclick: (e) => applyExtension(rq, e.currentTarget.closest('.pr-row'), resolve) }, 'Übernehmen')
+                            : el('button', { class: 'btn btn-primary btn-sm', title: 'Termin vereinbart — Wunsch schließen', onclick: (e) => resolve(rq, 'done', e.currentTarget.closest('.pr-row')) }, 'Erledigt'),
                     el('button', { class: 'btn btn-ghost btn-sm', onclick: (e) => resolve(rq, 'reject', e.currentTarget.closest('.pr-row')) }, 'Ablehnen')));
             card.append(row);
         });
         return card;
+    }
+
+    // Verlängerungswunsch übernehmen (Ausbau 22): das Gefährt mit seinen eigenen Werten
+    // und dem neuen Ende speichern, über denselben Weg wie das Formular (mit allen
+    // Prüfungen am Server), dann den Wunsch schließen.
+    async function applyExtension(rq, node, resolve) {
+        const pl = asObj(rq.payload);
+        if (!await confirmDialog('Verlängerung übernehmen?', (pl.vehicle || 'Gefährt') + ' wird bis ' + new Date(pl.until).toLocaleDateString('de-DE') + ' verlängert.', 'Übernehmen', { tone: 'neutral' })) return;
+        try {
+            const v = await api.get('/vehicles/' + pl.vehicle_id);
+            await api.put('/vehicles/' + v.id, {
+                person_id: v.person_id, category_id: v.category_id, label: v.label, license_plate: v.license_plate, notes: v.notes,
+                billing_period: v.billing_period, rate: Number(v.rate) !== 0 ? v.rate : (v.effective_rate ?? v.rate),
+                start_date: String(v.start_date).slice(0, 10), status: v.status, end_date: pl.until,
+                reserved_from: v.reserved_from ? v.reserved_from.slice(0, 10) : null, reserved_until: v.reserved_until ? v.reserved_until.slice(0, 10) : null,
+                needs_power: !!v.needs_power, planner_symbol: v.planner_symbol || null,
+            });
+            await resolve(rq, 'done', node);
+        } catch (e) { toast(e.message || 'Verlängerung nicht möglich', 'error'); }
     }
 
     function readinessChecklist(data, compact = false) {
@@ -1785,7 +1809,7 @@ import { createRevenueChart } from './revenue-chart.js';
         return wrap;
     }
 
-    function todayWorklist({ overdue, ending, portalRequests, occ, readiness, incomplete }) {
+    function todayWorklist({ overdue, ending, portalRequests, occ, readiness, incomplete, waitlist }) {
         const items = [];
         (overdue || []).forEach((invoice) => items.push({
             priority: 0, tone: 'critical', title: invoice.person_name + ' · Rechnung ' + invoice.number,
@@ -1795,7 +1819,7 @@ import { createRevenueChart } from './revenue-chart.js';
         }));
         (portalRequests || []).filter((request) => request.status === 'offen').forEach((request) => items.push({
             priority: 1, tone: 'attention', title: request.person_name + ' · Kundenwunsch',
-            meta: (request.kind === 'pickup' ? 'Abholung abstimmen' : 'Kontaktdaten prüfen') + ' · Kundenservice',
+            meta: (request.kind === 'pickup' ? 'Abholung abstimmen' : request.kind === 'extend' ? 'Verlängerung prüfen' : 'Kontaktdaten prüfen') + ' · Kundenservice',
             href: '#/person/' + request.person_id, action: 'Person öffnen',
         }));
         (ending || []).forEach((vehicle) => items.push({
@@ -1815,6 +1839,11 @@ import { createRevenueChart } from './revenue-chart.js';
                 meta: (halls.length === 1 ? pm[0].hall_name + ' · ' : '') + 'nicht in einer Stromzone · Disposition',
                 href: halls.length === 1 ? '#/hall/' + halls[0] : '#/vehicles?missing=power', action: halls.length === 1 ? 'Planer öffnen' : 'Gefährte anzeigen' });
         }
+        // Warteliste (Ausbau 31): Wartende, für deren Tarif gerade ein Platz frei wurde.
+        ((waitlist && waitlist.by_category) || []).filter((m) => m.freed > 0).forEach((m) => items.push({
+            priority: 2, tone: 'attention', title: m.waiting + (m.waiting === 1 ? ' Wartender' : ' Wartende') + ' für ' + m.category_name,
+            meta: m.freed + (m.freed === 1 ? ' Gefährt' : ' Gefährte') + ' dieses Tarifs in den letzten 14 Tagen abgeholt · Vertrieb', href: '#/waitlist', action: 'Warteliste öffnen',
+        }));
         const nd = incomplete ? Number(incomplete.no_dimensions) || 0 : 0;
         if (nd) items.push({ priority: 3, tone: 'normal', title: nd + (nd === 1 ? ' Gefährt' : ' Gefährte') + ' ohne Maße',
             meta: 'Der Planer kann die Passung nicht prüfen · Stammdaten', href: '#/vehicles?missing=dims', action: 'Gefährte anzeigen' });
@@ -1880,7 +1909,7 @@ import { createRevenueChart } from './revenue-chart.js';
             return fallback;
         });
         // These independent reads share one network round trip, instead of five.
-        const [ov, occ, overdue, ending, portalRequests, readiness, incomplete] = await Promise.all([
+        const [ov, occ, overdue, ending, portalRequests, readiness, incomplete, waitlist] = await Promise.all([
             api.get('/overview' + (dashYear ? '?year=' + dashYear : '')),
             optional('/occupancy', 'Belegung', null),
             optional('/invoices/overdue', 'Überfällige Rechnungen', []),
@@ -1888,6 +1917,7 @@ import { createRevenueChart } from './revenue-chart.js';
             canManage() ? optional('/portal-requests', 'Kundenwünsche', []) : Promise.resolve([]),
             isAdmin() ? optional('/admin/readiness', 'Betriebsbereitschaft', null) : Promise.resolve(null),
             optional('/vehicles/incomplete', 'Unvollständige Gefährte', null),
+            canManage() ? optional('/waitlist/summary', 'Warteliste', null) : Promise.resolve(null),
         ]);
         const prCard = portalRequestsCard(portalRequests);
         dashYear = ov.year;
@@ -1922,7 +1952,7 @@ import { createRevenueChart } from './revenue-chart.js';
             return;
         }
 
-        page.append(todayWorklist({ overdue, ending, portalRequests, occ, readiness, incomplete }));
+        page.append(todayWorklist({ overdue, ending, portalRequests, occ, readiness, incomplete, waitlist }));
 
         // Money first — "Offen gesamt" is the operator's lead metric, shown as a
         // gradient hero; Umsatz (with a YoY delta) and Bezahlt sit beside it.
@@ -2184,6 +2214,7 @@ import { createRevenueChart } from './revenue-chart.js';
                 if (canManage()) {
                     out.push(el('button', { class: 'btn btn-ghost btn-sm', type: 'button',
                         title: 'Personen aus CSV importieren', onclick: () => importPersonsDialog() }, icon('upload'), ' Import'));
+                    out.push(el('a', { class: 'btn btn-ghost btn-sm', href: '#/waitlist' }, 'Warteliste'));
                 }
                 return out;
             },
@@ -3820,18 +3851,19 @@ import { createRevenueChart } from './revenue-chart.js';
 
     // Mail-Automatik (Ausbau 19 und 20): beides aus, bis es bewusst eingeschaltet wird.
     async function mailAutomationCard() {
-        let m = { auto_send_invoices: false, auto_dunning: false, dunning_days: 14 };
+        let m = { auto_send_invoices: false, auto_dunning: false, dunning_days: 14, end_reminder_days: 0 };
         try { m = (await api.get('/mail-automation')) || m; } catch (e) { /* Standard zeigen */ }
         const send = el('input', { type: 'checkbox', id: 'ma_send' }); send.checked = !!m.auto_send_invoices;
         const dun = el('input', { type: 'checkbox', id: 'ma_dunning' }); dun.checked = !!m.auto_dunning;
         const days = el('input', { type: 'number', id: 'ma_days', min: '3', max: '90', value: m.dunning_days || 14, 'aria-describedby': 'ma_days_help' });
         // Eigene Klasse: .save-feedback gehört dem Formular darüber (eine Statuszeile je Seite).
+        const endDays = el('input', { type: 'number', id: 'ma_end', min: '0', max: '60', value: m.end_reminder_days || 0, 'aria-describedby': 'ma_end_help' });
         const fb = el('p', { class: 'mail-feedback', role: 'status', 'aria-live': 'polite' });
         const btn = el('button', { class: 'btn btn-primary', type: 'button' }, 'Mail-Automatik speichern');
         btn.addEventListener('click', async () => {
             btn.disabled = true; fb.textContent = '';
             try {
-                await api.put('/mail-automation', { auto_send_invoices: send.checked, auto_dunning: dun.checked, dunning_days: Number(days.value) || 14 });
+                await api.put('/mail-automation', { auto_send_invoices: send.checked, auto_dunning: dun.checked, dunning_days: Number(days.value) || 14, end_reminder_days: Math.max(0, Number(endDays.value) || 0) });
                 fb.textContent = 'Gespeichert.'; toast('Mail-Automatik gespeichert', 'success');
             } catch (e) { fb.textContent = 'Nicht gespeichert: ' + e.message; toast(e.message, 'error'); }
             finally { btn.disabled = false; }
@@ -3843,6 +3875,8 @@ import { createRevenueChart } from './revenue-chart.js';
             el('label', { class: 'switch' }, dun, el('span', { class: 'track' }), el('span', {}, 'Automatisch mahnen (Zahlungserinnerung, 1. und 2. Mahnung)')),
             el('div', { class: 'bill-field' }, el('label', { for: 'ma_days' }, 'Tage bis zur nächsten Stufe'), days,
                 el('div', { class: 'card-meta', id: 'ma_days_help' }, 'Ab Fälligkeit bzw. ab der letzten Mahnung. Die Stufe zählt erst, wenn die Mail zugestellt ist. Personen lassen sich einzeln ausnehmen.')),
+            el('div', { class: 'bill-field' }, el('label', { for: 'ma_end' }, 'Erinnerung vor Vertragsende (Tage)'), endDays,
+                el('div', { class: 'card-meta', id: 'ma_end_help' }, '0 = aus. Kunden bekommen so viele Tage vor dem Ende eine Mail: verlängern oder Abholtermin vereinbaren, beides auch über das Portal.')),
             el('div', { class: 'form-savebar' }, btn, fb));
     }
 
@@ -3908,6 +3942,60 @@ import { createRevenueChart } from './revenue-chart.js';
         return wrap;
     }
 
+    // Saisonwechsel (Ausbau 21): abgeholte Gefährte der letzten zwölf Monate in einem
+    // Zug erneut einstellen. Jede Zeile läuft über „Erneut einstellen“ (eigener Eintrag
+    // im Protokoll, Fotos mitkopiert); bereits wieder eingestellte fehlen in der Liste.
+    async function seasonRolloverDialog(vehicles) {
+        const t = today();
+        const yearAgo = new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10);
+        const key = (v) => String(v.person_id) + '|' + (norm(v.license_plate || '') || norm(v.label || ''));
+        const restored = new Set(vehicles.filter((v) => v.status !== 'cancelled' && !(v.status === 'collected')).map(key));
+        const candidates = vehicles.filter((v) => v.status === 'collected' && v.end_date && v.end_date.slice(0, 10) >= yearAgo && !restored.has(key(v)));
+        if (!candidates.length) { toast('Keine abgeholten Gefährte der letzten zwölf Monate, die noch nicht wieder eingestellt sind'); return; }
+        const now = new Date();
+        const defStart = (now.getMonth() >= 10 ? now.getFullYear() + 1 : now.getFullYear()) + '-11-01';
+        const catPrice = (v) => { const c = state.categories.find((x) => x.id === v.category_id); return c ? (v.billing_period === 'yearly' ? c.default_yearly_cost : c.default_monthly_cost) : null; };
+        contentModal('Saisonwechsel', (body, close) => {
+            const startIn = el('input', { type: 'date', id: 'sr_start', value: defStart });
+            const tariff = el('input', { type: 'checkbox', id: 'sr_tariff' });
+            const reserve = el('input', { type: 'checkbox', id: 'sr_reserve', checked: defStart > t });
+            startIn.addEventListener('change', () => { reserve.checked = startIn.value > today(); });
+            body.append(el('div', { class: 'sr-opts' },
+                el('label', { for: 'sr_start' }, 'Neuer Beginn', startIn),
+                el('label', { class: 'switch' }, tariff, el('span', { class: 'track' }), el('span', {}, 'Aktueller Tarif statt Vorjahrespreis')),
+                el('label', { class: 'switch' }, reserve, el('span', { class: 'track' }), el('span', {}, 'Als Reservierung bis zum Beginn'))));
+            const boxes = new Map();
+            const list = el('div', { class: 'remind-list' });
+            candidates.forEach((v) => {
+                const cb = el('input', { type: 'checkbox', id: 'sr_' + v.id, checked: true });
+                boxes.set(v.id, cb);
+                const now$ = eur(v.effective_rate), cat$ = catPrice(v);
+                list.append(el('label', { class: 'remind-row', for: 'sr_' + v.id }, cb,
+                    el('span', {}, el('strong', {}, esc(vehicleTitle(v)) + ' · ' + esc(v.person_name || '')),
+                        el('span', { class: 'card-meta' }, 'abgeholt ' + fmtDate(v.end_date) + ' · bisher ' + now$
+                            + (cat$ != null && Math.abs(cat$ - v.effective_rate) > 0.005 ? ', Tarif heute ' + eur(cat$) : '')))));
+            });
+            const out = el('div', { class: 'remind-out', role: 'status', 'aria-live': 'polite' });
+            const go = el('button', { class: 'btn btn-primary', type: 'button' }, 'Einstellen');
+            go.addEventListener('click', async () => {
+                const ids = [...boxes].filter(([, cb]) => cb.checked).map(([id]) => id);
+                if (!ids.length || !startIn.value) { out.textContent = 'Gefährte und Beginn wählen.'; return; }
+                go.disabled = true; let ok = 0; const failed = [];
+                for (const id of ids) {
+                    out.textContent = 'Stelle ' + (ok + failed.length + 1) + ' von ' + ids.length + ' ein …';
+                    try { await api.post('/vehicles/' + id + '/duplicate', { start_date: startIn.value, current_tariff: tariff.checked, reserve: reserve.checked }); ok++; }
+                    catch (e) { failed.push({ id, error: e.message }); }
+                }
+                out.textContent = '';
+                out.append(el('p', {}, ok + ' von ' + ids.length + ' eingestellt.'));
+                if (failed.length) out.append(el('ul', { class: 'import-errors' }, ...failed.map((f) => el('li', {}, el('b', {}, esc(vehicleTitle(candidates.find((v) => v.id === f.id) || {}) || 'Gefährt') + ': '), f.error || 'fehlgeschlagen'))));
+                go.textContent = 'Fertig'; go.disabled = false;
+                go.onclick = () => { close(); render(); };
+            });
+            body.append(list, el('div', { class: 'btn-row', style: 'margin-top:.8rem' }, go), out);
+        });
+    }
+
     // Gleiche Regel wie GET /api/vehicles/incomplete: nur aktive Gefährte zählen.
     function vehicleMissing(v, cs) {
         if (v.archived || !(v.status === 'stored' || v.status === 'reserved')) return cs.missing === 'power' && cs.powerIds && cs.powerIds.has(v.id);
@@ -3916,6 +4004,82 @@ import { createRevenueChart } from './revenue-chart.js';
         if (cs.missing === 'power') return !!(cs.powerIds && cs.powerIds.has(v.id));
         return true;
     }
+
+    // ================= WARTELISTE (Ausbau 31) =================
+    function waitlistForm(existing) {
+        const cats = state.categories.filter((c) => !c.archived);
+        return formModal({
+            title: existing ? 'Wartelisten-Eintrag bearbeiten' : 'Auf die Warteliste',
+            fields: [
+                { name: 'name', label: 'Name', required: true, value: existing?.name },
+                { name: 'email', label: 'E-Mail', type: 'email', value: existing?.email },
+                { name: 'phone', label: 'Telefon', value: existing?.phone },
+                { name: 'category_id', label: 'Tarif / Typ', type: 'select', value: existing?.category_id ?? '', options: [{ value: '', label: 'noch offen' }].concat(cats.map((c) => ({ value: c.id, label: c.name }))) },
+                { name: 'wanted_from', label: 'Gewünscht ab', type: 'date', value: existing?.wanted_from ? existing.wanted_from.slice(0, 10) : '' },
+                { name: 'wanted_until', label: 'Gewünscht bis', type: 'date', value: existing?.wanted_until ? existing.wanted_until.slice(0, 10) : '' },
+                { name: 'length_m', label: 'Länge (m)', type: 'number', step: '0.01', min: 0, value: existing?.length_m ?? '' },
+                { name: 'width_m', label: 'Breite (m)', type: 'number', step: '0.01', min: 0, value: existing?.width_m ?? '' },
+                { name: 'note', label: 'Notiz', type: 'textarea', value: existing?.note },
+                { name: 'consent', label: 'Einwilligung liegt vor: Kontaktdaten dürfen für die Warteliste ein Jahr gespeichert werden', type: 'checkbox', value: existing ? !!existing.consent : false },
+            ],
+            save: async (d) => {
+                const num = (v) => (v === '' || v == null ? null : Number(v));
+                const payload = { name: d.name, email: d.email, phone: d.phone, category_id: d.category_id ? Number(d.category_id) : null,
+                    wanted_from: d.wanted_from || null, wanted_until: d.wanted_until || null, length_m: num(d.length_m), width_m: num(d.width_m),
+                    note: d.note, consent: !!d.consent, status: existing?.status || 'offen' };
+                if (existing) await api.put('/waitlist/' + existing.id, payload); else await api.post('/waitlist', payload);
+                toast('Warteliste gespeichert', 'success'); render();
+            },
+        });
+    }
+    routes.waitlist = async (page) => {
+        if (!canManage()) { page.innerHTML = ''; page.append(emptyState('lock', 'Nur für Bearbeiter.')); return; }
+        await refreshLookups();
+        const items = (await api.get('/waitlist')) || [];
+        const STATUS = { offen: ['offen', 'badge-reserved'], uebernommen: ['übernommen', 'badge-stored'], abgesagt: ['abgesagt', 'badge-ended'] };
+        mountList(page, {
+            stateKey: 'waitlist', title: 'Warteliste', emptyIcon: 'users', items,
+            onAdd: () => waitlistForm(), addLabel: '+ Eintrag', firstLabel: '+ Erster Eintrag',
+            firstText: 'Niemand wartet. Ist die Halle voll, notierst du Anfragen hier statt auf einem Zettel; wer zuerst fragt, steht oben.',
+            searchText: (e) => norm([e.name, e.email, e.phone, e.category_name, e.note].join(' ')),
+            sorts: [{ label: 'Wer zuerst fragte', cmp: (a, b) => (a.status === 'offen' ? 0 : 1) - (b.status === 'offen' ? 0 : 1) || String(a.created_at).localeCompare(String(b.created_at)) }],
+            render: (e) => {
+                const [label, cls] = STATUS[e.status] || [e.status, ''];
+                const wish = [e.category_name, e.wanted_from ? 'ab ' + fmtDate(e.wanted_from) : '', e.wanted_until ? 'bis ' + fmtDate(e.wanted_until) : '',
+                    e.length_m ? e.length_m + ' × ' + (e.width_m || '?') + ' m' : ''].filter(Boolean).join(' · ');
+                return el('div', { class: 'card' },
+                    el('div', { class: 'card-row' },
+                        el('div', { style: 'flex:1' }, el('h3', {}, esc(e.name), ' ', el('span', { class: 'badge ' + cls }, label)),
+                            el('div', { class: 'card-meta' }, [e.email, e.phone].filter(Boolean).join(' · ')),
+                            wish ? el('div', { class: 'card-meta' }, esc(wish)) : null,
+                            el('div', { class: 'card-meta' }, 'eingetragen ' + fmtDate(e.created_at) + (e.note ? ' · ' + esc(e.note) : ''))),
+                        el('div', { class: 'card-actions' },
+                            e.status === 'offen' ? el('button', { class: 'btn btn-primary btn-sm', type: 'button', onclick: async () => {
+                                try {
+                                    const res = await api.post('/waitlist/' + e.id + '/convert', {});
+                                    await refreshLookups();
+                                    toast('Person angelegt', 'success');
+                                    navigate('persons/' + res.person_id);
+                                    setTimeout(() => vehicleForm(null, res.person_id, { category_id: e.category_id || undefined, start_date: e.wanted_from ? e.wanted_from.slice(0, 10) : undefined }), 400);
+                                } catch (err) { toast(err.message, 'error'); }
+                            } }, 'Übernehmen') : null,
+                            e.person_id ? el('a', { class: 'btn btn-ghost btn-sm', href: '#/persons/' + e.person_id }, 'Person') : null,
+                            el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': e.name + ' bearbeiten', onclick: () => waitlistForm(e) }, icon('edit')),
+                            e.status === 'offen' ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: async () => {
+                                // Nur die Felder, die der Server kennt (unbekannte lehnt er ab).
+                                const body = { name: e.name, email: e.email, phone: e.phone, category_id: e.category_id, length_m: e.length_m, width_m: e.width_m,
+                                    wanted_from: e.wanted_from ? e.wanted_from.slice(0, 10) : null, wanted_until: e.wanted_until ? e.wanted_until.slice(0, 10) : null,
+                                    note: e.note, consent: e.consent, status: 'abgesagt' };
+                                try { await api.put('/waitlist/' + e.id, body); toast('Abgesagt', 'success'); render(); }
+                                catch (err) { toast(err.message, 'error'); }
+                            } }, 'Absagen') : null,
+                            el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': e.name + ' löschen', onclick: async () => {
+                                if (!await confirmDialog('Eintrag löschen?', e.name + ' wird von der Warteliste gelöscht.', 'Löschen')) return;
+                                try { await api.del('/waitlist/' + e.id); toast('Gelöscht', 'success'); render(); } catch (err) { toast(err.message, 'error'); }
+                            } }, icon('trash')))));
+            },
+        });
+    };
 
     routes.vehicles = async (page, _id, query = new URLSearchParams()) => {
         await refreshLookups();
@@ -4031,7 +4195,9 @@ import { createRevenueChart } from './revenue-chart.js';
                 });
                 const importBtn = canManage() ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button',
                     title: 'Gefährte aus CSV importieren', onclick: () => importCsvDialog('vehicles') }, icon('upload'), ' Import') : null;
-                return [filterBtn, group, bulkBtn, importBtn];
+                const seasonBtn = canManage() ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button',
+                    title: 'Abgeholte Gefährte der letzten Saison erneut einstellen', onclick: () => seasonRolloverDialog(vehicles) }, icon('redo'), ' Saisonwechsel') : null;
+                return [filterBtn, group, bulkBtn, importBtn, seasonBtn];
             },
             // Hide archived (closed) vehicles unless the Archiv toggle is on.
             extraFilter: (v, cs) => (cs.showArchived || !v.archived) &&
@@ -7207,6 +7373,48 @@ import { createRevenueChart } from './revenue-chart.js';
         return card;
     }
 
+    // Abholzeitfenster (Ausbau 23): wöchentliche Fenster für Abholtermine im Portal.
+    const WEEKDAYS = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
+    const hhmm = (m) => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+    const toMin = (v) => { const [h, mm] = String(v || '').split(':').map(Number); return Number.isFinite(h) && Number.isFinite(mm) ? h * 60 + mm : NaN; };
+    function pickupWindowsCard() {
+        const card = el('div', { class: 'card pickup-windows' }, el('h3', {}, 'Abholzeitfenster'),
+            el('p', { class: 'card-meta' }, 'Sind Fenster festgelegt, wählen Kunden im Portal einen freien Zeitpunkt statt nur eines Datums. Ohne Fenster bleibt es beim Wunschdatum.'));
+        const list = el('div', { class: 'pw-list' });
+        const fb = el('p', { class: 'mail-feedback', role: 'status', 'aria-live': 'polite' });
+        let rows = [];
+        const draw = () => {
+            list.innerHTML = '';
+            if (!rows.length) list.append(el('p', { class: 'muted' }, 'Noch keine Fenster.'));
+            rows.forEach((w, i) => {
+                const n = (k) => 'pw_' + i + '_' + k;
+                const day = el('select', { id: n('day'), 'aria-label': 'Wochentag' }, ...WEEKDAYS.map((d, k) => el('option', { value: k + 1, selected: w.weekday === k + 1 }, d)));
+                const from = el('input', { type: 'time', id: n('from'), value: hhmm(w.start_min), 'aria-label': 'Von' });
+                const to = el('input', { type: 'time', id: n('to'), value: hhmm(w.end_min), 'aria-label': 'Bis' });
+                const step = el('select', { id: n('step'), 'aria-label': 'Schritt' }, ...[15, 20, 30, 45, 60].map((m) => el('option', { value: m, selected: w.slot_min === m }, m + ' min')));
+                const cap = el('input', { type: 'number', id: n('cap'), min: '1', max: '20', value: w.capacity, 'aria-label': 'Abholungen je Zeitpunkt' });
+                day.onchange = () => { w.weekday = Number(day.value); };
+                from.onchange = () => { w.start_min = toMin(from.value); };
+                to.onchange = () => { w.end_min = toMin(to.value); };
+                step.onchange = () => { w.slot_min = Number(step.value); };
+                cap.onchange = () => { w.capacity = Number(cap.value) || 1; };
+                list.append(el('div', { class: 'pw-row' }, day, from, el('span', { 'aria-hidden': 'true' }, 'bis'), to, step, cap,
+                    el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': 'Fenster entfernen', onclick: () => { rows.splice(i, 1); draw(); } }, icon('trash', 15))));
+            });
+        };
+        const save = el('button', { class: 'btn btn-primary btn-sm', type: 'button' }, 'Fenster speichern');
+        save.addEventListener('click', async () => {
+            save.disabled = true; fb.textContent = '';
+            try { rows = (await api.put('/pickup-windows', rows)) || []; draw(); fb.textContent = 'Gespeichert.'; toast('Abholzeitfenster gespeichert', 'success'); }
+            catch (e) { fb.textContent = 'Nicht gespeichert: ' + e.message; }
+            finally { save.disabled = false; }
+        });
+        card.append(list, el('div', { class: 'btn-row', style: 'gap:.5rem;flex-wrap:wrap;margin-top:.5rem' },
+            el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => { rows.push({ weekday: 6, start_min: 540, end_min: 720, slot_min: 30, capacity: 2 }); draw(); } }, '+ Fenster'), save), fb);
+        api.get('/pickup-windows').then((l) => { rows = l || []; draw(); }).catch(() => { list.append(el('p', { class: 'muted' }, 'Fenster konnten nicht geladen werden.')); });
+        return card;
+    }
+
     routes.settings = async (page) => {
         page.innerHTML = '';
         page.append(el('div', { class: 'detail-head' }, el('button', { class: 'back-btn', onclick: () => navigate('dashboard') }, '‹'), el('h2', { style: 'margin:0' }, 'Einstellungen')));
@@ -7320,6 +7528,7 @@ import { createRevenueChart } from './revenue-chart.js';
                 s.current ? null : el('button', { class: 'btn btn-ghost btn-sm', onclick: () => revokeSession(s.token) }, 'Abmelden')));
         }
         colB.append(calendarFeedCard());
+        if (canManage()) colB.append(pickupWindowsCard());
         if (canManage()) colB.append(el('div', { class: 'card template-links' }, el('h3', {}, 'Arbeitsvorlagen'),
             el('a', { href: '#/handover-templates' }, 'Übergabeprotokolle', el('span', { 'aria-hidden': 'true' }, '›'))));
         if (isAdmin()) {
@@ -7775,7 +7984,7 @@ import { createRevenueChart } from './revenue-chart.js';
         (overdue || []).forEach((iv) => add(iv.due_on, 'due', 'Fällig: ', 'Rechnung ' + iv.number, '#/invoices/' + iv.id));
         (requests || []).filter((r) => r.status === 'offen' && r.kind === 'pickup').forEach((r) => {
             const pl = asObj(r.payload);
-            add(pl.date, 'wish', 'Abholwunsch: ', r.person_name, '#/person/' + r.person_id);
+            add(pl.date, 'wish', 'Abholwunsch' + (pl.time ? ' ' + pl.time : '') + ': ', r.person_name, '#/person/' + r.person_id);
         });
 
         // Monatsraster: Mo-So, fuehrende Leerzellen aus dem Wochentag des Ersten.
@@ -11507,6 +11716,7 @@ import { createRevenueChart } from './revenue-chart.js';
     const CMDK_NAV = [
         { label: 'Übersicht', sub: 'Dashboard', url: '#/dashboard', kw: 'start home uebersicht zahlen kennzahlen' },
         { label: 'Personen', sub: 'Stammdaten', url: '#/persons', kw: 'kunde halter mieter adresse kontakt' },
+        { label: 'Warteliste', sub: 'Interessenten ohne freien Platz', url: '#/waitlist', kw: 'warteliste interessent anfrage voll warten' },
         { label: 'Gefährte', sub: 'Fahrzeuge', url: '#/vehicles', kw: 'auto wohnwagen wohnmobil boot anhaenger kennzeichen' },
         { label: 'Zusatzkosten', sub: 'Buchungen', url: '#/finance', kw: 'kosten strom reinigung leistung' },
         { label: 'Rechnungen', sub: 'Offen, überfällig, bezahlt', url: '#/invoices', kw: 'rechnung beleg mahnung storno offen ueberfaellig' },
@@ -11737,6 +11947,7 @@ import { createRevenueChart } from './revenue-chart.js';
             requests: 'Anliegen', req_contact: 'Kontaktdaten ändern', req_pickup: 'Abholung anmelden',
             req_email: 'Neue E-Mail', req_phone: 'Neue Telefonnummer', req_address: 'Neue Adresse',
             req_date: 'Wunschtermin', req_note: 'Anmerkung (optional)', req_send: 'Absenden',
+            req_slot: 'Termin', req_extend: 'Einlagerung verlängern', req_vehicle: 'Gefährt', req_until: 'Verlängern bis', req_no_slots: 'Zurzeit sind keine Abholtermine frei. Bitte melden Sie sich beim Betreiber.',
             req_sent: 'Übermittelt — der Betreiber meldet sich.', req_err: 'Senden fehlgeschlagen.',
             req_hint: 'Änderungen werden vom Betreiber geprüft und übernommen.', sign_out: 'Portal verlassen',
             // Dieselben Worte wie in der Betreiberansicht (STATUS_LABEL): der Kunde las
@@ -11755,6 +11966,7 @@ import { createRevenueChart } from './revenue-chart.js';
             requests: 'Requests', req_contact: 'Update contact details', req_pickup: 'Request pickup',
             req_email: 'New e-mail', req_phone: 'New phone number', req_address: 'New address',
             req_date: 'Preferred date', req_note: 'Note (optional)', req_send: 'Send',
+            req_slot: 'Time slot', req_extend: 'Extend storage', req_vehicle: 'Vehicle', req_until: 'Extend until', req_no_slots: 'No pickup slots are available right now. Please contact the operator.',
             req_sent: 'Submitted — the operator will get back to you.', req_err: 'Sending failed.',
             req_hint: 'Changes are reviewed and applied by the operator.', sign_out: 'Leave portal',
             status: { reserved: 'reserved', stored: 'stored', collected: 'collected', cancelled: 'cancelled' },
@@ -11965,11 +12177,42 @@ import { createRevenueChart } from './revenue-chart.js';
             const pNote = el('input', { type: 'text', placeholder: P9.req_note, 'aria-label': P9.req_note });
             const pMsg = el('p', { class: 'muted', role: 'status' });
             const pBtn = el('button', { class: 'btn btn-primary btn-sm', type: 'submit' }, P9.req_send);
-            const pickup = el('form', { class: 'portal-form' }, el('label', {}, P9.req_date, pDate), el('label', {}, P9.req_note, pNote), pBtn);
-            pickup.addEventListener('submit', e => { e.preventDefault(); send({ kind: 'pickup', date: pDate.value, note: pNote.value.trim() }, pMsg, pBtn); });
+            // Zeitfenster (Ausbau 23): legt der Betreiber Fenster fest, wählt der Kunde
+            // einen freien Zeitpunkt statt eines Datums.
+            const pSlot = el('select', { 'aria-label': P9.req_slot, hidden: true });
+            const pDateLabel = el('label', {}, P9.req_date, pDate);
+            const pSlotLabel = el('label', { hidden: true }, P9.req_slot, pSlot);
+            const pickup = el('form', { class: 'portal-form' }, pDateLabel, pSlotLabel, el('label', {}, P9.req_note, pNote), pBtn);
+            let slotsActive = false;
+            portalFetch(token, '/pickup-slots', 'json').then((slots) => {
+                if (!Array.isArray(slots) || !slots.length) return;
+                slotsActive = true; pDateLabel.hidden = true; pDate.required = false; pSlotLabel.hidden = false; pSlot.hidden = false;
+                slots.forEach((sl) => pSlot.append(el('option', { value: sl.date + ' ' + sl.time },
+                    new Date(sl.date + 'T00:00:00').toLocaleDateString(lang === 'de' ? 'de-AT' : 'en-GB', { weekday: 'short', day: '2-digit', month: '2-digit' }) + ' ' + sl.time)));
+            }).catch(() => { /* ohne Fenster bleibt das Datum */ });
+            pickup.addEventListener('submit', e => {
+                e.preventDefault();
+                if (slotsActive) { const [d, tm] = pSlot.value.split(' '); send({ kind: 'pickup', date: d, time: tm, note: pNote.value.trim() }, pMsg, pBtn); }
+                else send({ kind: 'pickup', date: pDate.value, note: pNote.value.trim() }, pMsg, pBtn);
+            });
+            // Verlängern (Ausbau 22): nur für eingelagerte oder reservierte Gefährte.
+            // Nur mit ID: ohne sie (älterer Server) ließe sich das Gefährt nicht benennen.
+            const active = (sum.vehicles || []).filter((v) => v.id && (v.status === 'stored' || v.status === 'reserved'));
+            let extendBox = null;
+            if (active.length) {
+                const xVeh = el('select', { 'aria-label': P9.req_vehicle }, ...active.map((v) => el('option', { value: v.id }, v.label + (v.end_date ? ' (' + new Date(v.end_date).toLocaleDateString(lang === 'de' ? 'de-AT' : 'en-GB') + ')' : ''))));
+                const xUntil = el('input', { type: 'date', required: true, 'aria-label': P9.req_until });
+                const xNote = el('input', { type: 'text', placeholder: P9.req_note, 'aria-label': P9.req_note });
+                const xMsg = el('p', { class: 'muted', role: 'status' });
+                const xBtn = el('button', { class: 'btn btn-primary btn-sm', type: 'submit' }, P9.req_send);
+                const extend = el('form', { class: 'portal-form' }, el('label', {}, P9.req_vehicle, xVeh), el('label', {}, P9.req_until, xUntil), el('label', {}, P9.req_note, xNote), xBtn);
+                extend.addEventListener('submit', e => { e.preventDefault(); send({ kind: 'extend', vehicle_id: Number(xVeh.value), until: xUntil.value, note: xNote.value.trim() }, xMsg, xBtn); });
+                extendBox = el('details', { class: 'portal-request form-disclosure' }, el('summary', {}, P9.req_extend), extend, xMsg);
+            }
             rcard.append(el('div', { class: 'portal-request-groups' },
                 el('details', { class: 'portal-request form-disclosure' }, el('summary', {}, P9.req_contact), contact, cMsg),
-                el('details', { class: 'portal-request form-disclosure' }, el('summary', {}, P9.req_pickup), pickup, pMsg)));
+                el('details', { class: 'portal-request form-disclosure' }, el('summary', {}, P9.req_pickup), pickup, pMsg),
+                extendBox));
             wrap.append(rcard);
         }
         wrap.append(el('p', { class: 'portal-foot muted' }, P9.foot));

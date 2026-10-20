@@ -12,7 +12,8 @@ import (
 // StartMailQueue treibt die Mail-Warteschlange (Ausbau 36): alle 30 Sekunden oder
 // sofort nach einem KickOutbox werden fällige Mails verschickt. Einmal pro Stunde
 // reiht der Lauf fällige automatische Mahnungen ein, wenn die Mahnautomatik an ist
-// (Ausbau 20, standardmäßig aus). Ohne SMTP verschickt der Lauf nichts; wartende
+// (Ausbau 20, standardmäßig aus) und Erinnerungen an das Vertragsende (Ausbau 22,
+// ebenfalls aus). Ohne SMTP verschickt der Lauf nichts; wartende
 // Mails bleiben liegen, bis SMTP eingerichtet ist.
 func StartMailQueue(h *handlers.Handler, stop <-chan struct{}) {
 	if h.OutboxKick == nil {
@@ -35,6 +36,11 @@ func StartMailQueue(h *handlers.Handler, stop <-chan struct{}) {
 				slog.Warn("mail-queue: fällige Mahnungen nicht ermittelbar", "err", err)
 			} else if n > 0 {
 				slog.Info("mail-queue: automatische Mahnungen eingereiht", "count", n)
+			}
+			if n, err := h.QueueContractEndNotices(ctx); err != nil {
+				slog.Warn("mail-queue: Vertragsende-Erinnerungen nicht ermittelbar", "err", err)
+			} else if n > 0 {
+				slog.Info("mail-queue: Vertragsende-Erinnerungen eingereiht", "count", n)
 			}
 		}
 		// Mehrere Runden, solange volle Zehnerpakete kommen: ein großer Rechnungslauf

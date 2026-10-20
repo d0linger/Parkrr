@@ -34,6 +34,7 @@ type scheduleEvent struct {
 	Hall       string
 	Spot       string
 	Note       string
+	Time       string // HH:MM eines Abholwunschs im Zeitfenster (Ausbau 23), sonst leer
 }
 
 var scheduleKindLabel = map[string]string{"pickup": "Abholung", "arrival": "Einlagerung", "wish": "Abholwunsch"}
@@ -72,7 +73,7 @@ func (h *Handler) scheduleEvents(ctx context.Context, from, to time.Time) ([]sch
 	// Der Wunschtermin steht als Text im JSON; nur gültige Daten im Fenster zählen.
 	wrows, err := h.Pool.Query(ctx,
 		`SELECT pr.person_id, trim(p.first_name || ' ' || p.last_name),
-		        COALESCE(pr.payload->>'date', ''), COALESCE(pr.payload->>'note', '')
+		        COALESCE(pr.payload->>'date', ''), COALESCE(pr.payload->>'note', ''), COALESCE(pr.payload->>'time', '')
 		   FROM portal_requests pr JOIN persons p ON p.id = pr.person_id
 		  WHERE pr.kind = 'pickup' AND pr.status = 'offen'`)
 	if err != nil {
@@ -81,7 +82,7 @@ func (h *Handler) scheduleEvents(ctx context.Context, from, to time.Time) ([]sch
 	for wrows.Next() {
 		var e scheduleEvent
 		var day string
-		if err := wrows.Scan(&e.PersonID, &e.PersonName, &day, &e.Note); err != nil {
+		if err := wrows.Scan(&e.PersonID, &e.PersonName, &day, &e.Note, &e.Time); err != nil {
 			wrows.Close()
 			return nil, err
 		}
@@ -100,6 +101,9 @@ func (h *Handler) scheduleEvents(ctx context.Context, from, to time.Time) ([]sch
 		a, b := out[i], out[j]
 		if !a.Date.Equal(b.Date) {
 			return a.Date.Before(b.Date)
+		}
+		if a.Time != b.Time {
+			return a.Time < b.Time
 		}
 		if a.Hall != b.Hall {
 			return a.Hall < b.Hall
@@ -196,7 +200,11 @@ func (h *Handler) WeekSchedulePDF(w http.ResponseWriter, r *http.Request) {
 		if e.Kind == "wish" {
 			label = "aus dem Portal"
 		}
-		vals := []string{germanWeekday[e.Date.Weekday()] + " " + e.Date.Format("02.01."), scheduleKindLabel[e.Kind], e.PersonName, label, e.Plate, place, e.Note}
+		day := germanWeekday[e.Date.Weekday()] + " " + e.Date.Format("02.01.")
+		if e.Time != "" {
+			day += " " + e.Time
+		}
+		vals := []string{day, scheduleKindLabel[e.Kind], e.PersonName, label, e.Plate, place, e.Note}
 		for i, c := range cols {
 			ln := 0
 			if i == len(cols)-1 {
@@ -374,6 +382,9 @@ func (h *Handler) renderICS(r *http.Request, events []scheduleEvent) string {
 		if e.Kind == "wish" {
 			uid = "wish-" + strconv.FormatInt(e.PersonID, 10) + "-" + e.Date.Format("20060102")
 			summary = "Abholwunsch aus dem Portal"
+			if e.Time != "" {
+				summary += " um " + e.Time
+			}
 			link = base + "/#/person/" + strconv.FormatInt(e.PersonID, 10)
 		}
 		place := e.Hall

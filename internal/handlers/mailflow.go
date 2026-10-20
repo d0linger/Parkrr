@@ -270,12 +270,15 @@ type mailAutomation struct {
 	AutoSendInvoices bool `json:"auto_send_invoices"`
 	AutoDunning      bool `json:"auto_dunning"`
 	DunningDays      int  `json:"dunning_days"`
+	// EndReminderDays: so viele Tage vor dem Vertragsende geht die Erinnerung
+	// (Ausbau 22); 0 = aus.
+	EndReminderDays int `json:"end_reminder_days"`
 }
 
 func (h *Handler) loadMailAutomation(ctx context.Context) (mailAutomation, error) {
 	m := mailAutomation{DunningDays: 14}
-	err := h.Pool.QueryRow(ctx, `SELECT auto_send_invoices, auto_dunning, dunning_days FROM mail_automation WHERE id=1`).
-		Scan(&m.AutoSendInvoices, &m.AutoDunning, &m.DunningDays)
+	err := h.Pool.QueryRow(ctx, `SELECT auto_send_invoices, auto_dunning, dunning_days, end_reminder_days FROM mail_automation WHERE id=1`).
+		Scan(&m.AutoSendInvoices, &m.AutoDunning, &m.DunningDays, &m.EndReminderDays)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return m, nil
 	}
@@ -304,23 +307,28 @@ func (h *Handler) SaveMailAutomation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "dunning_days muss zwischen 3 und 90 liegen")
 		return
 	}
+	if in.EndReminderDays < 0 || in.EndReminderDays > 60 {
+		writeError(w, http.StatusBadRequest, "end_reminder_days muss zwischen 0 und 60 liegen")
+		return
+	}
 	old, err := h.loadMailAutomation(r.Context())
 	if err != nil {
 		serverError(w, r, "query failed", err)
 		return
 	}
 	if _, err := h.Pool.Exec(r.Context(),
-		`INSERT INTO mail_automation (id, auto_send_invoices, auto_dunning, dunning_days, updated_at)
-		 VALUES (1, $1, $2, $3, now())
+		`INSERT INTO mail_automation (id, auto_send_invoices, auto_dunning, dunning_days, end_reminder_days, updated_at)
+		 VALUES (1, $1, $2, $3, $4, now())
 		 ON CONFLICT (id) DO UPDATE SET auto_send_invoices=EXCLUDED.auto_send_invoices,
-		        auto_dunning=EXCLUDED.auto_dunning, dunning_days=EXCLUDED.dunning_days, updated_at=now()`,
-		in.AutoSendInvoices, in.AutoDunning, in.DunningDays); err != nil {
+		        auto_dunning=EXCLUDED.auto_dunning, dunning_days=EXCLUDED.dunning_days,
+		        end_reminder_days=EXCLUDED.end_reminder_days, updated_at=now()`,
+		in.AutoSendInvoices, in.AutoDunning, in.DunningDays, in.EndReminderDays); err != nil {
 		serverError(w, r, "could not save", err)
 		return
 	}
 	h.auditChange(r, "update", "mail_automation", 1, "Mail-Automatik geändert", diffFields(
-		map[string]any{"auto_send_invoices": old.AutoSendInvoices, "auto_dunning": old.AutoDunning, "dunning_days": old.DunningDays},
-		map[string]any{"auto_send_invoices": in.AutoSendInvoices, "auto_dunning": in.AutoDunning, "dunning_days": in.DunningDays}))
+		map[string]any{"auto_send_invoices": old.AutoSendInvoices, "auto_dunning": old.AutoDunning, "dunning_days": old.DunningDays, "end_reminder_days": old.EndReminderDays},
+		map[string]any{"auto_send_invoices": in.AutoSendInvoices, "auto_dunning": in.AutoDunning, "dunning_days": in.DunningDays, "end_reminder_days": in.EndReminderDays}))
 	writeJSON(w, http.StatusOK, in)
 }
 

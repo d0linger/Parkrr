@@ -42,10 +42,10 @@ Legende: `[x]` umgesetzt · `[~]` teilweise (Grund dahinter) · `[ ]` offen · `
 
 ## B5 Saison und Kunden
 
-- [ ] 21 Saisonwechsel als Sammelaktion
-- [ ] 22 Kunden vor Vertragsende erinnern (Standard aus)
-- [ ] 23 Abholung in Zeitfenstern
-- [ ] 31 Warteliste
+- [x] 21 Saisonwechsel (Dialog in der Gefährte-Liste; je Gefährt über „Erneut einstellen“, neu: aktueller Tarif statt Vorjahrespreis und Reservierung ab Beginn, beides optional). Offen: Platz vom Vorjahr reservieren.
+- [x] 22 Vertragsende-Erinnerung per Mail (Standard aus, Tage in der Mail-Automatik, je Gefährt und Ende genau einmal) und Verlängerungswunsch im Portal, „Übernehmen“ speichert das Gefährt über den normalen Weg
+- [x] 23 Abholzeitfenster (Einstellungen), im Portal Auswahl freier Zeitpunkte; der letzte Platz wird unter Sperre nur einmal vergeben; Uhrzeit in Kalender, Wochenliste und Abo
+- [x] 31 Warteliste (eigene Seite, Einwilligung Pflicht, „Übernehmen“ legt die Person an und öffnet das Gefährt-Formular, Hinweis in der Heute-Liste, Löschung nach 12 Monaten)
 
 ## B6 Halle
 
