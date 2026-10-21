@@ -1396,7 +1396,7 @@ import { createRevenueChart } from './revenue-chart.js';
         garages: 'garages', garage: 'garages', hall: 'garages', calendar: 'dashboard', 'handover-templates': 'vehicles', waitlist: 'persons' };
     // Ziele, die nur im Menü (☰) stehen: dort markiert, und ☰ selbst zeigt an, dass
     // die aktuelle Seite darin liegt — bisher war auf diesen Seiten nichts markiert.
-    const MENU_ROUTES = new Set(['invoices', 'billing', 'finance', 'taxyear', 'settings', 'users', 'audit', 'backup', 'help']);
+    const MENU_ROUTES = new Set(['invoices', 'billing', 'finance', 'taxyear', 'settings', 'users', 'audit', 'backup', 'help', 'service', 'keys']);
     function navigate(path) {
         if (('#/' + path) === location.hash) render();
         else location.hash = '#/' + path;
@@ -1809,8 +1809,16 @@ import { createRevenueChart } from './revenue-chart.js';
         return wrap;
     }
 
-    function todayWorklist({ overdue, ending, portalRequests, occ, readiness, incomplete, waitlist }) {
+    function todayWorklist({ overdue, ending, portalRequests, occ, readiness, incomplete, waitlist, service }) {
         const items = [];
+        // Serviceaufgaben (Ausbau 25): überfällige zuerst, der Ladevorschlag ist Pflege.
+        const svcDue = service && Array.isArray(service.items) ? service.items.length : 0;
+        if (svcDue) items.push({ priority: service.overdue ? 1 : 2, tone: service.overdue ? 'attention' : 'normal',
+            title: svcDue + (svcDue === 1 ? ' Serviceaufgabe fällig' : ' Serviceaufgaben fällig'),
+            meta: (service.overdue ? service.overdue + ' überfällig · ' : '') + 'Hallendienst', href: '#/service', action: 'Serviceaufgaben öffnen' });
+        if (service && service.power_without_task > 0) items.push({ priority: 3, tone: 'normal',
+            title: service.power_without_task + (service.power_without_task === 1 ? ' Gefährt' : ' Gefährte') + ' mit Ladebedarf ohne Ladeaufgabe',
+            meta: '„Erhaltungsladung prüfen“ anlegen · Hallendienst', href: '#/service', action: 'Serviceaufgaben öffnen' });
         (overdue || []).forEach((invoice) => items.push({
             priority: 0, tone: 'critical', title: invoice.person_name + ' · Rechnung ' + invoice.number,
             meta: (invoice.days_overdue > 0 ? invoice.days_overdue + (invoice.days_overdue === 1 ? ' Tag' : ' Tage') + ' überfällig' : 'heute fällig')
@@ -1909,7 +1917,7 @@ import { createRevenueChart } from './revenue-chart.js';
             return fallback;
         });
         // These independent reads share one network round trip, instead of five.
-        const [ov, occ, overdue, ending, portalRequests, readiness, incomplete, waitlist] = await Promise.all([
+        const [ov, occ, overdue, ending, portalRequests, readiness, incomplete, waitlist, service] = await Promise.all([
             api.get('/overview' + (dashYear ? '?year=' + dashYear : '')),
             optional('/occupancy', 'Belegung', null),
             optional('/invoices/overdue', 'Überfällige Rechnungen', []),
@@ -1918,6 +1926,7 @@ import { createRevenueChart } from './revenue-chart.js';
             isAdmin() ? optional('/admin/readiness', 'Betriebsbereitschaft', null) : Promise.resolve(null),
             optional('/vehicles/incomplete', 'Unvollständige Gefährte', null),
             canManage() ? optional('/waitlist/summary', 'Warteliste', null) : Promise.resolve(null),
+            optional('/service-tasks/due?days=0', 'Serviceaufgaben', null),
         ]);
         const prCard = portalRequestsCard(portalRequests);
         dashYear = ov.year;
@@ -1952,7 +1961,7 @@ import { createRevenueChart } from './revenue-chart.js';
             return;
         }
 
-        page.append(todayWorklist({ overdue, ending, portalRequests, occ, readiness, incomplete, waitlist }));
+        page.append(todayWorklist({ overdue, ending, portalRequests, occ, readiness, incomplete, waitlist, service }));
 
         // Money first — "Offen gesamt" is the operator's lead metric, shown as a
         // gradient hero; Umsatz (with a YoY delta) and Bezahlt sit beside it.
@@ -2726,6 +2735,20 @@ import { createRevenueChart } from './revenue-chart.js';
         }
         if (!invoices.length) page.append(el('p', { class: 'muted' }, 'Noch keine Rechnungen. „+ Rechnung" erstellt eine aus den offenen Einzelposten.'));
         else page.append(collapsibleRows(invoices, (iv) => invoiceRow(iv)));
+
+        // Schlüsselbuch (Ausbau 34): was die Person noch an Zugangsmitteln hat.
+        {
+            const keyCard = el('div', { class: 'card person-keys', hidden: true }, el('h3', {}, 'Zugangsmittel'));
+            page.append(keyCard);
+            api.get('/persons/' + id + '/access-media').then((loans) => {
+                if (!loans || !loans.length) return;
+                keyCard.hidden = false;
+                loans.forEach((l) => keyCard.append(el('div', { class: 'balance' },
+                    el('span', {}, (ACCESS_KIND_LABEL[l.kind] || l.kind) + ' ' + l.label),
+                    el('span', {}, 'seit ' + fmtDate(l.issued_on)))));
+                keyCard.append(el('a', { class: 'btn btn-ghost btn-sm', href: '#/keys' }, 'Schlüsselbuch'));
+            }).catch(() => { /* optional */ });
+        }
 
         // Anhänge (Hundert 57): Vertrag, Typenschein, Gutachten — beim Datensatz.
         page.append(attachmentsCard('/persons/' + id));
@@ -4077,6 +4100,201 @@ import { createRevenueChart } from './revenue-chart.js';
                                 if (!await confirmDialog('Eintrag löschen?', e.name + ' wird von der Warteliste gelöscht.', 'Löschen')) return;
                                 try { await api.del('/waitlist/' + e.id); toast('Gelöscht', 'success'); render(); } catch (err) { toast(err.message, 'error'); }
                             } }, icon('trash')))));
+            },
+        });
+    };
+
+    // ================= SERVICEAUFGABEN (Ausbau 25) =================
+    const SERVICE_SCOPE = { vehicle: 'Ein Gefährt', category: 'Ein Tarif', all: 'Alle eingelagerten', power: 'Alle mit Ladebedarf' };
+    async function serviceTaskForm(existing, preset) {
+        await refreshLookups();
+        const vehicles = ((await api.get('/vehicles')) || []).filter((v) => !v.archived);
+        const cats = state.categories.filter((c) => !c.archived), svcs = state.services.filter((x) => !x.archived);
+        const t = existing || preset || {};
+        return formModal({
+            title: existing ? 'Serviceaufgabe bearbeiten' : 'Neue Serviceaufgabe',
+            fields: [
+                { name: 'title', label: 'Aufgabe', required: true, value: t.title || '', placeholder: 'z. B. Reifendruck prüfen' },
+                { name: 'scope', label: 'Gilt für', type: 'select', value: t.scope || 'all', options: Object.entries(SERVICE_SCOPE).map(([value, label]) => ({ value, label })) },
+                { name: 'vehicle_id', label: 'Gefährt', type: 'select', value: t.vehicle_id ?? '', options: [{ value: '', label: 'bitte wählen' }].concat(vehicles.map((v) => ({ value: v.id, label: vehicleTitle(v) + (v.person_name ? ' · ' + v.person_name : '') }))) },
+                { name: 'category_id', label: 'Tarif', type: 'select', value: t.category_id ?? '', options: [{ value: '', label: 'bitte wählen' }].concat(cats.map((c) => ({ value: c.id, label: c.name }))) },
+                { name: 'interval_days', label: 'Alle … Tage', type: 'number', min: 1, step: '1', required: true, value: t.interval_days || 30 },
+                { name: 'service_type_id', label: 'Abrechnen als Leistung', type: 'select', value: t.service_type_id ?? '', options: [{ value: '', label: 'nicht abrechnen' }].concat(svcs.map((x) => ({ value: x.id, label: x.name + ' · ' + eur(x.default_amount) }))) },
+                { name: 'note', label: 'Notiz', type: 'textarea', value: t.note || '' },
+                { name: 'active', label: 'Aktiv (wird fällig)', type: 'checkbox', value: existing ? !!existing.active : true },
+            ],
+            onRender: (body) => {
+                const scope = body.querySelector('#f_scope');
+                const sync = () => {
+                    body.querySelector('#f_vehicle_id').closest('.form-field').hidden = scope.value !== 'vehicle';
+                    body.querySelector('#f_category_id').closest('.form-field').hidden = scope.value !== 'category';
+                };
+                scope.addEventListener('change', sync);
+                sync();
+            },
+            save: async (d) => {
+                const payload = { title: d.title, scope: d.scope,
+                    vehicle_id: d.scope === 'vehicle' && d.vehicle_id ? Number(d.vehicle_id) : null,
+                    category_id: d.scope === 'category' && d.category_id ? Number(d.category_id) : null,
+                    interval_days: Number(d.interval_days), service_type_id: d.service_type_id ? Number(d.service_type_id) : null,
+                    note: d.note || '', active: !!d.active };
+                if (existing) await api.put('/service-tasks/' + existing.id, payload); else await api.post('/service-tasks', payload);
+                toast('Serviceaufgabe gespeichert', 'success');
+                render();
+            },
+        });
+    }
+    async function completeService(d, bill) {
+        try {
+            const res = await api.post('/service-tasks/' + d.task_id + '/done', { vehicle_id: d.vehicle_id, bill });
+            await render();
+            toastAction(d.title + ' erledigt' + (res.charge_id ? ' · Position angelegt' : ''), 'Rückgängig', async () => {
+                try {
+                    await api.del('/service-task-log/' + res.id);
+                    if (res.charge_id) await api.del('/charges/' + res.charge_id);
+                    toast('Zurückgenommen');
+                } catch (err) { toast(err.message, 'error'); }
+                render();
+            }, 8000);
+        } catch (err) { toast(err.message, 'error'); }
+    }
+    routes.service = async (page) => {
+        const [due, tasks] = await Promise.all([api.get('/service-tasks/due?days=7'), api.get('/service-tasks')]);
+        page.innerHTML = '';
+        page.append(el('div', { class: 'page-head' }, el('h2', {}, 'Serviceaufgaben'),
+            canManage() ? el('button', { class: 'btn btn-primary btn-sm btn-add', type: 'button', 'aria-keyshortcuts': 'N', onclick: () => serviceTaskForm() }, '+ Aufgabe') : null));
+        page.append(el('p', { class: 'route-intro' }, 'Wiederkehrende Arbeiten an eingelagerten Gefährten. Fällig nach Intervall je Gefährt, erledigt mit einem Tipp. Hängt eine Leistung daran, entsteht auf Wunsch die Zusatzkosten-Position.'));
+        if (due.power_without_task > 0 && canManage()) {
+            page.append(el('div', { class: 'card svc-suggest', role: 'note' },
+                el('p', {}, due.power_without_task + (due.power_without_task === 1 ? ' eingelagertes Gefährt hat' : ' eingelagerte Gefährte haben') + ' Ladebedarf, aber keine Ladeaufgabe.'),
+                el('button', { class: 'btn btn-primary btn-sm', type: 'button', onclick: () => serviceTaskForm(null, { title: 'Erhaltungsladung prüfen', scope: 'power', interval_days: 30 }) }, '„Erhaltungsladung prüfen“ anlegen')));
+        }
+        const todayYmd = today();
+        const dueCard = el('div', { class: 'card' }, el('h3', {}, 'Fällig in den nächsten 7 Tagen'));
+        if (!due.items.length) dueCard.append(el('p', { class: 'muted' }, 'Nichts fällig.'));
+        due.items.forEach((d) => {
+            const ymd = String(d.due_on).slice(0, 10);
+            const days = Math.round((new Date(ymd + 'T00:00:00') - new Date(todayYmd + 'T00:00:00')) / 86400000);
+            const when = days < 0 ? 'seit ' + (-days) + (days === -1 ? ' Tag' : ' Tagen') + ' fällig' : days === 0 ? 'heute fällig' : 'fällig am ' + fmtDate(ymd);
+            dueCard.append(el('div', { class: 'svc-row' + (days < 0 ? ' is-overdue' : '') },
+                el('div', { class: 'svc-main' }, el('strong', {}, d.title),
+                    el('div', { class: 'card-meta' }, el('a', { href: '#/vehicle/' + d.vehicle_id }, d.vehicle_label),
+                        (d.hall_name ? ' · ' + d.hall_name : '') + ' · ' + when + (d.last_done ? ' · zuletzt ' + fmtDate(d.last_done) : ''))),
+                canManage() ? el('div', { class: 'card-actions' },
+                    el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': d.title + ' für ' + d.vehicle_label + ' erledigt', onclick: () => completeService(d, false) }, icon('check', 14), ' Erledigt'),
+                    d.service_type_id && d.service_amount != null
+                        ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': d.title + ' für ' + d.vehicle_label + ' erledigt und ' + eur(d.service_amount) + ' abrechnen', onclick: () => completeService(d, true) }, 'Erledigt + ' + eur(d.service_amount))
+                        : null) : null));
+        });
+        page.append(dueCard);
+        const listCard = el('div', { class: 'card' }, el('h3', {}, 'Aufgaben'));
+        if (!tasks.length) listCard.append(el('p', { class: 'muted' }, 'Noch keine Aufgaben. Zum Beispiel: Batterie laden alle 30 Tage, Reifendruck alle 60 Tage, lüften alle 14 Tage.'));
+        tasks.forEach((t) => {
+            const scope = t.scope === 'vehicle' ? (t.vehicle_label || 'Gefährt') : t.scope === 'category' ? 'Tarif ' + (t.category_name || '') : SERVICE_SCOPE[t.scope];
+            listCard.append(el('div', { class: 'svc-row' + (t.active ? '' : ' is-inactive') },
+                el('div', { class: 'svc-main' }, el('strong', {}, t.title), t.active ? null : el('span', { class: 'badge badge-ended', style: 'margin-left:.4rem' }, 'pausiert'),
+                    el('div', { class: 'card-meta' }, scope + ' · alle ' + t.interval_days + ' Tage' + (t.service_name ? ' · ' + t.service_name + (t.service_amount != null ? ' ' + eur(t.service_amount) : '') : ''))),
+                canManage() ? el('div', { class: 'card-actions' },
+                    el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': t.title + ' bearbeiten', onclick: () => serviceTaskForm(t) }, icon('edit')),
+                    el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': t.title + ' löschen', onclick: async () => {
+                        if (!await confirmDialog('Aufgabe löschen?', '„' + t.title + '“ und ihre Erledigungen werden gelöscht. Abgerechnete Positionen bleiben.', 'Löschen')) return;
+                        try { await api.del('/service-tasks/' + t.id); toast('Gelöscht', 'success'); render(); } catch (err) { toast(err.message, 'error'); }
+                    } }, icon('trash'))) : null));
+        });
+        page.append(listCard);
+    };
+
+    // ================= SCHLÜSSELBUCH (Ausbau 34) =================
+    async function allHalls() {
+        const garages = (await api.get('/garages')) || [];
+        const lists = await Promise.all(garages.map((g) => api.get('/garages/' + g.id + '/halls')
+            .then((hs) => (hs || []).map((hl) => ({ id: hl.id, name: (garages.length > 1 ? g.name + ' · ' : '') + hl.name }))).catch(() => [])));
+        return lists.flat();
+    }
+    async function accessMediumForm(existing) {
+        const halls = await allHalls();
+        return formModal({
+            title: existing ? 'Zugangsmittel bearbeiten' : 'Neues Zugangsmittel',
+            fields: [
+                { name: 'kind', label: 'Art', type: 'select', value: existing?.kind || 'handsender', options: Object.entries(ACCESS_KIND_LABEL).map(([value, label]) => ({ value, label })) },
+                { name: 'label', label: 'Nummer oder Bezeichnung', required: true, value: existing?.label || '', placeholder: 'z. B. 7', help: 'Bei Codes nur die Bezeichnung („Tor Nord“), nie den Code selbst.' },
+                { name: 'hall_id', label: 'Halle', type: 'select', value: existing?.hall_id ?? '', options: [{ value: '', label: 'alle / keine bestimmte' }].concat(halls.map((hl) => ({ value: hl.id, label: hl.name }))) },
+                { name: 'note', label: 'Notiz', type: 'textarea', value: existing?.note || '' },
+                { name: 'retired', label: 'Ausgemustert (verloren oder ersetzt)', type: 'checkbox', value: !!existing?.retired },
+            ],
+            save: async (d) => {
+                const payload = { kind: d.kind, label: d.label, hall_id: d.hall_id ? Number(d.hall_id) : null, note: d.note || '', retired: !!d.retired };
+                if (existing) await api.put('/access-media/' + existing.id, payload); else await api.post('/access-media', payload);
+                toast('Gespeichert', 'success');
+                render();
+            },
+        });
+    }
+    async function issueAccessMedium(m) {
+        await refreshLookups();
+        const persons = (state.persons || []).filter((x) => !x.anonymized)
+            .sort((a, b) => personName(a).localeCompare(personName(b), 'de'));
+        return formModal({
+            title: (ACCESS_KIND_LABEL[m.kind] || m.kind) + ' ' + m.label + ' ausgeben', submitLabel: 'Ausgeben',
+            fields: [
+                { name: 'person_id', label: 'An', type: 'select', required: true, value: '', options: [{ value: '', label: 'Person wählen' }].concat(persons.map((x) => ({ value: x.id, label: personName(x) }))) },
+                { name: 'issued_on', label: 'Ausgegeben am', type: 'date', value: today(), quickDate: true },
+                { name: 'note', label: 'Notiz', type: 'textarea' },
+            ],
+            save: async (d) => {
+                if (!d.person_id) throw new Error('Bitte eine Person wählen');
+                await api.post('/access-media/' + m.id + '/issue', { person_id: Number(d.person_id), issued_on: d.issued_on || null, note: d.note || '' });
+                toast('Ausgegeben', 'success');
+                render();
+            },
+        });
+    }
+    async function returnAccessMedium(m) {
+        const d = await formModal({
+            title: (ACCESS_KIND_LABEL[m.kind] || m.kind) + ' ' + m.label + ' zurücknehmen', submitLabel: 'Zurücknehmen',
+            fields: [{ name: 'returned_on', label: 'Zurück am', type: 'date', value: today(), quickDate: true }],
+        });
+        if (!d) return;
+        try { await api.post('/access-media/' + m.id + '/return', { returned_on: d.returned_on || null }); toast('Zurückgenommen', 'success'); render(); }
+        catch (err) { toast(err.message, 'error'); }
+    }
+    async function accessMediumHistory(m) {
+        const loans = (await api.get('/access-media/' + m.id + '/loans')) || [];
+        const list = loans.length
+            ? el('ul', { class: 'timeline' }, ...loans.map((l) => el('li', {},
+                el('div', {}, el('a', { href: '#/person/' + l.person_id }, l.person_name || 'Person')),
+                el('div', { class: 't-time' }, fmtDate(l.issued_on) + ' – ' + (l.returned_on ? fmtDate(l.returned_on) : 'heute') + (l.note ? ' · ' + l.note : '')))))
+            : el('p', { class: 'muted' }, 'Noch nie ausgegeben.');
+        await formModal({ title: 'Verlauf · ' + (ACCESS_KIND_LABEL[m.kind] || m.kind) + ' ' + m.label, submitLabel: 'Schließen', fields: [],
+            onRender: (body) => { body.append(list); $('#modal-cancel').style.display = 'none'; } });
+    }
+    routes.keys = async (page) => {
+        const items = (await api.get('/access-media')) || [];
+        mountList(page, {
+            stateKey: 'keys', title: 'Schlüsselbuch', emptyIcon: 'key', items,
+            onAdd: canManage() ? () => accessMediumForm() : null, addLabel: '+ Zugangsmittel', firstLabel: '+ Erstes Zugangsmittel',
+            firstText: 'Hier steht, wer welchen Schlüssel, Handsender oder welche Karte für die Halle hat. Bei Codes nur die Bezeichnung eintragen, nie den Code.',
+            searchText: (m) => norm([ACCESS_KIND_LABEL[m.kind], m.label, m.hall_name, m.person_name, m.note].join(' ')),
+            sorts: [{ label: 'Art und Nummer', cmp: (a, b) => (Number(a.retired) - Number(b.retired)) || a.kind.localeCompare(b.kind) || a.label.localeCompare(b.label, 'de', { numeric: true }) },
+                { label: 'Ausgegebene zuerst', cmp: (a, b) => (a.loan_id ? 0 : 1) - (b.loan_id ? 0 : 1) || a.label.localeCompare(b.label, 'de', { numeric: true }) }],
+            render: (m) => {
+                const name = (ACCESS_KIND_LABEL[m.kind] || m.kind) + ' ' + m.label;
+                const status = m.retired ? el('span', { class: 'badge badge-ended' }, 'ausgemustert')
+                    : m.loan_id ? el('span', { class: 'badge badge-reserved' }, 'ausgegeben') : el('span', { class: 'badge badge-stored' }, 'frei');
+                return el('div', { class: 'card' },
+                    el('div', { class: 'card-row key-row' },
+                        el('div', { class: 'svc-main' }, el('h3', {}, name, ' ', status),
+                            m.loan_id ? el('div', { class: 'card-meta' }, 'bei ', el('a', { href: '#/person/' + m.person_id }, m.person_name || 'Person'), ' seit ' + fmtDate(m.issued_on)) : null,
+                            (m.hall_name || m.note) ? el('div', { class: 'card-meta' }, [m.hall_name, m.note].filter(Boolean).join(' · ')) : null),
+                        el('div', { class: 'card-actions' },
+                            canManage() && !m.retired && !m.loan_id ? el('button', { class: 'btn btn-primary btn-sm', type: 'button', 'aria-label': name + ' ausgeben', onclick: () => issueAccessMedium(m) }, 'Ausgeben') : null,
+                            canManage() && m.loan_id ? el('button', { class: 'btn btn-primary btn-sm', type: 'button', 'aria-label': name + ' zurücknehmen', onclick: () => returnAccessMedium(m) }, 'Zurücknehmen') : null,
+                            m.loan_count ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': name + ': Verlauf', onclick: () => accessMediumHistory(m) }, 'Verlauf') : null,
+                            canManage() ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': name + ' bearbeiten', onclick: () => accessMediumForm(m) }, icon('edit')) : null,
+                            canManage() && !m.loan_count ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': name + ' löschen', onclick: async () => {
+                                if (!await confirmDialog('Zugangsmittel löschen?', name + ' wird gelöscht.', 'Löschen')) return;
+                                try { await api.del('/access-media/' + m.id); toast('Gelöscht', 'success'); render(); } catch (err) { toast(err.message, 'error'); }
+                            } }, icon('trash')) : null)));
             },
         });
     };
@@ -5499,7 +5717,7 @@ import { createRevenueChart } from './revenue-chart.js';
         // Übergabeprotokolle (Zustand + Unterschrift bei Ein-/Auslagerung)
         const hoCard = el('div', { class: 'card' });
         const hoHead = el('div', { class: 'page-head' }, el('h3', {}, 'Übergabeprotokolle'));
-        if (canManage()) hoHead.append(el('button', { class: 'btn-sect', onclick: () => handoverForm(id) }, '+ Protokoll'));
+        if (canManage()) hoHead.append(el('button', { class: 'btn-sect', onclick: () => handoverForm(id, v) }, '+ Protokoll'));
         hoCard.append(hoHead);
         if (handovers === null) hoCard.append(el('p', { class: 'muted' }, 'Protokolle konnten nicht geladen werden.'));
         else if (!handovers.length) hoCard.append(el('p', { class: 'muted' }, 'Noch keine Protokolle.'));
@@ -5522,6 +5740,16 @@ import { createRevenueChart } from './revenue-chart.js';
                         // fehl, wonach die Zeile wieder auftauchte.
                         isAdmin() ? el('button', { class: 'btn btn-ghost btn-sm', title: 'Protokoll löschen', 'aria-label': 'Protokoll löschen', onclick: (e) => delHandover(ho, e.currentTarget.closest('.pay-row')) }, icon('trash', 14)) : null));
                 if (ho.notes) row.querySelector('.pay-main').append(el('div', { class: 'inv-bills' }, esc(ho.notes)));
+                // Ausbau 24: Schäden als Liste, Zustandsfotos als Streifen (Tipp = groß).
+                if ((ho.damages || []).length) row.querySelector('.pay-main').append(el('ul', { class: 'ho-dlist' },
+                    ...ho.damages.map((d) => el('li', {}, [d.area, d.note].filter(Boolean).join(': ')))));
+                if ((ho.photos || []).length || (ho.photos_open && canManage())) {
+                    const strip = el('div', { class: 'ho-strip' });
+                    (ho.photos || []).forEach((ph) => strip.append(el('button', { type: 'button', class: 'ho-strip-ph', 'aria-label': (HANDOVER_VIEW_LABEL[ph.view] || 'Foto') + ' groß ansehen', onclick: () => lightbox(ph.id) },
+                        el('img', { src: '/api/photos/' + ph.id, alt: '', loading: 'lazy' }), el('span', {}, HANDOVER_VIEW_LABEL[ph.view] || ph.view))));
+                    if (ho.photos_open && canManage()) strip.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm', title: 'Bis 24 Stunden nach dem Protokoll', onclick: () => handoverPhotoAdd(ho) }, '+ Foto'));
+                    row.querySelector('.pay-main').append(strip);
+                }
                 hoCard.append(row);
             });
         }
@@ -5663,10 +5891,21 @@ import { createRevenueChart } from './revenue-chart.js';
             () => api.del('/handovers/' + ho.id), () => render(), node);
     }
     // Übergabeprotokoll form: direction + condition notes + signer + a drawn signature.
-    async function handoverForm(vehicleId) {
+    // Ausbau 24/34: Schäden als Liste, Zustandsfotos je Ansicht (bei der Abholung neben
+    // denen der Einlagerung) und die Rücknahme noch ausgegebener Zugangsmittel.
+    const HANDOVER_VIEWS = [['vorne', 'Vorne'], ['hinten', 'Hinten'], ['links', 'Links'], ['rechts', 'Rechts'], ['innen', 'Innenraum'], ['km', 'Kilometerstand'], ['schaden', 'Schaden']];
+    const HANDOVER_VIEW_LABEL = Object.fromEntries(HANDOVER_VIEWS);
+    const ACCESS_KIND_LABEL = { schluessel: 'Schlüssel', handsender: 'Handsender', karte: 'Karte', code: 'Code' };
+    async function handoverForm(vehicleId, vehicle) {
         let sigData = () => '';
-        let templates = [];
-        try { templates = await api.get('/handover-templates'); } catch (error) { /* optional enhancement */ }
+        const [templates, previous, loans] = await Promise.all([
+            api.get('/handover-templates').catch(() => []),
+            api.get('/vehicles/' + vehicleId + '/handovers').catch(() => []),
+            vehicle && vehicle.person_id ? api.get('/persons/' + vehicle.person_id + '/access-media').catch(() => []) : Promise.resolve([]),
+        ]);
+        const lastIn = (previous || []).find((h) => h.direction === 'einlagerung'); // neueste zuerst
+        const photos = new Map(); // Ansicht -> Dateien, hochgeladen erst nach dem Speichern
+        let damageRows = null, returnBoxes = [];
         await formModal({
             title: 'Übergabeprotokoll',
             submitLabel: 'Speichern',
@@ -5674,8 +5913,8 @@ import { createRevenueChart } from './revenue-chart.js';
                 { name: 'direction', label: 'Art', type: 'select', value: 'einlagerung',
                     options: [{ value: 'einlagerung', label: 'Einlagerung (Übernahme)' }, { value: 'auslagerung', label: 'Auslagerung (Rückgabe)' }] },
                 { name: 'template_id', label: 'Vorlage (optional)', type: 'select', value: '',
-                    options: [{ value: '', label: 'Keine Vorlage' }].concat(templates.map((template) => ({ value: template.id, label: template.name }))) },
-                { name: 'notes', label: 'Zustand / Anmerkungen', type: 'textarea', placeholder: 'z. B. Kratzer vorne links, Tank halb voll …' },
+                    options: [{ value: '', label: 'Keine Vorlage' }].concat((templates || []).map((template) => ({ value: template.id, label: template.name }))) },
+                { name: 'notes', label: 'Zustand / Anmerkungen', type: 'textarea', placeholder: 'z. B. Tank halb voll, Schlüssel 2 Stück …' },
                 { name: 'signer_name', label: 'Name (Unterschrift)', type: 'text', placeholder: 'Name der unterschreibenden Person' },
             ],
             onRender: (body) => {
@@ -5685,14 +5924,14 @@ import { createRevenueChart } from './revenue-chart.js';
                 const notes = body.querySelector('#f_notes');
                 const renderTemplateOptions = () => {
                     const selected = templateSelect.value;
-                    const available = templates.filter((template) => template.applies_to === 'beide' || template.applies_to === direction.value);
+                    const available = (templates || []).filter((template) => template.applies_to === 'beide' || template.applies_to === direction.value);
                     templateSelect.replaceChildren(el('option', { value: '' }, 'Keine Vorlage'),
                         ...available.map((template) => el('option', { value: template.id }, template.name)));
                     if (available.some((template) => String(template.id) === selected)) templateSelect.value = selected;
                 };
                 direction.addEventListener('change', renderTemplateOptions);
                 templateSelect.addEventListener('change', () => {
-                    const template = templates.find((candidate) => String(candidate.id) === templateSelect.value);
+                    const template = (templates || []).find((candidate) => String(candidate.id) === templateSelect.value);
                     if (!template) return;
                     notes.value = notes.value.trim() ? notes.value.trimEnd() + '\n\n' + template.content : template.content;
                     notes.dispatchEvent(new Event('input', { bubbles: true }));
@@ -5703,6 +5942,89 @@ import { createRevenueChart } from './revenue-chart.js';
                     $('#modal-cancel').click();
                     navigate('handover-templates');
                 } }, 'Übergabevorlagen verwalten'));
+
+                // Schäden: Ort und Beschreibung je Zeile statt Freitext.
+                const prevDmg = el('div', { class: 'ho-prev' });
+                damageRows = el('div', { class: 'ho-damages' });
+                const addDamage = () => {
+                    const n = damageRows.children.length + 1;
+                    const row = el('div', { class: 'ho-damage' },
+                        el('input', { type: 'text', class: 'ho-d-area', maxlength: '60', placeholder: 'Ort, z. B. vorne links', 'aria-label': 'Schaden ' + n + ': Ort' }),
+                        el('input', { type: 'text', class: 'ho-d-note', maxlength: '300', placeholder: 'z. B. Kratzer 10 cm', 'aria-label': 'Schaden ' + n + ': Beschreibung' }));
+                    row.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm', 'aria-label': 'Schaden ' + n + ' entfernen', onclick: () => row.remove() }, icon('close', 14)));
+                    damageRows.append(row);
+                    row.querySelector('input').focus();
+                };
+                body.append(el('fieldset', { class: 'ho-sec' }, el('legend', {}, 'Schäden'), prevDmg, damageRows,
+                    el('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: addDamage }, '+ Schaden')));
+
+                // Zustandsfotos je Ansicht; „Schaden“ nimmt mehrere.
+                const hint = el('p', { class: 'card-meta' });
+                const grid = el('div', { class: 'ho-photos' });
+                HANDOVER_VIEWS.forEach(([view, label]) => {
+                    const thumbs = el('div', { class: 'ho-thumbs' });
+                    const ref = el('div', { class: 'ho-ref' });
+                    const input = el('input', { type: 'file', accept: 'image/jpeg,image/png', capture: 'environment', style: 'display:none' });
+                    if (view === 'schaden') input.multiple = true;
+                    const pick = el('button', { type: 'button', class: 'btn btn-ghost btn-sm ho-pick', 'aria-label': 'Foto ' + label }, icon('camera', 14), ' ' + label);
+                    const renderThumbs = () => {
+                        thumbs.textContent = '';
+                        (photos.get(view) || []).forEach((file, i) => {
+                            const url = URL.createObjectURL(file);
+                            const img = el('img', { src: url, alt: label + ' neu' });
+                            img.addEventListener('load', () => URL.revokeObjectURL(url), { once: true });
+                            thumbs.append(el('div', { class: 'ho-thumb' }, img, el('button', { type: 'button', class: 'ho-thumb-del', 'aria-label': label + ': Foto ' + (i + 1) + ' entfernen', onclick: () => {
+                                photos.set(view, (photos.get(view) || []).filter((_, j) => j !== i)); renderThumbs();
+                            } }, icon('close', 12))));
+                        });
+                        pick.classList.toggle('has-photo', (photos.get(view) || []).length > 0);
+                    };
+                    pick.addEventListener('click', () => input.click());
+                    input.addEventListener('change', () => {
+                        const files = Array.from(input.files || []);
+                        if (files.length) photos.set(view, view === 'schaden' ? (photos.get(view) || []).concat(files) : files.slice(0, 1));
+                        input.value = '';
+                        renderThumbs();
+                    });
+                    const slot = el('div', { class: 'ho-slot' }, pick, ref, thumbs, input);
+                    slot.dataset.view = view;
+                    grid.append(slot);
+                });
+                body.append(el('fieldset', { class: 'ho-sec' }, el('legend', {}, 'Zustandsfotos'), hint, grid));
+
+                // Zugangsmittel (Ausbau 34): was die Person noch hat, mit Rücknahme beim Speichern.
+                if ((loans || []).length) {
+                    const keys = el('fieldset', { class: 'ho-sec ho-keys' }, el('legend', {}, 'Zugangsmittel noch ausgegeben'));
+                    returnBoxes = loans.map((l) => {
+                        const cb = el('input', { type: 'checkbox' });
+                        cb.dataset.mid = l.medium_id;
+                        keys.append(el('label', { class: 'ho-key' }, cb, el('span', {},
+                            (ACCESS_KIND_LABEL[l.kind] || l.kind) + ' ' + l.label + ' (seit ' + fmtDate(l.issued_on) + ') · zurückgenommen')));
+                        return cb;
+                    });
+                    body.append(keys);
+                }
+
+                const syncDirection = () => {
+                    const out = direction.value === 'auslagerung' && lastIn;
+                    prevDmg.textContent = '';
+                    if (out && (lastIn.damages || []).length) prevDmg.append(
+                        el('p', { class: 'card-meta' }, 'Bei der Einlagerung am ' + fmtDate(lastIn.created_at) + ' vermerkt:'),
+                        el('ul', { class: 'ho-dlist' }, ...lastIn.damages.map((d) => el('li', {}, [d.area, d.note].filter(Boolean).join(': ')))));
+                    grid.querySelectorAll('.ho-slot').forEach((slot) => {
+                        const ref = slot.querySelector('.ho-ref');
+                        ref.textContent = '';
+                        const before = out && (lastIn.photos || []).find((ph) => ph.view === slot.dataset.view);
+                        if (before) ref.append(el('img', { src: '/api/photos/' + before.id, alt: 'Einlagerung: ' + HANDOVER_VIEW_LABEL[slot.dataset.view], loading: 'lazy' }),
+                            el('span', { class: 'ho-ref-cap' }, 'Einlagerung'));
+                    });
+                    hint.textContent = out && (lastIn.photos || []).length
+                        ? 'Neben jeder Ansicht steht das Foto der Einlagerung zum Vergleich.'
+                        : 'Je Ansicht ein Foto, „Schaden“ nimmt mehrere. Hochgeladen wird nach dem Speichern.';
+                };
+                direction.addEventListener('change', syncDirection);
+                syncDirection();
+
                 const wrap = el('div', { class: 'field' }, el('label', {}, 'Unterschrift'));
                 const canvas = el('canvas', { width: 500, height: 180,
                     style: 'width:100%;height:180px;touch-action:none;border:1px solid var(--border);border-radius:8px;background:#fff;display:block' });
@@ -5724,10 +6046,52 @@ import { createRevenueChart } from './revenue-chart.js';
                 sigData = () => (dirty ? canvas.toDataURL('image/png') : '');
             },
             save: async (d) => {
-                await api.post('/vehicles/' + vehicleId + '/handovers', {
-                    direction: d.direction, notes: d.notes || '', signer_name: d.signer_name || '', signature: sigData(),
+                const damages = damageRows ? Array.from(damageRows.querySelectorAll('.ho-damage'))
+                    .map((row) => ({ area: row.querySelector('.ho-d-area').value.trim(), note: row.querySelector('.ho-d-note').value.trim() }))
+                    .filter((x) => x.area || x.note) : [];
+                const ho = await api.post('/vehicles/' + vehicleId + '/handovers', {
+                    direction: d.direction, notes: d.notes || '', signer_name: d.signer_name || '', signature: sigData(), damages,
                 });
-                toast('Protokoll gespeichert', 'success');
+                // Fotos erst nach dem Protokoll: sie hängen an ihm. Ein Fehlschlag kostet das
+                // Protokoll nicht; nachreichen geht 24 Stunden lang an der Protokollzeile.
+                const queue = [];
+                photos.forEach((files, view) => files.forEach((file) => queue.push([view, file])));
+                let failed = 0;
+                for (const [view, file] of queue) {
+                    try {
+                        const slim = await downscalePhoto(file);
+                        const fd = new FormData(); fd.append('view', view); fd.append('photo', slim, slim.name || file.name);
+                        await uploadWithProgress('/handovers/' + ho.id + '/photos', fd);
+                    } catch (e) { failed++; }
+                }
+                let keyFailed = 0;
+                for (const cb of returnBoxes.filter((c) => c.checked)) {
+                    try { await api.post('/access-media/' + cb.dataset.mid + '/return', {}); } catch (e) { keyFailed++; }
+                }
+                if (failed) toast(failed + (failed === 1 ? ' Foto' : ' Fotos') + ' nicht hochgeladen – an der Protokollzeile innerhalb von 24 Stunden nachreichen', 'warn');
+                else toast('Protokoll gespeichert' + (queue.length ? ' · ' + queue.length + (queue.length === 1 ? ' Foto' : ' Fotos') : ''), 'success');
+                if (keyFailed) toast('Zugangsmittel nicht zurückgenommen – im Schlüsselbuch nachholen', 'warn');
+                render();
+            },
+        });
+    }
+    // Foto zu einem Protokoll nachreichen (bis 24 Stunden danach).
+    function handoverPhotoAdd(ho) {
+        let fileIn = null;
+        return formModal({
+            title: 'Foto zum Protokoll', submitLabel: 'Hochladen',
+            fields: [{ name: 'view', label: 'Ansicht', type: 'select', value: 'schaden', options: HANDOVER_VIEWS.map(([value, label]) => ({ value, label })) }],
+            onRender: (body) => {
+                fileIn = el('input', { type: 'file', id: 'f_ho_photo', accept: 'image/jpeg,image/png', capture: 'environment' });
+                body.querySelector('.form-grid').append(el('div', { class: 'form-field form-field-wide' }, el('label', { for: 'f_ho_photo' }, 'Foto'), fileIn));
+            },
+            save: async (d) => {
+                const file = fileIn && fileIn.files && fileIn.files[0];
+                if (!file) throw new Error('Bitte ein Foto wählen');
+                const slim = await downscalePhoto(file);
+                const fd = new FormData(); fd.append('view', d.view); fd.append('photo', slim, slim.name || file.name);
+                await uploadWithProgress('/handovers/' + ho.id + '/photos', fd);
+                toast('Foto ergänzt', 'success');
                 render();
             },
         });
@@ -7143,7 +7507,7 @@ import { createRevenueChart } from './revenue-chart.js';
     const AUDIT_ACTIONS = { create: 'Erstellt', update: 'Geändert', delete: 'Gelöscht', login: 'Login', logout: 'Logout', revoke: 'Widerrufen', backup: 'Backup', backup_failed: 'Backup fehlgeschlagen', restore: 'Wiederherstellung', remind: 'Mahnung', import: 'Import', security: 'Sicherheit' };
     // Muss die im Backend verwendeten entity-Werte abdecken, sonst lässt sich ein
     // Ereignis zwar protokollieren, aber im Filter nicht mehr auswählen.
-    const AUDIT_ENTITIES = { person: 'Person', vehicle: 'Gefährt', category: 'Tarif', service_type: 'Dienst', charge: 'Zusatzkosten', payment: 'Zahlung', invoice: 'Rechnung', billing: 'Rechnungs-Einstellungen', user: 'Benutzer', photo: 'Foto', passkey: 'Passkey', flatrate: 'Pauschale', recurring_charge: 'Wiederkehrende Kosten', spot: 'Stellplatz', hall: 'Halle', garage: 'Garage', handover: 'Übergabe', handover_template: 'Übergabevorlage', 'portal-link': 'Self-Service-Link', planner_icon: 'Planer-Symbol', wall_template: 'Wandvorlage', backup_settings: 'Backup-Einstellungen', system: 'System', audit_log: 'Audit-Log' };
+    const AUDIT_ENTITIES = { person: 'Person', vehicle: 'Gefährt', category: 'Tarif', service_type: 'Dienst', charge: 'Zusatzkosten', payment: 'Zahlung', invoice: 'Rechnung', billing: 'Rechnungs-Einstellungen', user: 'Benutzer', photo: 'Foto', passkey: 'Passkey', flatrate: 'Pauschale', recurring_charge: 'Wiederkehrende Kosten', spot: 'Stellplatz', hall: 'Halle', garage: 'Garage', handover: 'Übergabe', handover_template: 'Übergabevorlage', 'portal-link': 'Self-Service-Link', planner_icon: 'Planer-Symbol', wall_template: 'Wandvorlage', backup_settings: 'Backup-Einstellungen', system: 'System', audit_log: 'Audit-Log', service_task: 'Serviceaufgabe', service_task_log: 'Service erledigt', access_medium: 'Zugangsmittel', access_loan: 'Schlüsselausgabe' };
 
     function fmtAuditVal(x) {
         if (x === null || x === undefined || x === '') return '∅';
@@ -9989,6 +10353,14 @@ import { createRevenueChart } from './revenue-chart.js';
         // scope: 'CANVAS_ONLY' (default) re-arranges only the vehicles already on the plan and leaves the
         // "Nicht platziert" backlog untouched; 'INCLUDE_UNASSIGNED' also pulls the backlog in.
         let arrangeBusy = false; // in-flight guard for autoArrange (see below)
+        // Routing targets (drive-to) = Fahrstraße/Notausgang zones + gate/door openings.
+        function routeGates() {
+            const gates = P.excl.filter((e) => e.kind === 'lane' || e.kind === 'exit').map((e) => ({ x: e.x, y: e.y, w: e.w, h: e.h, rot: e.rot || 0 }));
+            P.walls.edges.forEach((e) => { const v = edgeVec(e); (e.ops || []).forEach((o) => { if (o.kind !== 'gate' && o.kind !== 'door') return;
+                const cx = v.a.x + v.dx * o.c, cy = v.a.y + v.dy * o.c, ang = Math.atan2(v.dy, v.dx) * 180 / Math.PI, gw = o.w, gh = (e.thick || 0.24) + 0.8;
+                gates.push({ x: cx - gw / 2, y: cy - gh / 2, w: gw, h: gh, rot: ang }); }); });
+            return gates;
+        }
         async function autoArrange(padding, scope) {
             // Re-entry guard. autoArrange awaits a confirm dialog and then a long series of API calls,
             // and the rail stays clickable throughout — so a second click starts a second run that
@@ -10026,11 +10398,7 @@ import { createRevenueChart } from './revenue-chart.js';
                 doorZones.push({ kind: 'doorswing', x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys), rot: 0 });
             }));
             const baseObs = wallRects().concat(P.excl.filter((e) => !isZoneKind(e.kind))).concat(doorZones);
-            // Routing targets (drive-to) = Fahrstraße/Notausgang zones + gate/door openings.
-            const gates = P.excl.filter((e) => e.kind === 'lane' || e.kind === 'exit').map((e) => ({ x: e.x, y: e.y, w: e.w, h: e.h, rot: e.rot || 0 }));
-            P.walls.edges.forEach((e) => { const v = edgeVec(e); (e.ops || []).forEach((o) => { if (o.kind !== 'gate' && o.kind !== 'door') return;
-                const cx = v.a.x + v.dx * o.c, cy = v.a.y + v.dy * o.c, ang = Math.atan2(v.dy, v.dx) * 180 / Math.PI, gw = o.w, gh = (e.thick || 0.24) + 0.8;
-                gates.push({ x: cx - gw / 2, y: cy - gh / 2, w: gw, h: gh, rot: ang }); }); });
+            const gates = routeGates();
             const routeObs = wallRects().concat(P.excl.filter((e) => EXCL[e.kind] && EXCL[e.kind].cat === 'wall')); // path can cross lanes, not walls/columns
             const driveways = P.excl.filter((e) => e.kind === 'lane').map((e) => ({ x: e.x, y: e.y, w: e.w, h: e.h, rot: e.rot || 0 })); // comb reference
             const bb = floorBB(), opts = { margin: pad, gap: pad, gates, routeObstacles: routeObs, allowBlocking: !!P.allowBlocking, driveways };
@@ -10801,10 +11169,11 @@ import { createRevenueChart } from './revenue-chart.js';
         // Gemeinsamer Ablageweg für Ziehen und Tippen. Ungültig heißt: nichts wird
         // gespeichert, das Gefährt bleibt in „Nicht platziert“ (wie bisher).
         async function placeFromPalette(p, pc) {
-            if (!rectInPoly(pc, P.floor)) { toast('Außerhalb der Hallenfläche — bleibt in „Nicht platziert"', 'warn'); return false; }
-            if (collide({ kind: 'veh', x: pc.x, y: pc.y, w: pc.w, h: pc.h }, null)) { toast('Kein Platz frei hier — bleibt in „Nicht platziert“ · „Auto-Anordnen“ packt es automatisch', 'warn'); return false; }
+            const rot = pc.rot || 0, cand = { kind: 'veh', x: pc.x, y: pc.y, w: pc.w, h: pc.h, rot };
+            if (!inside(cand)) { toast('Außerhalb der Hallenfläche — bleibt in „Nicht platziert"', 'warn'); return false; }
+            if (collide(cand, null)) { toast('Kein Platz frei hier — bleibt in „Nicht platziert“ · „Auto-Anordnen“ packt es automatisch', 'warn'); return false; }
             try {
-                const geom = { x: round2(pc.x), y: round2(pc.y), w: round2(pc.w), h: round2(pc.h), rot: 0, status: 'busy' };
+                const geom = { x: round2(pc.x), y: round2(pc.y), w: round2(pc.w), h: round2(pc.h), rot, status: 'busy' };
                 // Hall-unique persisted spot label (uq_spots_hall_label) — suffix the vehicle id
                 // so two like-named Gefährte don't collide; p.label stays the display label.
                 const spotLabel = (p.label + ' #' + p.id).slice(0, 90);
@@ -10813,7 +11182,7 @@ import { createRevenueChart } from './revenue-chart.js';
                 // link fails, roll the just-created spot back so no orphan lingers.
                 try { await api.put('/spots/' + spot.id + '/vehicle', { vehicle_id: p.id }); }
                 catch (linkErr) { try { await api.del('/spots/' + spot.id); } catch (e2) { /* best effort */ } throw linkErr; }
-                P.spots.push({ _id: spot.id, kind: 'veh', label: p.label, spotLabel: spot.label || spotLabel, type: p.type || '', vehId: p.id, personId: p.person_id || null, personName: p.person_name || '', L: p.length_m, W: p.width_m, H: p.height_m, t: p.weight_t, x: pc.x, y: pc.y, w: pc.w, h: pc.h, rot: 0, status: 'busy', _dirty: false });
+                P.spots.push({ _id: spot.id, kind: 'veh', label: p.label, spotLabel: spot.label || spotLabel, type: p.type || '', vehId: p.id, personId: p.person_id || null, personName: p.person_name || '', L: p.length_m, W: p.width_m, H: p.height_m, t: p.weight_t, needsPower: !!p.needs_power, x: pc.x, y: pc.y, w: pc.w, h: pc.h, rot, status: 'busy', _dirty: false });
                 P.palette = P.palette.filter((x) => x.id !== p.id); P.sel = spot.id;
                 const nb = P.spots[P.spots.length - 1];
                 if ((nb.H != null && nb.H > P.tor) || (nb.t != null && nb.t > P.load)) toast('⚠ ' + p.label + ' platziert · Höhe/Gewicht', 'warn'); else toast('✓ ' + p.label + ' platziert', 'ok');
@@ -10843,10 +11212,58 @@ import { createRevenueChart } from './revenue-chart.js';
             let x, y;
             if (free) { x = free.x; y = free.y; }
             else { const xs = P.floor.map((q) => q[0]), ys = P.floor.map((q) => q[1]); x = round2((Math.min(...xs) + Math.max(...xs) - w) / 2); y = round2((Math.min(...ys) + Math.max(...ys) - h) / 2); }
-            armed = { p, x, y, w, h };
+            armed = { p, x, y, w, h, sugg: null };
             renderRail(); updateArm();
             try { armPrev.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (e) { /* ältere Browser */ }
             if (viaKeyboard) rail.querySelector('.gp-vehc[data-pid="' + p.id + '"] .gp-vpick')?.focus({ preventScroll: true });
+        }
+        // Platzvorschlag (Ausbau 33): drei gültige Plätze für das bereite Gefährt, bewertet
+        // nach Strom (Ladebedarf), Nähe zum Tor (frühe Abholung) und dichtem Packen. Gültig
+        // heißt hier dasselbe wie beim Ziehen: validVeh. Übernommen wird über placeFromPalette.
+        const suggLayer = el('div', { class: 'gp-sugglayer', 'aria-hidden': 'true' });
+        planEl.append(suggLayer);
+        function pickupUrgency(p) {
+            if (!p.end_date) return 0;
+            const days = (new Date(p.end_date + 'T00:00:00') - new Date(today() + 'T00:00:00')) / 86400000;
+            return Math.max(0, Math.min(1, 1 - (days - 30) / 150));
+        }
+        function suggestFor(p) {
+            const { w, h } = footFor(p), gates = routeGates();
+            const routeObs = wallRects().concat(P.excl.filter((e) => EXCL[e.kind] && EXCL[e.kind].cat === 'wall'))
+                .concat(P.spots.map((b) => ({ x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot || 0 })));
+            const bb = floorBB();
+            return PG.suggestPlacements({ w, h }, {
+                bounds: bb, step: (P.snap && P.gridStep) ? Math.max(P.gridStep, 0.25) : 0.5,
+                valid: (c) => validVeh({ kind: 'veh', ...c }, null),
+                exitOK: (gates.length && !P.allowBlocking)
+                    ? (c) => PG.hasExitPath(c, routeObs, gates, bb, { clearance: Math.min(c.w, c.h) / 2 + 0.15, exitTol: 0.5 }) : null,
+                needsPower: !!p.needs_power, powerZones: P.excl.filter((e) => e.kind === 'power'), gates, urgency: pickupUrgency(p), limit: 3,
+            });
+        }
+        function showSuggestions() {
+            if (!armed) return;
+            armed.sugg = suggestFor(armed.p);
+            if (!armed.sugg.length) toast('Kein freier Platz für ' + armed.p.label + ' in dieser Halle', 'warn');
+            updateArm();
+        }
+        function renderSuggestions() {
+            suggLayer.textContent = '';
+            if (!armed || !armed.sugg || P.mode !== 'manage') return;
+            armed.sugg.forEach((sg, i) => {
+                const turned = Math.abs((sg.rot || 0) % 180) === 90, fw = turned ? sg.h : sg.w, fh = turned ? sg.w : sg.h;
+                const cx = sg.x + sg.w / 2, cy = sg.y + sg.h / 2;
+                const g = el('div', { class: 'gp-suggest' }, el('span', { class: 'gp-suggest-n' }, String(i + 1)));
+                g.style.left = ((cx - fw / 2) * P.CELL) + 'px'; g.style.top = ((cy - fh / 2) * P.CELL) + 'px';
+                g.style.width = (fw * P.CELL) + 'px'; g.style.height = (fh * P.CELL) + 'px';
+                g.addEventListener('click', (e) => { e.stopPropagation(); takeSuggestion(i); });
+                suggLayer.append(g);
+            });
+        }
+        async function takeSuggestion(i) {
+            const a = armed; if (!a || !a.sugg || !a.sugg[i]) return;
+            const sg = a.sugg[i];
+            const ok = await placeFromPalette(a.p, { x: sg.x, y: sg.y, w: sg.w, h: sg.h, rot: sg.rot || 0 });
+            if (ok) { updateArm(); requestAnimationFrame(() => rail.querySelector('.gp-vpick')?.focus({ preventScroll: true })); }
         }
         function disarm() {
             if (!armed) return;
@@ -10855,6 +11272,7 @@ import { createRevenueChart } from './revenue-chart.js';
             rail.querySelector('.gp-vehc[data-pid="' + id + '"] .gp-vpick')?.focus({ preventScroll: true });
         }
         function updateArm() {
+            renderSuggestions();
             if (!armed || P.mode !== 'manage') { armBar.hidden = true; armPrev.hidden = true; return; }
             const cand = { kind: 'veh', x: armed.x, y: armed.y, w: armed.w, h: armed.h };
             const ins = rectInPoly(cand, P.floor), col = collide(cand, null), ok = ins && !col;
@@ -10867,7 +11285,14 @@ import { createRevenueChart } from './revenue-chart.js';
             armBar.append(el('span', {}, el('b', {}, armed.p.label), ' bereit · ',
                 ok ? 'Fläche antippen oder Enter legt hier ab' : 'hier ist kein Platz – Fläche antippen oder mit den Pfeiltasten verschieben',
                 ' · Esc bricht ab'),
+                el('button', { class: 'gp-tbtn', type: 'button', onclick: showSuggestions }, 'Platz vorschlagen'),
                 el('button', { class: 'gp-tbtn', type: 'button', onclick: disarm }, 'Abbrechen'));
+            if (armed.sugg && armed.sugg.length) {
+                armBar.append(el('div', { class: 'gp-sugglist' }, ...armed.sugg.map((sg, i) => el('button', {
+                    class: 'gp-tbtn gp-suggbtn', type: 'button', onclick: () => takeSuggestion(i),
+                    'aria-label': 'Vorschlag ' + (i + 1) + ' übernehmen' + (sg.reasons.length ? ': ' + sg.reasons.join(', ') : ''),
+                }, el('b', {}, String(i + 1)), ' ', sg.reasons.length ? sg.reasons.join(' · ') : 'frei'))));
+            }
         }
         async function commitArmed() {
             const a = armed; if (!a) return;
@@ -10878,6 +11303,7 @@ import { createRevenueChart } from './revenue-chart.js';
         // Verschieben (Capture), damit der Tipp nicht zusätzlich etwas markiert.
         planWrap.addEventListener('pointerdown', (e) => {
             if (!armed || e.button !== 0 || spaceDown || P.mode !== 'manage') return;
+            if (e.target.closest && e.target.closest('.gp-suggest')) return; // Vorschlag antippen übernimmt genau ihn
             e.preventDefault(); e.stopPropagation();
             const pc = placeAt(armed.p, e.clientX, e.clientY);
             armed.x = pc.x; armed.y = pc.y; updateArm();
@@ -11044,6 +11470,8 @@ import { createRevenueChart } from './revenue-chart.js';
         group('Betrieb');
         body.append(item('receipt', 'Rechnungen', () => navigate('invoices'), '', 'invoices'));
         body.append(item('euro', 'Zusatzkosten', () => navigate('finance'), '', 'finance'));
+        body.append(item('check', 'Serviceaufgaben', () => navigate('service'), '', 'service'));
+        body.append(item('key', 'Schlüsselbuch', () => navigate('keys'), '', 'keys'));
         if (isAdmin()) body.append(item('ledger', 'Steuerjahr', () => navigate('taxyear'), '', 'taxyear'));
         group('Verwaltung');
         if (isAdmin()) body.append(item('receiptGear', 'Rechnungs-Einstellungen', () => navigate('billing'), '', 'billing'));
@@ -11717,6 +12145,8 @@ import { createRevenueChart } from './revenue-chart.js';
         { label: 'Übersicht', sub: 'Dashboard', url: '#/dashboard', kw: 'start home uebersicht zahlen kennzahlen' },
         { label: 'Personen', sub: 'Stammdaten', url: '#/persons', kw: 'kunde halter mieter adresse kontakt' },
         { label: 'Warteliste', sub: 'Interessenten ohne freien Platz', url: '#/waitlist', kw: 'warteliste interessent anfrage voll warten' },
+        { label: 'Serviceaufgaben', sub: 'Laden, Reifendruck, lüften', url: '#/service', kw: 'service aufgabe batterie laden reifen lueften wartung faellig' },
+        { label: 'Schlüsselbuch', sub: 'Schlüssel, Handsender, Karten', url: '#/keys', kw: 'schluessel handsender fernbedienung karte zugang tor code' },
         { label: 'Gefährte', sub: 'Fahrzeuge', url: '#/vehicles', kw: 'auto wohnwagen wohnmobil boot anhaenger kennzeichen' },
         { label: 'Zusatzkosten', sub: 'Buchungen', url: '#/finance', kw: 'kosten strom reinigung leistung' },
         { label: 'Rechnungen', sub: 'Offen, überfällig, bezahlt', url: '#/invoices', kw: 'rechnung beleg mahnung storno offen ueberfaellig' },

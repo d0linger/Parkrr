@@ -281,10 +281,31 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("DELETE /api/handover-templates/{id}", editor(hf(h.DeleteHandoverTemplate)))
 	mux.Handle("GET /api/handovers/{id}/signature", authed(hf(h.GetHandoverSignature)))
 	mux.Handle("GET /api/handovers/{id}/pdf", authed(hf(h.HandoverPDF)))
+	// Zustandsfotos zum Protokoll (Ausbau 24), nur bis 24 h nach dem Protokoll.
+	mux.Handle("POST /api/handovers/{id}/photos", editor(hf(h.UploadHandoverPhoto)))
 	// Ein unterschriebenes Übergabeprotokoll ist ein Beleg: nur Admins dürfen es
 	// entfernen, nicht jeder Bearbeiter (Hundert SEC-79). Gegen nachträgliche
 	// Änderungen schützt zusätzlich der Trigger aus Migration 051.
 	mux.Handle("DELETE /api/handovers/{id}", admin(hf(h.DeleteHandover)))
+
+	// --- Serviceaufgaben (Ausbau 25) ---
+	mux.Handle("GET /api/service-tasks", authed(hf(h.ListServiceTasks)))
+	mux.Handle("GET /api/service-tasks/due", authed(hf(h.ServiceTasksDue)))
+	mux.Handle("POST /api/service-tasks", editor(hf(h.CreateServiceTask)))
+	mux.Handle("PUT /api/service-tasks/{id}", editor(hf(h.UpdateServiceTask)))
+	mux.Handle("DELETE /api/service-tasks/{id}", editor(hf(h.DeleteServiceTask)))
+	mux.Handle("POST /api/service-tasks/{id}/done", editor(hf(h.CompleteServiceTask)))
+	mux.Handle("DELETE /api/service-task-log/{id}", editor(hf(h.UndoServiceTask)))
+
+	// --- Schlüssel- und Handsenderbuch (Ausbau 34) ---
+	mux.Handle("GET /api/access-media", authed(hf(h.ListAccessMedia)))
+	mux.Handle("POST /api/access-media", editor(hf(h.CreateAccessMedium)))
+	mux.Handle("PUT /api/access-media/{id}", editor(hf(h.UpdateAccessMedium)))
+	mux.Handle("DELETE /api/access-media/{id}", editor(hf(h.DeleteAccessMedium)))
+	mux.Handle("POST /api/access-media/{id}/issue", editor(hf(h.IssueAccessMedium)))
+	mux.Handle("POST /api/access-media/{id}/return", editor(hf(h.ReturnAccessMedium)))
+	mux.Handle("GET /api/access-media/{id}/loans", authed(hf(h.AccessMediumLoans)))
+	mux.Handle("GET /api/persons/{id}/access-media", authed(hf(h.PersonAccessMedia)))
 
 	// --- Categories (tariffs) ---
 	mux.Handle("GET /api/categories", authed(hf(h.ListCategories)))

@@ -513,7 +513,71 @@
     };
     const blockCenter = (b) => [b.x + b.w / 2, b.y + b.h / 2];
 
-    const PG = { ringAreaS, pointInPoly, segCross, polySelfIntersects, insetRing, roomAreas, arcPts, parseDXF, rectsCollide, packRects, hasExitPath, pointInBlock, blockCenter };
+    // Platzvorschlag (Ausbau 33): bewertet für EIN Gefährt die möglichen Lagen und
+    // liefert die besten `limit` Plätze, die sich nicht überlappen. Gültig ist eine Lage
+    // genau dann, wenn o.valid(cand) zustimmt — der Planer reicht dort dieselbe Prüfung
+    // durch wie beim Ziehen (Fläche + Kollision), damit ein Vorschlag nie ungültig ist.
+    //   item  { w, h }                        Länge × Breite in Metern
+    //   o     { bounds, step, valid, exitOK?, needsPower, powerZones[], gates[], urgency 0..1, limit }
+    // Bewertung (höher = besser), jede Stufe nennt ihren Grund für die Anzeige:
+    //   an Wand/Nachbar  je anliegender Seite (Lage 0,3 m weiter wäre ungültig): dicht packen
+    //   Strom            Ladebedarf und Mitte in einer Stromzone (fehlt sie: Abzug)
+    //   nah am Tor       frühe Abholung ans Tor/an die Fahrstraße, lange Standzeit eher nach hinten
+    function suggestPlacements(item, o) {
+        const b = o.bounds, limit = o.limit > 0 ? o.limit : 3;
+        if (!b || !(item.w > 0 && item.h > 0)) return [];
+        const W = b.maxX - b.minX, H = b.maxY - b.minY;
+        // Raster: ½ m, in großen Hallen gröber, damit höchstens ~20 000 Lagen geprüft werden.
+        const step = Math.max(o.step > 0 ? o.step : 0.5, Math.sqrt(Math.max(0, W * H) * 2 / 20000));
+        const r2 = (v) => Math.round(v * 100) / 100;
+        const urgency = Math.min(1, Math.max(0, o.urgency || 0));
+        const zones = o.powerZones || [], gates = o.gates || [];
+        const gateA = gates.map(_aabb);
+        const oris = Math.abs(item.w - item.h) < 1e-3 ? [0] : [0, 90];
+        const scored = [];
+        for (const rot of oris) {
+            const fw = rot === 90 ? item.h : item.w, fh = rot === 90 ? item.w : item.h;
+            const offX = (fw - item.w) / 2, offY = (fh - item.h) / 2;
+            for (let ay = b.minY; ay + fh <= b.maxY + 1e-6; ay += step) {
+                for (let ax = b.minX; ax + fw <= b.maxX + 1e-6; ax += step) {
+                    const cand = { x: r2(ax + offX), y: r2(ay + offY), w: item.w, h: item.h, rot };
+                    if (!o.valid(cand)) continue;
+                    const reasons = [];
+                    let s = -0.001 * (ax + ay); // stabile Reihenfolge bei Gleichstand
+                    let hug = 0;
+                    for (const [dx, dy] of [[-0.3, 0], [0.3, 0], [0, -0.3], [0, 0.3]]) if (!o.valid({ ...cand, x: cand.x + dx, y: cand.y + dy })) hug++;
+                    s += 1.2 * hug;
+                    if (hug >= 2) reasons.push('an Wand/Nachbar');
+                    if (o.needsPower && zones.length) {
+                        const [cx, cy] = blockCenter(cand);
+                        if (zones.some((z) => pointInBlock(cx, cy, z))) { s += 6; reasons.push('Strom'); } else s -= 2;
+                    }
+                    if (gateA.length) {
+                        const fa = _aabb(cand);
+                        let d = Infinity;
+                        for (const a of gateA) {
+                            const ddx = Math.max(a.x - (fa.x + fa.w), fa.x - (a.x + a.w), 0), ddy = Math.max(a.y - (fa.y + fa.h), fa.y - (a.y + a.h), 0);
+                            d = Math.min(d, Math.hypot(ddx, ddy));
+                        }
+                        s += (urgency * 5 - 1) / (1 + d / 3);
+                        if (urgency >= 0.5 && d < 3) reasons.push('nah am Tor');
+                    }
+                    scored.push({ cand, s, reasons });
+                }
+            }
+        }
+        scored.sort((a, c) => c.s - a.s);
+        const out = [];
+        for (const c of scored) {
+            if (out.length >= limit) break;
+            if (out.some((p) => rectsCollide(p, c.cand))) continue; // drei verschiedene Plätze, nicht dreimal derselbe
+            if (o.exitOK && !o.exitOK(c.cand)) continue;
+            out.push({ ...c.cand, score: Math.round(c.s * 100) / 100, reasons: c.reasons });
+        }
+        return out;
+    }
+
+    const PG = { ringAreaS, pointInPoly, segCross, polySelfIntersects, insetRing, roomAreas, arcPts, parseDXF, rectsCollide, packRects, hasExitPath, pointInBlock, blockCenter, suggestPlacements };
     if (typeof module !== 'undefined' && module.exports) module.exports = PG;
     if (root) root.PG = PG;
 })(typeof window !== 'undefined' ? window : null);

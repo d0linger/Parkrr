@@ -2161,6 +2161,13 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-armbar{display:flex;align-items:center;justify-content:space-between;gap:.6rem;flex-wrap:wrap;margin:0 0 .55rem;padding:.4rem .5rem .4rem .8rem;border:1px solid var(--gpteal);background:var(--gpteal-soft);border-radius:10px;color:var(--gpink);font-size:var(--text-base)}
 .gp-armbar > span{flex:1 1 14rem;min-width:0}
 .gp-armprev{border-style:dashed;z-index:9}
+/* Platzvorschlag (Ausbau 33): drei gestrichelte Plätze, antippbar */
+.gp-sugglayer{position:absolute;inset:0;pointer-events:none;z-index:9}
+.gp-suggest{position:absolute;pointer-events:auto;cursor:pointer;border:2px dashed var(--gpteal);background:var(--gpteal-soft);border-radius:7px}
+.gp-suggest:hover{border-style:solid}
+.gp-suggest-n{position:absolute;top:2px;left:5px;font-weight:700;font-size:var(--text-sm);color:var(--gpteal-text)}
+.gp-sugglist{display:flex;flex-wrap:wrap;gap:.35rem;flex-basis:100%}
+.gp-suggbtn b{color:var(--gpteal-text)}
 .gp-more{display:none}
 /* Telefon/schmal: Plan zuerst. „Nicht platziert“ als waagrechter Streifen über dem Plan,
    Kennzahlen als eine scrollbare Zeile, seltene Werkzeuge hinter „Mehr“. Wischen auf
@@ -2501,6 +2508,39 @@ a.portal-row.link:hover { color: var(--primary-ink); }
 .pw-row{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center}
 .pw-row select,.pw-row input{width:auto;min-width:0}
 .pw-row input[type=number]{width:4.5rem}
+/* Übergabe: Schäden, Zustandsfotos, Zugangsmittel (Ausbau 24, 34) */
+.ho-sec{border:1px solid var(--border);border-radius:var(--radius-sm);padding:.6rem .75rem;margin:.8rem 0;display:grid;gap:.5rem;min-width:0}
+.ho-sec legend{padding:0 .3rem;font-weight:600}
+.ho-damages{display:grid;gap:.4rem}
+.ho-damage{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr) auto;gap:.4rem;align-items:center}
+.ho-dlist{margin:.3rem 0 0;padding-left:1.1rem}
+.ho-photos{display:grid;grid-template-columns:repeat(auto-fill,minmax(9.5rem,1fr));gap:.5rem}
+.ho-slot{display:grid;gap:.35rem;align-content:start;min-width:0}
+.ho-pick.has-photo{border-color:var(--primary);color:var(--primary-ink)}
+.ho-ref,.ho-thumbs{display:flex;flex-wrap:wrap;gap:.3rem;align-items:flex-end}
+.ho-ref img,.ho-thumb img{width:4.5rem;height:3.4rem;object-fit:cover;border-radius:6px;display:block}
+.ho-ref-cap{font-size:var(--text-sm);color:var(--text-muted)}
+.ho-thumb{position:relative}
+.ho-thumb-del{position:absolute;top:-.35rem;right:-.35rem;width:1.5rem;height:1.5rem;border-radius:50%;border:1px solid var(--border);background:var(--bg-elev);color:inherit;display:grid;place-items:center;padding:0;cursor:pointer}
+.ho-keys{border-color:var(--warning)}
+.ho-key{display:flex;gap:.6rem;align-items:center;justify-content:flex-start;text-align:left;cursor:pointer}
+.ho-key input{width:auto;flex:none;margin:0;padding:0;inline-size:1.15rem;block-size:1.15rem}
+@media(max-width:480px){.ho-damage{grid-template-columns:minmax(0,1fr) auto}.ho-d-note{grid-column:1/-1;grid-row:2}}
+.ho-strip{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.45rem;align-items:center}
+.ho-strip-ph{display:grid;gap:.15rem;padding:0;border:0;background:none;color:inherit;cursor:pointer;font:inherit;font-size:var(--text-sm);text-align:center}
+.ho-strip-ph img{width:4.2rem;height:3.2rem;object-fit:cover;border-radius:6px;display:block}
+/* Serviceaufgaben (Ausbau 25) */
+.svc-row{display:flex;flex-wrap:wrap;gap:.5rem 1rem;align-items:center;justify-content:space-between;padding:.55rem 0;border-top:1px solid var(--border)}
+.svc-row:first-of-type{border-top:0}
+.svc-main{flex:1 1 16rem;min-width:0}
+.svc-row.is-overdue .svc-main strong{color:var(--warning-text)}
+.svc-row.is-inactive{opacity:.7}
+.svc-suggest{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;justify-content:space-between;border-color:var(--primary)}
+.svc-suggest p{margin:0;flex:1 1 18rem}
+/* Schlüsselbuch (Ausbau 34): Aktionen umbrechen statt den Titel zu quetschen */
+.key-row{flex-wrap:wrap}
+.key-row > .svc-main{flex:1 1 14rem}
+.key-row .card-actions{flex-wrap:wrap}
 .dash-spark-wrap{margin-top:.5rem}
 .dash-spark{display:block;overflow:visible}
 .dash-spark-line{fill:none;stroke:var(--primary-ink);stroke-width:1.8;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}

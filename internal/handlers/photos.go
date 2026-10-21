@@ -61,7 +61,7 @@ func (h *Handler) ListPhotos(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := h.Pool.Query(r.Context(),
 		`SELECT id, vehicle_id, filename, content_type, byte_size, created_at
-		 FROM vehicle_photos WHERE vehicle_id=$1 ORDER BY sort_order, created_at DESC`, id)
+		 FROM vehicle_photos WHERE vehicle_id=$1 AND handover_id IS NULL ORDER BY sort_order, created_at DESC`, id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -148,9 +148,10 @@ func (h *Handler) UploadPhoto(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not store photo")
 		return
 	}
+	// Protokollfotos (Ausbau 24) zählen nicht zur Galerie: sie haben ihre eigene Grenze.
 	var count int
 	if err := tx.QueryRow(r.Context(),
-		`SELECT count(*) FROM vehicle_photos WHERE vehicle_id=$1`, id).Scan(&count); err != nil {
+		`SELECT count(*) FROM vehicle_photos WHERE vehicle_id=$1 AND handover_id IS NULL`, id).Scan(&count); err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
@@ -162,7 +163,7 @@ func (h *Handler) UploadPhoto(w http.ResponseWriter, r *http.Request) {
 	if err := tx.QueryRow(r.Context(),
 		`INSERT INTO vehicle_photos (vehicle_id, filename, content_type, byte_size, data, sort_order)
 		 VALUES ($1,$2,$3,$4,$5,
-		         COALESCE((SELECT max(sort_order) + 1 FROM vehicle_photos WHERE vehicle_id = $1), 0))
+		         COALESCE((SELECT max(sort_order) + 1 FROM vehicle_photos WHERE vehicle_id = $1 AND handover_id IS NULL), 0))
 		 RETURNING id`,
 		id, filename, contentType, len(data), data).Scan(&photoID); err != nil {
 		if isForeignKeyViolation(err) {
@@ -281,13 +282,19 @@ func (h *Handler) DeletePhoto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Metadata only — the image bytes must never enter the audit log.
+	// Ein Protokollfoto (Ausbau 24) ist Teil des Belegs und geht nur mit dem Protokoll.
 	var delVehicle int64
 	var delFile, delType string
 	var delSize int
 	if err := h.Pool.QueryRow(r.Context(),
-		`DELETE FROM vehicle_photos WHERE id=$1 RETURNING vehicle_id, filename, content_type, byte_size`, id).
+		`DELETE FROM vehicle_photos WHERE id=$1 AND handover_id IS NULL RETURNING vehicle_id, filename, content_type, byte_size`, id).
 		Scan(&delVehicle, &delFile, &delType, &delSize); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			var bound bool
+			if qerr := h.Pool.QueryRow(r.Context(), `SELECT handover_id IS NOT NULL FROM vehicle_photos WHERE id=$1`, id).Scan(&bound); qerr == nil && bound {
+				writeError(w, http.StatusConflict, "Das Foto gehört zu einem Übergabeprotokoll und wird nur mit ihm gelöscht.")
+				return
+			}
 			writeError(w, http.StatusNotFound, "photo not found")
 			return
 		}
@@ -337,7 +344,7 @@ func (h *Handler) ReorderPhotos(w http.ResponseWriter, r *http.Request) {
 		// und die Reihenfolge wäre mehrdeutig.
 		var count int
 		if err := tx.QueryRow(r.Context(),
-			`SELECT count(*) FROM vehicle_photos WHERE vehicle_id=$1`, id).Scan(&count); err != nil {
+			`SELECT count(*) FROM vehicle_photos WHERE vehicle_id=$1 AND handover_id IS NULL`, id).Scan(&count); err != nil {
 			return err
 		}
 		if count != len(req.IDs) {
@@ -346,7 +353,7 @@ func (h *Handler) ReorderPhotos(w http.ResponseWriter, r *http.Request) {
 		}
 		for pos, pid := range req.IDs {
 			ct, err := tx.Exec(r.Context(),
-				`UPDATE vehicle_photos SET sort_order=$1 WHERE id=$2 AND vehicle_id=$3`, pos, pid, id)
+				`UPDATE vehicle_photos SET sort_order=$1 WHERE id=$2 AND vehicle_id=$3 AND handover_id IS NULL`, pos, pid, id)
 			if err != nil {
 				return err
 			}

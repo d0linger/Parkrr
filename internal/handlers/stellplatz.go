@@ -365,7 +365,7 @@ func (h *Handler) spotsOfHall(r *http.Request, hallID int64) ([]models.Spot, err
 		        COALESCE(v.height_m, cat.default_height_m), COALESCE(v.weight_t, cat.default_weight_t),
 		        COALESCE(v.needs_power, false),
 		        v.planner_symbol,
-		        (SELECT vp.id FROM vehicle_photos vp WHERE vp.vehicle_id = v.id ORDER BY vp.sort_order, vp.created_at DESC, vp.id LIMIT 1)
+		        (SELECT vp.id FROM vehicle_photos vp WHERE vp.vehicle_id = v.id AND vp.handover_id IS NULL ORDER BY vp.sort_order, vp.created_at DESC, vp.id LIMIT 1)
 		   FROM spots s
 		   LEFT JOIN vehicles   v   ON v.spot_id = s.id
 		   LEFT JOIN categories cat ON cat.id = v.category_id
@@ -666,6 +666,9 @@ type unassignedVehicle struct {
 	WidthM     *float64 `json:"width_m,omitempty"`
 	HeightM    *float64 `json:"height_m,omitempty"`
 	WeightT    *float64 `json:"weight_t,omitempty"`
+	// Für den Platzvorschlag (Ausbau 33): Strom bei Ladebedarf, frühe Abholung ans Tor.
+	NeedsPower bool    `json:"needs_power"`
+	EndDate    *string `json:"end_date"`
 }
 
 // ListUnassignedVehicles returns active Gefährte that stand on no spot yet — the
@@ -677,7 +680,8 @@ func (h *Handler) ListUnassignedVehicles(w http.ResponseWriter, r *http.Request)
 		        COALESCE(cat.name, ''),
 		        v.person_id, trim(p.first_name || ' ' || p.last_name),
 		        COALESCE(v.length_m, cat.default_length_m), COALESCE(v.width_m, cat.default_width_m),
-		        COALESCE(v.height_m, cat.default_height_m), COALESCE(v.weight_t, cat.default_weight_t)
+		        COALESCE(v.height_m, cat.default_height_m), COALESCE(v.weight_t, cat.default_weight_t),
+		        v.needs_power, to_char(v.end_date, 'YYYY-MM-DD')
 		   FROM vehicles v
 		   LEFT JOIN categories cat ON cat.id = v.category_id
 		   LEFT JOIN persons    p   ON p.id = v.person_id
@@ -692,7 +696,7 @@ func (h *Handler) ListUnassignedVehicles(w http.ResponseWriter, r *http.Request)
 	for rows.Next() {
 		var uv unassignedVehicle
 		if err := rows.Scan(&uv.ID, &uv.Label, &uv.Type, &uv.PersonID, &uv.PersonName,
-			&uv.LengthM, &uv.WidthM, &uv.HeightM, &uv.WeightT); err != nil {
+			&uv.LengthM, &uv.WidthM, &uv.HeightM, &uv.WeightT, &uv.NeedsPower, &uv.EndDate); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan failed")
 			return
 		}

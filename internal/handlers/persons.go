@@ -291,6 +291,12 @@ func anonymizeUnlinkedTraces(
 		        last_error = CASE WHEN status IN ('queued', 'sending') THEN 'Person anonymisiert, nicht gesendet' ELSE last_error END,
 		        status = CASE WHEN status IN ('queued', 'sending') THEN 'failed' ELSE status END
 		  WHERE person_id = $1`, personID)
+	if err != nil {
+		return err
+	}
+	// Schlüsselbuch (Ausbau 34): die Ausgabe bleibt (welches Zugangsmittel wann draußen
+	// war), die Freitext-Notiz dazu kann Personenbezug tragen und geht.
+	_, err = q.Exec(ctx, `UPDATE access_media_loans SET note = '' WHERE person_id = $1 AND note <> ''`, personID)
 	return err
 }
 
@@ -400,6 +406,13 @@ func (h *Handler) DeletePerson(w http.ResponseWriter, r *http.Request) {
 	if hasPayments {
 		writeError(w, http.StatusConflict,
 			"Person hat erfasste Zahlungen und kann nicht gelöscht werden (Aufbewahrungspflicht).")
+		return
+	}
+	if open, err := h.openAccessLoans(r.Context(), id); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete person")
+		return
+	} else if open != "" {
+		writeError(w, http.StatusConflict, "Person hat noch Zugangsmittel: "+open+". Erst zurücknehmen.")
 		return
 	}
 	// RETURNING captures who was deleted, atomically with the delete — once the row

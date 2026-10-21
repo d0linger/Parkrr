@@ -284,7 +284,9 @@ var auditIgnoredPerFunc = map[string]map[string]bool{
 	// die geloeschte Adresse ins Aenderungsprotokoll und hoebe die Loeschung damit auf.
 	// error (mail_log) ebenso: der SMTP-Fehlertext zitiert die abgewiesene Adresse
 	// (PRT-03), geschwärzt wird genau sie.
-	"AnonymizePerson": {"revoked": true, "payload": true, "recipients": true, "sent_to": true, "error": true},
+	// note (access_media_loans, Ausbau 34): die Freitext-Notiz zur Ausgabe eines
+	// Schlüssels kann Personenbezug tragen und gehört in dieselbe Klasse.
+	"AnonymizePerson": {"revoked": true, "payload": true, "recipients": true, "sent_to": true, "error": true, "note": true},
 }
 
 // TestAuditDiffsCoverEveryWrittenColumn fails when a handler records field changes

@@ -493,3 +493,32 @@ test('pointInBlock: Mitte, Rand und Drehung um die Blockmitte (Stromzone, Ausbau
   assert.ok(!PG.pointInBlock(3.5, 1, turned), 'rechts außerhalb nach der Drehung');
   assert.deepStrictEqual(PG.blockCenter({ x: 1, y: 2, w: 4, h: 2, rot: 45 }), [3, 3]);
 });
+
+// Platzvorschlag (Ausbau 33): nur gültige Lagen, drei verschiedene Plätze, Strom und
+// Tor ziehen in die erwartete Richtung.
+test('suggestPlacements: gültig, verschieden, Strom bei Ladebedarf, Tor bei früher Abholung', () => {
+  const bounds = { minX: 0, minY: 0, maxX: 20, maxY: 10 };
+  const parked = [{ x: 0, y: 0, w: 6, h: 2.5, rot: 0 }];
+  const inside = (c) => { const cx = c.x + c.w / 2, cy = c.y + c.h / 2;
+    const hw = (c.rot === 90 ? c.h : c.w) / 2, hh = (c.rot === 90 ? c.w : c.h) / 2;
+    return cx - hw >= -1e-9 && cy - hh >= -1e-9 && cx + hw <= 20 + 1e-9 && cy + hh <= 10 + 1e-9; };
+  const valid = (c) => inside(c) && !parked.some((p) => PG.rectsCollide(p, c));
+  const item = { w: 6, h: 2.4 };
+  const base = PG.suggestPlacements(item, { bounds, valid, limit: 3 });
+  assert.strictEqual(base.length, 3);
+  for (const s of base) assert.ok(valid(s), 'jeder Vorschlag besteht dieselbe Prüfung wie das Ziehen');
+  for (let i = 0; i < base.length; i++) for (let j = i + 1; j < base.length; j++) assert.ok(!PG.rectsCollide(base[i], base[j]), 'Vorschläge überlappen sich nicht');
+
+  const zone = { x: 14, y: 6, w: 6, h: 4, rot: 0 };
+  const powered = PG.suggestPlacements(item, { bounds, valid, needsPower: true, powerZones: [zone], limit: 1 })[0];
+  assert.ok(PG.pointInBlock(powered.x + powered.w / 2, powered.y + powered.h / 2, zone), 'Ladebedarf landet in der Stromzone');
+  assert.ok(powered.reasons.includes('Strom'));
+
+  const gate = { x: 19, y: 0, w: 1, h: 10, rot: 0 };
+  const soon = PG.suggestPlacements(item, { bounds, valid, gates: [gate], urgency: 1, limit: 1 })[0];
+  const late = PG.suggestPlacements(item, { bounds, valid, gates: [gate], urgency: 0, limit: 1 })[0];
+  assert.ok(soon.x > late.x, 'frühe Abholung steht näher am Tor als eine lange Standzeit');
+
+  const none = PG.suggestPlacements({ w: 30, h: 2 }, { bounds, valid });
+  assert.deepStrictEqual(none, [], 'passt nirgends: kein Vorschlag');
+});

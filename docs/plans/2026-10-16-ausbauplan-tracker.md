@@ -49,10 +49,10 @@ Legende: `[x]` umgesetzt · `[~]` teilweise (Grund dahinter) · `[ ]` offen · `
 
 ## B6 Halle
 
-- [ ] 24 Zustandsfotos an der Übergabe, Vergleich bei der Abholung
-- [ ] 25 Serviceaufgaben während der Einlagerung
-- [ ] 33 Platzvorschlag beim Einlagern
-- [ ] 34 Schlüssel- und Handsenderbuch
+- [x] 24 Zustandsfotos an der Übergabe (Migration 084): feste Ansichten, Fotos hängen am Protokoll statt in der Galerie, bis 24 h nachreichbar, einzeln nicht löschbar; Schäden als Liste; bei der Abholung stehen Fotos und Schäden der Einlagerung daneben, das PDF hat einen Kontaktbogen im Vergleich
+- [x] 25 Serviceaufgaben (Seite „Serviceaufgaben“): je Gefährt, Tarif, alle eingelagerten oder alle mit Ladebedarf, fällig nach Intervall; „Erledigt“ mit einem Tipp, mit Leistung auf Wunsch als Position über CreateCharge (Rückgängig nimmt beides zurück); Hinweis in der Heute-Liste; Ladebedarf ohne Aufgabe schlägt „Erhaltungsladung prüfen“ vor
+- [x] 33 Platzvorschlag im Planer („Platz vorschlagen“ beim bereiten Gefährt): drei verschiedene Plätze, geprüft mit derselben Prüfung wie das Ziehen, bewertet nach Strom, Abholtermin (nah am Tor) und dichtem Packen; mit Fahrweg-Prüfung, wenn Tore oder Fahrstraßen gezeichnet sind
+- [x] 34 Schlüssel- und Handsenderbuch (Seite „Schlüsselbuch“): Art und Nummer, nie ein Code; Ausgabe und Rückgabe mit Verlauf; die Übergabe zeigt Offenes und nimmt zurück; eine Person mit offenem Zugangsmittel lässt sich nicht löschen
 
 ## B7 Geld und Recht
 

@@ -1333,11 +1333,12 @@ func (h *Handler) DuplicateVehicle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Copy the photos so the new period reuses the existing images.
+	// Copy the photos so the new period reuses the existing images. Nur die Galerie:
+	// Protokollfotos gehören zum Protokoll der alten Einlagerung (Ausbau 24).
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO vehicle_photos (vehicle_id, filename, content_type, byte_size, data, sort_order)
 		 SELECT $1, filename, content_type, byte_size, data, sort_order
-		 FROM vehicle_photos WHERE vehicle_id = $2 ORDER BY sort_order, id`, newID, id); err != nil {
+		 FROM vehicle_photos WHERE vehicle_id = $2 AND handover_id IS NULL ORDER BY sort_order, id`, newID, id); err != nil {
 		serverError(w, r, "could not copy vehicle photos", err)
 		return
 	}
