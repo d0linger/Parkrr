@@ -57,3 +57,8 @@
 *Vulnerability:* In `PasskeyLoginFinish`, when a passkey assertion verified for a disabled user account (`u.Disabled`), the handler explicitly refunded the rate-limiter attempt budget via `h.Limiter.Refund(key)`. This allowed repeated passkey login attempts against disabled accounts to bypass IP-based throttling and avoid rate-limiting penalties.
 *Learning:* Authentication rejections due to account status (such as disabled accounts) represent failed login attempts and must retain their consumed rate-limit penalty rather than being treated like transient server/database errors.
 *Prevention:* Never refund rate-limiter reservations on account-status authentication failures; ensure disabled-account login attempts consume rate limiting consistently across all authentication methods.
+
+## 2026-07-21 - [Step-Up Session Verification on Backup Validation]
+*Vulnerability:* Backup restore execution endpoints (`BackupRestore`, `BackupRestoreS3`) checked session recency (`restoreStepUpOK`), but validation handlers (`BackupValidate`, `BackupValidateS3`) did not. Stale sessions could stage uploads, decrypt archives, or generate restore confirmation tokens without step-up re-authentication.
+*Learning:* Validation and confirmation-generation endpoints for sensitive operations (like database restores) must enforce the same step-up authentication checks as the final execution handlers.
+*Prevention:* Always gate both validation/preview handlers and execution handlers with step-up session recency checks (`restoreStepUpOK`).

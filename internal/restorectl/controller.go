@@ -195,6 +195,11 @@ func randomID() (string, error) {
 	return hex.EncodeToString(raw[:]), nil
 }
 
+// NewForTest constructs a minimal Controller for testing purposes.
+func NewForTest(enabled bool) *Controller {
+	return &Controller{enabled: enabled}
+}
+
 func (c *Controller) Enabled() bool { return c != nil && c.enabled }
 
 func (c *Controller) InstanceID() string {
