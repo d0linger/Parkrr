@@ -57,3 +57,8 @@
 *Vulnerability:* In `PasskeyLoginFinish`, when a passkey assertion verified for a disabled user account (`u.Disabled`), the handler explicitly refunded the rate-limiter attempt budget via `h.Limiter.Refund(key)`. This allowed repeated passkey login attempts against disabled accounts to bypass IP-based throttling and avoid rate-limiting penalties.
 *Learning:* Authentication rejections due to account status (such as disabled accounts) represent failed login attempts and must retain their consumed rate-limit penalty rather than being treated like transient server/database errors.
 *Prevention:* Never refund rate-limiter reservations on account-status authentication failures; ensure disabled-account login attempts consume rate limiting consistently across all authentication methods.
+
+## 2026-07-21 - [Rate-Limiting Bypass on Over-Long Re-Authentication Passwords]
+*Vulnerability:* Re-authentication handlers (`requireStepUp`, `ChangePassword`, `TOTPDisable`, `TOTPRegenerateBackup`) evaluated password length bounds (`len(password) > maxPasswordLen`) prior to checking and consuming rate-limiting budgets. Over-long password attempts returned early without registering as failed re-authentication attempts, allowing attackers to probe password endpoints or bypass active rate-limit lockouts.
+*Learning:* Input validation checks that reject invalid credentials must execute after rate-limit checks and consume rate-limit quota as re-authentication failures (`recordReauthFailure`) to ensure consistent throttling across all invalid payload formats.
+*Prevention:* Perform rate-limit reservations prior to validating credential payload properties and record failures when credentials are too long.
