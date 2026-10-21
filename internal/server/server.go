@@ -96,6 +96,9 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	// (Kontaktdaten, Abholtermin) landen als Anfrage beim Betreiber (Hundert 85/87).
 	mux.HandleFunc("POST /api/portal/requests", h.PortalCreateRequest)
 	mux.HandleFunc("GET /api/portal/pickup-slots", h.PortalPickupSlots)
+	// Einstellvertrag (Ausbau 30): lesen und annehmen, nur für die eigenen Gefährte.
+	mux.HandleFunc("GET /api/portal/contract", h.PortalContractPDF)
+	mux.HandleFunc("POST /api/portal/contract/accept", h.PortalAcceptContract)
 	mux.HandleFunc("GET /ical/{token}", h.CalendarFeed)
 
 	// --- Auth (protected) ---
@@ -194,6 +197,15 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/waitlist/{id}/convert", editor(hf(h.ConvertWaitlist)))
 	mux.Handle("POST /api/invoices/{id}/cancel", editor(hf(h.CancelInvoice)))
 	mux.Handle("POST /api/persons/{id}/pay-invoices", editor(hf(h.PayInvoices)))
+	// Kautionen (Ausbau 32): eigenes Konto je Person, Einbehalt über pay-invoices.
+	mux.Handle("GET /api/persons/{id}/deposits", authed(hf(h.ListDeposits)))
+	mux.Handle("POST /api/persons/{id}/deposits", editor(hf(h.CreateDeposit)))
+	mux.Handle("DELETE /api/deposits/{id}", admin(hf(h.DeleteDeposit)))
+	// Kontoauszug (Ausbau 27): camt.053 einlesen, per Klick zuordnen.
+	mux.Handle("POST /api/bank-import", editor(hf(h.ImportBankStatement)))
+	mux.Handle("GET /api/bank-transactions", authed(hf(h.ListBankTransactions)))
+	mux.Handle("POST /api/bank-transactions/{id}/assign", editor(hf(h.AssignBankTransaction)))
+	mux.Handle("POST /api/bank-transactions/{id}/ignore", editor(hf(h.SetBankTransactionIgnored)))
 	mux.Handle("GET /api/invoices/overdue", authed(hf(h.OverdueInvoices)))
 	// Offene-Posten-Liste als druckfertiges Dokument mit Stichtag (Hundert 17).
 	mux.Handle("GET /api/reports/outstanding.pdf", authed(hf(h.OutstandingReportPDF)))
@@ -306,6 +318,23 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	mux.Handle("POST /api/access-media/{id}/return", editor(hf(h.ReturnAccessMedium)))
 	mux.Handle("GET /api/access-media/{id}/loans", authed(hf(h.AccessMediumLoans)))
 	mux.Handle("GET /api/persons/{id}/access-media", authed(hf(h.PersonAccessMedia)))
+	// Datenauskunft nach Art. 15 DSGVO (Ausbau 28): nur Admins, steht im Änderungsprotokoll.
+	mux.Handle("GET /api/persons/{id}/export", admin(hf(h.PersonDataExport)))
+	// Einstellvertrag (Ausbau 30): versionierte Vorlage, PDF je Gefährt, Annahmen.
+	mux.Handle("GET /api/contract-template", authed(hf(h.GetContractTemplate)))
+	mux.Handle("POST /api/contract-template", admin(hf(h.SaveContractTemplate)))
+	mux.Handle("GET /api/vehicles/{id}/contract.pdf", authed(hf(h.VehicleContractPDF)))
+	mux.Handle("GET /api/persons/{id}/contracts", authed(hf(h.PersonContracts)))
+	// Wertsicherung (Ausbau 29): VPI-Werte, Tarif-Basis, Vorschau, Anpassen.
+	mux.Handle("GET /api/cpi", authed(hf(h.ListCPI)))
+	mux.Handle("PUT /api/cpi", editor(hf(h.SaveCPI)))
+	mux.Handle("DELETE /api/cpi/{month}", editor(hf(h.DeleteCPI)))
+	mux.Handle("GET /api/indexation", authed(hf(h.IndexationSettings)))
+	mux.Handle("PUT /api/categories/{id}/indexation", editor(hf(h.SetCategoryIndexation)))
+	mux.Handle("GET /api/indexation/preview", authed(hf(h.IndexationPreview)))
+	mux.Handle("POST /api/indexation/apply", editor(hf(h.ApplyIndexation)))
+	mux.Handle("GET /api/vehicles/{id}/rate-changes", authed(hf(h.VehicleRateChanges)))
+	mux.Handle("DELETE /api/vehicle-rate-changes/{id}", editor(hf(h.DeleteRateChange)))
 
 	// --- Categories (tariffs) ---
 	mux.Handle("GET /api/categories", authed(hf(h.ListCategories)))

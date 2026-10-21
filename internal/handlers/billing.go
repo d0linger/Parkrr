@@ -347,7 +347,7 @@ func (h *Handler) invoiceLinesFrom(r *http.Request, q dbQuerier, personID int64)
 	ctx := r.Context()
 	now := h.now()
 
-	vehicles, _, err := h.loadVehiclesWithCategoriesFrom(r, q, personID)
+	vehicles, cats, err := h.loadVehiclesWithCategoriesFrom(r, q, personID)
 	if err != nil {
 		return nil, err
 	}
@@ -407,10 +407,9 @@ func (h *Handler) invoiceLinesFrom(r *http.Request, q dbQuerier, personID int64)
 		if v.Archived || v.FlatRateCovered {
 			continue
 		}
-		vp := models.FlatRatePeriod{
-			Amount: v.EffectiveRate, Period: v.BillingPeriod,
-			StartDate: v.StartDate, EndDate: v.EndDate,
-		}
+		// Abrechnungssicht mit Preisänderungen (Ausbau 29): EffectiveRate ist nur der
+		// heute gültige Satz, die Perioden davor rechnen mit ihrem eigenen.
+		vp := v.AsPeriod(cats[v.CategoryID])
 		var settledUntil time.Time // exclusive; zero = nothing settled
 		if v.PaidThrough != nil {
 			settledUntil = v.PaidThrough.AddDate(0, 0, 1)

@@ -227,6 +227,11 @@ func (h *Handler) markSent(ctx context.Context, row outboxRow, after func(contex
 				return err
 			}
 		}
+		if row.Kind == "price_change" && row.RefID != nil {
+			if err := auditExec(wctx, tx, 0, "system", "notice", "vehicle", *row.RefID, "Mitteilung zur Preisanpassung versendet (Mail-Warteschlange)", nil); err != nil {
+				return err
+			}
+		}
 		if row.Kind == "contract_end" && row.RefID != nil {
 			if err := auditExec(wctx, tx, 0, "system", "notice", "vehicle", *row.RefID, "Erinnerung an das Vertragsende versendet (Mail-Warteschlange)", nil); err != nil {
 				return err

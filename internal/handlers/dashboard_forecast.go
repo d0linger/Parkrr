@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -213,7 +214,9 @@ func loadForecastVehicles(ctx context.Context, q dbQuerier, data *dashboardForec
 	rows, err := q.Query(ctx, `
 		SELECT v.id, v.person_id, v.category_id, v.billing_period, v.rate, v.cost_override,
 		       v.start_date, v.end_date, v.status, v.archived, v.reserved_from, v.reserved_until,
-		       c.default_monthly_cost, c.default_yearly_cost
+		       c.default_monthly_cost, c.default_yearly_cost,
+		       (SELECT jsonb_agg(jsonb_build_object('from', to_char(rc.effective_from, 'YYYY-MM-DD"T"00:00:00"Z"'), 'amount', rc.rate)
+		               ORDER BY rc.effective_from) FROM vehicle_rate_changes rc WHERE rc.vehicle_id = v.id)
 		  FROM vehicles v JOIN categories c ON c.id=v.category_id ORDER BY v.id`)
 	if err != nil {
 		return fmt.Errorf("load forecast vehicles: %w", err)
@@ -222,13 +225,19 @@ func loadForecastVehicles(ctx context.Context, q dbQuerier, data *dashboardForec
 	for rows.Next() {
 		var vehicle models.Vehicle
 		var category models.Category
+		var rateChanges []byte
 		if err := rows.Scan(
 			&vehicle.ID, &vehicle.PersonID, &vehicle.CategoryID, &vehicle.BillingPeriod,
 			&vehicle.Rate, &vehicle.CostOverride, &vehicle.StartDate, &vehicle.EndDate,
 			&vehicle.Status, &vehicle.Archived, &vehicle.ReservedFrom, &vehicle.ReservedUntil,
-			&category.DefaultMonthlyCost, &category.DefaultYearlyCost,
+			&category.DefaultMonthlyCost, &category.DefaultYearlyCost, &rateChanges,
 		); err != nil {
 			return fmt.Errorf("scan forecast vehicle: %w", err)
+		}
+		if len(rateChanges) > 0 {
+			if err := json.Unmarshal(rateChanges, &vehicle.RateChanges); err != nil {
+				return fmt.Errorf("forecast rate changes: %w", err)
+			}
 		}
 		category.ID = vehicle.CategoryID
 		data.Vehicles = append(data.Vehicles, vehicle)
@@ -322,10 +331,9 @@ func buildForecastSources(data dashboardForecastData, now time.Time) (forecastSo
 			}
 			continue
 		}
-		period := models.FlatRatePeriod{
-			Amount: vehicle.EffectiveRateFor(data.Categories[vehicle.CategoryID]),
-			Period: vehicle.BillingPeriod, StartDate: vehicle.StartDate, EndDate: vehicle.EndDate,
-		}
+		// Mit Preisänderungen (Ausbau 29): die Prognose rechnet künftige Monate mit dem
+		// dann gültigen Satz.
+		period := vehicle.AsPeriod(data.Categories[vehicle.CategoryID])
 		sources.Actual = append(sources.Actual, period)
 		legacyPrice = legacyPrice || (vehicle.Rate == 0 && vehicle.CostOverride == nil)
 		closed := vehicle.Archived || vehicle.Status == models.StatusCancelled || vehicle.Status == models.StatusCollected

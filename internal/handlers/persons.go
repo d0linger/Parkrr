@@ -447,7 +447,7 @@ func (h *Handler) DeletePerson(w http.ResponseWriter, r *http.Request) {
 			// Invoices reference the person (ON DELETE RESTRICT) for immutability —
 			// a person with issued invoices must be kept (storniere statt löschen).
 			writeError(w, http.StatusConflict,
-				"Person hat geschützte Rechnungen oder Übergabeprotokolle und kann nicht gelöscht werden.")
+				"Person hat geschützte Rechnungen, Übergabeprotokolle oder Kautionsbuchungen und kann nicht gelöscht werden.")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "could not delete person")

@@ -1396,7 +1396,7 @@ import { createRevenueChart } from './revenue-chart.js';
         garages: 'garages', garage: 'garages', hall: 'garages', calendar: 'dashboard', 'handover-templates': 'vehicles', waitlist: 'persons' };
     // Ziele, die nur im Menü (☰) stehen: dort markiert, und ☰ selbst zeigt an, dass
     // die aktuelle Seite darin liegt — bisher war auf diesen Seiten nichts markiert.
-    const MENU_ROUTES = new Set(['invoices', 'billing', 'finance', 'taxyear', 'settings', 'users', 'audit', 'backup', 'help', 'service', 'keys']);
+    const MENU_ROUTES = new Set(['invoices', 'billing', 'finance', 'taxyear', 'settings', 'users', 'audit', 'backup', 'help', 'service', 'keys', 'bank']);
     function navigate(path) {
         if (('#/' + path) === location.hash) render();
         else location.hash = '#/' + path;
@@ -2817,6 +2817,64 @@ import { createRevenueChart } from './revenue-chart.js';
             }
             yc.append(bars);
             statFold.append(yc);
+        }
+
+        // Kaution (Ausbau 32): eigenes Konto. Erhalten und Zurückzahlen sind kein Erlös;
+        // einbehalten bucht der Server als Zahlung (offene Rechnungen zuerst).
+        {
+            const depCard = el('div', { class: 'card person-deposit' });
+            page.append(depCard);
+            const DEP = { erhalten: 'Erhalten', einbehalten: 'Einbehalten', zurueck: 'Zurückgezahlt' };
+            const depositForm = (kind, balance) => formModal({
+                title: kind === 'erhalten' ? 'Kaution erhalten' : kind === 'zurueck' ? 'Kaution zurückzahlen' : 'Kaution einbehalten',
+                submitLabel: kind === 'einbehalten' ? 'Einbehalten' : 'Buchen',
+                fields: [
+                    { name: 'amount', label: 'Betrag (€)', type: 'number', step: '0.01', min: '0.01', required: true, value: kind === 'erhalten' ? '' : balance.toFixed(2) },
+                    { name: 'booked_on', label: 'Datum', type: 'date', value: today(), quickDate: true },
+                    kind === 'einbehalten'
+                        ? { name: 'note', label: 'Grund', type: 'textarea', required: true, placeholder: 'z. B. Schaden am Heck laut Übergabeprotokoll' }
+                        : { name: 'method', label: 'Zahlungsart', type: 'select', value: 'ueberweisung', options: [{ value: 'ueberweisung', label: 'Überweisung' }, { value: 'bar', label: 'Bar' }, { value: 'sonstiges', label: 'Sonstiges' }] },
+                ].concat(kind === 'einbehalten' ? [] : [{ name: 'note', label: 'Notiz', type: 'textarea' }]),
+                save: async (d) => {
+                    await api.post('/persons/' + id + '/deposits', { kind, amount: Number(d.amount), booked_on: d.booked_on || null, method: d.method || '', note: d.note || '' });
+                    toast(kind === 'einbehalten' ? 'Einbehalten und als Zahlung gebucht' : 'Gebucht', 'success');
+                    loadDeposits();
+                },
+            });
+            const loadDeposits = async () => {
+                let dep;
+                try { dep = await api.get('/persons/' + id + '/deposits'); } catch (e) { depCard.hidden = true; return; }
+                // Unerwartete Antwort (alter Server, Proxy): Karte weglassen statt abstürzen.
+                if (!dep || !Array.isArray(dep.entries)) { depCard.hidden = true; return; }
+                dep.balance = Number(dep.balance) || 0;
+                depCard.hidden = false;
+                depCard.textContent = '';
+                const open = dep.balance > 0.005;
+                depCard.append(el('div', { class: 'page-head' }, el('h3', {}, 'Kaution'),
+                    el('strong', { class: 'amt' }, open ? 'offen ' + eur(dep.balance) : (dep.entries.length ? 'ausgeglichen' : '–'))));
+                if (!dep.entries.length) depCard.append(el('p', { class: 'card-meta' }, 'Keine Kaution. Eine Kaution ist kein Erlös, solange sie nicht einbehalten wird.'));
+                dep.entries.slice().reverse().forEach((e) => depCard.append(el('div', { class: 'balance' },
+                    el('span', {}, fmtDate(e.booked_on) + ' · ' + DEP[e.kind] + (e.note ? ' · ' + e.note : '')),
+                    el('span', { class: 'dep-amt' }, (e.kind === 'erhalten' ? '+' : '−') + eur(e.amount),
+                        isAdmin() && !e.payment_id ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': 'Kautionsbuchung vom ' + fmtDate(e.booked_on) + ' löschen', onclick: async () => {
+                            if (!await confirmDialog('Kautionsbuchung löschen?', DEP[e.kind] + ' ' + eur(e.amount) + ' vom ' + fmtDate(e.booked_on) + ' wird gelöscht.', 'Löschen')) return;
+                            try { await api.del('/deposits/' + e.id); toast('Gelöscht', 'success'); loadDeposits(); } catch (err) { toast(err.message, 'error'); }
+                        } }, icon('trash', 14)) : null))));
+                if (canManage()) depCard.append(el('div', { class: 'card-actions dep-actions' },
+                    el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => depositForm('erhalten', dep.balance) }, '+ Erhalten'),
+                    open ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => depositForm('zurueck', dep.balance) }, 'Zurückzahlen') : null,
+                    open ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => depositForm('einbehalten', dep.balance) }, 'Einbehalten') : null));
+            };
+            loadDeposits();
+        }
+
+        // Datenauskunft nach Art. 15 DSGVO (Ausbau 28): alles zur Person in einem ZIP.
+        // Nur Admins; der Server vermerkt den Abruf im Änderungsprotokoll.
+        if (isAdmin()) {
+            page.append(el('div', { class: 'card person-privacy' },
+                el('h3', {}, 'Datenschutz'),
+                el('p', { class: 'card-meta' }, 'Auskunftsersuchen: Stammdaten, Gefährte, Rechnungen als PDF, Zahlungen, Übergaben, Fotos, Anhänge, Kundenwünsche und Mailverlauf in einem Paket. Frist: ein Monat ab Anfrage.'),
+                el('a', { class: 'btn btn-ghost btn-sm', href: '/api/persons/' + id + '/export', download: '' }, icon('download', 15), ' Datenauskunft (ZIP)')));
         }
 
         // Gefahrenzone: Anonymisieren und Löschen sind unumkehrbar und gehören zur
@@ -4299,6 +4357,69 @@ import { createRevenueChart } from './revenue-chart.js';
         });
     };
 
+    // ================= KONTOAUSZUG (Ausbau 27) =================
+    routes.bank = async (page, _id, query = new URLSearchParams()) => {
+        const status = ['offen', 'zugeordnet', 'ignoriert'].includes(query.get('status')) ? query.get('status') : 'offen';
+        const data = await api.get('/bank-transactions?status=' + status);
+        page.innerHTML = '';
+        const fileIn = el('input', { type: 'file', accept: '.xml,application/xml,text/xml', style: 'display:none' });
+        fileIn.addEventListener('change', async () => {
+            const f = fileIn.files && fileIn.files[0]; fileIn.value = '';
+            if (!f) return;
+            const fd = new FormData(); fd.append('file', f);
+            try { const r = await api.upload('/bank-import', fd); toast(r.imported + ' neue Gutschriften' + (r.duplicates ? ', ' + r.duplicates + ' schon vorhanden' : '') + (r.skipped ? ', ' + r.skipped + ' übersprungen' : ''), 'success'); render(); }
+            catch (e) { toast(e.message, 'error'); }
+        });
+        page.append(el('div', { class: 'page-head' }, el('h2', {}, 'Kontoauszug'),
+            canManage() ? el('button', { class: 'btn btn-primary btn-sm btn-add', type: 'button', onclick: () => fileIn.click() }, icon('upload'), ' camt.053 einlesen') : null, fileIn));
+        page.append(el('p', { class: 'route-intro' }, 'Gutschriften aus dem Online-Banking (camt.053). Parkrr schlägt die Rechnung vor, gebucht wird erst mit „Zuordnen“ – über denselben Weg wie eine erfasste Zahlung. Derselbe Auszug zweimal legt nichts doppelt an.'));
+        page.append(el('div', { class: 'segments', role: 'group', 'aria-label': 'Status' },
+            ...[['offen', 'Offen'], ['zugeordnet', 'Zugeordnet'], ['ignoriert', 'Ignoriert']].map(([k, l]) => el('button', {
+                type: 'button', class: status === k ? 'active' : '', 'aria-pressed': String(status === k), onclick: () => updateRouteQuery({ status: k === 'offen' ? null : k }) }, l))));
+        const list = el('div', { class: 'bank-list' });
+        if (!data.items.length) list.append(emptyState('ledger', status === 'offen' ? 'Keine offenen Gutschriften. Lade einen Auszug im Format camt.053 hoch.' : 'Nichts in dieser Ansicht.'));
+        const assignDialog = async (t) => {
+            await refreshLookups();
+            const persons = (state.persons || []).filter((x) => !x.anonymized).sort((a, b) => personName(a).localeCompare(personName(b), 'de'));
+            return formModal({
+                title: 'Gutschrift zuordnen · ' + eur(t.amount), submitLabel: 'Zuordnen',
+                fields: [
+                    { name: 'invoice_id', label: 'Offene Rechnung', type: 'select', value: t.suggestion ? t.suggestion.invoice_id : '', options: [{ value: '', label: '– keine –' }].concat(data.open_invoices.map((o) => ({ value: o.invoice_id, label: o.number + ' · ' + o.person_name + ' · offen ' + eur(o.open_amount) }))) },
+                    { name: 'person_id', label: 'oder als Guthaben bei', type: 'select', value: '', options: [{ value: '', label: '– keine –' }].concat(persons.map((x) => ({ value: x.id, label: personName(x) }))) },
+                ],
+                save: async (d) => {
+                    if (!!d.invoice_id === !!d.person_id) throw new Error('Entweder eine Rechnung oder eine Person wählen');
+                    await api.post('/bank-transactions/' + t.id + '/assign', d.invoice_id ? { invoice_id: Number(d.invoice_id) } : { person_id: Number(d.person_id) });
+                    toast('Zugeordnet und als Zahlung gebucht', 'success'); render();
+                },
+            });
+        };
+        data.items.forEach((t) => {
+            const sg = t.suggestion;
+            const row = el('div', { class: 'card bank-row' },
+                el('div', { class: 'card-row key-row' },
+                    el('div', { class: 'svc-main' },
+                        el('strong', {}, eur(t.amount), ' ', el('span', { class: 'muted' }, '· ' + fmtDate(t.booked_on) + (t.name ? ' · ' + t.name : ''))),
+                        t.remittance ? el('div', { class: 'card-meta' }, t.remittance) : null,
+                        sg ? el('div', { class: 'bank-sugg' + (sg.strong ? ' is-strong' : '') }, 'Vorschlag: Rechnung ' + sg.number + ' · ' + sg.person_name + ' (offen ' + eur(sg.open_amount) + ') – ' + sg.reason) : null,
+                        t.status === 'zugeordnet' && t.person_id ? el('div', { class: 'card-meta' }, el('a', { href: '#/person/' + t.person_id }, 'Zur Person')) : null),
+                    canManage() ? el('div', { class: 'card-actions' },
+                        t.status === 'offen' && sg ? el('button', { class: 'btn btn-primary btn-sm', type: 'button', 'aria-label': eur(t.amount) + ' der Rechnung ' + sg.number + ' zuordnen', onclick: async () => {
+                            try { await api.post('/bank-transactions/' + t.id + '/assign', { invoice_id: sg.invoice_id }); toast('Zugeordnet und als Zahlung gebucht', 'success'); render(); }
+                            catch (e) { toast(e.message, 'error'); }
+                        } }, 'Zuordnen') : null,
+                        t.status === 'offen' ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => assignDialog(t) }, sg ? 'Andere …' : 'Zuordnen …') : null,
+                        t.status === 'offen' ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: async () => {
+                            try { await api.post('/bank-transactions/' + t.id + '/ignore', { ignored: true }); toast('Ignoriert', 'success'); render(); } catch (e) { toast(e.message, 'error'); }
+                        } }, 'Ignorieren') : null,
+                        t.status === 'ignoriert' ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: async () => {
+                            try { await api.post('/bank-transactions/' + t.id + '/ignore', { ignored: false }); render(); } catch (e) { toast(e.message, 'error'); }
+                        } }, 'Wieder öffnen') : null) : null));
+            list.append(row);
+        });
+        page.append(list);
+    };
+
     routes.vehicles = async (page, _id, query = new URLSearchParams()) => {
         await refreshLookups();
         const vehicles = await api.get('/vehicles');
@@ -5586,9 +5707,11 @@ import { createRevenueChart } from './revenue-chart.js';
     // ---------- VEHICLE DETAIL ----------
     routes.vehicle = async (page, id) => {
         await refreshLookups();
-        const [vehicles, photos, history, handovers] = await Promise.all([
+        const [vehicles, photos, history, handovers, rateChanges, contract] = await Promise.all([
             api.get('/vehicles'), api.get('/vehicles/' + id + '/photos'), api.get('/vehicles/' + id + '/history'),
             api.get('/vehicles/' + id + '/handovers').catch(() => null),
+            api.get('/vehicles/' + id + '/rate-changes').catch(() => []),
+            api.get('/contract-template').catch(() => null),
         ]);
         const v = vehicles.find((x) => x.id === id);
         if (!v) { page.innerHTML = ''; page.append(emptyState('car', 'Gefährt nicht gefunden.')); return; }
@@ -5611,6 +5734,7 @@ import { createRevenueChart } from './revenue-chart.js';
                 ? el('button', { class: 'btn btn-primary btn-sm', onclick: () => vehicleForm(v) }, icon('edit'), ' Bearbeiten')
                 : null,
             el('a', { class: 'btn btn-ghost btn-sm', href: '/api/vehicles/' + v.id + '/label', target: '_blank', rel: 'noopener', title: 'Druck-Label mit QR-Code' }, '🖶 Label'),
+            contract && contract.template ? el('a', { class: 'btn btn-ghost btn-sm', href: '/api/vehicles/' + v.id + '/contract.pdf', target: '_blank', rel: 'noopener', title: 'Einstellvertrag (Version ' + contract.template.version + ') zum Unterschreiben' }, 'Vertrag') : null,
             statusBadge(v.status)));
 
         page.append(el('div', { class: 'card' },
@@ -5627,6 +5751,24 @@ import { createRevenueChart } from './revenue-chart.js';
                 : el('div', { class: 'balance' }, el('strong', {}, vc.covered ? 'Aufgelaufen (Rest)' : 'Aufgelaufen'),
                     el('strong', { class: 'amt' }, eur(vc.owed))),
             v.notes ? el('div', { class: 'card-meta', style: 'margin-top:.5rem' }, esc(v.notes)) : null));
+
+        // Wertsicherung (Ausbau 29): Preisänderungen ab einem Periodenbeginn. Eine noch
+        // nicht geltende lässt sich zurücknehmen; eine geltende nicht mehr.
+        if ((rateChanges || []).length) {
+            const rc = el('div', { class: 'card' }, el('h3', {}, 'Preisänderungen'));
+            const todayYmd = today();
+            rateChanges.forEach((c) => {
+                const from = String(c.effective_from).slice(0, 10), future = from > todayYmd;
+                rc.append(el('div', { class: 'balance' },
+                    el('span', {}, 'ab ' + fmtDate(from) + ': ' + eur(c.rate) + ' (bisher ' + eur(c.previous_rate) + ')',
+                        c.reason ? el('span', { class: 'card-meta', style: 'display:block' }, c.reason) : null),
+                    future && canManage() ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': 'Preisänderung ab ' + fmtDate(from) + ' zurücknehmen', onclick: async () => {
+                        if (!await confirmDialog('Preisänderung zurücknehmen?', 'Ab ' + fmtDate(from) + ' gilt dann wieder ' + eur(c.previous_rate) + '.', 'Zurücknehmen')) return;
+                        try { await api.del('/vehicle-rate-changes/' + c.id); toast('Zurückgenommen', 'success'); render(); } catch (e) { toast(e.message, 'error'); }
+                    } }, 'Zurücknehmen') : null));
+            });
+            page.append(rc);
+        }
 
         // Bound extra costs, with a subtotal — kept separate from the rent
         // "Aufgelaufen" above (they are billed on top, exactly like on the person page).
@@ -5898,10 +6040,11 @@ import { createRevenueChart } from './revenue-chart.js';
     const ACCESS_KIND_LABEL = { schluessel: 'Schlüssel', handsender: 'Handsender', karte: 'Karte', code: 'Code' };
     async function handoverForm(vehicleId, vehicle) {
         let sigData = () => '';
-        const [templates, previous, loans] = await Promise.all([
+        const [templates, previous, loans, deposits] = await Promise.all([
             api.get('/handover-templates').catch(() => []),
             api.get('/vehicles/' + vehicleId + '/handovers').catch(() => []),
             vehicle && vehicle.person_id ? api.get('/persons/' + vehicle.person_id + '/access-media').catch(() => []) : Promise.resolve([]),
+            vehicle && vehicle.person_id ? api.get('/persons/' + vehicle.person_id + '/deposits').catch(() => null) : Promise.resolve(null),
         ]);
         const lastIn = (previous || []).find((h) => h.direction === 'einlagerung'); // neueste zuerst
         const photos = new Map(); // Ansicht -> Dateien, hochgeladen erst nach dem Speichern
@@ -6005,7 +6148,12 @@ import { createRevenueChart } from './revenue-chart.js';
                     body.append(keys);
                 }
 
+                // Kaution (Ausbau 32): bei der Rückgabe an die offene Kaution erinnern.
+                const depNote = el('p', { class: 'ho-deposit', role: 'note', hidden: true },
+                    'Kaution offen: ' + eur(deposits ? deposits.balance : 0) + ' – auf der Personenseite zurückzahlen oder einbehalten.');
+                if (deposits && deposits.balance > 0.005) body.append(depNote);
                 const syncDirection = () => {
+                    depNote.hidden = direction.value !== 'auslagerung';
                     const out = direction.value === 'auslagerung' && lastIn;
                     prevDmg.textContent = '';
                     if (out && (lastIn.damages || []).length) prevDmg.append(
@@ -6095,6 +6243,40 @@ import { createRevenueChart } from './revenue-chart.js';
                 render();
             },
         });
+    }
+
+    // Einstellvertrag (Ausbau 30): versionierte Vorlage mit Platzhaltern. Speichern legt
+    // eine neue Version an; frühere Annahmen bleiben an ihrer Version.
+    const CONTRACT_SAMPLE = 'Einstellvertrag\n\nZwischen {{betreiber}}, {{betreiber_anschrift}} (Betreiber)\nund {{name}}, {{anschrift}} (Einsteller)\n\n'
+        + '1. Gegenstand: Einstellung von {{gefaehrt}}, Kennzeichen {{kennzeichen}}, in {{halle}} (Stellplatz {{stellplatz}}).\n'
+        + '2. Laufzeit: ab {{beginn}} bis {{ende}}.\n'
+        + '3. Entgelt: {{preis}} € ({{abrechnung}}) laut Tarif {{tarif}}. Der Preis ist an den Verbraucherpreisindex gebunden.\n'
+        + '4. Hausordnung: Zutritt nur zu den vereinbarten Zeiten. Fahrzeuge werden ohne Betriebsstoffe im Innenraum und mit abgeklemmter Batterie eingestellt, sofern kein Strom vereinbart ist.\n'
+        + '5. Haftung: Der Betreiber haftet nur für Vorsatz und grobe Fahrlässigkeit.\n\nStand: {{datum}}';
+    function contractTemplateCard() {
+        const card = el('div', { class: 'card contract-template' }, el('h3', {}, 'Einstellvertrag'));
+        const meta = el('p', { class: 'card-meta' }, 'Lädt …');
+        const title = el('input', { type: 'text', id: 'ct_title', maxlength: '120' });
+        const body = el('textarea', { id: 'ct_body', rows: '10' });
+        const fb = el('p', { class: 'mail-feedback', role: 'status' });
+        card.append(meta,
+            el('div', { class: 'form-field' }, el('label', { for: 'ct_title' }, 'Titel'), title),
+            el('div', { class: 'form-field' }, el('label', { for: 'ct_body' }, 'Text'), body),
+            el('p', { class: 'card-meta ct-placeholders' }),
+            el('div', { class: 'card-actions' },
+                el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => { body.value = CONTRACT_SAMPLE; if (!title.value) title.value = 'Einstellvertrag'; body.focus(); } }, 'Muster einfügen'),
+                el('button', { class: 'btn btn-primary btn-sm', type: 'button', onclick: async () => {
+                    fb.textContent = '';
+                    try { const c = await api.post('/contract-template', { title: title.value, body: body.value }); fb.textContent = 'Version ' + c.version + ' gespeichert.'; meta.textContent = 'Aktuell: Version ' + c.version + '. Kunden nehmen im Kundenzugang die jeweils aktuelle Version an.'; }
+                    catch (e) { fb.textContent = e.message; }
+                } }, 'Als neue Version speichern')),
+            fb);
+        api.get('/contract-template').then((res) => {
+            card.querySelector('.ct-placeholders').textContent = 'Platzhalter: ' + (res.placeholders || []).map((k) => '{{' + k + '}}').join(' ');
+            if (res.template) { title.value = res.template.title; body.value = res.template.body; meta.textContent = 'Aktuell: Version ' + res.template.version + '. Kunden nehmen im Kundenzugang die jeweils aktuelle Version an.'; }
+            else meta.textContent = 'Noch keine Vorlage. Ohne Vorlage zeigt der Kundenzugang keinen Vertrag.';
+        }).catch(() => { meta.textContent = 'Vorlage konnte nicht geladen werden.'; });
+        return card;
     }
 
     routes['handover-templates'] = async (page) => {
@@ -6595,6 +6777,99 @@ import { createRevenueChart } from './revenue-chart.js';
         return det;
     }
 
+    // Wertsicherung nach VPI (Ausbau 29): Indexwerte eintragen, je Tarif Basis und
+    // Schwelle, Vorschau mit alt → neu je Gefährt, Anpassen ab der nächsten Periode.
+    function indexationCard() {
+        const card = el('details', { class: 'card indexation-card' }, el('summary', {}, el('strong', {}, 'Wertsicherung (VPI)'),
+            el('span', { class: 'muted' }, ' · Preise an den Verbraucherpreisindex binden')));
+        const body = el('div', { class: 'idx-body' });
+        card.append(body);
+        let loaded = false;
+        card.addEventListener('toggle', () => { if (card.open && !loaded) { loaded = true; load(); } });
+        const monthLabel = (m) => { const d = new Date(m); return String(d.getUTCMonth() + 1).padStart(2, '0') + '/' + d.getUTCFullYear(); };
+        async function load() {
+            body.textContent = '';
+            let cpi = [], settings = { categories: [] };
+            try { [cpi, settings] = await Promise.all([api.get('/cpi'), api.get('/indexation')]); }
+            catch (e) { body.append(el('p', { class: 'form-error' }, e.message)); return; }
+            const manage = canManage();
+            body.append(el('p', { class: 'card-meta' }, 'Die Indexwerte (VPI 2020, Statistik Austria) trägst du selbst ein. Angepasst wird nur ab dem Beginn der nächsten Periode, nie rückwirkend.'));
+            // Indexwerte
+            const cpiSec = el('section', { class: 'idx-sec' }, el('h3', {}, 'Indexwerte'));
+            if (manage) {
+                const m = el('input', { type: 'month', 'aria-label': 'Monat' });
+                const v = el('input', { type: 'number', step: '0.01', min: '0', 'aria-label': 'Indexwert', placeholder: 'z. B. 126,6' });
+                cpiSec.append(el('div', { class: 'idx-row' }, m, v, el('button', { class: 'btn btn-sm', type: 'button', onclick: async () => {
+                    if (!m.value || !v.value) { toast('Monat und Wert angeben', 'warn'); return; }
+                    try { await api.put('/cpi', { month: m.value, value: Number(v.value) }); toast('Indexwert gespeichert', 'success'); load(); }
+                    catch (e) { toast(e.message, 'error'); }
+                } }, 'Speichern')));
+            }
+            if (!cpi.length) cpiSec.append(el('p', { class: 'muted' }, 'Noch keine Indexwerte.'));
+            else cpiSec.append(el('div', { class: 'idx-cpi' }, ...cpi.slice(0, 18).map((c) => el('span', { class: 'idx-chip' }, monthLabel(c.month) + ': ' + String(c.value).replace('.', ','),
+                manage ? el('button', { type: 'button', class: 'idx-chip-del', 'aria-label': 'Indexwert ' + monthLabel(c.month) + ' löschen', onclick: async () => {
+                    if (!await confirmDialog('Indexwert löschen?', 'Der Wert für ' + monthLabel(c.month) + ' wird gelöscht.', 'Löschen')) return;
+                    try { await api.del('/cpi/' + new Date(c.month).toISOString().slice(0, 7)); load(); } catch (e) { toast(e.message, 'error'); }
+                } }, icon('close', 11)) : null))));
+            body.append(cpiSec);
+            // Je Tarif
+            const catSec = el('section', { class: 'idx-sec' }, el('h3', {}, 'Tarife'));
+            settings.categories.forEach((c) => {
+                const bm = el('input', { type: 'month', value: c.base_month || '', 'aria-label': c.name + ': Basismonat', disabled: !manage });
+                const th = el('input', { type: 'number', step: '0.1', min: '0', max: '50', value: c.threshold, 'aria-label': c.name + ': Schwelle in Prozent', disabled: !manage });
+                catSec.append(el('div', { class: 'idx-row' }, el('span', { class: 'idx-name' }, c.name), el('label', {}, 'Basis ', bm), el('label', {}, 'Schwelle % ', th),
+                    manage ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': c.name + ': Wertsicherung speichern', onclick: async () => {
+                        try { await api.put('/categories/' + c.id + '/indexation', { base_month: bm.value || null, threshold: Number(th.value) || 0 }); toast('Gespeichert', 'success'); }
+                        catch (e) { toast(e.message, 'error'); }
+                    } }, 'Speichern') : null));
+            });
+            body.append(catSec);
+            // Vorschau
+            const pSec = el('section', { class: 'idx-sec' }, el('h3', {}, 'Vorschau'));
+            const pick = el('select', { 'aria-label': 'Indexmonat für die Anpassung' }, ...cpi.map((c) => el('option', { value: new Date(c.month).toISOString().slice(0, 7) }, monthLabel(c.month))));
+            const out = el('div', { class: 'idx-preview', 'aria-live': 'polite' });
+            pSec.append(el('div', { class: 'idx-row' }, pick, el('button', { class: 'btn btn-sm', type: 'button', disabled: !cpi.length, onclick: () => preview(pick.value, out) }, 'Vorschau')), out);
+            body.append(pSec);
+        }
+        async function preview(month, out) {
+            out.textContent = '';
+            let plan;
+            try { plan = await api.get('/indexation/preview?month=' + month); }
+            catch (e) { out.append(el('p', { class: 'form-error' }, e.message)); return; }
+            const picks = [];
+            plan.categories.forEach((c) => {
+                const head = el('div', { class: 'idx-cat-head' }, el('strong', {}, c.name),
+                    c.change_pct != null ? el('span', { class: 'muted' }, ' · ' + (c.change_pct > 0 ? '+' : '') + String(c.change_pct).replace('.', ',') + ' % seit ' + monthLabel(c.base_month) + ' (Schwelle ' + String(c.threshold).replace('.', ',') + ' %)') : null,
+                    c.due ? el('span', { class: 'badge badge-reserved', style: 'margin-left:.4rem' }, 'fällig') : null);
+                const box = el('div', { class: 'idx-cat' }, head);
+                if (c.note) box.append(el('p', { class: 'muted' }, c.note));
+                if (c.due && canManage()) {
+                    const cb = el('input', { type: 'checkbox', checked: true }); cb.dataset.cat = c.category_id; picks.push(cb);
+                    box.append(el('label', { class: 'ho-key' }, cb, el('span', {}, 'Anpassen · Tarifpreis für neue Verträge ' + eur(c.new_monthly) + ' /Monat')));
+                }
+                if (c.vehicles.length) box.append(el('div', { class: 'table-scroll' }, el('table', { class: 'idx-table' },
+                    el('thead', {}, el('tr', {}, el('th', {}, 'Gefährt'), el('th', {}, 'Person'), el('th', {}, 'Bisher'), el('th', {}, 'Neu'), el('th', {}, 'Ab'))),
+                    el('tbody', {}, ...c.vehicles.map((v) => el('tr', {}, el('td', {}, v.label), el('td', {}, v.person_name), el('td', { class: 'num' }, eur(v.old_rate)),
+                        el('td', { class: 'num' }, eur(v.new_rate)), el('td', {}, fmtDate(v.effective_from))))))));
+                if (c.skipped.length) box.append(el('p', { class: 'muted' }, 'Nicht angepasst: ' + c.skipped.map((x) => x.label + ' (' + x.reason + ')').join(', ')));
+                out.append(box);
+            });
+            if (picks.length) {
+                const notify = el('input', { type: 'checkbox' });
+                out.append(el('label', { class: 'ho-key' }, notify, el('span', {}, 'Kundinnen und Kunden per Mail informieren')),
+                    el('button', { class: 'btn btn-primary btn-sm', type: 'button', onclick: async () => {
+                        const ids = picks.filter((x) => x.checked).map((x) => Number(x.dataset.cat));
+                        if (!ids.length) { toast('Keinen Tarif gewählt', 'warn'); return; }
+                        if (!await confirmDialog('Preise anpassen?', 'Die neuen Preise gelten ab der nächsten Periode. Bis dahin lässt sich jede Änderung am Gefährt zurücknehmen.', 'Anpassen', { tone: 'neutral' })) return;
+                        try { const r = await api.post('/indexation/apply', { month, category_ids: ids, notify: notify.checked });
+                            toast(r.vehicles + (r.vehicles === 1 ? ' Gefährt' : ' Gefährte') + ' angepasst' + (r.mails ? ' · ' + r.mails + ' Mitteilungen' : ''), 'success'); preview(month, out); }
+                        catch (e) { toast(e.message, 'error'); }
+                    } }, 'Anpassen'));
+            }
+        }
+        return card;
+    }
+
     routes.tariffs = async (page) => {
         await refreshLookups();
         const isCat = tariffTab === 'categories';
@@ -6608,6 +6883,7 @@ import { createRevenueChart } from './revenue-chart.js';
             isCat ? 'Zentrale Gefährt-Typen mit Standardpreisen (beim Gefährt überschreibbar).'
                 : 'Katalog für Zusatzleistungen (Strom, Reinigung …).'));
         if (isCat) { const qp = quickPriceCard(); if (qp) page.append(qp); }
+        if (isCat) page.append(indexationCard());
 
         const list = el('div', {});
         // "Neuer Tarif/Dienst" opens a blank, already-expanded inline card at the top.
@@ -7507,7 +7783,7 @@ import { createRevenueChart } from './revenue-chart.js';
     const AUDIT_ACTIONS = { create: 'Erstellt', update: 'Geändert', delete: 'Gelöscht', login: 'Login', logout: 'Logout', revoke: 'Widerrufen', backup: 'Backup', backup_failed: 'Backup fehlgeschlagen', restore: 'Wiederherstellung', remind: 'Mahnung', import: 'Import', security: 'Sicherheit' };
     // Muss die im Backend verwendeten entity-Werte abdecken, sonst lässt sich ein
     // Ereignis zwar protokollieren, aber im Filter nicht mehr auswählen.
-    const AUDIT_ENTITIES = { person: 'Person', vehicle: 'Gefährt', category: 'Tarif', service_type: 'Dienst', charge: 'Zusatzkosten', payment: 'Zahlung', invoice: 'Rechnung', billing: 'Rechnungs-Einstellungen', user: 'Benutzer', photo: 'Foto', passkey: 'Passkey', flatrate: 'Pauschale', recurring_charge: 'Wiederkehrende Kosten', spot: 'Stellplatz', hall: 'Halle', garage: 'Garage', handover: 'Übergabe', handover_template: 'Übergabevorlage', 'portal-link': 'Self-Service-Link', planner_icon: 'Planer-Symbol', wall_template: 'Wandvorlage', backup_settings: 'Backup-Einstellungen', system: 'System', audit_log: 'Audit-Log', service_task: 'Serviceaufgabe', service_task_log: 'Service erledigt', access_medium: 'Zugangsmittel', access_loan: 'Schlüsselausgabe' };
+    const AUDIT_ENTITIES = { person: 'Person', vehicle: 'Gefährt', category: 'Tarif', service_type: 'Dienst', charge: 'Zusatzkosten', payment: 'Zahlung', invoice: 'Rechnung', billing: 'Rechnungs-Einstellungen', user: 'Benutzer', photo: 'Foto', passkey: 'Passkey', flatrate: 'Pauschale', recurring_charge: 'Wiederkehrende Kosten', spot: 'Stellplatz', hall: 'Halle', garage: 'Garage', handover: 'Übergabe', handover_template: 'Übergabevorlage', 'portal-link': 'Self-Service-Link', planner_icon: 'Planer-Symbol', wall_template: 'Wandvorlage', backup_settings: 'Backup-Einstellungen', system: 'System', audit_log: 'Audit-Log', service_task: 'Serviceaufgabe', service_task_log: 'Service erledigt', access_medium: 'Zugangsmittel', access_loan: 'Schlüsselausgabe', deposit: 'Kaution', bank_transaction: 'Kontobuchung', contract_template: 'Vertragsvorlage', contract_acceptance: 'Vertragsannahme', cpi: 'VPI' };
 
     function fmtAuditVal(x) {
         if (x === null || x === undefined || x === '') return '∅';
@@ -7893,6 +8169,7 @@ import { createRevenueChart } from './revenue-chart.js';
         }
         colB.append(calendarFeedCard());
         if (canManage()) colB.append(pickupWindowsCard());
+        if (isAdmin()) colB.append(contractTemplateCard());
         if (canManage()) colB.append(el('div', { class: 'card template-links' }, el('h3', {}, 'Arbeitsvorlagen'),
             el('a', { href: '#/handover-templates' }, 'Übergabeprotokolle', el('span', { 'aria-hidden': 'true' }, '›'))));
         if (isAdmin()) {
@@ -11472,6 +11749,7 @@ import { createRevenueChart } from './revenue-chart.js';
         body.append(item('euro', 'Zusatzkosten', () => navigate('finance'), '', 'finance'));
         body.append(item('check', 'Serviceaufgaben', () => navigate('service'), '', 'service'));
         body.append(item('key', 'Schlüsselbuch', () => navigate('keys'), '', 'keys'));
+        if (canManage()) body.append(item('ledger', 'Kontoauszug', () => navigate('bank'), '', 'bank'));
         if (isAdmin()) body.append(item('ledger', 'Steuerjahr', () => navigate('taxyear'), '', 'taxyear'));
         group('Verwaltung');
         if (isAdmin()) body.append(item('receiptGear', 'Rechnungs-Einstellungen', () => navigate('billing'), '', 'billing'));
@@ -12147,6 +12425,7 @@ import { createRevenueChart } from './revenue-chart.js';
         { label: 'Warteliste', sub: 'Interessenten ohne freien Platz', url: '#/waitlist', kw: 'warteliste interessent anfrage voll warten' },
         { label: 'Serviceaufgaben', sub: 'Laden, Reifendruck, lüften', url: '#/service', kw: 'service aufgabe batterie laden reifen lueften wartung faellig' },
         { label: 'Schlüsselbuch', sub: 'Schlüssel, Handsender, Karten', url: '#/keys', kw: 'schluessel handsender fernbedienung karte zugang tor code' },
+        { label: 'Kontoauszug', sub: 'camt.053 einlesen, Zahlungen zuordnen', url: '#/bank', kw: 'konto bank camt auszug ueberweisung zahlung zuordnen import' },
         { label: 'Gefährte', sub: 'Fahrzeuge', url: '#/vehicles', kw: 'auto wohnwagen wohnmobil boot anhaenger kennzeichen' },
         { label: 'Zusatzkosten', sub: 'Buchungen', url: '#/finance', kw: 'kosten strom reinigung leistung' },
         { label: 'Rechnungen', sub: 'Offen, überfällig, bezahlt', url: '#/invoices', kw: 'rechnung beleg mahnung storno offen ueberfaellig' },
@@ -12371,6 +12650,8 @@ import { createRevenueChart } from './revenue-chart.js';
             invalid: 'Dieser Link ist ungültig oder abgelaufen. Bitte fordern Sie einen neuen an.',
             open_total: 'Offener Betrag', your_vehicles: 'Ihre Gefährte', no_vehicles: 'Keine aktiven Gefährte.',
             handovers: 'Übergabeprotokolle', signed: 'unterschrieben: ', storein: 'Einlagerung', storeout: 'Auslagerung',
+            contract: 'Einstellvertrag', contract_read: 'Vertrag lesen', contract_accept: 'Gelesen und angenommen', contract_accepted: 'angenommen', contract_open: 'noch nicht angenommen',
+            contract_hint: 'Bitte zuerst den Vertrag lesen, dann annehmen.', contract_done: 'Vielen Dank, der Vertrag ist angenommen.',
             invoices: 'Rechnungen', no_invoices: 'Keine Rechnungen.', invoice: 'Rechnung ', open_part: 'offen ',
             pdf_err: 'Die Rechnung konnte nicht geladen werden.', skip: 'Zum Inhalt springen', title: 'Übersicht',
             scan_pay: 'Scan zum Bezahlen (SEPA)', qr_alt: 'SEPA-Zahlungs-QR', foot: 'Ihre Übersicht · bereitgestellt mit Parkrr',
@@ -12390,6 +12671,8 @@ import { createRevenueChart } from './revenue-chart.js';
             invalid: 'This link is invalid or has expired. Please request a new one.',
             open_total: 'Open balance', your_vehicles: 'Your vehicles', no_vehicles: 'No active vehicles.',
             handovers: 'Handover protocols', signed: 'signed by ', storein: 'Check-in', storeout: 'Check-out',
+            contract: 'Storage contract', contract_read: 'Read contract', contract_accept: 'Read and accepted', contract_accepted: 'accepted', contract_open: 'not accepted yet',
+            contract_hint: 'Please read the contract first, then accept it.', contract_done: 'Thank you, the contract is accepted.',
             invoices: 'Invoices', no_invoices: 'No invoices.', invoice: 'Invoice ', open_part: 'open ',
             pdf_err: 'The invoice could not be loaded.', skip: 'Skip to content', title: 'Overview',
             scan_pay: 'Scan to pay (SEPA)', qr_alt: 'SEPA payment QR', foot: 'Your overview · powered by Parkrr',
@@ -12512,6 +12795,34 @@ import { createRevenueChart } from './revenue-chart.js';
         else sum.vehicles.forEach((v) => vcard.append(el('div', { class: 'portal-row' },
             el('span', {}, esc(v.label)), el('span', { class: 'badge badge-' + v.status }, P9.status[v.status] || v.status))));
         wrap.append(vcard);
+        // Einstellvertrag (Ausbau 30): lesen (PDF mit den eigenen Angaben), dann annehmen.
+        // Angenommen wird genau die gelesene Version; der Knopf wird erst nach dem Lesen frei.
+        if (sum.contract) {
+            const ccard = el('div', { class: 'portal-card portal-contract' }, el('h2', {}, P9.contract),
+                el('p', { class: 'muted' }, esc(sum.contract.title) + ' · Version ' + sum.contract.version));
+            sum.vehicles.filter((v) => v.status === 'stored' || v.status === 'reserved').forEach((v) => {
+                const done = v.contract_accepted === sum.contract.version;
+                const state = el('span', { class: 'badge ' + (done ? 'badge-stored' : 'badge-reserved') }, done ? P9.contract_accepted : P9.contract_open);
+                const accept = el('button', { class: 'btn btn-primary btn-sm', type: 'button', disabled: true, title: P9.contract_hint }, P9.contract_accept);
+                const read = el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: async () => {
+                    const win = window.open('', '_blank'); if (win) win.opener = null;
+                    try {
+                        const url = URL.createObjectURL(await portalFetch(token, '/contract?vehicle_id=' + v.id, 'blob'));
+                        if (win) win.location = url; else window.open(url, '_blank', 'noopener');
+                        setTimeout(() => URL.revokeObjectURL(url), 60000);
+                        accept.disabled = false; accept.removeAttribute('title');
+                    } catch (e) { if (win) win.close(); toast(e.message || P9.pdf_err, 'error'); }
+                } }, P9.contract_read);
+                accept.addEventListener('click', async () => {
+                    accept.disabled = true;
+                    try { await portalFetch(token, '/contract/accept', 'json', { method: 'POST', body: JSON.stringify({ vehicle_id: v.id, version: sum.contract.version }) }); toast(P9.contract_done, 'success'); renderPortal(token); }
+                    catch (e) { accept.disabled = false; toast(e.message, 'error'); }
+                });
+                ccard.append(el('div', { class: 'portal-row' }, el('span', {}, esc(v.label), ' ', state),
+                    done ? null : el('span', { class: 'portal-contract-actions' }, read, accept)));
+            });
+            wrap.append(ccard);
+        }
         // Übergabeprotokolle (Hundert 84): was der Kunde unterschrieben hat —
         // Richtung, Datum, Zustandsnotizen. Ohne Unterschriftsbild (siehe Server).
         if ((sum.handovers || []).length) {

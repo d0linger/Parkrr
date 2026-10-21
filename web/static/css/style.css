@@ -2541,6 +2541,36 @@ a.portal-row.link:hover { color: var(--primary-ink); }
 .key-row{flex-wrap:wrap}
 .key-row > .svc-main{flex:1 1 14rem}
 .key-row .card-actions{flex-wrap:wrap}
+/* Ausbau B7: Kaution, Kontoauszug, Vertrag, Wertsicherung */
+.ho-deposit{margin:.6rem 0;padding:.5rem .7rem;border:1px solid var(--warning);border-radius:var(--radius-sm);color:var(--warning-text)}
+.dep-amt{display:inline-flex;gap:.4rem;align-items:center;font-variant-numeric:tabular-nums}
+.dep-actions{margin-top:.6rem;flex-wrap:wrap}
+.bank-list{display:grid;gap:.6rem}
+.bank-sugg{margin-top:.35rem;font-size:var(--text-sm);color:var(--text-muted)}
+.bank-sugg.is-strong{color:var(--primary-ink);font-weight:600}
+.portal-contract-actions{display:inline-flex;flex-wrap:wrap;gap:.4rem;justify-content:flex-end}
+.portal-contract .portal-row{flex-wrap:wrap;gap:.5rem}
+@media(max-width:480px){.portal-contract-actions{flex-basis:100%;justify-content:flex-start}}
+.contract-template textarea{min-height:12rem;font-family:inherit}
+.indexation-card > summary{cursor:pointer;list-style-position:inside}
+.idx-body{display:grid;gap:.9rem;margin-top:.7rem}
+.idx-sec{display:grid;gap:.45rem}
+.idx-sec h3{margin:0;font-size:var(--text-md)}
+.idx-row{display:flex;flex-wrap:wrap;gap:.45rem .7rem;align-items:center}
+.idx-row input,.idx-row select{width:auto;min-width:0}
+.idx-row input[type=number]{width:6.5rem}
+.idx-row label{display:inline-flex;gap:.35rem;align-items:center;color:var(--text-muted)}
+.idx-name{flex:1 1 10rem;min-width:0;font-weight:600}
+.idx-cpi{display:flex;flex-wrap:wrap;gap:.35rem}
+.idx-chip{display:inline-flex;align-items:center;gap:.25rem;padding:.15rem .5rem;border:1px solid var(--border);border-radius:999px;font-size:var(--text-sm);font-variant-numeric:tabular-nums}
+.idx-chip-del{border:0;background:none;color:inherit;padding:0;cursor:pointer;display:inline-grid;place-items:center}
+.idx-preview{display:grid;gap:.7rem}
+.idx-cat{border-top:1px solid var(--border);padding-top:.6rem;display:grid;gap:.4rem}
+.idx-table{width:100%;border-collapse:collapse;font-size:var(--text-sm)}
+.idx-table th,.idx-table td{padding:.3rem .5rem;text-align:left;border-bottom:1px solid var(--border)}
+.idx-table td.num{text-align:right;font-variant-numeric:tabular-nums}
+.idx-table th:nth-child(3),.idx-table th:nth-child(4){text-align:right}
+.table-scroll{overflow-x:auto;max-width:100%}
 .dash-spark-wrap{margin-top:.5rem}
 .dash-spark{display:block;overflow:visible}
 .dash-spark-line{fill:none;stroke:var(--primary-ink);stroke-width:1.8;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}

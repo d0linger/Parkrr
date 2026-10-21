@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"math"
@@ -77,7 +78,9 @@ const vehicleSelect = `SELECT v.id, v.person_id, v.category_id, v.label, v.licen
 	        c.name, c.default_monthly_cost, c.default_yearly_cost,
 	        p.first_name, p.last_name,
 	        (SELECT count(*) FROM vehicle_photos vp WHERE vp.vehicle_id = v.id),
-	        v.spot_id, sp.hall_id, hl.name, v.paid_through
+	        v.spot_id, sp.hall_id, hl.name, v.paid_through,
+	        (SELECT jsonb_agg(jsonb_build_object('from', to_char(rc.effective_from, 'YYYY-MM-DD"T"00:00:00"Z"'), 'amount', rc.rate)
+	                ORDER BY rc.effective_from) FROM vehicle_rate_changes rc WHERE rc.vehicle_id = v.id)
 	 FROM vehicles v
 	 JOIN categories c ON c.id = v.category_id
 	 JOIN persons p ON p.id = v.person_id
@@ -1279,8 +1282,13 @@ func (h *Handler) DuplicateVehicle(w http.ResponseWriter, r *http.Request) {
 	var period string
 	var sourceRate float64
 	var sourceOverride *float64
+	// Nach einer Wertsicherung (Ausbau 29) ist der zuletzt angepasste Satz der
+	// vereinbarte Preis, nicht mehr der ursprüngliche.
 	if err := tx.QueryRow(ctx,
-		`SELECT category_id, billing_period, rate, cost_override FROM vehicles WHERE id=$1`, id).
+		`SELECT v.category_id, v.billing_period,
+		        COALESCE((SELECT rc.rate FROM vehicle_rate_changes rc WHERE rc.vehicle_id = v.id ORDER BY rc.effective_from DESC LIMIT 1), v.rate),
+		        v.cost_override
+		   FROM vehicles v WHERE v.id=$1`, id).
 		Scan(&categoryID, &period, &sourceRate, &sourceOverride); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "vehicle not found")
@@ -1397,15 +1405,23 @@ func scanVehicleRow(row rowScanner) (models.Vehicle, models.Category, error) {
 	var cat models.Category
 	var firstName, lastName string
 	var hallName *string
+	var rateChanges []byte
 	err := row.Scan(&v.ID, &v.PersonID, &v.CategoryID, &v.Label, &v.LicensePlate,
 		&v.Notes, &v.BillingPeriod, &v.Rate, &v.CostOverride, &v.StartDate, &v.EndDate,
 		&v.Status, &v.ReservedFrom, &v.ReservedUntil, &v.Paid, &v.Archived, &v.CreatedAt, &v.UpdatedAt,
 		&v.NeedsPower, &v.PlannerSymbol,
 		&cat.Name, &cat.DefaultMonthlyCost, &cat.DefaultYearlyCost,
 		&firstName, &lastName, &v.PhotoCount,
-		&v.SpotID, &v.HallID, &hallName, &v.PaidThrough)
+		&v.SpotID, &v.HallID, &hallName, &v.PaidThrough, &rateChanges)
 	if err != nil {
 		return v, cat, err
+	}
+	// Preisänderungen der Wertsicherung (Ausbau 29) gehören zur Abrechnung des
+	// Gefährts: jede Ladung über vehicleSelect bringt sie mit.
+	if len(rateChanges) > 0 {
+		if err := json.Unmarshal(rateChanges, &v.RateChanges); err != nil {
+			return v, cat, err
+		}
 	}
 	cat.ID = v.CategoryID
 	v.CategoryName = cat.Name
@@ -1483,7 +1499,8 @@ func (h *Handler) setVehicleInvoiceStatusFrom(ctx context.Context, q dbQuerier, 
 
 // enrich fills in derived cost/status fields on a vehicle as of the given time.
 func enrich(v *models.Vehicle, cat models.Category, now time.Time) {
-	v.EffectiveRate = v.EffectiveRateFor(cat)
+	// Der heute gültige Satz: nach einer Wertsicherung nicht mehr der vereinbarte.
+	v.EffectiveRate = v.RateAt(cat, now)
 	v.AccruedCost = round2(v.AccruedCostAsOf(cat, now))
 	v.IsActive = v.Status == models.StatusStored || v.Status == models.StatusReserved
 }

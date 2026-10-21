@@ -56,11 +56,11 @@ Legende: `[x]` umgesetzt · `[~]` teilweise (Grund dahinter) · `[ ]` offen · `
 
 ## B7 Geld und Recht
 
-- [ ] 27 Kontoauszug importieren (camt.053), Zahlungen zuordnen
-- [ ] 28 Datenauskunft je Person (Art. 15 DSGVO)
-- [ ] 29 Wertsicherung nach Verbraucherpreisindex
-- [ ] 32 Kautionen getrennt führen
-- [ ] 30 Einstellvertrag als PDF, Annahme im Portal
+- [x] 27 Kontoauszug (Seite „Kontoauszug“, Migration 085): camt.053 einlesen (nur gebuchte Gutschriften, kein doppelter Import über die Buchungsreferenz); Vorschlag über die Rechnungsnummer im Verwendungszweck, sonst Betrag und Name (bei Mehrdeutigkeit keiner); gebucht wird erst beim Zuordnen, über pay-invoices
+- [x] 28 Datenauskunft (Art. 15): ZIP mit allen Tabellen mit Personenbezug, Rechnungs- und Übergabe-PDFs, Fotos, Anhängen und Mail-Protokoll; nur Admins, im Änderungsprotokoll; ein Test verlangt jede Tabelle mit person_id im Paket
+- [x] 29 Wertsicherung (Tarife → Wertsicherung): VPI-Werte selbst eintragen, je Tarif Basismonat und Schwelle, Vorschau alt → neu je Gefährt, Anpassen ab Beginn der nächsten Periode; die Abrechnung teilt Perioden jetzt an Preisänderungen (models.sliceCents, ohne Änderungen centgenau wie vorher); Mitteilung per Mail nur auf Wunsch. Offen: Pauschalen werden nicht angepasst (in der Vorschau als „nicht angepasst“ genannt)
+- [x] 32 Kautionen (Personenseite): eigenes Konto, erhalten und zurückgezahlt sind kein Erlös; Einbehalt nur mit Grund, gebucht über pay-invoices; die Übergabe bei der Abholung erinnert an die offene Kaution
+- [x] 30 Einstellvertrag (Einstellungen): versionierte Vorlage mit Platzhaltern, PDF je Gefährt; im Kundenzugang erst lesen, dann annehmen (genau die gelesene Version); das angenommene PDF wird Anhang der Person
 
 ## B8 Rollen
 
