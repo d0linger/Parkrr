@@ -124,7 +124,53 @@ func (h *Handler) deliverOutbox(ctx context.Context, row outboxRow, attempts int
 		h.deliverReminder(ctx, row, attempts)
 		return
 	}
+	if row.Kind == "invoice" {
+		h.deliverInvoice(ctx, row, attempts)
+		return
+	}
 	if err := h.sendOutboxRow(ctx, row); err != nil {
+		h.retryOrFail(ctx, row, attempts, err)
+		return
+	}
+	h.markSent(ctx, row, func(context.Context, pgx.Tx) error { return nil })
+}
+
+// The invoice row lock orders delivery against CancelInvoice's UPDATE: either the
+// cancellation commits first and no mail goes out, or delivery finishes before
+// cancellation can commit. NO KEY UPDATE still permits the Storno's FK check.
+func (h *Handler) deliverInvoice(ctx context.Context, row outboxRow, attempts int) {
+	if row.RefID == nil {
+		h.finishOutbox(ctx, row.ID, "failed", "Nicht gesendet: Rechnung nicht mehr vorhanden")
+		return
+	}
+	lctx, cancel := context.WithTimeout(ctx, 35*time.Second)
+	defer cancel()
+	tx, err := h.Pool.Begin(lctx)
+	if err != nil {
+		h.requeueSoon(ctx, row.ID, "Rechnung nicht lesbar")
+		return
+	}
+	defer func() {
+		rctx, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer rollbackCancel()
+		_ = tx.Rollback(rctx) // Only the invoice lock lives in this transaction.
+	}()
+	var canceled bool
+	var cancelsID *int64
+	err = tx.QueryRow(lctx, `SELECT canceled, cancels_id FROM invoices WHERE id=$1 FOR NO KEY UPDATE`, *row.RefID).
+		Scan(&canceled, &cancelsID)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		h.finishOutbox(ctx, row.ID, "failed", "Nicht gesendet: Rechnung nicht mehr vorhanden")
+		return
+	case err != nil:
+		h.requeueSoon(ctx, row.ID, "Rechnung nicht lesbar")
+		return
+	case canceled || cancelsID != nil:
+		h.finishOutbox(ctx, row.ID, "failed", "Nicht gesendet: Rechnung storniert")
+		return
+	}
+	if err := h.sendOutboxRow(lctx, row); err != nil {
 		h.retryOrFail(ctx, row, attempts, err)
 		return
 	}

@@ -440,6 +440,37 @@ func TestDashboardForecastIntegrationRoundingNeverInventsNegativeRent(t *testing
 	}
 }
 
+func TestDashboardForecastIntegrationPausesMatchBilling(t *testing.T) {
+	f := newForecastDBFixture(t, "2010-01-15")
+	janEnd := forecastDatePtr("2010-01-31")
+	ended := f.vehicle(t, forecastDBVehicle{start: "2010-01-01", end: janEnd, rate: 31})
+	open := f.vehicle(t, forecastDBVehicle{start: "2010-01-01", end: janEnd, rate: 62})
+	f.exec(t, `INSERT INTO vehicle_pauses (vehicle_id,start_date,until,ended) VALUES
+		($1,'2010-01-05','2010-01-09',true),($2,'2010-01-11','2010-01-12',false)`, ended, open)
+	f.exec(t, `INSERT INTO recurring_charges (person_id,vehicle_id,description,amount,period,start_date,end_date)
+		VALUES ($1,$2,'bound paused extra',31,'monthly','2010-01-01','2010-01-31'),
+		       ($1,NULL,'person extra continues',31,'monthly','2010-01-01','2010-01-31')`, f.persons[0], open)
+	// The vehicle's pause is recorded under its Pauschale but must not reduce
+	// that person's agreed flat amount, exactly as in personRent.
+	flatPerson := f.person(t)
+	flatVehicle := f.vehicle(t, forecastDBVehicle{person: flatPerson, start: "2010-01-01", end: janEnd, rate: 9000})
+	f.exec(t, `INSERT INTO vehicle_pauses (vehicle_id,start_date,until,ended)
+		VALUES ($1,'2010-01-01','2010-01-31',true)`, flatVehicle)
+	f.exec(t, `INSERT INTO flat_rate_periods (person_id,amount,period,start_date,end_date)
+		VALUES ($1,31,'monthly','2010-01-01','2010-01-31')`, flatPerson)
+	before := f.financialSnapshot(t)
+	rep := forecastDBGet(t, f.h, "2010")
+	// 10 ended-pause rent + 20 open-pause rent + 10 paused bound extra
+	// + 15 person extra + 15 Pauschale, all at whole euros per active day.
+	assertForecastDBCents(t, "actual respects ended and open pauses", forecastDBSum(rep.ActualByMonth), 70)
+	assertForecastDBCents(t, "future keeps open pause despite expired planned return", forecastDBSum(rep.ForecastByMonth), 48)
+	ov := forecastDBOverview(t, f.h, "2010")
+	assertForecastDBCents(t, "paused billing/dashboard actual parity", forecastDBSum(rep.ActualByMonth), ov.AccruedThisYear)
+	if after := f.financialSnapshot(t); after != before {
+		t.Error("forecast reads changed persisted financial values")
+	}
+}
+
 type forecastSnapshotDB struct {
 	pool       *pgxpool.Pool
 	afterYears func() error

@@ -494,8 +494,8 @@ var auditExemptHandlers = map[string]string{
 // The per-handler guards elsewhere in this file check the QUALITY of an entry; this
 // one checks that an entry exists at all. It is what catches a newly added endpoint
 // that simply forgot — the gap that let session revocation and TOTP setup ship
-// unlogged. Handlers that audit indirectly (through saveAgreement) are accepted via
-// the delegation check.
+// unlogged. Reachable helper bodies also count, so extracting a transaction helper
+// keeps coverage without an exemption that could hide a later missing audit.
 func TestEveryMutatingRouteIsAudited(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join("..", "server", "server.go"))
 	if err != nil {
@@ -507,7 +507,6 @@ func TestEveryMutatingRouteIsAudited(t *testing.T) {
 	}
 	reRoute := regexp.MustCompile(`"(?:POST|PUT|PATCH|DELETE) (/api[^"]*)"[^\n]*?(?:h|ah)\.([A-Za-z0-9_]+)`)
 	reAudit := regexp.MustCompile(`\.(?:audit|auditAs|auditChange|auditChangeTx|auditInsert|auditCreated|auditCreatedTx|auditDeleted|auditDeletedTx|AuditSystem)\(`)
-	reDelegates := regexp.MustCompile(`\b(?:saveAgreement|persistAgreement)\s*\(`)
 
 	// A guard that silently skips what it cannot parse is worse than no guard: the one
 	// route registered in a shape the pattern misses would be exactly the unaudited
@@ -536,7 +535,7 @@ func TestEveryMutatingRouteIsAudited(t *testing.T) {
 			unknown = append(unknown, path+" -> "+name)
 			continue
 		}
-		if !reAudit.MatchString(hf.Body) && !reDelegates.MatchString(hf.Body) {
+		if !reAudit.MatchString(hf.Reach) {
 			bad = append(bad, path+" -> "+name+" ("+hf.File+")")
 		}
 	}

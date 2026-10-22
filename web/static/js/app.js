@@ -3231,12 +3231,13 @@ import { createRevenueChart } from './revenue-chart.js';
             if (location.hash === at) render();
         } catch (e) { toast(e.message || 'Senden fehlgeschlagen', 'error'); }
     }
-    async function createInvoiceFor(personId, btn) {
+    async function createInvoiceFor(personId, btn, onCreated = null) {
         if (!await confirmDialog('Rechnung erstellen?', 'Erstellt eine fortlaufend nummerierte Rechnung aus allen offenen Einzelposten (Gefährte + Einmal-Zusatzkosten). Rechnungen sind unveränderlich.', 'Erstellen', { tone: 'neutral' })) return;
         const o = btn.textContent; btn.disabled = true; btn.textContent = 'Erstelle …';
         try {
             const iv = await api.post('/persons/' + personId + '/invoices', {});
             toast('Rechnung ' + iv.number + ' erstellt', 'success');
+            if (onCreated) onCreated();
             location.hash = '#/invoices/' + iv.id;
         } catch (e) { toast(e.message, 'error'); btn.disabled = false; btn.textContent = o; }
     }
@@ -3423,9 +3424,10 @@ import { createRevenueChart } from './revenue-chart.js';
             m.last_error ? el('div', { class: 'card-meta outbox-error' }, esc(m.last_error)) : null);
         if (m.status === 'failed' && canBill() && m.recipient !== 'anonymisiert') {
             row.append(el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: async (e) => {
-                e.currentTarget.disabled = true;
+                const btn = e.currentTarget;
+                btn.disabled = true;
                 try { await api.post('/mail-outbox/' + m.id + '/retry', {}); toast('Erneut eingereiht', 'success'); render(); }
-                catch (err) { toast(err.message || 'Nicht möglich', 'error'); e.currentTarget.disabled = false; }
+                catch (err) { toast(err.message || 'Nicht möglich', 'error'); btn.disabled = false; }
             } }, 'Erneut senden'));
         }
         return row;
@@ -3487,7 +3489,7 @@ import { createRevenueChart } from './revenue-chart.js';
     async function invoiceRunPreview() {
         let data;
         try { data = await api.get('/invoices/preview'); } catch (e) { toast(e.message || 'Vorschau nicht möglich', 'error'); return; }
-        contentModal('Vorschau Rechnungslauf', (body) => {
+        contentModal('Vorschau Rechnungslauf', (body, close) => {
             const persons = (data && data.persons) || [];
             if (!persons.length) { body.append(el('p', { class: 'muted' }, 'Zurzeit gibt es nichts zu fakturieren.')); return; }
             body.append(el('p', { class: 'card-meta', style: 'margin-top:0' }, persons.length + ' Rechnungen über zusammen ' + eur(data.total) + ' (Stand ' + fmtDateTime(data.as_of) + '). Nur abgeschlossene Perioden; nichts wird gespeichert, keine Nummer vergeben.'));
@@ -3497,7 +3499,7 @@ import { createRevenueChart } from './revenue-chart.js';
                         pp.warnings.length ? el('span', { class: 'badge badge-reserved' }, pp.warnings.length === 1 ? '1 Hinweis' : pp.warnings.length + ' Hinweise') : null));
                 det.append(el('ul', { class: 'preview-lines' }, ...pp.lines.map((ln) => el('li', {}, el('span', {}, esc(ln.label)), el('span', {}, eur(ln.amount))))));
                 pp.warnings.forEach((w) => det.append(el('p', { class: 'card-meta outbox-error' }, esc(w))));
-                if (canBill()) det.append(el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: (e) => createInvoiceFor(pp.person_id, e.currentTarget) }, 'Rechnung erstellen'));
+                if (canBill()) det.append(el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: (e) => createInvoiceFor(pp.person_id, e.currentTarget, close) }, 'Rechnung erstellen'));
                 body.append(det);
             });
         });
@@ -10652,14 +10654,14 @@ import { createRevenueChart } from './revenue-chart.js';
                 toolbar.append(dseg); }
             // Manage custom planner icons (upload / rename / replace / delete) — placed on
             // the toolbar so it's reachable without first selecting a vehicle.
-            if (canManageNow && P.mode === 'manage') toolbar.append(tb(el('span', {}, icon('image', 15), ' Icons'), 'Eigene Planer-Icons verwalten', async () => { await plannerIconsDialog(); try { P.plannerIcons = await api.get('/planner-icons'); } catch (e) { /* keep old */ } draw(); if (P.sel) renderRail(); }, undefined, 'gp-rare'));
+            if (canManage() && P.mode === 'manage') toolbar.append(tb(el('span', {}, icon('image', 15), ' Icons'), 'Eigene Planer-Icons verwalten', async () => { await plannerIconsDialog(); try { P.plannerIcons = await api.get('/planner-icons'); } catch (e) { /* keep old */ } draw(); if (P.sel) renderRail(); }, undefined, 'gp-rare'));
             if (canManageNow && P.mode === 'manage') { const rb = tb(el('span', {}, icon('rotate', 15), ' Drehen'), 'Auswahl drehen', rotateSel); rb.disabled = !(P.sel && P.spots.find((s) => s._id === P.sel)); toolbar.append(rb); }
             toolbar.append(tb('−', 'Verkleinern', () => { P.zoom = Math.max(0.5, +(P.zoom - 0.15).toFixed(2)); layout(); }, undefined, 'gp-rare'));
             toolbar.append(el('span', { class: 'gp-zoomlbl gp-rare' }, Math.round((P.zoom || 1) * 100) + '%'));
             toolbar.append(tb('+', 'Vergrößern', () => { P.zoom = Math.min(8, +(P.zoom + 0.15).toFixed(2)); layout(); }, undefined, 'gp-rare'));
             toolbar.append(tb(tbLabel('maximize', 'Passen'), 'Einpassen & Raster an die Wände anpassen', () => { fitView(); }));
             toolbar.append(tb(tbLabel('download', 'Export'), 'Als PNG / PDF / SVG / DXF exportieren', () => openExportMenu(), undefined, 'gp-rare'));
-            if (canManageNow) toolbar.append(tb(tbLabel('layers', 'Vorlagen'), 'Wand-Layouts speichern & wiederverwenden', () => openTemplateMenu(), undefined, 'gp-rare'));
+            if (canManage()) toolbar.append(tb(tbLabel('layers', 'Vorlagen'), 'Wand-Layouts speichern & wiederverwenden', () => openTemplateMenu(), undefined, 'gp-rare'));
             toolbar.append(tb('?', 'Tastaturkürzel (Taste ?)', () => toggleShortcutHelp(), undefined, 'gp-rare'));
             // Always render the save control (fixed width, centred) so it never appears/disappears
             // and reflows the wrapping toolbar mid-edit — that shift caused mis-clicks. Dirty → an
@@ -10741,11 +10743,12 @@ import { createRevenueChart } from './revenue-chart.js';
         async function saveGeomOnce(silent) {
             P.dirty = false; renderToolbar(); // optimistic; a change during the save re-flags it
             spotErr = null;
+            let wrote = false;
             try {
                 // Den Grundriss schreiben nur Bearbeiter; der Hallendienst (Ausbau 35) platziert
                 // nur Gefährte. Bisher scheiterte sein Speichern hier mit 403, bevor ein Platz
                 // geschrieben war.
-                if (canManage()) { const geometry = currentGeometry(); await api.put('/halls/' + P.hallId, { name: P.hallName, geometry }); P.storedPark = geometry.park; }
+                if (canManage()) { const geometry = currentGeometry(); await api.put('/halls/' + P.hallId, { name: P.hallName, geometry }); P.storedPark = geometry.park; wrote = true; }
                 // Free placement: an invalid spot (outside / gate / lane / collision) is kept
                 // locally and stays _dirty, but is NOT persisted until it is valid again.
                 let heldInvalid = 0;
@@ -10754,6 +10757,7 @@ import { createRevenueChart } from './revenue-chart.js';
                     if (!validVeh(b, b._id)) { b._invalid = true; heldInvalid++; continue; }
                     b._invalid = false;
                     await persistSpot(b);
+                    wrote = true;
                 }
                 // A failed spot write re-flags P.dirty (persistSpot); reschedule instead of
                 // falsely reporting success — with backoff, unless it halted the loop.
@@ -10761,7 +10765,7 @@ import { createRevenueChart } from './revenue-chart.js';
                 saveFails = 0;
                 if (P.dirty) scheduleSave();
                 else if (heldInvalid && !silent) toast(heldInvalid + (heldInvalid === 1 ? ' Fahrzeug ungültig platziert — nicht gespeichert' : ' Fahrzeuge ungültig platziert — nicht gespeichert'), 'warn');
-                else if (!silent) toast('Grundriss gespeichert', 'ok');
+                else if (!silent && wrote) toast(canManage() ? 'Grundriss gespeichert' : 'Platzierung gespeichert', 'ok');
                 return true;
             } catch (err) {
                 P.dirty = true; renderToolbar();
@@ -11732,8 +11736,10 @@ import { createRevenueChart } from './revenue-chart.js';
         planEl.append(suggLayer);
         function pickupUrgency(p) {
             if (!p.end_date) return 0;
-            const days = (new Date(p.end_date + 'T00:00:00') - new Date(today() + 'T00:00:00')) / 86400000;
-            return Math.max(0, Math.min(1, 1 - (days - 30) / 150));
+            const end = parseYMDUTC(String(p.end_date).slice(0, 10));
+            if (!end) return 0;
+            const days = (end - parseYMDUTC(today())) / 86400000;
+            return Number.isFinite(days) ? Math.max(0, Math.min(1, 1 - (days - 30) / 150)) : 0;
         }
         // Ausbauplan O3: der Platz vom letzten Mal zuerst, beim Saisonwechsel der des
         // Vorgängers aus „Erneut einstellen“. Nur wenn er in dieser Halle noch steht, leer ist

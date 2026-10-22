@@ -1,13 +1,9 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
-	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -113,8 +109,17 @@ func shiftPaidThrough(paidThrough, from, until time.Time, end *time.Time, paused
 	return d
 }
 
-func (h *Handler) loadPause(ctx context.Context, q dbQuerier, id int64) (vehiclePause, error) {
-	return scanPause(q.QueryRow(ctx, `SELECT `+pauseCols+` FROM vehicle_pauses WHERE id = $1 FOR UPDATE`, id))
+// Share invoice/payment locks and take the vehicle row before its pause row,
+// including collection's status change, to keep the lock order stable.
+func (h *Handler) loadPause(ctx context.Context, tx pgx.Tx, id int64) (vehiclePause, error) {
+	var vehicleID int64
+	if err := tx.QueryRow(ctx, `SELECT vehicle_id FROM vehicle_pauses WHERE id = $1`, id).Scan(&vehicleID); err != nil {
+		return vehiclePause{}, err
+	}
+	if err := lockFinancialSourceTx(ctx, tx, "vehicle", vehicleID, 0); err != nil {
+		return vehiclePause{}, err
+	}
+	return scanPause(tx.QueryRow(ctx, `SELECT `+pauseCols+` FROM vehicle_pauses WHERE id = $1 FOR UPDATE`, id))
 }
 
 func (h *Handler) listPauses(ctx context.Context, q dbQuerier, vehicleID int64) ([]vehiclePause, error) {
@@ -198,6 +203,12 @@ func (h *Handler) createPauseTx(ctx context.Context, tx pgx.Tx, vehicleID int64,
 		end      *time.Time
 		spotID   *int64
 	)
+	if err := lockFinancialSourceTx(ctx, tx, "vehicle", vehicleID, 0); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return vehiclePause{}, errPauseRule{http.StatusNotFound, "Gefährt nicht gefunden"}
+		}
+		return vehiclePause{}, err
+	}
 	if err := tx.QueryRow(ctx, `SELECT status, archived, start_date, end_date, spot_id FROM vehicles WHERE id = $1 FOR UPDATE`, vehicleID).
 		Scan(&status, &archived, &start, &end, &spotID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -245,6 +256,9 @@ func (h *Handler) createPauseTx(ctx context.Context, tx pgx.Tx, vehicleID int64,
 }
 
 func writePauseErr(w http.ResponseWriter, r *http.Request, err error) {
+	if writeSettlementConflict(w, err) {
+		return
+	}
 	var rule errPauseRule
 	if errors.As(err, &rule) {
 		writeError(w, rule.status, rule.msg)
@@ -312,25 +326,34 @@ func (h *Handler) ExtendPause(w http.ResponseWriter, r *http.Request) {
 		}
 		until = d
 	}
-	p, err := h.loadPause(r.Context(), h.Pool, id)
+	var p vehiclePause
+	err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		var err error
+		p, err = h.loadPause(r.Context(), tx, id)
+		if err != nil {
+			return err
+		}
+		if p.Ended {
+			return errPauseRule{http.StatusConflict, "Die Ruhezeit ist schon beendet"}
+		}
+		if until != nil && until.Before(p.From) {
+			return errPauseRule{http.StatusBadRequest, "Die Rückkehr liegt vor dem Beginn"}
+		}
+		ct, err := tx.Exec(r.Context(), `UPDATE vehicle_pauses SET until = $2, updated_at = now() WHERE id = $1 AND NOT ended`, id, until)
+		if err != nil {
+			return err
+		}
+		if ct.RowsAffected() != 1 {
+			return errPauseRule{http.StatusConflict, "Die Ruhezeit ist schon beendet"}
+		}
+		return nil
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 	if err != nil {
-		serverError(w, r, "query failed", err)
-		return
-	}
-	if p.Ended {
-		writeError(w, http.StatusConflict, "Die Ruhezeit ist schon beendet")
-		return
-	}
-	if until != nil && until.Before(p.From) {
-		writeError(w, http.StatusBadRequest, "Die Rückkehr liegt vor dem Beginn")
-		return
-	}
-	if _, err := h.Pool.Exec(r.Context(), `UPDATE vehicle_pauses SET until = $2, updated_at = now() WHERE id = $1`, id, until); err != nil {
-		serverError(w, r, "could not save", err)
+		writePauseErr(w, r, err)
 		return
 	}
 	h.auditChange(r, "update", "vehicle_pause", id, "Geplante Rückkehr geändert",
@@ -482,51 +505,55 @@ func (h *Handler) CollectFromPause(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	p, err := h.loadPause(r.Context(), h.Pool, id)
+	var p vehiclePause
+	err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		var err error
+		p, err = h.loadPause(r.Context(), tx, id)
+		if err != nil {
+			return err
+		}
+		if p.Ended {
+			return errPauseRule{http.StatusConflict, "Die Ruhezeit ist schon beendet"}
+		}
+		locked, err := h.pauseLockedThrough(r.Context(), tx, p.VehicleID)
+		if err != nil {
+			return err
+		}
+		if !locked.IsZero() && !p.From.After(locked) {
+			return errPauseRule{http.StatusConflict, lockedMsg(locked) + " Bitte über Storno und Gutschrift korrigieren."}
+		}
+		ct, err := tx.Exec(r.Context(), `DELETE FROM vehicle_pauses WHERE id = $1`, id)
+		if err != nil {
+			return err
+		}
+		if ct.RowsAffected() != 1 {
+			return errPauseRule{http.StatusConflict, "Die Ruhezeit wurde zwischenzeitlich geändert – bitte neu laden"}
+		}
+		if err := h.changeVehicleStatusTx(r, tx, p.VehicleID, statusRequest{
+			Status: models.StatusCollected, Date: p.From.Format(dateLayout), Note: "Doch abgeholt (Ruhezeit entfällt)",
+		}); err != nil {
+			return err
+		}
+		return h.auditDeletedTx(r.Context(), tx, r, "vehicle_pause", id,
+			"Doch abgeholt: Ruhezeit entfällt, Abholung am "+p.From.Format("02.01.2006"),
+			map[string]any{"vehicle_id": p.VehicleID, "from": p.From.Format(dateLayout), "until": dateOrNil(p.Until)})
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 	if err != nil {
-		serverError(w, r, "query failed", err)
-		return
-	}
-	locked, err := h.pauseLockedThrough(r.Context(), h.Pool, p.VehicleID)
-	if err != nil {
-		serverError(w, r, "query failed", err)
-		return
-	}
-	if !locked.IsZero() && !p.From.After(locked) {
-		writeError(w, http.StatusConflict, lockedMsg(locked)+" Bitte über Storno und Gutschrift korrigieren.")
-		return
-	}
-	if _, err := h.Pool.Exec(r.Context(), `DELETE FROM vehicle_pauses WHERE id = $1`, id); err != nil {
-		serverError(w, r, "could not delete", err)
-		return
-	}
-	body, _ := json.Marshal(statusRequest{Status: models.StatusCollected, Date: p.From.Format(dateLayout), Note: "Doch abgeholt (Ruhezeit entfällt)"})
-	vid := strconv.FormatInt(p.VehicleID, 10)
-	sub := httptest.NewRequest(http.MethodPost, "/api/vehicles/"+vid+"/status", bytes.NewReader(body)).WithContext(r.Context())
-	sub.Header.Set("Content-Type", "application/json")
-	sub.SetPathValue("id", vid)
-	rec := httptest.NewRecorder()
-	h.ChangeVehicleStatus(rec, sub)
-	if rec.Code >= 300 {
-		// Abholen gescheitert: die Ruhezeit kommt zurück, wie sie war.
-		if _, rerr := h.Pool.Exec(r.Context(),
-			`INSERT INTO vehicle_pauses (id, vehicle_id, start_date, until, ended, hold_spot, prev_spot_id, note, source, created_at, paid_through_before)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-			p.ID, p.VehicleID, p.From, p.Until, p.Ended, p.HoldSpot, p.PrevSpotID, p.Note, p.Source, p.CreatedAt, p.paidBefore); rerr != nil {
-			serverError(w, r, "could not restore pause", rerr)
+		var statusErr *vehicleStatusError
+		if errors.As(err, &statusErr) || writeSettlementConflict(w, err) {
+			if statusErr != nil {
+				writeVehicleStatusError(w, r, err)
+			}
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(rec.Code)
-		_, _ = w.Write(rec.Body.Bytes())
+		writePauseErr(w, r, err)
 		return
 	}
-	h.auditDeleted(r, "vehicle_pause", id, "Doch abgeholt: Ruhezeit entfällt, Abholung am "+p.From.Format("02.01.2006"),
-		map[string]any{"vehicle_id": p.VehicleID, "from": p.From.Format(dateLayout), "until": dateOrNil(p.Until)})
+	h.autoArchiveIfClosed(r, p.VehicleID)
 	writeJSON(w, http.StatusOK, map[string]any{"collected": true, "end_date": p.From.Format(dateLayout)})
 }
 
@@ -551,13 +578,34 @@ func (h *Handler) DeletePause(w http.ResponseWriter, r *http.Request) {
 		if !locked.IsZero() && !p.From.After(locked) {
 			return errPauseRule{http.StatusConflict, lockedMsg(locked) + " Die Ruhezeit lässt sich nicht mehr entfernen."}
 		}
-		if _, err := tx.Exec(r.Context(), `DELETE FROM vehicle_pauses WHERE id = $1`, id); err != nil {
-			return err
-		}
 		if p.Ended && p.paidBefore != nil {
-			if _, err := tx.Exec(r.Context(), `UPDATE vehicles SET paid_through = $2, updated_at = now() WHERE id = $1`, p.VehicleID, *p.paidBefore); err != nil {
+			var paidThrough, end *time.Time
+			if err := tx.QueryRow(r.Context(), `SELECT paid_through, end_date FROM vehicles WHERE id = $1`, p.VehicleID).Scan(&paidThrough, &end); err != nil {
 				return err
 			}
+			pauses, err := h.listPauses(r.Context(), tx, p.VehicleID)
+			if err != nil {
+				return err
+			}
+			shifted := shiftPaidThrough(*p.paidBefore, p.From, *p.Until, end, func(d time.Time) bool {
+				for _, other := range pauses {
+					if !d.Before(other.From) && !d.After(other.billingEnd()) {
+						return true
+					}
+				}
+				return false
+			})
+			if !shifted.Equal(*p.paidBefore) {
+				if paidThrough == nil || !paidThrough.Equal(shifted) {
+					return errPauseRule{http.StatusConflict, "Bezahlt bis wurde seit der Rückkehr geändert. Bitte die spätere Zahlung oder Änderung zuerst korrigieren."}
+				}
+				if _, err := tx.Exec(r.Context(), `UPDATE vehicles SET paid_through = $2, updated_at = now() WHERE id = $1`, p.VehicleID, *p.paidBefore); err != nil {
+					return err
+				}
+			}
+		}
+		if _, err := tx.Exec(r.Context(), `DELETE FROM vehicle_pauses WHERE id = $1`, id); err != nil {
+			return err
 		}
 		if p.PrevSpotID != nil {
 			if _, err := tx.Exec(r.Context(),

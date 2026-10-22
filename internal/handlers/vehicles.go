@@ -854,11 +854,6 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "notes is too long")
 		return
 	}
-	var oldStatus string
-	var oldEnd *time.Time // a status change can set or clear the end date — audit it
-	var start time.Time
-	var personID int64
-	var archived bool
 	ctx := r.Context()
 	tx, err := h.Pool.Begin(ctx)
 	if err != nil {
@@ -866,29 +861,79 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := tx.QueryRow(ctx, `SELECT person_id FROM vehicles WHERE id=$1`, id).Scan(&personID); err != nil {
-		ensureVehicleWritable(w, false, err)
+	if err := h.changeVehicleStatusTx(r, tx, id, req); err != nil {
+		writeVehicleStatusError(w, r, err)
 		return
 	}
-	if err := lockInvoicePersonTx(ctx, tx, personID); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		serverError(w, r, "could not change status", err)
 		return
+	}
+	h.autoArchiveIfClosed(r, id)
+	h.writeVehicle(w, r.Context(), id, http.StatusOK)
+}
+
+type vehicleStatusError struct {
+	status int
+	msg    string
+	cause  error
+}
+
+func (e *vehicleStatusError) Error() string { return e.msg }
+func (e *vehicleStatusError) Unwrap() error { return e.cause }
+
+func writeVehicleStatusError(w http.ResponseWriter, r *http.Request, err error) {
+	var statusErr *vehicleStatusError
+	if errors.As(err, &statusErr) {
+		if statusErr.cause != nil {
+			serverError(w, r, statusErr.msg, statusErr.cause)
+		} else {
+			writeError(w, statusErr.status, statusErr.msg)
+		}
+		return
+	}
+	if !writeSettlementConflict(w, err) {
+		serverError(w, r, "could not change status", err)
+	}
+}
+
+// changeVehicleStatusTx shares the status, history and audit writes with pause
+// collection so removing a pause and closing its vehicle commit together.
+func (h *Handler) changeVehicleStatusTx(r *http.Request, tx pgx.Tx, id int64, req statusRequest) error {
+	var oldStatus string
+	var oldEnd *time.Time // a status change can set or clear the end date — audit it
+	var start time.Time
+	var personID int64
+	var archived bool
+	ctx := r.Context()
+	if err := tx.QueryRow(ctx, `SELECT person_id FROM vehicles WHERE id=$1`, id).Scan(&personID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &vehicleStatusError{status: http.StatusNotFound, msg: "vehicle not found"}
+		}
+		return &vehicleStatusError{msg: "query failed", cause: err}
+	}
+	if err := lockInvoicePersonTx(ctx, tx, personID); err != nil {
+		return err
 	}
 	var lockedPersonID int64
 	scanErr := tx.QueryRow(ctx,
 		`SELECT status, archived, end_date, start_date, person_id FROM vehicles WHERE id=$1 FOR UPDATE`, id).
 		Scan(&oldStatus, &archived, &oldEnd, &start, &lockedPersonID)
-	if !ensureVehicleWritable(w, archived, scanErr) {
-		return
+	if errors.Is(scanErr, pgx.ErrNoRows) {
+		return &vehicleStatusError{status: http.StatusNotFound, msg: "vehicle not found"}
+	}
+	if scanErr != nil {
+		return &vehicleStatusError{msg: "query failed", cause: scanErr}
+	}
+	if archived {
+		return &vehicleStatusError{status: http.StatusConflict, msg: errArchived}
 	}
 	if lockedPersonID != personID {
-		writeError(w, http.StatusConflict, "Kundenzuordnung wurde geändert – bitte neu laden")
-		return
+		return &vehicleStatusError{status: http.StatusConflict, msg: "Kundenzuordnung wurde geändert – bitte neu laden"}
 	}
 	var billingPeriod string
 	if err := tx.QueryRow(ctx, `SELECT billing_period FROM vehicles WHERE id=$1`, id).Scan(&billingPeriod); err != nil {
-		serverError(w, r, "could not check rental period", err)
-		return
+		return &vehicleStatusError{msg: "could not check rental period", cause: err}
 	}
 	date := trim(req.Date)
 	var proposedEnd *time.Time
@@ -899,23 +944,22 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		if date != "" {
 			if !validDateLength(date) {
-				writeError(w, http.StatusBadRequest, "date is too long")
-				return
+				return &vehicleStatusError{status: http.StatusBadRequest, msg: "date is too long"}
 			}
 			parsed, err := time.Parse(dateLayout, date)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, "date must be YYYY-MM-DD")
-				return
+				return &vehicleStatusError{status: http.StatusBadRequest, msg: "date must be YYYY-MM-DD"}
 			}
 			end = parsed
 		}
 		proposedEnd = &end
 	}
 	if err := h.guardInvoicedPartialExtension(ctx, tx, "vehicle", id, oldEnd, proposedEnd, billingPeriod); err != nil {
-		if !writeSettlementConflict(w, err) {
-			serverError(w, r, "could not check billed rental end", err)
+		var conflict *settlementConflictError
+		if errors.As(err, &conflict) {
+			return err
 		}
-		return
+		return &vehicleStatusError{msg: "could not check billed rental end", cause: err}
 	}
 	// When collecting, set the pickup/end date: use the caller-supplied date if
 	// given (allows back-dating), otherwise keep any existing end date or today.
@@ -929,18 +973,15 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 	case (req.Status == models.StatusCollected || req.Status == models.StatusCancelled) && date != "":
 		end := *proposedEnd
 		if end.Before(start) {
-			writeError(w, http.StatusBadRequest, "Enddatum darf nicht vor Mietbeginn liegen")
-			return
+			return &vehicleStatusError{status: http.StatusBadRequest, msg: "Enddatum darf nicht vor Mietbeginn liegen"}
 		}
 		// A back-dated close must not fall below an already-invoiced period — that
 		// would drop it from accrual while its payment stays → phantom Guthaben
 		// (mirrors the UpdateVehicle guard).
 		if retract, ierr := h.endDateRetractsBelowInvoiced(ctx, tx, "vehicle", id, &end); ierr != nil {
-			writeError(w, http.StatusInternalServerError, "could not check invoices")
-			return
+			return &vehicleStatusError{msg: "could not check invoices", cause: ierr}
 		} else if retract {
-			writeError(w, http.StatusConflict, "Enddatum liegt vor einer fakturierten Periode – Storno über die Rechnung")
-			return
+			return &vehicleStatusError{status: http.StatusConflict, msg: "Enddatum liegt vor einer fakturierten Periode – Storno über die Rechnung"}
 		}
 		ct, uerr = tx.Exec(ctx,
 			`UPDATE vehicles SET status=$1, end_date=$2, spot_id=NULL, updated_at=now() WHERE id=$3`,
@@ -956,15 +997,12 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 			end = start
 		}
 		if end.Before(start) {
-			writeError(w, http.StatusBadRequest, "Enddatum darf nicht vor Mietbeginn liegen")
-			return
+			return &vehicleStatusError{status: http.StatusBadRequest, msg: "Enddatum darf nicht vor Mietbeginn liegen"}
 		}
 		if retract, err := h.endDateRetractsBelowInvoiced(ctx, tx, "vehicle", id, &end); err != nil {
-			serverError(w, r, "could not check invoices", err)
-			return
+			return &vehicleStatusError{msg: "could not check invoices", cause: err}
 		} else if retract {
-			writeError(w, http.StatusConflict, "Enddatum liegt vor einer fakturierten Periode – Storno über die Rechnung")
-			return
+			return &vehicleStatusError{status: http.StatusConflict, msg: "Enddatum liegt vor einer fakturierten Periode – Storno über die Rechnung"}
 		}
 		ct, uerr = tx.Exec(ctx,
 			`UPDATE vehicles SET status=$1, end_date=$2, spot_id=NULL, updated_at=now() WHERE id=$3`,
@@ -980,36 +1018,26 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 	// (or 0 rows) would claim a transition that didn't happen — and for a closing
 	// status that means rent keeps accruing while the log says "collected".
 	if uerr != nil {
-		writeError(w, http.StatusInternalServerError, "could not change status")
-		return
+		return &vehicleStatusError{msg: "could not change status", cause: uerr}
 	}
 	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "vehicle not found")
-		return
+		return &vehicleStatusError{status: http.StatusNotFound, msg: "vehicle not found"}
 	}
 	if err := h.recordStatusTx(r, tx, id, oldStatus, req.Status, trim(req.Note)); err != nil {
-		serverError(w, r, "could not record status history", err)
-		return
+		return &vehicleStatusError{msg: "could not record status history", cause: err}
 	}
 	// Re-read the end date: the branches above set, keep or clear it.
 	var newEnd *time.Time
 	if err := tx.QueryRow(ctx, `SELECT end_date FROM vehicles WHERE id=$1`, id).Scan(&newEnd); err != nil {
-		serverError(w, r, "could not read status", err)
-		return
+		return &vehicleStatusError{msg: "could not read status", cause: err}
 	}
 	if err := h.auditChangeTx(ctx, tx, r, "update", "vehicle", id,
 		"Status Gefährt #"+strconv.FormatInt(id, 10)+": "+oldStatus+" → "+req.Status,
 		diffFields(map[string]any{"status": oldStatus, "end_date": auditDate(oldEnd)},
 			map[string]any{"status": req.Status, "end_date": auditDate(newEnd)})); err != nil {
-		serverError(w, r, "could not record status audit", err)
-		return
+		return &vehicleStatusError{msg: "could not record status audit", cause: err}
 	}
-	if err := tx.Commit(ctx); err != nil {
-		serverError(w, r, "could not change status", err)
-		return
-	}
-	h.autoArchiveIfClosed(r, id)
-	h.writeVehicle(w, r.Context(), id, http.StatusOK)
+	return nil
 }
 
 // VehicleHistory returns the status history of a vehicle, newest first.
@@ -1292,14 +1320,16 @@ func (h *Handler) DuplicateVehicle(w http.ResponseWriter, r *http.Request) {
 	var period string
 	var sourceRate float64
 	var sourceOverride *float64
-	// Nach einer Wertsicherung (Ausbau 29) ist der zuletzt angepasste Satz der
-	// vereinbarte Preis, nicht mehr der ursprüngliche.
+	var applicableRate *float64
+	// Der vereinbarte Preis gilt zum Beginn der Kopie; spätere Änderungen dürfen
+	// weder vorgezogen werden noch beim Saisonwechsel verloren gehen.
 	if err := tx.QueryRow(ctx,
-		`SELECT v.category_id, v.billing_period,
-		        COALESCE((SELECT rc.rate FROM vehicle_rate_changes rc WHERE rc.vehicle_id = v.id ORDER BY rc.effective_from DESC LIMIT 1), v.rate),
-		        v.cost_override
-		   FROM vehicles v WHERE v.id=$1`, id).
-		Scan(&categoryID, &period, &sourceRate, &sourceOverride); err != nil {
+		`SELECT v.category_id, v.billing_period, v.rate, v.cost_override,
+		        (SELECT rc.rate FROM vehicle_rate_changes rc
+		                   WHERE rc.vehicle_id = v.id AND rc.effective_from <= $2
+		                   ORDER BY rc.effective_from DESC LIMIT 1)
+		   FROM vehicles v WHERE v.id=$1`, id, start).
+		Scan(&categoryID, &period, &sourceRate, &sourceOverride, &applicableRate); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "vehicle not found")
 			return
@@ -1314,6 +1344,10 @@ func (h *Handler) DuplicateVehicle(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		serverError(w, r, "could not resolve vehicle price", err)
 		return
+	}
+	if applicableRate != nil {
+		rate = *applicableRate
+		sourceOverride = nil
 	}
 	costOverride := markZeroRate(rate, sourceOverride)
 	if req.CurrentTariff {
@@ -1351,6 +1385,16 @@ func (h *Handler) DuplicateVehicle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !req.CurrentTariff {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO vehicle_rate_changes (vehicle_id, effective_from, rate, previous_rate, index_month, reason, created_by)
+			 SELECT $1, effective_from, rate, previous_rate, index_month, reason, created_by
+			 FROM vehicle_rate_changes WHERE vehicle_id=$2 AND effective_from > $3 ORDER BY effective_from`,
+			newID, id, start); err != nil {
+			serverError(w, r, "could not copy planned price changes", err)
+			return
+		}
+	}
 	// Copy the photos so the new period reuses the existing images. Nur die Galerie:
 	// Protokollfotos gehören zum Protokoll der alten Einlagerung (Ausbau 24).
 	if _, err := tx.Exec(ctx,

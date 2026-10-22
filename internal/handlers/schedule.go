@@ -27,6 +27,7 @@ type scheduleEvent struct {
 	Date       time.Time
 	Kind       string // pickup | arrival | wish | leave | return (Ruhezeit)
 	VehicleID  int64  // 0 bei einem Abholwunsch
+	SourceID   int64  // Ruhezeit bzw. Portal-Wunsch; bleibt bei Terminänderungen stabil
 	PersonID   int64
 	Label      string
 	Plate      string
@@ -48,7 +49,7 @@ func (h *Handler) scheduleEvents(ctx context.Context, from, to time.Time) ([]sch
 		`SELECT k.kind, k.day, v.id, v.person_id,
 		        COALESCE(NULLIF(v.label, ''), c.name), v.license_plate,
 		        trim(p.first_name || ' ' || p.last_name),
-		        COALESCE(hl.name, ''), COALESCE(s.label, '')
+		        COALESCE(hl.name, ''), COALESCE(s.label, ''), 0::bigint
 		   FROM vehicles v
 		   JOIN persons p ON p.id = v.person_id
 		   JOIN categories c ON c.id = v.category_id
@@ -62,7 +63,7 @@ func (h *Handler) scheduleEvents(ctx context.Context, from, to time.Time) ([]sch
 		 SELECT k.kind, k.day, v.id, v.person_id,
 		        COALESCE(NULLIF(v.label, ''), c.name), v.license_plate,
 		        trim(p.first_name || ' ' || p.last_name),
-		        COALESCE(hl.name, ''), COALESCE(s.label, '')
+		        COALESCE(hl.name, ''), COALESCE(s.label, ''), vp.id
 		   FROM vehicle_pauses vp
 		   JOIN vehicles v ON v.id = vp.vehicle_id
 		   JOIN persons p ON p.id = v.person_id
@@ -76,7 +77,7 @@ func (h *Handler) scheduleEvents(ctx context.Context, from, to time.Time) ([]sch
 	}
 	for rows.Next() {
 		var e scheduleEvent
-		if err := rows.Scan(&e.Kind, &e.Date, &e.VehicleID, &e.PersonID, &e.Label, &e.Plate, &e.PersonName, &e.Hall, &e.Spot); err != nil {
+		if err := rows.Scan(&e.Kind, &e.Date, &e.VehicleID, &e.PersonID, &e.Label, &e.Plate, &e.PersonName, &e.Hall, &e.Spot, &e.SourceID); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -88,7 +89,7 @@ func (h *Handler) scheduleEvents(ctx context.Context, from, to time.Time) ([]sch
 	}
 	// Der Wunschtermin steht als Text im JSON; nur gültige Daten im Fenster zählen.
 	wrows, err := h.Pool.Query(ctx,
-		`SELECT pr.person_id, trim(p.first_name || ' ' || p.last_name),
+		`SELECT pr.id, pr.person_id, trim(p.first_name || ' ' || p.last_name),
 		        COALESCE(pr.payload->>'date', ''), COALESCE(pr.payload->>'note', ''), COALESCE(pr.payload->>'time', '')
 		   FROM portal_requests pr JOIN persons p ON p.id = pr.person_id
 		  WHERE pr.kind = 'pickup' AND pr.status = 'offen'`)
@@ -98,7 +99,7 @@ func (h *Handler) scheduleEvents(ctx context.Context, from, to time.Time) ([]sch
 	for wrows.Next() {
 		var e scheduleEvent
 		var day string
-		if err := wrows.Scan(&e.PersonID, &e.PersonName, &day, &e.Note, &e.Time); err != nil {
+		if err := wrows.Scan(&e.SourceID, &e.PersonID, &e.PersonName, &day, &e.Note, &e.Time); err != nil {
 			wrows.Close()
 			return nil, err
 		}
@@ -387,16 +388,19 @@ func (h *Handler) renderICS(r *http.Request, events []scheduleEvent) string {
 	stamp := h.now().UTC().Format("20060102T150405Z")
 	base := strings.TrimSuffix(h.vehicleLink(r, 0), "/#/vehicles/0")
 	for _, e := range events {
-		// Stabile UID je Gefährt und Art: verschiebt sich das Datum, wandert der Termin
-		// mit, statt doppelt zu stehen.
+		// Abholung/Einlagerung sind je Gefährt eindeutig. Ruhezeiten und Wünsche
+		// brauchen zusätzlich ihren Datensatz, damit weitere Termine nicht kollidieren.
 		uid := e.Kind + "-" + strconv.FormatInt(e.VehicleID, 10)
+		if e.Kind == "leave" || e.Kind == "return" {
+			uid += "-" + strconv.FormatInt(e.SourceID, 10)
+		}
 		summary := scheduleKindLabel[e.Kind] + ": " + e.Label
 		if e.Plate != "" {
 			summary += " (" + e.Plate + ")"
 		}
 		link := base + "/#/vehicles/" + strconv.FormatInt(e.VehicleID, 10)
 		if e.Kind == "wish" {
-			uid = "wish-" + strconv.FormatInt(e.PersonID, 10) + "-" + e.Date.Format("20060102")
+			uid = "wish-" + strconv.FormatInt(e.PersonID, 10) + "-" + strconv.FormatInt(e.SourceID, 10)
 			summary = "Abholwunsch aus dem Portal"
 			if e.Time != "" {
 				summary += " um " + e.Time

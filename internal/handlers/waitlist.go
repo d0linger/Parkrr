@@ -259,6 +259,9 @@ func (h *Handler) ConvertWaitlist(w http.ResponseWriter, r *http.Request) {
 	}
 	var pid int64
 	err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(r.Context(), `SELECT id FROM waitlist WHERE id=$1 FOR UPDATE`, id); err != nil {
+			return err
+		}
 		e, err := h.getWaitlist(r.Context(), tx, id)
 		if err != nil {
 			return err
@@ -340,6 +343,10 @@ func (h *Handler) WaitlistSummary(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		matches = append(matches, m)
+	}
+	if err := rows.Err(); err != nil {
+		serverError(w, r, "query failed", err)
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"open": open, "by_category": matches})
 }

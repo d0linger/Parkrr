@@ -18,6 +18,7 @@ test('CSP-Verstoss wird an client-error gemeldet', async ({ page }) => {
 
   const reports = [];
   page.on('request', (req) => { if (req.url().includes('/api/client-error')) reports.push(JSON.parse(req.postData() || '{}')); });
+  const acceptedReport = page.waitForResponse(response => new URL(response.url()).pathname === '/api/client-error' && response.request().method() === 'POST');
 
   // Einen Verstoss erzwingen: ein style-Attribut verletzt style-src 'self'.
   await page.evaluate(() => {
@@ -26,7 +27,11 @@ test('CSP-Verstoss wird an client-error gemeldet', async ({ page }) => {
     document.body.append(d);
   });
   await page.waitForTimeout(1200);
+  const response = await acceptedReport;
+  expect(response.status()).toBe(204);
+  expect(response.request().headers()['content-type']).toBe('application/json');
 
   expect(reports.length, 'kein client-error-Report angekommen').toBeGreaterThan(0);
   expect(reports.some((r) => String(r.message || '').startsWith('CSP:'))).toBeTruthy();
+  for (const report of reports) expect(Object.keys(report).sort()).toEqual(['message', 'stack', 'url', 'version']);
 });

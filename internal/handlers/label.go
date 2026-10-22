@@ -211,8 +211,8 @@ const labelStyle = `
     .print { display: none; }
   }`
 
-// renderLabelSheet lays the cards out as an A4 sheet: two columns, five rows, a
-// page break after every ten. hall is HTML-escaped; cards come from labelCard.
+// renderLabelSheet lays the cards out as an A4 sheet: two columns and five rows
+// per page. hall is HTML-escaped; cards come from labelCard.
 func renderLabelSheet(hall string, count int, cards string) string {
 	empty := ""
 	if count == 0 {
@@ -224,12 +224,11 @@ func renderLabelSheet(hall string, count int, cards string) string {
 <style>` + labelStyle + `
   .head { display: flex; justify-content: space-between; align-items: center; gap: 12px; width: min(100%, 186mm); }
   .head h1 { font-size: 18px; margin: 0; }
-  .grid { display: grid; grid-template-columns: repeat(2, 90mm); gap: 6mm; justify-content: center; }
+  .grid { display: grid; grid-template-columns: repeat(2, 90mm); gap: 5mm 6mm; justify-content: center; }
   .grid .label { width: 90mm; height: 50mm; break-inside: avoid; }
-  .grid .label:nth-child(10n) { break-after: page; }
   .empty { color: #5a6b7b; }
   @page { size: A4; margin: 12mm; }
-  @media print { .head { display: none; } .grid .label { border: 1px dashed #cdd5dd; } }
+  @media print { .sheet { display: block; } .head { display: none; } .grid .label { border: 1px dashed #cdd5dd; } }
 </style></head>
 <body>
   <div class="sheet">

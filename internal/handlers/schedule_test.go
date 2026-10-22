@@ -44,6 +44,50 @@ func TestICSTextAndFold(t *testing.T) {
 	}
 }
 
+func TestICSRepeatedEventsHaveUniqueStableUIDs(t *testing.T) {
+	h := &Handler{}
+	req := httptest.NewRequest(http.MethodGet, "http://parkrr.test/ical/test", nil)
+	day := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
+	events := []scheduleEvent{
+		{Kind: "pickup", VehicleID: 7, Date: day},
+		{Kind: "arrival", VehicleID: 7, Date: day},
+		{Kind: "leave", VehicleID: 7, SourceID: 11, Date: day},
+		{Kind: "return", VehicleID: 7, SourceID: 11, Date: day},
+		{Kind: "leave", VehicleID: 7, SourceID: 12, Date: day},
+		{Kind: "return", VehicleID: 7, SourceID: 12, Date: day},
+		{Kind: "wish", PersonID: 5, SourceID: 21, Date: day, Time: "09:00"},
+		{Kind: "wish", PersonID: 5, SourceID: 22, Date: day, Time: "09:00"},
+	}
+	uids := func(body string) []string {
+		var result []string
+		for _, line := range strings.Split(body, "\r\n") {
+			if strings.HasPrefix(line, "UID:") {
+				result = append(result, line)
+			}
+		}
+		return result
+	}
+	before := uids(h.renderICS(req, events))
+	seen := map[string]bool{}
+	for _, uid := range before {
+		if seen[uid] {
+			t.Fatalf("calendar events share UID %q", uid)
+		}
+		seen[uid] = true
+	}
+	if len(before) != len(events) {
+		t.Fatalf("got %d event UIDs, want %d", len(before), len(events))
+	}
+	for i := range events {
+		events[i].Date = events[i].Date.AddDate(0, 0, 7)
+		events[i].Time = "09:30"
+	}
+	after := uids(h.renderICS(req, events))
+	if strings.Join(before, "\n") != strings.Join(after, "\n") {
+		t.Fatalf("rescheduling changes event identities: %v -> %v", before, after)
+	}
+}
+
 // Termine kommen aus Vertragsende, Reservierungsbeginn und offenen Abholwünschen; die
 // Wochenliste ist ein PDF, das Abo liefert dieselben Termine ohne Namen und ist
 // widerrufbar.
@@ -61,8 +105,21 @@ func TestScheduleWeekPDFAndCalendarFeed(t *testing.T) {
 		VALUES ($1, $2, 'Eriba '||$3, 'BN-627 CK', 'monthly', 20, '2026-01-01', '2026-10-17', 'stored') RETURNING id`, pid, catID, tag).Scan(&vid); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.Pool.Exec(ctx, `INSERT INTO portal_requests (person_id, kind, payload) VALUES ($1, 'pickup', '{"date":"2026-10-15","note":"vormittags"}')`, pid); err != nil {
-		t.Fatal(err)
+	wishIDs := make(map[int64]bool)
+	for range 2 {
+		var id int64
+		if err := h.Pool.QueryRow(ctx, `INSERT INTO portal_requests (person_id, kind, payload) VALUES ($1, 'pickup', '{"date":"2026-10-15","note":"vormittags"}') RETURNING id`, pid).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		wishIDs[id] = true
+	}
+	pauseIDs := make(map[int64]int)
+	for _, dates := range [][2]string{{"2026-10-12", "2026-10-13"}, {"2026-10-15", "2026-10-16"}} {
+		var id int64
+		if err := h.Pool.QueryRow(ctx, `INSERT INTO vehicle_pauses (vehicle_id, start_date, until, ended) VALUES ($1,$2,$3,true) RETURNING id`, vid, dates[0], dates[1]).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		pauseIDs[id] = 0
 	}
 
 	events, err := h.scheduleEvents(ctx, time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC))
@@ -76,10 +133,28 @@ func TestScheduleWeekPDFAndCalendarFeed(t *testing.T) {
 		}
 		if e.Kind == "wish" && e.PersonID == pid && e.Note == "vormittags" {
 			wish = true
+			if !wishIDs[e.SourceID] {
+				t.Fatalf("wish lost its database identity: %+v", e)
+			}
+			delete(wishIDs, e.SourceID)
+		}
+		if (e.Kind == "leave" || e.Kind == "return") && e.VehicleID == vid {
+			if _, found := pauseIDs[e.SourceID]; !found {
+				t.Fatalf("pause event lost its database identity: %+v", e)
+			}
+			pauseIDs[e.SourceID]++
 		}
 	}
 	if !pickup || !wish {
 		t.Fatalf("pickup=%v wish=%v in %+v", pickup, wish, events)
+	}
+	if len(wishIDs) != 0 {
+		t.Fatalf("missing wish events: %v", wishIDs)
+	}
+	for id, count := range pauseIDs {
+		if count != 2 {
+			t.Fatalf("pause %d has %d events, want departure and return", id, count)
+		}
 	}
 
 	rec := httptest.NewRecorder()

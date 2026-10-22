@@ -169,7 +169,8 @@ func (h *Handler) InvoiceMailings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	rows, err := h.Pool.Query(r.Context(), `SELECT `+outboxCols+` FROM mail_outbox WHERE ref_id=$1 ORDER BY id DESC LIMIT 50`, id)
+	rows, err := h.Pool.Query(r.Context(), `SELECT `+outboxCols+` FROM mail_outbox
+	  WHERE ref_id=$1 AND kind IN ('invoice', 'reminder') ORDER BY id DESC LIMIT 50`, id)
 	if err != nil {
 		serverError(w, r, "query failed", err)
 		return
@@ -229,10 +230,18 @@ func (h *Handler) RetryOutbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var att []byte
-	if kind == "invoice" && ref != nil {
+	if kind == "invoice" {
+		if ref == nil {
+			writeError(w, http.StatusConflict, "Rechnung nicht mehr lesbar")
+			return
+		}
 		iv, found, err := h.fetchInvoice(r.Context(), *ref)
 		if err != nil || !found {
 			writeError(w, http.StatusConflict, "Rechnung nicht mehr lesbar")
+			return
+		}
+		if iv.Canceled || iv.CancelsID != nil {
+			writeError(w, http.StatusConflict, "Rechnung ist storniert")
 			return
 		}
 		if att, err = invoicePDFBytes(iv); err != nil {
