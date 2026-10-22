@@ -1744,7 +1744,7 @@ import { createRevenueChart } from './revenue-chart.js';
         if (!open.length) return null;
         const card = el('div', { class: 'card' },
             el('h3', {}, 'Kundenwünsche ', el('span', { class: 'sec-count' }, String(open.length))));
-        const KIND = { contact_update: 'Kontaktdaten', pickup: 'Abholung', extend: 'Verlängerung' };
+        const KIND = { contact_update: 'Kontaktdaten', pickup: 'Abholung', extend: 'Verlängerung', pause: 'Kurz weg' };
         const resolve = async (req, action, node) => {
             try {
                 await api.post('/portal-requests/' + req.id + '/resolve', { action });
@@ -1760,7 +1760,9 @@ import { createRevenueChart } from './revenue-chart.js';
                 ? ('Wunschtermin ' + dd(pl.date) + (pl.time ? ' um ' + pl.time : '') + (pl.note ? ' — ' + pl.note : ''))
                 : rq.kind === 'extend'
                     ? ((pl.vehicle || 'Gefährt') + ' bis ' + dd(pl.until) + (pl.previous_end ? ' (bisher ' + dd(pl.previous_end) + ')' : '') + (pl.note ? ' — ' + pl.note : ''))
-                    : Object.entries(pl).map(([k, v]) => (k === 'email' ? 'E-Mail' : k === 'phone' ? 'Telefon' : 'Adresse') + ': ' + v).join(' · ');
+                    : rq.kind === 'pause'
+                        ? ((pl.vehicle || 'Gefährt') + ' ab ' + dd(pl.from) + (pl.until ? ', zurück ' + dd(addDaysYmd(pl.until, 1)) : ', Rückkehr offen') + (pl.note ? ' — ' + pl.note : ''))
+                        : Object.entries(pl).map(([k, v]) => (k === 'email' ? 'E-Mail' : k === 'phone' ? 'Telefon' : 'Adresse') + ': ' + v).join(' · ');
             const row = el('div', { class: 'pr-row' },
                 el('div', { class: 'pay-main' },
                     el('div', { class: 'pay-method' },
@@ -1771,6 +1773,8 @@ import { createRevenueChart } from './revenue-chart.js';
                         ? el('button', { class: 'btn btn-primary btn-sm', title: 'Gewünschte Kontaktdaten in die Stammdaten übernehmen', onclick: (e) => resolve(rq, 'apply', e.currentTarget.closest('.pr-row')) }, 'Übernehmen')
                         : rq.kind === 'extend'
                             ? el('button', { class: 'btn btn-primary btn-sm', title: 'Neues Ende am Gefährt eintragen und den Wunsch schließen', onclick: (e) => applyExtension(rq, e.currentTarget.closest('.pr-row'), resolve) }, 'Übernehmen')
+                        : rq.kind === 'pause'
+                            ? el('button', { class: 'btn btn-primary btn-sm', title: 'Ruhezeit am Gefährt eintragen und den Wunsch schließen', onclick: (e) => applyPauseRequest(rq, e.currentTarget.closest('.pr-row'), resolve) }, 'Übernehmen')
                             : el('button', { class: 'btn btn-primary btn-sm', title: 'Termin vereinbart — Wunsch schließen', onclick: (e) => resolve(rq, 'done', e.currentTarget.closest('.pr-row')) }, 'Erledigt'),
                     el('button', { class: 'btn btn-ghost btn-sm', onclick: (e) => resolve(rq, 'reject', e.currentTarget.closest('.pr-row')) }, 'Ablehnen')));
             card.append(row);
@@ -1797,6 +1801,18 @@ import { createRevenueChart } from './revenue-chart.js';
         } catch (e) { toast(e.message || 'Verlängerung nicht möglich', 'error'); }
     }
 
+    // „Kurz abholen“ aus dem Portal übernehmen: Ruhezeit eintragen (Platz gehalten),
+    // dann den Wunsch schließen.
+    async function applyPauseRequest(rq, node, resolve) {
+        const pl = asObj(rq.payload);
+        const ret = pl.until ? ', zurück am ' + new Date(addDaysYmd(pl.until, 1)).toLocaleDateString('de-DE') : ', Rückkehr offen';
+        if (!await confirmDialog('Kurz weg eintragen?', (pl.vehicle || 'Gefährt') + ' ab ' + new Date(pl.from).toLocaleDateString('de-DE') + ret + '. Der Platz bleibt reserviert.', 'Eintragen', { tone: 'neutral' })) return;
+        try {
+            await api.post('/vehicles/' + pl.vehicle_id + '/pause', { from: pl.from, until: pl.until || null, hold_spot: true, note: 'Kundenwunsch' + (pl.note ? ': ' + pl.note : '') });
+            await resolve(rq, 'done', node);
+        } catch (e) { toast(e.message || 'Ruhezeit nicht möglich', 'error'); }
+    }
+
     function readinessChecklist(data, compact = false) {
         if (!data || !Array.isArray(data.items)) return null;
         const wrap = el('section', { class: 'readiness' + (compact ? ' readiness-compact' : ''), 'aria-label': 'Betriebsbereitschaft' },
@@ -1817,8 +1833,14 @@ import { createRevenueChart } from './revenue-chart.js';
         return wrap;
     }
 
-    function todayWorklist({ overdue, ending, portalRequests, occ, readiness, incomplete, waitlist, service }) {
+    function todayWorklist({ overdue, ending, portalRequests, occ, readiness, incomplete, waitlist, service, pauses }) {
         const items = [];
+        // Ruhezeit: Rückkehr fällig oder seit 30 Tagen unterwegs (nichts endet von selbst).
+        (Array.isArray(pauses) ? pauses : []).forEach((p) => items.push({
+            priority: 1, tone: 'attention',
+            title: p.label + (p.reason === 'return' ? ' · Rückkehr fällig' : ' · seit 30 Tagen unterwegs'),
+            meta: p.person_name + (p.until ? ' · geplant ' + fmtDate(addDaysYmd(String(p.until).slice(0, 10), 1)) : ' · Rückkehr offen') + ' · Hallendienst',
+            href: '#/vehicle/' + p.vehicle_id, action: 'Gefährt öffnen' }));
         // Serviceaufgaben (Ausbau 25): überfällige zuerst, der Ladevorschlag ist Pflege.
         const svcDue = service && Array.isArray(service.items) ? service.items.length : 0;
         if (svcDue) items.push({ priority: service.overdue ? 1 : 2, tone: service.overdue ? 'attention' : 'normal',
@@ -1835,7 +1857,7 @@ import { createRevenueChart } from './revenue-chart.js';
         }));
         (portalRequests || []).filter((request) => request.status === 'offen').forEach((request) => items.push({
             priority: 1, tone: 'attention', title: request.person_name + ' · Kundenwunsch',
-            meta: (request.kind === 'pickup' ? 'Abholung abstimmen' : request.kind === 'extend' ? 'Verlängerung prüfen' : 'Kontaktdaten prüfen') + ' · Kundenservice',
+            meta: (request.kind === 'pickup' ? 'Abholung abstimmen' : request.kind === 'extend' ? 'Verlängerung prüfen' : request.kind === 'pause' ? 'Kurz weg eintragen' : 'Kontaktdaten prüfen') + ' · Kundenservice',
             href: '#/person/' + request.person_id, action: 'Person öffnen',
         }));
         (ending || []).forEach((vehicle) => items.push({
@@ -1919,13 +1941,13 @@ import { createRevenueChart } from './revenue-chart.js';
     // Hallendienst (Ausbau 35): der Tag in der Halle, ohne Beträge.
     async function hallDashboard(page) {
         const optional = (path, fallback) => api.get(path).then((d) => d ?? fallback).catch((err) => { if (err.status === 401) throw err; return fallback; });
-        const [occ, ending, incomplete, service] = await Promise.all([
+        const [occ, ending, incomplete, service, pauses] = await Promise.all([
             optional('/occupancy', null), optional('/vehicles/ending-soon?days=14', []),
-            optional('/vehicles/incomplete', null), optional('/service-tasks/due?days=0', null)]);
+            optional('/vehicles/incomplete', null), optional('/service-tasks/due?days=0', null), optional('/pauses/due', [])]);
         page.innerHTML = '';
         page.classList.add('dashboard-view');
         page.append(el('div', { class: 'page-head' }, el('h2', {}, 'Heute in der Halle')));
-        page.append(todayWorklist({ overdue: [], ending, portalRequests: [], occ, readiness: null, incomplete, waitlist: null, service }));
+        page.append(todayWorklist({ overdue: [], ending, portalRequests: [], occ, readiness: null, incomplete, waitlist: null, service, pauses }));
         page.append(el('div', { class: 'card hall-links' }, el('h3', {}, 'Schnell'),
             el('div', { class: 'card-actions' },
                 el('a', { class: 'btn btn-ghost btn-sm', href: '#/garages' }, 'Stellplätze'),
@@ -1966,7 +1988,7 @@ import { createRevenueChart } from './revenue-chart.js';
             return fallback;
         });
         // These independent reads share one network round trip, instead of five.
-        const [ov, occ, overdue, ending, portalRequests, readiness, incomplete, waitlist, service] = await Promise.all([
+        const [ov, occ, overdue, ending, portalRequests, readiness, incomplete, waitlist, service, pauses] = await Promise.all([
             api.get('/overview' + (dashYear ? '?year=' + dashYear : '')),
             optional('/occupancy', 'Belegung', null),
             optional('/invoices/overdue', 'Überfällige Rechnungen', []),
@@ -1976,6 +1998,7 @@ import { createRevenueChart } from './revenue-chart.js';
             optional('/vehicles/incomplete', 'Unvollständige Gefährte', null),
             canManage() ? optional('/waitlist/summary', 'Warteliste', null) : Promise.resolve(null),
             optional('/service-tasks/due?days=0', 'Serviceaufgaben', null),
+            optional('/pauses/due', 'Ruhezeiten', []),
         ]);
         const prCard = portalRequestsCard(portalRequests);
         dashYear = ov.year;
@@ -2010,7 +2033,7 @@ import { createRevenueChart } from './revenue-chart.js';
             return;
         }
 
-        page.append(todayWorklist({ overdue, ending, portalRequests, occ, readiness, incomplete, waitlist, service }));
+        page.append(todayWorklist({ overdue, ending, portalRequests, occ, readiness, incomplete, waitlist, service, pauses }));
 
         // Money first — "Offen gesamt" is the operator's lead metric, shown as a
         // gradient hero; Umsatz (with a YoY delta) and Bezahlt sit beside it.
@@ -4778,10 +4801,121 @@ import { createRevenueChart } from './revenue-chart.js';
     // Slider-based quick controls: status + payment, shown on card and detail.
     // When the vehicle is covered by a flat-rate agreement an "in Pauschale" hint
     // is shown; the payment slider still marks the uncovered portion as paid.
+    // ---- Ruhezeit („Kurz weg“) ----
+    // Ein eingelagertes Gefährt ist ein paar Wochen unterwegs und kommt zurück. Der
+    // Status bleibt „eingelagert“; Miete und gebundene Nebenkosten ruhen (der Server
+    // rechnet). Offen ist eine Ruhezeit, bis jemand „Ist zurück“ tippt.
+    const addDaysYmd = (ymd, n) => { const d = new Date(ymd + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+    const openPause = (v) => (v.pauses || []).find((p) => !p.ended) || null;
+    const pauseFrom = (p) => String(p.from).slice(0, 10);
+    const pausePlanned = (p) => (p && p.planned ? String(p.planned).slice(0, 10) : null);
+    function pauseLabel(p) {
+        const planned = pausePlanned(p), ret = planned ? addDaysYmd(planned, 1) : null;
+        if (pauseFrom(p) > today()) return 'Kurz weg ab ' + fmtDate(pauseFrom(p)) + (ret ? ', zurück ' + fmtDate(ret) : '');
+        return 'Unterwegs' + (ret ? ', Rückkehr ' + fmtDate(ret) : ', Rückkehr offen');
+    }
+    function pauseControls(v) {
+        const p = openPause(v);
+        if (!p) return (canManage() && v.status === 'stored' && !v.archived)
+            ? [el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': 'Kurz weg: ' + vehicleTitle(v), onclick: () => pauseSheet(v) }, 'Kurz weg …')] : [];
+        const nodes = [el('span', { class: 'badge badge-away', title: p.hold_spot ? 'Platz bleibt reserviert' : 'Platz freigegeben' }, pauseLabel(p))];
+        if (!canManage()) return nodes;
+        const name = vehicleTitle(v);
+        if (pauseFrom(p) > today()) {
+            nodes.push(el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': 'Ruhezeit von ' + name + ' absagen', onclick: () => pauseCancel(p) }, 'Absagen'));
+            return nodes;
+        }
+        nodes.push(
+            el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': name + ' ist zurück', onclick: () => pauseReturn(v, p) }, 'Ist zurück'),
+            el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': 'Rückkehr von ' + name + ' eine Woche später', onclick: () => pauseExtend(p) }, '+1 Woche'),
+            el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': name + ' doch abgeholt', onclick: () => pauseCollect(v, p) }, 'Doch abgeholt'));
+        return nodes;
+    }
+    function pauseSheet(v) {
+        const preview = el('p', { class: 'pause-preview', role: 'status', 'aria-live': 'polite' });
+        return formModal({
+            title: 'Kurz weg · ' + vehicleTitle(v), submitLabel: 'Eintragen',
+            fields: [
+                { name: 'from', label: 'Ab', type: 'date', value: today(), quickDate: true },
+                { name: 'ret', label: 'Rückkehr', type: 'select', value: '14', options: [
+                    { value: '7', label: 'in 1 Woche' }, { value: '14', label: 'in 2 Wochen' }, { value: '21', label: 'in 3 Wochen' },
+                    { value: 'date', label: 'Datum wählen' }, { value: 'open', label: 'offen' }] },
+                { name: 'back_on', label: 'Zurück am', type: 'date', value: '' },
+                { name: 'hold', label: 'Platz', type: 'select', value: 'hold', options: [{ value: 'hold', label: 'halten (reserviert)' }, { value: 'free', label: 'freigeben' }] },
+                { name: 'note', label: 'Notiz', type: 'textarea', placeholder: 'z. B. Wintercamping' },
+            ],
+            onRender: (body) => {
+                const from = body.querySelector('#f_from'), ret = body.querySelector('#f_ret'), backOn = body.querySelector('#f_back_on'), hold = body.querySelector('#f_hold');
+                body.querySelector('.form-grid').after(preview);
+                let seq = 0;
+                const sync = async () => {
+                    backOn.closest('.form-field').hidden = ret.value !== 'date';
+                    const future = from.value > today();
+                    hold.querySelector('option[value="free"]').disabled = future;
+                    if (future && hold.value === 'free') hold.value = 'hold';
+                    const until = pauseUntil(from.value, ret.value, backOn.value);
+                    const my = ++seq;
+                    if (!from.value) { preview.textContent = ''; return; }
+                    if (!until) { preview.textContent = ret.value === 'open' ? 'Miete und gebundene Nebenkosten ruhen, bis du „Ist zurück“ tippst.' : ''; return; }
+                    try {
+                        const pv = await api.get('/vehicles/' + v.id + '/pause-preview?from=' + from.value + '&until=' + until);
+                        if (my !== seq) return;
+                        preview.textContent = pv.flat_rate
+                            ? 'Unter einer Pauschale bleibt der Preis; die Ruhezeit wird nur vermerkt.'
+                            : pv.days + (pv.days === 1 ? ' Ruhetag' : ' Ruhetage') + ': ' + eur(pv.saved) + ' Miete ruhen. Gebundene Nebenkosten ruhen mit.';
+                    } catch (e) { if (my === seq) preview.textContent = ''; }
+                };
+                [from, ret, backOn, hold].forEach((x) => { x.addEventListener('change', sync); x.addEventListener('input', sync); });
+                sync();
+            },
+            save: async (d) => {
+                const until = pauseUntil(d.from, d.ret, d.back_on);
+                if (d.ret === 'date' && !until) throw new Error('Rückkehrtag wählen (nach dem Abholtag)');
+                await api.post('/vehicles/' + v.id + '/pause', { from: d.from || null, until: until || null, hold_spot: d.hold !== 'free', note: d.note || '' });
+                toast('Kurz weg eingetragen', 'success');
+                render();
+            },
+        });
+    }
+    // Letzter Ruhetag: der Tag vor der Rückkehr (der Rückkehrtag ist wieder Miettag).
+    function pauseUntil(from, ret, backOn) {
+        if (!from || ret === 'open') return null;
+        if (ret === 'date') return backOn && backOn > from ? addDaysYmd(backOn, -1) : null;
+        return addDaysYmd(from, Number(ret) - 1);
+    }
+    async function pauseReturn(v, p) {
+        try {
+            const r = await api.post('/vehicle-pauses/' + p.id + '/return', {});
+            toast(r.removed ? 'Am selben Tag zurück – keine Ruhetage' : 'Zurück' + (r.paid_through ? ' · bezahlt bis ' + fmtDate(String(r.paid_through).slice(0, 10)) : ''), 'success');
+            await render();
+            if (!r.relinked && r.prev_spot_id) toastAction('Der alte Platz ist belegt', 'Im Plan platzieren', () => placeInPlan(v), 8000);
+        } catch (e) { toast(e.message, 'error'); }
+    }
+    async function pauseExtend(p) {
+        const until = addDaysYmd(pausePlanned(p) || addDaysYmd(today(), -1), 7);
+        try { await api.put('/vehicle-pauses/' + p.id, { until }); toast('Rückkehr ' + fmtDate(addDaysYmd(until, 1)), 'success'); render(); }
+        catch (e) { toast(e.message, 'error'); }
+    }
+    async function pauseCollect(v, p) {
+        if (!await confirmDialog('Doch abgeholt?', 'Aus der Ruhezeit wird ein normales Abholen am ' + fmtDate(pauseFrom(p)) + '. Die Ruhezeit entfällt.', 'Abgeholt', { tone: 'neutral' })) return;
+        try { await api.post('/vehicle-pauses/' + p.id + '/collect', {}); toast('Als abgeholt eingetragen', 'success'); render(); }
+        catch (e) { toast(e.message, 'error'); }
+    }
+    async function pauseCancel(p) {
+        if (!await confirmDialog('Ruhezeit löschen?', 'Die geplante Ruhezeit ab ' + fmtDate(pauseFrom(p)) + ' wird gelöscht.', 'Löschen')) return;
+        try { await api.del('/vehicle-pauses/' + p.id); toast('Gelöscht', 'success'); render(); }
+        catch (e) { toast(e.message, 'error'); }
+    }
+
     function vehicleControls(v) {
         const wrap = el('div', { class: 'controls-row' });
         // Hallendienst (Ausbau 35): nur der Status, keine Zahlungsschieber.
-        if (!seesMoney()) { wrap.append(statusBadge(v.status)); return wrap; }
+        if (!seesMoney()) {
+            wrap.append(statusBadge(v.status));
+            const op = openPause(v);
+            if (op) wrap.append(el('span', { class: 'badge badge-away' }, pauseLabel(op)));
+            return wrap;
+        }
         const c = coverage(v);
         const pauschaleBadge = (label, title) => el('span', { class: 'badge badge-cat', title }, label);
         // An invoiced vehicle settles via its invoice, not the per-vehicle slider:
@@ -4831,6 +4965,7 @@ import { createRevenueChart } from './revenue-chart.js';
         } else if (c.active || c.settled) {
             wrap.append(pauschaleBadge('in Pauschale', 'Über eine Pauschale abgerechnet'));
         }
+        if (!v.archived) wrap.append(...pauseControls(v));
         if (canManage() && v.status === 'collected') {
             wrap.append(el('button', { class: 'btn btn-ghost btn-sm', onclick: () => duplicateVehicle(v) }, icon('redo'), ' Erneut einstellen'));
         }
@@ -8866,7 +9001,7 @@ import { createRevenueChart } from './revenue-chart.js';
             spots: (data.spots || []).map((s) => { const g = asObj(s.geometry); return {
                 _id: s.id, kind: 'veh', label: s.vehicle_label || s.label, spotLabel: s.label, type: s.vehicle_type || '', vehId: s.vehicle_id || null,
                 personId: s.person_id || null, personName: s.person_name || '',
-                L: s.length_m, W: s.width_m, H: s.height_m, t: s.weight_t, needsPower: !!s.needs_power,
+                L: s.length_m, W: s.width_m, H: s.height_m, t: s.weight_t, needsPower: !!s.needs_power, away: !!s.away,
                 plannerSymbol: s.planner_symbol || null, photoUrl: s.photo_id ? '/api/photos/' + s.photo_id : null,
                 x: num(g.x, 1), y: num(g.y, 1), w: num(g.w, s.length_m || catFoot(s.vehicle_type)[0]), h: num(g.h, s.width_m || catFoot(s.vehicle_type)[1]), rot: num(g.rot, 0), status: g.status || 'busy', noBuf: !!g.noBuf, _dirty: false }; }),
             palette, plannerIcons,
@@ -9648,7 +9783,7 @@ import { createRevenueChart } from './revenue-chart.js';
             P.spots.forEach((b) => {
                 const ctx = !interactive(b), st = GPSTAT[b.status] || GPSTAT.busy;
                 let eff = P.render || 'symbol'; if (eff === 'foto' && !b.photoUrl) eff = 'symbol'; // fallback chain: no photo → symbol
-                const d = el('div', { class: 'gp-block veh ' + b.status + (eff !== 'rect' ? ' gp-media' : '') + (eff === 'symbol' ? ' gp-symmode' : '') + (b._id === P.sel ? ' sel' : '') + (inSel(b._id) ? ' multisel' : '') + (warn(b) || b._invalid ? ' invalid' : '') + (ctx ? ' dimctx' : '') });
+                const d = el('div', { class: 'gp-block veh ' + b.status + (b.away ? ' is-away' : '') + (eff !== 'rect' ? ' gp-media' : '') + (eff === 'symbol' ? ' gp-symmode' : '') + (b._id === P.sel ? ' sel' : '') + (inSel(b._id) ? ' multisel' : '') + (warn(b) || b._invalid ? ' invalid' : '') + (ctx ? ' dimctx' : '') });
                 d.dataset.id = b._id;
                 const warnTxt = !inside(b) ? '⚠ außerhalb' : (b._invalid ? '⚠ blockiert' : ((!heightOK(b) || !weightOK(b)) ? '⚠ Maß' : (doorHitsSpot(b) ? '⚠ Türaufschlag' : null)));
                 const codeTxt = st.sym + ' ' + (b.type || 'Gefährt'), nameTxt = b.personName || b.label;
@@ -12705,6 +12840,7 @@ import { createRevenueChart } from './revenue-chart.js';
             invalid: 'Dieser Link ist ungültig oder abgelaufen. Bitte fordern Sie einen neuen an.',
             open_total: 'Offener Betrag', your_vehicles: 'Ihre Gefährte', no_vehicles: 'Keine aktiven Gefährte.',
             handovers: 'Übergabeprotokolle', signed: 'unterschrieben: ', storein: 'Einlagerung', storeout: 'Auslagerung',
+            req_pause: 'Kurz abholen (z. B. Urlaub)', req_from: 'Abholtag', req_back: 'Zurück am (leer = offen)',
             contract: 'Einstellvertrag', contract_read: 'Vertrag lesen', contract_accept: 'Gelesen und angenommen', contract_accepted: 'angenommen', contract_open: 'noch nicht angenommen',
             contract_hint: 'Bitte zuerst den Vertrag lesen, dann annehmen.', contract_done: 'Vielen Dank, der Vertrag ist angenommen.',
             invoices: 'Rechnungen', no_invoices: 'Keine Rechnungen.', invoice: 'Rechnung ', open_part: 'offen ',
@@ -12726,6 +12862,7 @@ import { createRevenueChart } from './revenue-chart.js';
             invalid: 'This link is invalid or has expired. Please request a new one.',
             open_total: 'Open balance', your_vehicles: 'Your vehicles', no_vehicles: 'No active vehicles.',
             handovers: 'Handover protocols', signed: 'signed by ', storein: 'Check-in', storeout: 'Check-out',
+            req_pause: 'Take it out for a while (e.g. holiday)', req_from: 'Pick-up day', req_back: 'Back on (empty = open)',
             contract: 'Storage contract', contract_read: 'Read contract', contract_accept: 'Read and accepted', contract_accepted: 'accepted', contract_open: 'not accepted yet',
             contract_hint: 'Please read the contract first, then accept it.', contract_done: 'Thank you, the contract is accepted.',
             invoices: 'Invoices', no_invoices: 'No invoices.', invoice: 'Invoice ', open_part: 'open ',
@@ -13005,10 +13142,27 @@ import { createRevenueChart } from './revenue-chart.js';
                 extend.addEventListener('submit', e => { e.preventDefault(); send({ kind: 'extend', vehicle_id: Number(xVeh.value), until: xUntil.value, note: xNote.value.trim() }, xMsg, xBtn); });
                 extendBox = el('details', { class: 'portal-request form-disclosure' }, el('summary', {}, P9.req_extend), extend, xMsg);
             }
+            // Kurz abholen (Ruhezeit): nur eingelagerte Gefährte; der Betreiber trägt sie ein.
+            const stored = active.filter((v) => v.status === 'stored');
+            let pauseBox = null;
+            if (stored.length) {
+                const kVeh = el('select', { 'aria-label': P9.req_vehicle }, ...stored.map((v) => el('option', { value: v.id }, v.label)));
+                const kFrom = el('input', { type: 'date', required: true, 'aria-label': P9.req_from });
+                const kBack = el('input', { type: 'date', 'aria-label': P9.req_back });
+                const kNote = el('input', { type: 'text', placeholder: P9.req_note, 'aria-label': P9.req_note });
+                const kMsg = el('p', { class: 'muted', role: 'status' });
+                const kBtn = el('button', { class: 'btn btn-primary btn-sm', type: 'submit' }, P9.req_send);
+                const pauseForm = el('form', { class: 'portal-form' }, el('label', {}, P9.req_vehicle, kVeh), el('label', {}, P9.req_from, kFrom),
+                    el('label', {}, P9.req_back, kBack), el('label', {}, P9.req_note, kNote), kBtn);
+                // Der letzte Ruhetag ist der Tag vor der Rückkehr.
+                pauseForm.addEventListener('submit', e => { e.preventDefault(); send({ kind: 'pause', vehicle_id: Number(kVeh.value), date: kFrom.value,
+                    until: kBack.value ? addDaysYmd(kBack.value, -1) : '', note: kNote.value.trim() }, kMsg, kBtn); });
+                pauseBox = el('details', { class: 'portal-request form-disclosure' }, el('summary', {}, P9.req_pause), pauseForm, kMsg);
+            }
             rcard.append(el('div', { class: 'portal-request-groups' },
                 el('details', { class: 'portal-request form-disclosure' }, el('summary', {}, P9.req_contact), contact, cMsg),
                 el('details', { class: 'portal-request form-disclosure' }, el('summary', {}, P9.req_pickup), pickup, pMsg),
-                extendBox));
+                extendBox, pauseBox));
             wrap.append(rcard);
         }
         wrap.append(el('p', { class: 'portal-foot muted' }, P9.foot));

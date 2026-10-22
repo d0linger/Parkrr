@@ -241,10 +241,16 @@ type RateChange struct {
 	Amount float64   `json:"amount"`
 }
 
-// Pause: von From bis einschließlich Until ruht die Berechnung (Ruhezeit).
+// Pause: von From bis einschließlich Until ruht die Berechnung (Ruhezeit). Die
+// übrigen Felder braucht nur die Oberfläche; gerechnet wird mit From und Until (bei
+// einer noch nicht beendeten Ruhezeit ist Until offen, 9999-12-31).
 type Pause struct {
-	From  time.Time `json:"from"`
-	Until time.Time `json:"until"`
+	From     time.Time  `json:"from"`
+	Until    time.Time  `json:"until"`
+	ID       int64      `json:"id,omitempty"`
+	Planned  *time.Time `json:"planned,omitempty"`
+	Ended    bool       `json:"ended,omitempty"`
+	HoldSpot bool       `json:"hold_spot,omitempty"`
 }
 
 // rateAt liefert den Satz, der am Tag t gilt: die jüngste Änderung mit From <= t,
@@ -547,6 +553,8 @@ type RecurringCharge struct {
 	Settled      bool               `json:"settled"`
 	PeriodCosts  map[string]float64 `json:"period_costs,omitempty"`
 	VehicleLabel string             `json:"vehicle_label,omitempty"` // display label when bound
+	// Pauses: Ruhezeiten des gebundenen Gefährts — gebundene Nebenkosten ruhen mit.
+	Pauses []Pause `json:"-"`
 }
 
 // AsPeriod returns a FlatRatePeriod view so the recurring charge reuses the exact
@@ -561,7 +569,7 @@ func (rc *RecurringCharge) AsPeriod() FlatRatePeriod {
 	}
 	return FlatRatePeriod{
 		Amount: rc.Amount, Period: rc.Period, StartDate: rc.StartDate, EndDate: rc.EndDate,
-		PaidPeriods: rc.PaidPeriods, PaidFixed: rc.PaidFixed, VehicleIDs: vids,
+		PaidPeriods: rc.PaidPeriods, PaidFixed: rc.PaidFixed, VehicleIDs: vids, Pauses: rc.Pauses,
 	}
 }
 
@@ -875,6 +883,8 @@ type Spot struct {
 	NeedsPower    bool     `json:"needs_power"`              // Ladebedarf of the Gefährt on this spot
 	PlannerSymbol *string  `json:"planner_symbol,omitempty"` // per-vehicle symbol override
 	PhotoID       *int64   `json:"photo_id,omitempty"`       // first photo of the Gefährt (foto mode)
+	// Away: das Gefährt ist kurz weg (Ruhezeit läuft); der gehaltene Platz bleibt belegt.
+	Away bool `json:"away,omitempty"`
 }
 
 func maxTime(a, b time.Time) time.Time {

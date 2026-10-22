@@ -2161,6 +2161,8 @@ h1,h2,h3{ font-weight:800; letter-spacing:-.02em; }
 .gp-armbar{display:flex;align-items:center;justify-content:space-between;gap:.6rem;flex-wrap:wrap;margin:0 0 .55rem;padding:.4rem .5rem .4rem .8rem;border:1px solid var(--gpteal);background:var(--gpteal-soft);border-radius:10px;color:var(--gpink);font-size:var(--text-base)}
 .gp-armbar > span{flex:1 1 14rem;min-width:0}
 .gp-armprev{border-style:dashed;z-index:9}
+/* Gehaltener Platz während der Ruhezeit: schraffiert, das Gefährt ist unterwegs */
+.gp-block.veh.is-away{background-image:repeating-linear-gradient(135deg,transparent 0 6px,var(--gpteal-soft) 6px 12px);opacity:.75;border-style:dashed}
 /* Platzvorschlag (Ausbau 33): drei gestrichelte Plätze, antippbar */
 .gp-sugglayer{position:absolute;inset:0;pointer-events:none;z-index:9}
 .gp-suggest{position:absolute;pointer-events:auto;cursor:pointer;border:2px dashed var(--gpteal);background:var(--gpteal-soft);border-radius:7px}
@@ -2571,6 +2573,9 @@ a.portal-row.link:hover { color: var(--primary-ink); }
 .idx-table td.num{text-align:right;font-variant-numeric:tabular-nums}
 .idx-table th:nth-child(3),.idx-table th:nth-child(4){text-align:right}
 .table-scroll{overflow-x:auto;max-width:100%}
+/* Ruhezeit („Kurz weg“) */
+.badge-away{background:transparent;border:1px dashed var(--primary);color:var(--primary-ink)}
+.pause-preview{margin:.4rem 0 0;color:var(--text-muted);min-height:1.2em}
 .dash-spark-wrap{margin-top:.5rem}
 .dash-spark{display:block;overflow:visible}
 .dash-spark-line{fill:none;stroke:var(--primary-ink);stroke-width:1.8;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}

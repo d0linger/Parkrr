@@ -57,6 +57,7 @@ var personExportSections = []personExportSection{
 	{"warteliste.json", "waitlist", `SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY t.id), '[]') FROM waitlist t WHERE t.person_id = $1`},
 	{"status_verlauf.json", "vehicle_status_history", `SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY t.id), '[]') FROM vehicle_status_history t WHERE t.vehicle_id = ANY($1)`},
 	{"serviceaufgaben.json", "service_task_log", `SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY t.id), '[]') FROM service_task_log t WHERE t.vehicle_id = ANY($1)`},
+	{"ruhezeiten.json", "vehicle_pauses", `SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY t.id), '[]') FROM vehicle_pauses t WHERE t.vehicle_id = ANY($1)`},
 	{"vertragsende_hinweise.json", "contract_end_notices", `SELECT COALESCE(jsonb_agg(to_jsonb(t)), '[]') FROM contract_end_notices t WHERE t.vehicle_id = ANY($1)`},
 	{"aenderungsprotokoll.json", "audit_log", `SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY t.id), '[]') FROM audit_log t
 		WHERE (t.entity = 'person' AND t.entity_id = $1) OR (t.entity = 'vehicle' AND t.entity_id = ANY($2))`},

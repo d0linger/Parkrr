@@ -22,7 +22,12 @@ const recurringSelect = `SELECT rc.id, rc.person_id, rc.vehicle_id, rc.descripti
 	COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), cat.name, '') AS vehicle_label,
 	ARRAY(SELECT s.period_key FROM invoice_source s JOIN invoices i ON i.id = s.invoice_id
 	       WHERE s.kind = 'recurring' AND s.ref_id = rc.id
-	         AND NOT i.canceled AND (i.total - i.paid_amount) <= 0.005) AS invoice_paid_periods
+	         AND NOT i.canceled AND (i.total - i.paid_amount) <= 0.005) AS invoice_paid_periods,
+	(SELECT jsonb_agg(jsonb_build_object('id', vp.id,
+	                'from', to_char(vp.start_date, 'YYYY-MM-DD"T"00:00:00"Z"'),
+	                'until', CASE WHEN vp.ended THEN to_char(vp.until, 'YYYY-MM-DD"T"00:00:00"Z"') ELSE '9999-12-31T00:00:00Z' END,
+	                'planned', to_char(vp.until, 'YYYY-MM-DD"T"00:00:00"Z"'), 'ended', vp.ended, 'hold_spot', vp.hold_spot)
+	                ORDER BY vp.start_date) FROM vehicle_pauses vp WHERE vp.vehicle_id = rc.vehicle_id) AS vehicle_pauses
 	FROM recurring_charges rc
 	LEFT JOIN vehicles v ON v.id = rc.vehicle_id
 	LEFT JOIN categories cat ON cat.id = v.category_id`
@@ -30,11 +35,17 @@ const recurringSelect = `SELECT rc.id, rc.person_id, rc.vehicle_id, rc.descripti
 // scanRecurring reads one recurring_charges row (paid_fixed as raw JSON).
 func scanRecurring(row pgx.Row) (models.RecurringCharge, error) {
 	var rc models.RecurringCharge
-	var fixedRaw []byte
+	var fixedRaw, pausesRaw []byte
 	if err := row.Scan(&rc.ID, &rc.PersonID, &rc.VehicleID, &rc.Description, &rc.Amount, &rc.Period,
 		&rc.StartDate, &rc.EndDate, &rc.PaidPeriods, &fixedRaw,
-		&rc.CreatedAt, &rc.UpdatedAt, &rc.VehicleLabel, &rc.InvoicePaidPeriods); err != nil {
+		&rc.CreatedAt, &rc.UpdatedAt, &rc.VehicleLabel, &rc.InvoicePaidPeriods, &pausesRaw); err != nil {
 		return rc, err
+	}
+	// Gebundene Nebenkosten ruhen mit dem Gefährt (Ruhezeit, Entscheidung 16.10.2026).
+	if len(pausesRaw) > 0 {
+		if err := json.Unmarshal(pausesRaw, &rc.Pauses); err != nil {
+			return rc, err
+		}
 	}
 	if rc.PaidPeriods == nil {
 		rc.PaidPeriods = []string{}

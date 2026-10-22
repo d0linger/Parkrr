@@ -79,6 +79,16 @@ func (h *Handler) PersonTimeline(w http.ResponseWriter, r *http.Request) {
 			         || CASE WHEN fp.period = 'monthly' THEN 'Monat' ELSE 'Jahr' END,
 			       fp.id
 			  FROM flat_rate_periods fp WHERE fp.person_id = $1
+			UNION ALL
+			-- Ruhezeit („Kurz weg“): Beginn und, sobald zurück, das Ende.
+			SELECT vp.start_date::timestamp AT TIME ZONE 'UTC', 'pause',
+			       'Kurz weg: ' || COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), 'Gefährt')
+			         || CASE WHEN vp.ended THEN ' bis ' || to_char(vp.until, 'DD.MM.YYYY') || ', zurück'
+			                 WHEN vp.until IS NOT NULL THEN ', Rückkehr geplant ' || to_char(vp.until + 1, 'DD.MM.YYYY')
+			                 ELSE ', Rückkehr offen' END,
+			       v.id
+			  FROM vehicle_pauses vp JOIN vehicles v ON v.id = vp.vehicle_id
+			 WHERE v.person_id = $1
 		) ev
 		ORDER BY at DESC, kind, ref DESC
 		LIMIT $2 OFFSET $3`, id, limit, offset)

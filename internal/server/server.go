@@ -351,6 +351,15 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	route("GET /api/indexation/preview", money(hf(h.IndexationPreview)))
 	route("POST /api/indexation/apply", editor(hf(h.ApplyIndexation)))
 	route("GET /api/vehicles/{id}/rate-changes", money(hf(h.VehicleRateChanges)))
+	// Ruhezeit „Kurz weg“: Miete und gebundene Nebenkosten ruhen, Status bleibt eingelagert.
+	route("GET /api/vehicles/{id}/pauses", authed(hf(h.VehiclePauses)))
+	route("GET /api/vehicles/{id}/pause-preview", money(hf(h.PausePreview)))
+	route("GET /api/pauses/due", authed(hf(h.PausesDue)))
+	route("POST /api/vehicles/{id}/pause", editor(hf(h.StartPause)))
+	route("PUT /api/vehicle-pauses/{id}", editor(hf(h.ExtendPause)))
+	route("POST /api/vehicle-pauses/{id}/return", editor(hf(h.ReturnFromPause)))
+	route("POST /api/vehicle-pauses/{id}/collect", editor(hf(h.CollectFromPause)))
+	route("DELETE /api/vehicle-pauses/{id}", editor(hf(h.DeletePause)))
 	route("DELETE /api/vehicle-rate-changes/{id}", editor(hf(h.DeleteRateChange)))
 
 	// --- Categories (tariffs) ---

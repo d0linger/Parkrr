@@ -68,7 +68,7 @@ Legende: `[x]` umgesetzt · `[~]` teilweise (Grund dahinter) · `[ ]` offen · `
 
 ## Danach
 
-- [ ] Ruhezeit („Kurz weg“): Entscheidungen vom 16.10.2026 (Artifact „Parkrr Ruhezeit“):
+- [x] Ruhezeit („Kurz weg“), Migration 087: Knopf „Kurz weg …“ am Gefährt (1/2/3 Wochen, Datum oder offen; Platz halten oder freigeben; Vorschau aus der Abrechnung), danach „Ist zurück“, „+1 Woche“, „Doch abgeholt“. Miete und gebundene Nebenkosten ruhen tagesgenau (models.Pause in sliceCents); eine offene Ruhezeit ruht, bis jemand „Ist zurück“ tippt; nie in abgerechneten Monaten (409 mit frühestem Tag); vorab bezahlt verschiebt „bezahlt bis“; Heute-Liste, Kalender-Abo, Zeitleiste, Planer (schraffiert), Portal-Anfrage. Entscheidungen vom 16.10.2026 (Artifact „Parkrr Ruhezeit“):
   Platz je Ruhezeit wählbar, Standard „halten“; Haltegebühr 0 %; gekürzt ab dem ersten Tag;
   Pauschale bleibt, Ruhezeit wird nur vermerkt; vorab bezahlt: „bezahlt bis“ verschiebt sich;
   gebundene Nebenkosten ruhen mit; Kunden können die Ruhezeit im Portal anfragen.

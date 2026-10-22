@@ -22,7 +22,7 @@ import (
 const maxOpenPortalRequests = 5
 
 type portalRequestIn struct {
-	Kind string `json:"kind"` // contact_update | pickup | extend
+	Kind string `json:"kind"` // contact_update | pickup | extend | pause
 	// contact_update: gewünschte neue Werte (leere Felder = unverändert lassen)
 	Email   string `json:"email"`
 	Phone   string `json:"phone"`
@@ -33,6 +33,7 @@ type portalRequestIn struct {
 	Time string `json:"time"`
 	Note string `json:"note"`
 	// extend (Ausbau 22): Verlängerung eines eigenen Gefährts bis Until.
+	// pause (Ruhezeit): „Kurz abholen“ ab Date, Rückkehr Until (leer = offen).
 	VehicleID int64  `json:"vehicle_id"`
 	Until     string `json:"until"`
 }
@@ -150,6 +151,48 @@ func (h *Handler) PortalCreateRequest(w http.ResponseWriter, r *http.Request) {
 		payload["until"] = until.Format(dateLayout)
 		if end != nil {
 			payload["previous_end"] = end.Format(dateLayout)
+		}
+		if req.Note != "" {
+			payload["note"] = req.Note
+		}
+	case "pause":
+		// Ruhezeit (Kurz weg): der Kunde fragt an, der Betreiber trägt sie mit einem
+		// Tipp ein. Nur für eigene, eingelagerte Gefährte.
+		if !validDateLength(req.Date) || !validDateLength(trim(req.Until)) || !validNoteLength(req.Note) {
+			writeError(w, http.StatusBadRequest, "Eingabe ist zu lang")
+			return
+		}
+		from, err := time.Parse(dateLayout, req.Date)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "date must be YYYY-MM-DD")
+			return
+		}
+		if from.Before(startOfDayUTC(h.now())) {
+			writeError(w, http.StatusBadRequest, "Der Abholtag liegt in der Vergangenheit")
+			return
+		}
+		var label string
+		if err := h.Pool.QueryRow(r.Context(),
+			`SELECT COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), 'Gefährt')
+			   FROM vehicles v WHERE v.id=$1 AND v.person_id=$2 AND NOT v.archived AND v.status = 'stored'`,
+			req.VehicleID, pid).Scan(&label); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeError(w, http.StatusBadRequest, "Gefährt nicht gefunden")
+				return
+			}
+			serverError(w, r, "query failed", err)
+			return
+		}
+		payload["vehicle_id"] = strconv.FormatInt(req.VehicleID, 10)
+		payload["vehicle"] = label
+		payload["from"] = from.Format(dateLayout)
+		if u := trim(req.Until); u != "" {
+			until, err := time.Parse(dateLayout, u)
+			if err != nil || until.Before(from) {
+				writeError(w, http.StatusBadRequest, "Die Rückkehr liegt vor dem Abholtag")
+				return
+			}
+			payload["until"] = until.Format(dateLayout)
 		}
 		if req.Note != "" {
 			payload["note"] = req.Note

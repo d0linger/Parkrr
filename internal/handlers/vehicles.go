@@ -80,7 +80,12 @@ const vehicleSelect = `SELECT v.id, v.person_id, v.category_id, v.label, v.licen
 	        (SELECT count(*) FROM vehicle_photos vp WHERE vp.vehicle_id = v.id),
 	        v.spot_id, sp.hall_id, hl.name, v.paid_through,
 	        (SELECT jsonb_agg(jsonb_build_object('from', to_char(rc.effective_from, 'YYYY-MM-DD"T"00:00:00"Z"'), 'amount', rc.rate)
-	                ORDER BY rc.effective_from) FROM vehicle_rate_changes rc WHERE rc.vehicle_id = v.id)
+	                ORDER BY rc.effective_from) FROM vehicle_rate_changes rc WHERE rc.vehicle_id = v.id),
+	        (SELECT jsonb_agg(jsonb_build_object('id', vp.id,
+	                'from', to_char(vp.start_date, 'YYYY-MM-DD"T"00:00:00"Z"'),
+	                'until', CASE WHEN vp.ended THEN to_char(vp.until, 'YYYY-MM-DD"T"00:00:00"Z"') ELSE '9999-12-31T00:00:00Z' END,
+	                'planned', to_char(vp.until, 'YYYY-MM-DD"T"00:00:00"Z"'), 'ended', vp.ended, 'hold_spot', vp.hold_spot)
+	                ORDER BY vp.start_date) FROM vehicle_pauses vp WHERE vp.vehicle_id = v.id)
 	 FROM vehicles v
 	 JOIN categories c ON c.id = v.category_id
 	 JOIN persons p ON p.id = v.person_id
@@ -1410,14 +1415,14 @@ func scanVehicleRow(row rowScanner) (models.Vehicle, models.Category, error) {
 	var cat models.Category
 	var firstName, lastName string
 	var hallName *string
-	var rateChanges []byte
+	var rateChanges, pauses []byte
 	err := row.Scan(&v.ID, &v.PersonID, &v.CategoryID, &v.Label, &v.LicensePlate,
 		&v.Notes, &v.BillingPeriod, &v.Rate, &v.CostOverride, &v.StartDate, &v.EndDate,
 		&v.Status, &v.ReservedFrom, &v.ReservedUntil, &v.Paid, &v.Archived, &v.CreatedAt, &v.UpdatedAt,
 		&v.NeedsPower, &v.PlannerSymbol,
 		&cat.Name, &cat.DefaultMonthlyCost, &cat.DefaultYearlyCost,
 		&firstName, &lastName, &v.PhotoCount,
-		&v.SpotID, &v.HallID, &hallName, &v.PaidThrough, &rateChanges)
+		&v.SpotID, &v.HallID, &hallName, &v.PaidThrough, &rateChanges, &pauses)
 	if err != nil {
 		return v, cat, err
 	}
@@ -1425,6 +1430,12 @@ func scanVehicleRow(row rowScanner) (models.Vehicle, models.Category, error) {
 	// Gefährts: jede Ladung über vehicleSelect bringt sie mit.
 	if len(rateChanges) > 0 {
 		if err := json.Unmarshal(rateChanges, &v.RateChanges); err != nil {
+			return v, cat, err
+		}
+	}
+	// Ruhezeiten (Kurz weg): die Abrechnung ruht in ihnen, die Oberfläche zeigt sie.
+	if len(pauses) > 0 {
+		if err := json.Unmarshal(pauses, &v.Pauses); err != nil {
 			return v, cat, err
 		}
 	}

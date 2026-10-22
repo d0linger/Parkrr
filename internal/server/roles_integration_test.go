@@ -62,6 +62,7 @@ var moneyReads = set(
 	"GET /api/persons/{id}/invoices", "GET /api/persons/{id}/open-items", "GET /api/persons/{id}/payments",
 	"GET /api/persons/{id}/recurring", "GET /api/persons/{id}/stats", "GET /api/persons/{id}/timeline",
 	"GET /api/reports/outstanding.pdf", "GET /api/vehicles/{id}/rate-changes", "GET /api/vehicles/{id}/contract.pdf",
+	"GET /api/vehicles/{id}/pause-preview",
 )
 
 func set(v ...string) map[string]bool {

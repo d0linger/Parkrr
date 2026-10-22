@@ -25,7 +25,7 @@ import (
 //   - Abholwunsch = offener Portal-Wunsch mit Wunschtermin (hängt an der Person).
 type scheduleEvent struct {
 	Date       time.Time
-	Kind       string // pickup | arrival | wish
+	Kind       string // pickup | arrival | wish | leave | return (Ruhezeit)
 	VehicleID  int64  // 0 bei einem Abholwunsch
 	PersonID   int64
 	Label      string
@@ -37,7 +37,8 @@ type scheduleEvent struct {
 	Time       string // HH:MM eines Abholwunschs im Zeitfenster (Ausbau 23), sonst leer
 }
 
-var scheduleKindLabel = map[string]string{"pickup": "Abholung", "arrival": "Einlagerung", "wish": "Abholwunsch"}
+var scheduleKindLabel = map[string]string{"pickup": "Abholung", "arrival": "Einlagerung", "wish": "Abholwunsch",
+	"leave": "Kurz weg", "return": "Rückkehr"}
 
 // scheduleEvents liefert alle Termine mit from <= Datum <= to, sortiert nach Datum,
 // Halle, Platz und Gefährt.
@@ -54,7 +55,22 @@ func (h *Handler) scheduleEvents(ctx context.Context, from, to time.Time) ([]sch
 		   LEFT JOIN spots s ON s.id = v.spot_id
 		   LEFT JOIN halls hl ON hl.id = s.hall_id
 		   CROSS JOIN LATERAL (VALUES ('pickup', v.end_date), ('arrival', v.reserved_from)) AS k(kind, day)
-		  WHERE v.status <> 'cancelled' AND k.day IS NOT NULL AND k.day BETWEEN $1 AND $2`, from, to)
+		  WHERE v.status <> 'cancelled' AND k.day IS NOT NULL AND k.day BETWEEN $1 AND $2
+		 UNION ALL
+		 -- Ruhezeit: Abfahrt am ersten Ruhetag, Rückkehr am Tag nach der geplanten
+		 -- (bzw. tatsächlichen) letzten Ruhetag.
+		 SELECT k.kind, k.day, v.id, v.person_id,
+		        COALESCE(NULLIF(v.label, ''), c.name), v.license_plate,
+		        trim(p.first_name || ' ' || p.last_name),
+		        COALESCE(hl.name, ''), COALESCE(s.label, '')
+		   FROM vehicle_pauses vp
+		   JOIN vehicles v ON v.id = vp.vehicle_id
+		   JOIN persons p ON p.id = v.person_id
+		   JOIN categories c ON c.id = v.category_id
+		   LEFT JOIN spots s ON s.id = v.spot_id
+		   LEFT JOIN halls hl ON hl.id = s.hall_id
+		   CROSS JOIN LATERAL (VALUES ('leave', vp.start_date), ('return', vp.until + 1)) AS k(kind, day)
+		  WHERE k.day IS NOT NULL AND k.day BETWEEN $1 AND $2`, from, to)
 	if err != nil {
 		return nil, err
 	}
