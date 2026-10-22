@@ -1119,7 +1119,16 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 			}
 			return err
 		}
+		if _, err := lockPaymentBankTransactionsTx(ctx, tx, id); err != nil {
+			return err
+		}
 		if err := lockInvoicePersonTx(ctx, tx, personID); err != nil {
+			return err
+		}
+		// A legacy orphan payment can acquire a bank link while we wait for the
+		// person lock. Recheck with nonblocking bank locks before reversing it.
+		bankIDs, err := lockPaymentBankTransactionsTx(ctx, tx, id)
+		if err != nil {
 			return err
 		}
 		var settlesKind *string
@@ -1258,6 +1267,9 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 		if err := h.reopenUncoveredVehiclesTx(r, tx, vehicleIDs); err != nil {
 			return err
 		}
+		if err := h.reopenPaymentBankTransactionsTx(r, tx, id, bankIDs); err != nil {
+			return err
+		}
 		// Preserve the released links in the same transaction, not as extra money.
 		return h.auditChangeTx(ctx, tx, r, "update", "payment", id, fmt.Sprintf(
 			"Zahlung storniert: %.2f € (%s, %s) – Datensatz bleibt erhalten, Zuordnungen zurückgesetzt",
@@ -1270,6 +1282,10 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 	})
 	if errors.Is(txErr, errPeriodManagedPayment) {
 		writeError(w, http.StatusConflict, periodPaymentHistoryMessage)
+		return
+	}
+	if errors.Is(txErr, ErrTaskBusy) {
+		writeError(w, http.StatusConflict, "Diese Kontobuchung wird gerade bearbeitet – bitte erneut versuchen")
 		return
 	}
 	if isRetryableTxError(txErr) {
@@ -1293,6 +1309,64 @@ func (h *Handler) DeletePayment(w http.ResponseWriter, r *http.Request) {
 }
 
 var errPaymentNotFound = fmt.Errorf("payment not found")
+
+// Use the same bank-before-person lock order as assignment. Try-locks make an
+// overlapping correction a retryable conflict instead of a lock cycle.
+func lockPaymentBankTransactionsTx(ctx context.Context, tx pgx.Tx, paymentID int64) ([]int64, error) {
+	rows, err := tx.Query(ctx, `SELECT id FROM bank_transactions WHERE payment_id=$1 ORDER BY id`, paymentID)
+	if err != nil {
+		return nil, err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, id := range ids {
+		if err := lockBankTransactionTx(ctx, tx, id); err != nil {
+			return nil, err
+		}
+	}
+	return ids, nil
+}
+
+func (h *Handler) reopenPaymentBankTransactionsTx(r *http.Request, tx pgx.Tx, paymentID int64, ids []int64) error {
+	for _, id := range ids {
+		var personID, resolvedBy *int64
+		var resolvedAt *time.Time
+		err := tx.QueryRow(r.Context(),
+			`SELECT person_id, resolved_at, resolved_by FROM bank_transactions
+			  WHERE id=$1 AND payment_id=$2 AND status='zugeordnet' FOR UPDATE`, id, paymentID).
+			Scan(&personID, &resolvedAt, &resolvedBy)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		// Keep the old payment ID as history and as the next assignment's generation.
+		if _, err := tx.Exec(r.Context(),
+			`UPDATE bank_transactions SET status='offen', person_id=NULL, resolved_at=NULL, resolved_by=NULL WHERE id=$1`, id); err != nil {
+			return err
+		}
+		if err := h.auditChangeTx(r.Context(), tx, r, "update", "bank_transaction", id,
+			"Kontobuchung nach Zahlungsstorno wieder offen", diffFields(
+				map[string]any{"status": "zugeordnet", "person_id": personID, "resolved_at": resolvedAt, "resolved_by": resolvedBy},
+				map[string]any{"status": "offen", "person_id": nil, "resolved_at": nil, "resolved_by": nil})); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 var errPeriodManagedPayment = errors.New("payment is managed by a period settlement")
 
 // OpenItems returns a person's open individually-owed positions (for the payment

@@ -1179,43 +1179,13 @@ func (h *Handler) PayInvoices(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	pr := paymentRequest{Amount: req.Amount, Method: req.Method, Note: req.Note, PaidOn: req.PaidOn}
-	paidOn, badMsg := h.validatePayment(&pr)
-	if badMsg != "" {
-		writeError(w, http.StatusBadRequest, badMsg)
+	prepared, err := h.prepareInvoicePayment(r, pid, req, r.Header.Get("Idempotency-Key"))
+	if writeInvoicePaymentError(w, r, err) {
 		return
 	}
-	explicit := map[int64]float64{}
-	for _, a := range req.Allocations {
-		explicit[a.InvoiceID] = a.Amount
-	}
-
-	var createdBy *int64
-	if u, ok := auth.UserFrom(r.Context()); ok {
-		createdBy = &u.ID
-	}
-	// Optional Idempotency-Key, same scheme as CreatePayment (WEB-01): a retried
-	// request (lost response, double tap) replays the first result instead of
-	// booking the money twice; the key reused for a different request is a 409.
-	key := r.Header.Get("Idempotency-Key")
-	if key != "" && !validIdempotencyKey(key) {
-		writeError(w, http.StatusBadRequest, "invalid Idempotency-Key header")
-		return
-	}
-	var fingerprint string
-	if key != "" {
-		var err error
-		if fingerprint, err = payInvoicesFingerprint(pid, req, pr, paidOn); err != nil {
-			writeError(w, http.StatusInternalServerError, "could not validate payment request")
-			return
-		}
-		prior, found, err := idempotentInvoicePayment(r.Context(), h.Pool, createdBy, key, fingerprint)
-		if errors.Is(err, errIdempotencyConflict) {
-			writeError(w, http.StatusConflict, "Idempotency-Key was already used for another payment")
-			return
-		}
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "could not check payment request")
+	if prepared.key != "" {
+		prior, found, err := idempotentInvoicePayment(r.Context(), h.Pool, prepared.createdBy, prepared.key, prepared.fingerprint)
+		if writeInvoicePaymentError(w, r, err) {
 			return
 		}
 		if found {
@@ -1228,138 +1198,11 @@ func (h *Handler) PayInvoices(w http.ResponseWriter, r *http.Request) {
 	var out payInvoicesResult
 	var replayed bool
 	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
-		if err := lockInvoicePersonTx(r.Context(), tx, pid); err != nil {
-			return err
-		}
-		if err := protectPaymentChangesTx(r.Context(), tx, nil, paidOn); err != nil {
-			return err
-		}
-		if key == "" {
-			if err := tx.QueryRow(r.Context(),
-				`INSERT INTO payments (person_id, amount, paid_on, method, note, created_by)
-				 VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-				pid, pr.Amount, paidOn, pr.Method, pr.Note, createdBy).Scan(&out.PaymentID); err != nil {
-				return err
-			}
-		} else {
-			err := tx.QueryRow(r.Context(),
-				`INSERT INTO payments (person_id, amount, paid_on, method, note, created_by, idempotency_key, request_fingerprint)
-				 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-				 ON CONFLICT (COALESCE(created_by, 0), idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
-				 RETURNING id`,
-				pid, pr.Amount, paidOn, pr.Method, pr.Note, createdBy, key, fingerprint).Scan(&out.PaymentID)
-			if errors.Is(err, pgx.ErrNoRows) {
-				// A concurrent request with the same key won: replay its result.
-				prior, found, lookupErr := idempotentInvoicePayment(r.Context(), tx, createdBy, key, fingerprint)
-				if lookupErr != nil {
-					return lookupErr
-				}
-				if !found {
-					return errors.New("idempotency conflict winner not visible")
-				}
-				out, replayed = prior, true
-				return nil
-			}
-			if err != nil {
-				return err
-			}
-		}
-		// Lock the person's open invoices, oldest first.
-		rows, err := tx.Query(r.Context(),
-			`SELECT id, total, paid_amount FROM invoices
-			  WHERE person_id=$1 AND NOT canceled AND cancels_id IS NULL AND (total - paid_amount) > 0.005
-			  ORDER BY issued_on, id FOR UPDATE`, pid)
-		if err != nil {
-			return err
-		}
-		type inv struct {
-			id          int64
-			total, paid float64
-		}
-		var open []inv
-		for rows.Next() {
-			var iv inv
-			if err := rows.Scan(&iv.id, &iv.total, &iv.paid); err != nil {
-				rows.Close()
-				return err
-			}
-			open = append(open, iv)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return err
-		}
-		openSet := map[int64]bool{}
-		for _, iv := range open {
-			openSet[iv.id] = true
-		}
-		for id := range explicit {
-			if !openSet[id] {
-				return errInvoiceNotOpen
-			}
-		}
-
-		remaining := pr.Amount
-		for _, iv := range open {
-			if remaining < 0.005 {
-				break
-			}
-			if len(explicit) > 0 {
-				amt, ok := explicit[iv.id]
-				if !ok {
-					continue // explicit selection: skip unchosen invoices
-				}
-				if amt <= 0 {
-					continue // chosen but amount ≤ 0 → allocate nothing to it
-				}
-			} else if !req.Auto {
-				break // no explicit selection and auto off → leave the rest as Guthaben
-			}
-			pay := round2(iv.total - iv.paid)
-			if pay > remaining {
-				pay = round2(remaining)
-			}
-			if amt, ok := explicit[iv.id]; ok && amt < pay {
-				pay = round2(amt)
-			}
-			if pay < 0.005 {
-				continue
-			}
-			if _, err := tx.Exec(r.Context(),
-				`INSERT INTO invoice_payments (invoice_id, payment_id, amount) VALUES ($1,$2,$3)`,
-				iv.id, out.PaymentID, pay); err != nil {
-				return err
-			}
-			if _, err := tx.Exec(r.Context(),
-				`UPDATE invoices SET paid_amount = paid_amount + $1 WHERE id=$2`, pay, iv.id); err != nil {
-				return err
-			}
-			remaining -= pay
-			out.Invoices++
-		}
-		out.Allocated = round2(pr.Amount - remaining)
-		out.Unallocated = round2(remaining)
-		return h.auditChangeTx(r.Context(), tx, r, "create", "payment", out.PaymentID,
-			fmt.Sprintf("Zahlung %.2f € auf %d Rechnung(en) (Rest %.2f € nicht zugeordnet)", pr.Amount, out.Invoices, out.Unallocated),
-			map[string]any{
-				"amount":      map[string]any{"old": nil, "new": pr.Amount},
-				"invoices":    map[string]any{"old": nil, "new": out.Invoices},
-				"unallocated": map[string]any{"old": nil, "new": out.Unallocated},
-			})
+		var err error
+		out, replayed, err = h.recordInvoicePaymentTx(r, tx, prepared)
+		return err
 	})
-	if writeSettlementConflict(w, txErr) {
-		return
-	}
-	if txErr != nil {
-		if errors.Is(txErr, errInvoiceNotOpen) {
-			writeError(w, http.StatusBadRequest, "eine gewählte Rechnung ist nicht offen (storniert/bezahlt/fremd)")
-			return
-		}
-		if errors.Is(txErr, errIdempotencyConflict) {
-			writeError(w, http.StatusConflict, "Idempotency-Key was already used for another payment")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "could not record payment")
+	if writeInvoicePaymentError(w, r, txErr) {
 		return
 	}
 	if replayed {
@@ -1370,6 +1213,201 @@ func (h *Handler) PayInvoices(w http.ResponseWriter, r *http.Request) {
 	// Paying an invoice can fully settle a collected vehicle → close it out.
 	h.archiveInvoiceSettledCollected(r.Context(), pid)
 	writeJSON(w, http.StatusCreated, out)
+}
+
+// preparedInvoicePayment keeps validation identical for HTTP, deposit and bank bookings.
+type preparedInvoicePayment struct {
+	personID    int64
+	req         payInvoicesRequest
+	pr          paymentRequest
+	paidOn      time.Time
+	createdBy   *int64
+	key         string
+	fingerprint string
+}
+
+type paymentRequestError struct {
+	status  int
+	message string
+}
+
+func (e *paymentRequestError) Error() string { return e.message }
+
+func (h *Handler) prepareInvoicePayment(r *http.Request, personID int64, req payInvoicesRequest, key string) (preparedInvoicePayment, error) {
+	p := preparedInvoicePayment{personID: personID, req: req, key: key,
+		pr: paymentRequest{Amount: req.Amount, Method: req.Method, Note: req.Note, PaidOn: req.PaidOn}}
+	var badMsg string
+	p.paidOn, badMsg = h.validatePayment(&p.pr)
+	if badMsg != "" {
+		return p, &paymentRequestError{status: http.StatusBadRequest, message: badMsg}
+	}
+	if key != "" && !validIdempotencyKey(key) {
+		return p, &paymentRequestError{status: http.StatusBadRequest, message: "invalid Idempotency-Key header"}
+	}
+	if u, ok := auth.UserFrom(r.Context()); ok {
+		p.createdBy = &u.ID
+	}
+	if key != "" {
+		var err error
+		p.fingerprint, err = payInvoicesFingerprint(personID, req, p.pr, p.paidOn)
+		if err != nil {
+			return p, fmt.Errorf("fingerprint invoice payment: %w", err)
+		}
+	}
+	return p, nil
+}
+
+func writeInvoicePaymentError(w http.ResponseWriter, r *http.Request, err error) bool {
+	if err == nil {
+		return false
+	}
+	if writeSettlementConflict(w, err) {
+		return true
+	}
+	var bad *paymentRequestError
+	switch {
+	case errors.As(err, &bad):
+		writeError(w, bad.status, bad.message)
+	case errors.Is(err, errInvoiceNotOpen):
+		writeError(w, http.StatusBadRequest, "eine gewählte Rechnung ist nicht offen (storniert/bezahlt/fremd)")
+	case errors.Is(err, errIdempotencyConflict):
+		writeError(w, http.StatusConflict, "Idempotency-Key was already used for another payment")
+	case errors.Is(err, ErrTaskBusy):
+		writeError(w, http.StatusConflict, "Diese Kontobuchung wird gerade bearbeitet")
+	default:
+		serverError(w, r, "could not record payment", err)
+	}
+	return true
+}
+
+// recordInvoicePaymentTx books and audits a payment in the caller's transaction.
+// The caller commits its related records before running any archival follow-up.
+func (h *Handler) recordInvoicePaymentTx(r *http.Request, tx pgx.Tx, p preparedInvoicePayment) (payInvoicesResult, bool, error) {
+	var out payInvoicesResult
+	pid, req, pr, paidOn := p.personID, p.req, p.pr, p.paidOn
+	createdBy, key, fingerprint := p.createdBy, p.key, p.fingerprint
+	explicit := map[int64]float64{}
+	for _, a := range req.Allocations {
+		explicit[a.InvoiceID] = a.Amount
+	}
+	if err := lockInvoicePersonTx(r.Context(), tx, pid); err != nil {
+		return out, false, err
+	}
+	if err := protectPaymentChangesTx(r.Context(), tx, nil, paidOn); err != nil {
+		return out, false, err
+	}
+	if key == "" {
+		if err := tx.QueryRow(r.Context(),
+			`INSERT INTO payments (person_id, amount, paid_on, method, note, created_by)
+			 VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+			pid, pr.Amount, paidOn, pr.Method, pr.Note, createdBy).Scan(&out.PaymentID); err != nil {
+			return out, false, err
+		}
+	} else {
+		err := tx.QueryRow(r.Context(),
+			`INSERT INTO payments (person_id, amount, paid_on, method, note, created_by, idempotency_key, request_fingerprint)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+			 ON CONFLICT (COALESCE(created_by, 0), idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+			 RETURNING id`,
+			pid, pr.Amount, paidOn, pr.Method, pr.Note, createdBy, key, fingerprint).Scan(&out.PaymentID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// A concurrent request with the same key won: replay its result.
+			prior, found, lookupErr := idempotentInvoicePayment(r.Context(), tx, createdBy, key, fingerprint)
+			if lookupErr != nil {
+				return out, false, lookupErr
+			}
+			if !found {
+				return out, false, errors.New("idempotency conflict winner not visible")
+			}
+			return prior, true, nil
+		}
+		if err != nil {
+			return out, false, err
+		}
+	}
+	// Lock the person's open invoices, oldest first.
+	rows, err := tx.Query(r.Context(),
+		`SELECT id, total, paid_amount FROM invoices
+		  WHERE person_id=$1 AND NOT canceled AND cancels_id IS NULL AND (total - paid_amount) > 0.005
+		  ORDER BY issued_on, id FOR UPDATE`, pid)
+	if err != nil {
+		return out, false, err
+	}
+	type inv struct {
+		id          int64
+		total, paid float64
+	}
+	var open []inv
+	for rows.Next() {
+		var iv inv
+		if err := rows.Scan(&iv.id, &iv.total, &iv.paid); err != nil {
+			rows.Close()
+			return out, false, err
+		}
+		open = append(open, iv)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return out, false, err
+	}
+	openSet := map[int64]bool{}
+	for _, iv := range open {
+		openSet[iv.id] = true
+	}
+	for id := range explicit {
+		if !openSet[id] {
+			return out, false, errInvoiceNotOpen
+		}
+	}
+
+	remaining := pr.Amount
+	for _, iv := range open {
+		if remaining < 0.005 {
+			break
+		}
+		if len(explicit) > 0 {
+			amt, ok := explicit[iv.id]
+			if !ok {
+				continue // explicit selection: skip unchosen invoices
+			}
+			if amt <= 0 {
+				continue // chosen but amount ≤ 0 → allocate nothing to it
+			}
+		} else if !req.Auto {
+			break // no explicit selection and auto off → leave the rest as Guthaben
+		}
+		pay := round2(iv.total - iv.paid)
+		if pay > remaining {
+			pay = round2(remaining)
+		}
+		if amt, ok := explicit[iv.id]; ok && amt < pay {
+			pay = round2(amt)
+		}
+		if pay < 0.005 {
+			continue
+		}
+		if _, err := tx.Exec(r.Context(),
+			`INSERT INTO invoice_payments (invoice_id, payment_id, amount) VALUES ($1,$2,$3)`,
+			iv.id, out.PaymentID, pay); err != nil {
+			return out, false, err
+		}
+		if _, err := tx.Exec(r.Context(),
+			`UPDATE invoices SET paid_amount = paid_amount + $1 WHERE id=$2`, pay, iv.id); err != nil {
+			return out, false, err
+		}
+		remaining -= pay
+		out.Invoices++
+	}
+	out.Allocated = round2(pr.Amount - remaining)
+	out.Unallocated = round2(remaining)
+	err = h.auditChangeTx(r.Context(), tx, r, "create", "payment", out.PaymentID,
+		fmt.Sprintf("Zahlung %.2f € auf %d Rechnung(en) (Rest %.2f € nicht zugeordnet)", pr.Amount, out.Invoices, out.Unallocated),
+		map[string]any{
+			"amount":      map[string]any{"old": nil, "new": pr.Amount},
+			"invoices":    map[string]any{"old": nil, "new": out.Invoices},
+			"unallocated": map[string]any{"old": nil, "new": out.Unallocated},
+		})
+	return out, false, err
 }
 
 var errInvoiceNotOpen = fmt.Errorf("invoice not open")

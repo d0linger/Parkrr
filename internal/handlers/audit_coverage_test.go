@@ -74,6 +74,9 @@ type handlerFunc struct {
 	// keine UPDATE-Anweisung mehr und lief LEER durch, statt zu prüfen. Eine
 	// Auslagerung darf kein Weg an der Prüfung vorbei sein.
 	Reach string
+	// Keep function boundaries so an unrelated helper map cannot be mistaken for
+	// part of another function's audit payload.
+	ReachBodies []string
 }
 
 func handlerFuncs(t *testing.T) []handlerFunc {
@@ -122,16 +125,17 @@ func handlerFuncs(t *testing.T) []handlerFunc {
 		bodies[hf.Name] += hf.Body + "\n"
 	}
 	for i := range out {
-		out[i].Reach = reachOf(out[i].Name, bodies)
+		out[i].ReachBodies = reachableBodies(out[i].Name, bodies)
+		out[i].Reach = strings.Join(out[i].ReachBodies, "\n")
 	}
 	return out
 }
 
-// reachOf sammelt den Rumpf von name und die Rümpfe aller Paketfunktionen, die von
+// reachableBodies sammelt den Rumpf von name und die Rümpfe aller Paketfunktionen, die von
 // dort aus erreichbar sind. Die Tiefe ist unbegrenzt, aber jeder Name wird nur einmal
 // aufgenommen — Rekursion und Zyklen laufen damit nicht ins Leere.
-func reachOf(name string, bodies map[string]string) string {
-	var b strings.Builder
+func reachableBodies(name string, bodies map[string]string) []string {
+	var out []string
 	seen := map[string]bool{}
 	var walk func(string)
 	walk = func(n string) {
@@ -143,14 +147,13 @@ func reachOf(name string, bodies map[string]string) string {
 		if !ok {
 			return
 		}
-		b.WriteString(body)
-		b.WriteString("\n")
+		out = append(out, body)
 		for _, m := range reCallName.FindAllStringSubmatch(body, -1) {
 			walk(m[1])
 		}
 	}
 	walk(name)
-	return b.String()
+	return out
 }
 
 var (
@@ -294,50 +297,8 @@ var auditIgnoredPerFunc = map[string]map[string]bool{
 func TestAuditDiffsCoverEveryWrittenColumn(t *testing.T) {
 	var bad []string
 	for _, hf := range handlerFuncs(t) {
-		{
-			path, name, body := hf.File, hf.Name, hf.Body
-			idx := strings.Index(body, "auditChange")
-			if idx < 0 {
-				continue // no field-level audit here; other tests cover presence
-			}
-			// EVERY UPDATE in the body, not just the first: a handler that writes two
-			// tables had only its first statement checked, so the second one's columns
-			// were unguarded (saveAgreement writes vehicles AND flat_rate_periods).
-			sets := reUpdateSet.FindAllStringSubmatch(hf.Reach, -1)
-			if len(sets) == 0 {
-				continue
-			}
-			seg := body[idx:]
-			// A struct-based diff — diffFields(old, …) / (prev, …) / (existing, …) —
-			// compares every json-tagged field of the request or model type, so it
-			// covers the written columns by construction and cannot be judged from
-			// the quoted keys in the source. Only map-literal diffs, where the author
-			// enumerates the fields by hand, are checkable here — and those are
-			// exactly the ones that drifted. Search the WHOLE body: several handlers
-			// build `changes := diffFields(old, new)` above the auditChange call.
-			if reStructDif.MatchString(body) {
-				continue
-			}
-			audited := map[string]bool{}
-			for _, k := range reQuotedKey.FindAllStringSubmatch(seg, -1) {
-				audited[k[1]] = true
-			}
-			var missing []string
-			seenCol := map[string]bool{}
-			for _, set := range sets {
-				for _, part := range strings.Split(strings.ReplaceAll(set[1], "\n", " "), ",") {
-					col := strings.TrimSpace(strings.SplitN(part, "=", 2)[0])
-					if !reColumn.MatchString(col) || auditIgnoredColumns[col] || auditIgnoredPerFunc[name][col] || audited[col] || seenCol[col] {
-						continue
-					}
-					seenCol[col] = true
-					missing = append(missing, col)
-				}
-			}
-			if len(missing) > 0 {
-				sort.Strings(missing)
-				bad = append(bad, path+" "+name+": "+strings.Join(missing, ", "))
-			}
+		if missing := missingAuditColumns(hf); len(missing) > 0 {
+			bad = append(bad, hf.File+" "+hf.Name+": "+strings.Join(missing, ", "))
 		}
 	}
 	sort.Strings(bad)
@@ -345,6 +306,97 @@ func TestAuditDiffsCoverEveryWrittenColumn(t *testing.T) {
 		t.Fatalf("audit diff(s) omit columns the UPDATE writes — a change to these fields would not be\n"+
 			"provable. Add them to the diff, or to auditIgnoredColumns with a reason:\n  %s",
 			strings.Join(bad, "\n  "))
+	}
+}
+
+func missingAuditColumns(hf handlerFunc) []string {
+	if !strings.Contains(hf.Body, "auditChange") {
+		return nil // no field-level audit here; other tests cover presence
+	}
+	// A struct diff covers its JSON-tagged fields by construction. Search the
+	// whole local body because the diff can be prepared before the audit call.
+	if reStructDif.MatchString(hf.Body) {
+		return nil
+	}
+	audited := map[string]bool{}
+	for _, body := range hf.ReachBodies {
+		idx := strings.Index(body, "auditChange")
+		if idx < 0 {
+			continue
+		}
+		// Helpers can audit their own updates transactionally. Only their audit
+		// segment contributes keys; unrelated maps elsewhere do not prove a diff.
+		for _, k := range reQuotedKey.FindAllStringSubmatch(body[idx:], -1) {
+			audited[k[1]] = true
+		}
+	}
+	var missing []string
+	seenCol := map[string]bool{}
+	// Check every reachable UPDATE, not just the first or the handler's own SQL.
+	for _, set := range reUpdateSet.FindAllStringSubmatch(hf.Reach, -1) {
+		for _, part := range strings.Split(strings.ReplaceAll(set[1], "\n", " "), ",") {
+			col := strings.TrimSpace(strings.SplitN(part, "=", 2)[0])
+			if !reColumn.MatchString(col) || auditIgnoredColumns[col] || auditIgnoredPerFunc[hf.Name][col] || audited[col] || seenCol[col] {
+				continue
+			}
+			seenCol[col] = true
+			missing = append(missing, col)
+		}
+	}
+	sort.Strings(missing)
+	return missing
+}
+
+func TestAuditDiffsIncludeReachableHelperAudits(t *testing.T) {
+	const caller = `{
+		h.reopen();
+		tx.Exec(ctx, "UPDATE payments SET reversed=true WHERE id=$1", id);
+		h.auditChangeTx(ctx, tx, r, "update", "payment", id, "reversed", map[string]any{"reversed": true});
+	}`
+	const helper = `{
+		tx.Exec(ctx, "UPDATE bank_transactions SET status='offen', person_id=NULL WHERE id=$1", id);
+		h.auditChangeTx(ctx, tx, r, "update", "bank_transaction", id, "reopened", map[string]any{"status": "offen", "person_id": nil});
+	}`
+	for _, tc := range []struct {
+		name   string
+		caller string
+		helper string
+		extra  map[string]string
+		want   string
+	}{
+		{name: "helper audits its own update", caller: caller, helper: helper},
+		{name: "nested helper audit", caller: strings.ReplaceAll(caller, "h.reopen()", "h.bridge()"), helper: helper,
+			extra: map[string]string{"bridge": `{ h.reopen() }`}},
+		{name: "missing helper column remains rejected", caller: caller,
+			helper: strings.ReplaceAll(helper, `, "person_id": nil`, ""), want: "person_id"},
+		{name: "unrelated helper map proves no audit", caller: caller,
+			helper: `{ tx.Exec(ctx, "UPDATE bank_transactions SET person_id=NULL WHERE id=$1", id); return map[string]any{"person_id": nil} }`,
+			want:   "person_id"},
+		{name: "unreachable audit cannot cover missing diff", caller: caller,
+			helper: strings.ReplaceAll(helper, `, "person_id": nil`, ""), extra: map[string]string{"unrelated": helper}, want: "person_id"},
+		{name: "missing caller column remains rejected", caller: strings.ReplaceAll(caller, "reversed=true WHERE", "reversed=true, note='' WHERE"),
+			helper: helper, want: "note"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bodies := map[string]string{"caller": tc.caller, "reopen": tc.helper}
+			for name, body := range tc.extra {
+				bodies[name] = body
+			}
+			reach := reachableBodies("caller", bodies)
+			hf := handlerFunc{Name: "caller", Body: tc.caller, Reach: strings.Join(reach, "\n"), ReachBodies: reach}
+			if got := strings.Join(missingAuditColumns(hf), ", "); got != tc.want {
+				t.Errorf("missing audit columns = %q, want %q", got, tc.want)
+			}
+			// Each helper is also checked independently: a caller's audit must not
+			// conceal a field the helper itself writes without recording it.
+			if tc.name == "missing helper column remains rejected" {
+				reach := reachableBodies("reopen", bodies)
+				hf := handlerFunc{Name: "reopen", Body: tc.helper, Reach: strings.Join(reach, "\n"), ReachBodies: reach}
+				if got := strings.Join(missingAuditColumns(hf), ", "); got != "person_id" {
+					t.Errorf("independent helper check = %q, want person_id", got)
+				}
+			}
+		})
 	}
 }
 
