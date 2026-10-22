@@ -25,8 +25,16 @@ jobs:
         with:
           go-version: "1.27.3"
           cache: true
+          cache-dependency-path: |
+            go.sum
+            .github/tools/gosec/go.sum
 
       - name: Run govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
+
+      - name: Scan gosec dependencies
+        # Nested tool modules are outside the application scan. Check every
+        # imported package, including code paths not reached by the CLI.
+        run: govulncheck -C .github/tools/gosec -scan=package github.com/securego/gosec/v2/cmd/gosec
