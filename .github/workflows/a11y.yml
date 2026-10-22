@@ -68,6 +68,7 @@ jobs:
           # config.go verlangt mindestens 32 Bytes.
           PARKRR_BACKUP_KEY: ci-a11y-backup-key-not-a-real-secret-0000
           PARKRR_BACKUP_DIR: /tmp/parkrr-a11y-backups
+          PARKRR_BROWSER_RESTORE: "true"
         run: |
           mkdir -p /tmp/parkrr-a11y-backups
           ./parkrr &
@@ -116,6 +117,8 @@ jobs:
           PARKRR_E2E_ISOLATED: "1"
           PARKRR_E2E_USER: admin
           PARKRR_E2E_PASS: ci-a11y-admin-password
+          PARKRR_E2E_RESTORE: "1"
+          PARKRR_E2E_BACKUP_KEY: ci-a11y-backup-key-not-a-real-secret-0000
           # Der Live-Test schlaegt hier fehl statt sich zu ueberspringen, falls die
           # Umgebung oben nicht mehr zu seinen Voraussetzungen passt.
           PARKRR_E2E_REQUIRE_LIVE: "1"

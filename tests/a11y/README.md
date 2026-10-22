@@ -37,6 +37,15 @@ exports, portal requests, planner interactions and record/payment persistence.
 `record-workflow.spec.js` requires the explicit `PARKRR_E2E_ISOLATED=1` opt-in;
 that flag is an acknowledgement, not an automatic safety check or database reset.
 
+`restore-live.spec.js` additionally requires `PARKRR_E2E_RESTORE=1`, a backend
+with `PARKRR_BROWSER_RESTORE=true`, and `PARKRR_E2E_BACKUP_KEY` matching that
+backend's test-only backup key. It only accepts localhost ports 18099 or 18101.
+It creates an invoice and partial payment, downloads an encrypted backup through
+the GUI, changes the test records, and restores through the GUI. It then checks
+the exact invoice, payment, balance, charge and invoice-number settings against
+the saved state and verifies that the old session was revoked. This overwrites
+the disposable backend's database; never use a normal dev or production database.
+
 ## Isolated UI refinement checks
 
 `ui-refinement.spec.js` serves local static assets with synthetic API responses.

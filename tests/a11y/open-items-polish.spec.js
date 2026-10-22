@@ -170,6 +170,7 @@ test('undo toast: shown at the top on a phone, Ctrl+Z undoes the paid toggle', a
 test('a paused undo window keeps the delete from running until the toast actually expires', async ({ page }) => {
   const requests = await arrange(page, 1440, 'light');
   await open(page, 'persons/1');
+  await page.getByRole('button', { name: 'Bearbeiten', exact: true }).click();
   // Erst die Rückfrage, danach das Rückgängig-Fenster.
   await page.locator('.person-danger').getByRole('button', { name: 'Person löschen' }).click();
   await expect(page.locator('#confirm-title')).toHaveText('Person löschen?');
