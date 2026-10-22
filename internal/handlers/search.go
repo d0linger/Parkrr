@@ -202,6 +202,15 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "search failed")
 		return
 	}
+	if hallStaff(r) { // Ausbau 35: Rechnungen sind Beträge
+		kept := res[:0]
+		for _, it := range res {
+			if it.Kind != "invoice" {
+				kept = append(kept, it)
+			}
+		}
+		res = kept
+	}
 	writeJSON(w, http.StatusOK, res)
 }
 

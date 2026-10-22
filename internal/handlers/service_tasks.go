@@ -122,6 +122,9 @@ func (h *Handler) ListServiceTasks(w http.ResponseWriter, r *http.Request) {
 			serverError(w, r, "scan failed", err)
 			return
 		}
+		if hallStaff(r) {
+			t.ServiceAmount = nil
+		}
 		out = append(out, t)
 	}
 	if err := rows.Err(); err != nil {
@@ -333,9 +336,12 @@ func (h *Handler) ServiceTasksDue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	overdue := 0
-	for _, d := range items {
+	for i, d := range items {
 		if d.DueOn.Before(today) {
 			overdue++
+		}
+		if hallStaff(r) {
+			items[i].ServiceAmount = nil
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "overdue": overdue, "power_without_task": powerCount})
@@ -399,6 +405,10 @@ func (h *Handler) CompleteServiceTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if !applies {
 		writeError(w, http.StatusBadRequest, "Die Aufgabe gilt nicht für dieses Gefährt")
+		return
+	}
+	if in.Bill && hallStaff(r) {
+		writeError(w, http.StatusForbidden, "Abrechnen macht das Büro; als erledigt vermerken geht.")
 		return
 	}
 	if in.Bill && (serviceID == nil || amount == nil) {

@@ -32,6 +32,9 @@ func (h *Handler) ListServiceTypes(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "scan failed")
 			return
 		}
+		if hallStaff(r) { // Ausbau 35: keine Beträge für den Hallendienst
+			s.DefaultAmount = 0
+		}
 		out = append(out, s)
 	}
 	if err := rows.Err(); err != nil {

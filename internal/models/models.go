@@ -20,11 +20,15 @@ const (
 	RoleAdmin  = "admin"  // full access, including user management and the audit log
 	RoleEditor = "editor" // everything except user management and the audit log
 	RoleReader = "reader" // read-only access
+	// RoleAccounting (Ausbau 35): liest alles wie RoleReader, dazu Steuerbereich und Exporte.
+	RoleAccounting = "buchhaltung"
+	// RoleHall (Ausbau 35): Planer, Übergaben, Fotos, Service, Schlüsselbuch — keine Beträge.
+	RoleHall = "hallendienst"
 )
 
 // ValidRoles is the set of assignable roles.
 var ValidRoles = map[string]bool{
-	RoleAdmin: true, RoleEditor: true, RoleReader: true,
+	RoleAdmin: true, RoleEditor: true, RoleReader: true, RoleAccounting: true, RoleHall: true,
 }
 
 // VehicleStatus enumerates the lifecycle states of a vehicle.

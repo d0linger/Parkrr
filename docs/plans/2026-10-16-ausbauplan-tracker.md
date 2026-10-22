@@ -64,7 +64,7 @@ Legende: `[x]` umgesetzt · `[~]` teilweise (Grund dahinter) · `[ ]` offen · `
 
 ## B8 Rollen
 
-- [ ] 35 Zwei Rollen dazu: Buchhaltung und Hallendienst
+- [x] 35 Rollen Buchhaltung und Hallendienst (Migration 086): Buchhaltung liest alles, dazu Steuerbereich und Exporte, schreibt sonst nichts; Hallendienst platziert, übergibt, fotografiert, erledigt Service und gibt Schlüssel aus, sieht keine Beträge (403 auf Geld-Routen, Beträge in Gefährte-, Tarif-, Dienst- und Servicelisten geschwärzt), eigene Startseite „Heute in der Halle“. Ein Go-Test prüft jede registrierte Route für jede Rolle
 
 ## Danach
 

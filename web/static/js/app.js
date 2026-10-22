@@ -292,6 +292,13 @@ import { createRevenueChart } from './revenue-chart.js';
     // Editors may do everything except user management and the audit log.
     const canManage = () => isAdmin() || role() === 'editor';
     const canBill = () => isAdmin() || role() === 'editor';
+    // Rollen Buchhaltung und Hallendienst (Ausbau 35). Die Rechte prüft der Server;
+    // die Oberfläche blendet nur aus, was die Rolle ohnehin nicht darf.
+    const isAccounting = () => role() === 'buchhaltung';
+    const isHall = () => !isAdmin() && role() === 'hallendienst';
+    const seesMoney = () => !isHall();
+    const canHall = () => canManage() || isHall();
+    const canTax = () => isAdmin() || isAccounting();
 
     // ---------- theme ----------
     function initTheme() {
@@ -1093,7 +1100,7 @@ import { createRevenueChart } from './revenue-chart.js';
     const STATUS_LABEL = { reserved: 'reserviert', stored: 'eingelagert', collected: 'abgeholt', cancelled: 'storniert' };
     const STATUS_COLOR = { stored: 'var(--success)', reserved: 'var(--warning)', collected: 'var(--text-muted)', cancelled: 'var(--danger)' };
     const MONTH_NAMES = ['Jänner', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
-    const ROLE_LABEL = { admin: 'Administrator', editor: 'Bearbeiter', reader: 'Nur-Lesen' };
+    const ROLE_LABEL = { admin: 'Administrator', editor: 'Bearbeiter', reader: 'Nur-Lesen', buchhaltung: 'Buchhaltung', hallendienst: 'Hallendienst' };
     const statusBadge = (s) => el('span', { class: 'badge badge-' + s }, STATUS_LABEL[s] || s);
 
     async function refreshLookups() {
@@ -1464,6 +1471,7 @@ import { createRevenueChart } from './revenue-chart.js';
         const { name, id, query } = parseHash();
         const routeName = id != null && (name === 'persons' || name === 'vehicles') ? name.slice(0, -1) : name;
         $$('.tab').forEach((t) => {
+            t.hidden = t.dataset.route === 'tariffs' && isHall();
             const on = t.dataset.route === (TAB_FOR[routeName] || TAB_FOR[name]);
             t.classList.toggle('active', on);
             if (on) t.setAttribute('aria-current', 'page');
@@ -1908,7 +1916,48 @@ import { createRevenueChart } from './revenue-chart.js';
                 onclick: () => go(years[i + 1], '[aria-label="Nächstes Jahr"]') }, '›'));
     }
 
+    // Hallendienst (Ausbau 35): der Tag in der Halle, ohne Beträge.
+    async function hallDashboard(page) {
+        const optional = (path, fallback) => api.get(path).then((d) => d ?? fallback).catch((err) => { if (err.status === 401) throw err; return fallback; });
+        const [occ, ending, incomplete, service] = await Promise.all([
+            optional('/occupancy', null), optional('/vehicles/ending-soon?days=14', []),
+            optional('/vehicles/incomplete', null), optional('/service-tasks/due?days=0', null)]);
+        page.innerHTML = '';
+        page.classList.add('dashboard-view');
+        page.append(el('div', { class: 'page-head' }, el('h2', {}, 'Heute in der Halle')));
+        page.append(todayWorklist({ overdue: [], ending, portalRequests: [], occ, readiness: null, incomplete, waitlist: null, service }));
+        page.append(el('div', { class: 'card hall-links' }, el('h3', {}, 'Schnell'),
+            el('div', { class: 'card-actions' },
+                el('a', { class: 'btn btn-ghost btn-sm', href: '#/garages' }, 'Stellplätze'),
+                el('a', { class: 'btn btn-ghost btn-sm', href: '#/service' }, 'Serviceaufgaben'),
+                el('a', { class: 'btn btn-ghost btn-sm', href: '#/keys' }, 'Schlüsselbuch'),
+                el('a', { class: 'btn btn-ghost btn-sm', href: '#/calendar' }, 'Kalender'))));
+    }
+    // Person für den Hallendienst: Kontakt, Gefährte mit Standort, ausgegebene
+    // Zugangsmittel — keine Salden, Rechnungen oder Zahlungen.
+    async function hallPersonView(page, id) {
+        await refreshLookups();
+        const p = (state.persons || []).find((x) => x.id === Number(id));
+        const [vehicles, loans] = await Promise.all([api.get('/vehicles?person_id=' + id), api.get('/persons/' + id + '/access-media').catch(() => [])]);
+        page.innerHTML = '';
+        page.append(el('div', { class: 'detail-head' },
+            el('button', { class: 'back-btn', onclick: () => navigate('persons'), 'aria-label': 'Zurück' }, '‹'),
+            el('h2', { style: 'margin:0;flex:1' }, p ? personName(p) : 'Person')));
+        if (p) page.append(el('div', { class: 'card' },
+            el('div', { class: 'balance' }, el('span', {}, 'Telefon'), el('span', {}, p.phone || '–')),
+            el('div', { class: 'balance' }, el('span', {}, 'E-Mail'), el('span', {}, p.email || '–'))));
+        const vc = el('div', { class: 'card' }, el('h3', {}, 'Gefährte'));
+        const active = (vehicles || []).filter((v) => !v.archived);
+        if (!active.length) vc.append(el('p', { class: 'muted' }, 'Keine aktiven Gefährte.'));
+        active.forEach((v) => vc.append(el('div', { class: 'balance' },
+            el('a', { href: '#/vehicle/' + v.id }, vehicleTitle(v)), el('span', {}, statusBadge(v.status), ' ', vehLocationChip(v, { compact: true })))));
+        page.append(vc);
+        if ((loans || []).length) page.append(el('div', { class: 'card' }, el('h3', {}, 'Zugangsmittel'),
+            ...loans.map((l) => el('div', { class: 'balance' }, el('span', {}, (ACCESS_KIND_LABEL[l.kind] || l.kind) + ' ' + l.label), el('span', {}, 'seit ' + fmtDate(l.issued_on))))));
+    }
+
     routes.dashboard = async (page) => {
+        if (isHall()) { await hallDashboard(page); return; }
         const requestedYear = dashYear;
         const missing = [];
         const optional = (path, label, fallback) => api.get(path).then(data => data ?? fallback).catch((err) => {
@@ -2574,6 +2623,7 @@ import { createRevenueChart } from './revenue-chart.js';
     }
 
     routes.person = async (page, id) => {
+        if (isHall()) { await hallPersonView(page, id); return; }
         await refreshLookups();
         const stats = await api.get('/persons/' + id + '/stats');
         // Load all billing reads together and let a failure propagate to the route's
@@ -3752,7 +3802,7 @@ import { createRevenueChart } from './revenue-chart.js';
 
     // Full tax-book workspace.
     routes.taxyear = async (page) => {
-        if (!isAdmin()) { page.innerHTML = ''; page.append(emptyState('lock', 'Nur für Administratoren.')); return; }
+        if (!canTax()) { page.innerHTML = ''; page.append(emptyState('lock', 'Nur für Administratoren und die Buchhaltung.')); return; }
         const nowYear = new Date().getFullYear();
         if (taxYear == null) taxYear = nowYear - 1;
         const [rep, garages] = await Promise.all([api.get('/reports/tax-year?year=' + taxYear), api.get('/garages')]);
@@ -4238,9 +4288,9 @@ import { createRevenueChart } from './revenue-chart.js';
                 el('div', { class: 'svc-main' }, el('strong', {}, d.title),
                     el('div', { class: 'card-meta' }, el('a', { href: '#/vehicle/' + d.vehicle_id }, d.vehicle_label),
                         (d.hall_name ? ' · ' + d.hall_name : '') + ' · ' + when + (d.last_done ? ' · zuletzt ' + fmtDate(d.last_done) : ''))),
-                canManage() ? el('div', { class: 'card-actions' },
+                canHall() ? el('div', { class: 'card-actions' },
                     el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': d.title + ' für ' + d.vehicle_label + ' erledigt', onclick: () => completeService(d, false) }, icon('check', 14), ' Erledigt'),
-                    d.service_type_id && d.service_amount != null
+                    canManage() && d.service_type_id && d.service_amount != null
                         ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': d.title + ' für ' + d.vehicle_label + ' erledigt und ' + eur(d.service_amount) + ' abrechnen', onclick: () => completeService(d, true) }, 'Erledigt + ' + eur(d.service_amount))
                         : null) : null));
         });
@@ -4345,8 +4395,8 @@ import { createRevenueChart } from './revenue-chart.js';
                             m.loan_id ? el('div', { class: 'card-meta' }, 'bei ', el('a', { href: '#/person/' + m.person_id }, m.person_name || 'Person'), ' seit ' + fmtDate(m.issued_on)) : null,
                             (m.hall_name || m.note) ? el('div', { class: 'card-meta' }, [m.hall_name, m.note].filter(Boolean).join(' · ')) : null),
                         el('div', { class: 'card-actions' },
-                            canManage() && !m.retired && !m.loan_id ? el('button', { class: 'btn btn-primary btn-sm', type: 'button', 'aria-label': name + ' ausgeben', onclick: () => issueAccessMedium(m) }, 'Ausgeben') : null,
-                            canManage() && m.loan_id ? el('button', { class: 'btn btn-primary btn-sm', type: 'button', 'aria-label': name + ' zurücknehmen', onclick: () => returnAccessMedium(m) }, 'Zurücknehmen') : null,
+                            canHall() && !m.retired && !m.loan_id ? el('button', { class: 'btn btn-primary btn-sm', type: 'button', 'aria-label': name + ' ausgeben', onclick: () => issueAccessMedium(m) }, 'Ausgeben') : null,
+                            canHall() && m.loan_id ? el('button', { class: 'btn btn-primary btn-sm', type: 'button', 'aria-label': name + ' zurücknehmen', onclick: () => returnAccessMedium(m) }, 'Zurücknehmen') : null,
                             m.loan_count ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': name + ': Verlauf', onclick: () => accessMediumHistory(m) }, 'Verlauf') : null,
                             canManage() ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': name + ' bearbeiten', onclick: () => accessMediumForm(m) }, icon('edit')) : null,
                             canManage() && !m.loan_count ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': name + ' löschen', onclick: async () => {
@@ -4654,7 +4704,7 @@ import { createRevenueChart } from './revenue-chart.js';
     }
     // Platzierbar = steht in der Planer-Palette (/vehicles/unassigned: ohne Platz, nicht
     // archiviert) und der Benutzer darf planen.
-    const canPlace = (v) => canManage() && !v.spot_id && !v.archived;
+    const canPlace = (v) => canHall() && !v.spot_id && !v.archived;
     // Welche Halle? Ohne Rueckfrage die zuletzt geoeffnete, sonst die erste
     // (Betreiberentscheid 15.10.2026); gewechselt wird im Planer. Keine Halle: zu den
     // Stellplaetzen, dort entsteht die erste.
@@ -4688,9 +4738,10 @@ import { createRevenueChart } from './revenue-chart.js';
         // Pauschale ends, per-vehicle billing resumes, so the rate + the owed
         // remainder are shown again (an expired Pauschale is no longer "aktiv").
         const period = `seit ${fmtDate(v.start_date)}` + (v.end_date ? ` bis ${fmtDate(v.end_date)}` : '');
-        const rateLine = c.settled ? ('über Pauschale · ' + period) : (`${eur(v.effective_rate)}${rateUnit} · ` + period);
-        let accruedLine;
-        if (c.settled) accruedLine = el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Abrechnung über Pauschale');
+        const rateLine = !seesMoney() ? period : c.settled ? ('über Pauschale · ' + period) : (`${eur(v.effective_rate)}${rateUnit} · ` + period);
+        let accruedLine = null;
+        if (!seesMoney()) accruedLine = null;
+        else if (c.settled) accruedLine = el('div', { class: 'card-meta', style: 'margin-top:.3rem' }, 'Abrechnung über Pauschale');
         else accruedLine = el('div', { class: 'card-meta', style: 'color:var(--text);font-weight:600;margin-top:.3rem' },
             (c.covered ? 'Aufgelaufen (Rest): ' : 'Aufgelaufen: ') + eur(c.owed));
         const main = el('div', { style: 'flex:1;' + (linkable ? 'cursor:pointer' : ''), onclick: linkable ? () => navigate('vehicles/' + v.id) : null },
@@ -4729,6 +4780,8 @@ import { createRevenueChart } from './revenue-chart.js';
     // is shown; the payment slider still marks the uncovered portion as paid.
     function vehicleControls(v) {
         const wrap = el('div', { class: 'controls-row' });
+        // Hallendienst (Ausbau 35): nur der Status, keine Zahlungsschieber.
+        if (!seesMoney()) { wrap.append(statusBadge(v.status)); return wrap; }
         const c = coverage(v);
         const pauschaleBadge = (label, title) => el('span', { class: 'badge badge-cat', title }, label);
         // An invoiced vehicle settles via its invoice, not the per-vehicle slider:
@@ -5720,10 +5773,10 @@ import { createRevenueChart } from './revenue-chart.js';
         // full picture lives at the Gefährt, not only on the person page. A failed
         // fetch propagates to the route's error handling rather than silently
         // rendering an empty (and misleading) "no extra costs" state.
-        const [pCharges, pRecurring] = await Promise.all([
+        const [pCharges, pRecurring] = seesMoney() ? await Promise.all([
             api.get('/charges?person_id=' + v.person_id),
             api.get('/persons/' + v.person_id + '/recurring'),
-        ]);
+        ]) : [[], []];
         const vCharges = pCharges.filter((c) => c.vehicle_id === v.id);
         const vRecurring = pRecurring.filter((rc) => rc.vehicle_id === v.id);
         page.innerHTML = '';
@@ -5734,19 +5787,19 @@ import { createRevenueChart } from './revenue-chart.js';
                 ? el('button', { class: 'btn btn-primary btn-sm', onclick: () => vehicleForm(v) }, icon('edit'), ' Bearbeiten')
                 : null,
             el('a', { class: 'btn btn-ghost btn-sm', href: '/api/vehicles/' + v.id + '/label', target: '_blank', rel: 'noopener', title: 'Druck-Label mit QR-Code' }, '🖶 Label'),
-            contract && contract.template ? el('a', { class: 'btn btn-ghost btn-sm', href: '/api/vehicles/' + v.id + '/contract.pdf', target: '_blank', rel: 'noopener', title: 'Einstellvertrag (Version ' + contract.template.version + ') zum Unterschreiben' }, 'Vertrag') : null,
+            seesMoney() && contract && contract.template ? el('a', { class: 'btn btn-ghost btn-sm', href: '/api/vehicles/' + v.id + '/contract.pdf', target: '_blank', rel: 'noopener', title: 'Einstellvertrag (Version ' + contract.template.version + ') zum Unterschreiben' }, 'Vertrag') : null,
             statusBadge(v.status)));
 
         page.append(el('div', { class: 'card' },
             el('div', { class: 'balance' }, el('span', {}, 'Person'), el('span', {}, el('a', { href: '#/persons/' + v.person_id }, esc(v.person_name)))),
             el('div', { class: 'balance' }, el('span', {}, 'Typ / Tarif'), el('span', {}, esc(v.category_name))),
             el('div', { class: 'balance' }, el('span', {}, 'Kennzeichen'), el('span', {}, esc(v.license_plate || '–'))),
-            el('div', { class: 'balance' }, el('span', {}, 'Preis'), el('span', { class: 'amt' }, eur(v.effective_rate) + (v.billing_period === 'yearly' ? ' /Jahr' : ' /Monat'))),
+            seesMoney() ? el('div', { class: 'balance' }, el('span', {}, 'Preis'), el('span', { class: 'amt' }, eur(v.effective_rate) + (v.billing_period === 'yearly' ? ' /Jahr' : ' /Monat'))) : null,
             el('div', { class: 'balance' }, el('span', {}, 'Zeitraum'), el('span', {}, fmtDate(v.start_date) + (v.end_date ? ' – ' + fmtDate(v.end_date) : ' – offen'))),
             el('div', { class: 'balance' }, el('span', {}, 'Standort'), el('span', {}, vehLocationChip(v))),
             v.reserved_from ? el('div', { class: 'balance' }, el('span', {}, 'Reservierung'), el('span', {}, fmtDate(v.reserved_from) + (v.reserved_until ? ' – ' + fmtDate(v.reserved_until) : ' – offen'))) : null,
-            vc.covered ? el('div', { class: 'balance' }, el('span', {}, 'Pauschale'), el('span', {}, vc.active ? 'aktiv abgedeckt' : 'beendet')) : null,
-            vc.settled
+            seesMoney() && vc.covered ? el('div', { class: 'balance' }, el('span', {}, 'Pauschale'), el('span', {}, vc.active ? 'aktiv abgedeckt' : 'beendet')) : null,
+            !seesMoney() ? null : vc.settled
                 ? el('div', { class: 'balance' }, el('strong', {}, 'Aufgelaufen'), el('strong', { class: 'amt', title: 'Abrechnung über Pauschale' }, 'über Pauschale'))
                 : el('div', { class: 'balance' }, el('strong', {}, vc.covered ? 'Aufgelaufen (Rest)' : 'Aufgelaufen'),
                     el('strong', { class: 'amt' }, eur(vc.owed))),
@@ -5804,7 +5857,7 @@ import { createRevenueChart } from './revenue-chart.js';
         // photos
         const photoCard = el('div', { class: 'card' });
         const ph = el('div', { class: 'page-head' }, el('h3', {}, 'Fotos'));
-        if (canManage()) {
+        if (canHall()) {
             // Fortschrittsbalken (role=progressbar) neben den Knöpfen; sichtbar nur
             // während eines Uploads.
             const prog = el('span', { class: 'upl-progress', role: 'progressbar', 'aria-label': 'Foto-Upload', 'aria-valuemin': '0', 'aria-valuemax': '100', hidden: true }, el('i', {}));
@@ -5842,7 +5895,7 @@ import { createRevenueChart } from './revenue-chart.js';
                 const img = el('img', { src: '/api/photos/' + p.id, alt: esc(p.filename), loading: 'lazy', onclick: () => lightbox(p.id) });
                 const thumb = el('div', { class: 'photo-thumb' + (i === 0 ? ' is-title' : '') }, img);
                 if (i === 0) thumb.append(el('span', { class: 'title-badge', title: 'Titelbild — erscheint im Garagenplaner' }, '★'));
-                if (canManage()) {
+                if (canHall()) {
                     thumb.append(el('button', { class: 'del', title: (p.filename || 'Foto') + ' löschen', 'aria-label': (p.filename || 'Foto') + ' löschen', onclick: () => delPhoto(p, thumb) }, icon('close', 12)));
                     const ord = el('div', { class: 'photo-order' });
                     if (i > 0) ord.append(el('button', { class: 'ord', title: 'Nach vorn', 'aria-label': 'Foto nach vorn schieben', onclick: () => reorder(i, i - 1) }, '‹'));
@@ -5859,7 +5912,7 @@ import { createRevenueChart } from './revenue-chart.js';
         // Übergabeprotokolle (Zustand + Unterschrift bei Ein-/Auslagerung)
         const hoCard = el('div', { class: 'card' });
         const hoHead = el('div', { class: 'page-head' }, el('h3', {}, 'Übergabeprotokolle'));
-        if (canManage()) hoHead.append(el('button', { class: 'btn-sect', onclick: () => handoverForm(id, v) }, '+ Protokoll'));
+        if (canHall()) hoHead.append(el('button', { class: 'btn-sect', onclick: () => handoverForm(id, v) }, '+ Protokoll'));
         hoCard.append(hoHead);
         if (handovers === null) hoCard.append(el('p', { class: 'muted' }, 'Protokolle konnten nicht geladen werden.'));
         else if (!handovers.length) hoCard.append(el('p', { class: 'muted' }, 'Noch keine Protokolle.'));
@@ -5885,11 +5938,11 @@ import { createRevenueChart } from './revenue-chart.js';
                 // Ausbau 24: Schäden als Liste, Zustandsfotos als Streifen (Tipp = groß).
                 if ((ho.damages || []).length) row.querySelector('.pay-main').append(el('ul', { class: 'ho-dlist' },
                     ...ho.damages.map((d) => el('li', {}, [d.area, d.note].filter(Boolean).join(': ')))));
-                if ((ho.photos || []).length || (ho.photos_open && canManage())) {
+                if ((ho.photos || []).length || (ho.photos_open && canHall())) {
                     const strip = el('div', { class: 'ho-strip' });
                     (ho.photos || []).forEach((ph) => strip.append(el('button', { type: 'button', class: 'ho-strip-ph', 'aria-label': (HANDOVER_VIEW_LABEL[ph.view] || 'Foto') + ' groß ansehen', onclick: () => lightbox(ph.id) },
                         el('img', { src: '/api/photos/' + ph.id, alt: '', loading: 'lazy' }), el('span', {}, HANDOVER_VIEW_LABEL[ph.view] || ph.view))));
-                    if (ho.photos_open && canManage()) strip.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm', title: 'Bis 24 Stunden nach dem Protokoll', onclick: () => handoverPhotoAdd(ho) }, '+ Foto'));
+                    if (ho.photos_open && canHall()) strip.append(el('button', { type: 'button', class: 'btn btn-ghost btn-sm', title: 'Bis 24 Stunden nach dem Protokoll', onclick: () => handoverPhotoAdd(ho) }, '+ Foto'));
                     row.querySelector('.pay-main').append(strip);
                 }
                 hoCard.append(row);
@@ -8602,7 +8655,7 @@ import { createRevenueChart } from './revenue-chart.js';
         try {
             [vehicles, overdue] = await Promise.all([
                 api.get('/vehicles'),
-                api.get('/invoices/overdue?due_until=' + dueUntil)]);
+                seesMoney() ? api.get('/invoices/overdue?due_until=' + dueUntil) : Promise.resolve([])]);
             if (canManage()) { try { requests = await api.get('/portal-requests'); } catch (e) { requests = []; } }
         } catch (e) { throw e; } // The route error view provides recovery.
 
@@ -8828,7 +8881,8 @@ import { createRevenueChart } from './revenue-chart.js';
 
     function buildGP(page, P) {
         page.innerHTML = ''; // clear the route skeleton (else it leaves empty cards above)
-        const canManageNow = canManage();
+        // Hallendienst (Ausbau 35) platziert Gefährte; den Grundriss ändern nur Bearbeiter.
+        const canManageNow = canHall();
         // ---- validity helpers bound to this hall ----
         const inside = (b) => (b.rot ? quadInPoly(quad(b), P.floor) : rectInPoly(b, P.floor));
         const heightOK = (b) => b.H == null || b.H <= P.tor + 0.001;
@@ -8878,7 +8932,7 @@ import { createRevenueChart } from './revenue-chart.js';
         // appbar
         const modeSwitch = el('div', { class: 'gp-switch', role: 'group', 'aria-label': 'Planermodus' });
         const mkModeBtn = (m, label) => el('button', { type: 'button', 'data-mode': m, 'aria-pressed': String(P.mode === m), class: P.mode === m ? 'on' : '', onclick: () => setMode(m) }, label);
-        const rebuildSwitch = () => { modeSwitch.innerHTML = ''; modeSwitch.append(mkModeBtn('plan', 'Garagenplaner'), mkModeBtn('manage', 'Stellplätze')); };
+        const rebuildSwitch = () => { modeSwitch.innerHTML = ''; if (canManage()) modeSwitch.append(mkModeBtn('plan', 'Garagenplaner')); modeSwitch.append(mkModeBtn('manage', 'Stellplätze')); };
         const occN = el('b', { class: 'num' }, '–'); const occBar = el('i', {});
         const maxBtn = el('button', { class: 'gp-iconbtn', title: 'Vollbild', 'aria-label': 'Vollbild', onclick: () => toggleMax() }, icon('maximize', 16));
         const appbar = el('div', { class: 'gp-appbar' },
@@ -10588,7 +10642,7 @@ import { createRevenueChart } from './revenue-chart.js';
             } });
             (P.halls || []).forEach((hl) => { const o = el('option', { value: hl.id }, hl.name); if (hl.id === P.hallId) o.selected = true; sel.append(o); });
             card.append(el('div', { class: 'gp-hallrow' }, sel));
-            if (withCrud && canManageNow) card.append(el('div', { class: 'gp-addrow', style: 'margin-top:.5rem' },
+            if (withCrud && canManage()) card.append(el('div', { class: 'gp-addrow', style: 'margin-top:.5rem' },
                 el('button', { class: 'btn btn-sm', onclick: () => hallForm(P.garageId) }, '+ Neue Halle'),
                 el('button', { class: 'btn btn-sm', onclick: () => hallForm(P.garageId, { id: P.hallId, name: P.hallName, geometry: currentGeometry() }) }, 'Umbenennen'),
                 el('button', { class: 'btn btn-sm', onclick: dupHall }, 'Duplizieren'),
@@ -11745,12 +11799,12 @@ import { createRevenueChart } from './revenue-chart.js';
         // (Design wechseln, Abmelden). Drei Gruppen, jede mit einer Ueberschrift.
         const group = (title) => body.append(el('div', { class: 'menu-sec' }, title));
         group('Betrieb');
-        body.append(item('receipt', 'Rechnungen', () => navigate('invoices'), '', 'invoices'));
-        body.append(item('euro', 'Zusatzkosten', () => navigate('finance'), '', 'finance'));
+        if (seesMoney()) body.append(item('receipt', 'Rechnungen', () => navigate('invoices'), '', 'invoices'));
+        if (seesMoney()) body.append(item('euro', 'Zusatzkosten', () => navigate('finance'), '', 'finance'));
         body.append(item('check', 'Serviceaufgaben', () => navigate('service'), '', 'service'));
         body.append(item('key', 'Schlüsselbuch', () => navigate('keys'), '', 'keys'));
         if (canManage()) body.append(item('ledger', 'Kontoauszug', () => navigate('bank'), '', 'bank'));
-        if (isAdmin()) body.append(item('ledger', 'Steuerjahr', () => navigate('taxyear'), '', 'taxyear'));
+        if (canTax()) body.append(item('ledger', 'Steuerjahr', () => navigate('taxyear'), '', 'taxyear'));
         group('Verwaltung');
         if (isAdmin()) body.append(item('receiptGear', 'Rechnungs-Einstellungen', () => navigate('billing'), '', 'billing'));
         body.append(item('settings', 'Einstellungen', () => navigate('settings'), '', 'settings'));
@@ -12425,11 +12479,11 @@ import { createRevenueChart } from './revenue-chart.js';
         { label: 'Warteliste', sub: 'Interessenten ohne freien Platz', url: '#/waitlist', kw: 'warteliste interessent anfrage voll warten' },
         { label: 'Serviceaufgaben', sub: 'Laden, Reifendruck, lüften', url: '#/service', kw: 'service aufgabe batterie laden reifen lueften wartung faellig' },
         { label: 'Schlüsselbuch', sub: 'Schlüssel, Handsender, Karten', url: '#/keys', kw: 'schluessel handsender fernbedienung karte zugang tor code' },
-        { label: 'Kontoauszug', sub: 'camt.053 einlesen, Zahlungen zuordnen', url: '#/bank', kw: 'konto bank camt auszug ueberweisung zahlung zuordnen import' },
+        { money: true, label: 'Kontoauszug', sub: 'camt.053 einlesen, Zahlungen zuordnen', url: '#/bank', kw: 'konto bank camt auszug ueberweisung zahlung zuordnen import' },
         { label: 'Gefährte', sub: 'Fahrzeuge', url: '#/vehicles', kw: 'auto wohnwagen wohnmobil boot anhaenger kennzeichen' },
-        { label: 'Zusatzkosten', sub: 'Buchungen', url: '#/finance', kw: 'kosten strom reinigung leistung' },
-        { label: 'Rechnungen', sub: 'Offen, überfällig, bezahlt', url: '#/invoices', kw: 'rechnung beleg mahnung storno offen ueberfaellig' },
-        { label: 'Tarife & Dienste', sub: 'Preise', url: '#/tariffs', kw: 'preis kategorie tarif dienst miete' },
+        { money: true, label: 'Zusatzkosten', sub: 'Buchungen', url: '#/finance', kw: 'kosten strom reinigung leistung' },
+        { money: true, label: 'Rechnungen', sub: 'Offen, überfällig, bezahlt', url: '#/invoices', kw: 'rechnung beleg mahnung storno offen ueberfaellig' },
+        { money: true, label: 'Tarife & Dienste', sub: 'Preise', url: '#/tariffs', kw: 'preis kategorie tarif dienst miete' },
         { label: 'Stellplätze', sub: 'Garagen, Hallen & Planer', url: '#/garages', kw: 'garage halle planer plan stellplatz' },
         { label: 'Einstellungen', sub: '', url: '#/settings', kw: 'optionen konfiguration profil passwort' },
     ];
@@ -12501,6 +12555,7 @@ import { createRevenueChart } from './revenue-chart.js';
         const go = (it) => { close(); if (it.run) it.run(); else navigate(String(it.url).replace(/^#\/?/, '')); };
 
         const navHits = (q) => CMDK_NAV.concat(isAdmin() ? CMDK_NAV_ADMIN : [])
+            .filter((c) => !c.money || seesMoney())
             .filter((c) => norm(c.label + ' ' + c.sub + ' ' + c.kw).includes(q))
             .map((c) => ({ kind: 'nav', label: c.label, sub: c.sub, url: c.url }));
         // Aktionen zuerst: "neu" oder "anlegen" soll sofort zum Dialog führen. Ohne

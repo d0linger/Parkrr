@@ -154,6 +154,11 @@ func (h *Handler) ListVehicles(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, "query failed", err)
 		return
 	}
+	if hallStaff(r) {
+		for i := range vehicles {
+			redactVehicleMoney(&vehicles[i])
+		}
+	}
 	writeJSON(w, http.StatusOK, vehicles)
 }
 

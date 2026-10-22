@@ -296,7 +296,7 @@ for (const role of ['reader', 'editor']) {
   test(`${role} does not get the admin import UI or fetch a tax report`, async ({ page }) => {
     const requests = await mockUI(page, { role, overrides });
     await page.goto(origin + '/#/taxyear');
-    await expect(page.getByText('Nur für Administratoren.', { exact: true })).toBeVisible();
+    await expect(page.getByText('Nur für Administratoren und die Buchhaltung.', { exact: true })).toBeVisible();
     await expect(page.locator('.tax-import')).toHaveCount(0);
     expect(requests.filter(request => request.path.startsWith('/reports/tax-'))).toEqual([]);
     expectPreviewOnly(requests, 0);
