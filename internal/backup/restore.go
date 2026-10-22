@@ -8,7 +8,10 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Einspielen eines Archivs (BAK-01).
@@ -125,9 +128,61 @@ func checkRestorableTOC(toc string) error {
 	return nil
 }
 
+// These releases contain both the original \restrict protection and the psql
+// \unrestrict expansion fix. Older generators can omit the protection entirely;
+// older psql clients can bypass it (CVE-2025-8714 and CVE-2026-18408).
+// https://www.postgresql.org/support/security/CVE-2026-18408/
+var minRestoreClientMinor = map[int]int{14: 24, 15: 19, 16: 15, 17: 11, 18: 6}
+
+var restoreClientVersionRe = regexp.MustCompile(`^(pg_restore|psql) \(PostgreSQL\) ([0-9]+)\.([0-9]+)(?: \([^\r\n]+\))?$`)
+
+func checkRestoreClientVersion(tool, out string) error {
+	m := restoreClientVersionRe.FindStringSubmatch(strings.TrimSpace(out))
+	if m == nil || m[1] != tool {
+		return fmt.Errorf("cannot determine stable %s version from %q", tool, strings.TrimSpace(out))
+	}
+	major, majorErr := strconv.Atoi(m[2])
+	minor, minorErr := strconv.Atoi(m[3])
+	if majorErr != nil || minorErr != nil {
+		return fmt.Errorf("cannot determine stable %s version from %q", tool, strings.TrimSpace(out))
+	}
+	if major >= 19 {
+		return nil
+	}
+	if want, ok := minRestoreClientMinor[major]; ok && minor >= want {
+		return nil
+	}
+	return fmt.Errorf("%s %d.%d is unsafe for restore (CVE-2025-8714, CVE-2026-18408); "+
+		"upgrade PostgreSQL clients to 14.24, 15.19, 16.15, 17.11, 18.6 or a newer stable release in the same major branch", tool, major, minor)
+}
+
+func checkRestoreClientVersions(ctx context.Context) error {
+	for _, tool := range []string{"pg_restore", "psql"} {
+		vctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		// #nosec G204 -- tool is one of the two fixed PostgreSQL client names above.
+		cmd := exec.CommandContext(vctx, tool, "--version")
+		cmd.WaitDelay = time.Second
+		out, err := cmd.Output()
+		if vctx.Err() != nil {
+			err = vctx.Err()
+		}
+		cancel()
+		if err != nil {
+			return fmt.Errorf("%s --version: %w", tool, err)
+		}
+		if err := checkRestoreClientVersion(tool, string(out)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // restoreArchive spielt ein entschlüsseltes pg_dump-Archiv atomar ein. Genau eine
 // Quelle ist gesetzt: archivePath (eine Datei) oder archive (stdin von pg_restore).
 func restoreArchive(ctx context.Context, dbURL, archivePath string, archive io.Reader) error {
+	if err := checkRestoreClientVersions(ctx); err != nil {
+		return err
+	}
 	dsn, env := dbExecEnv(dbURL)
 	args := []string{"--clean", "--if-exists", "--no-owner", "--no-privileges", "--file=-"}
 	if archivePath != "" {

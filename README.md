@@ -137,12 +137,13 @@ compose network). Schema migrations run automatically at startup.
 | `PARKRR_HTTP_PORT` | published host port (compose) | `8080` |
 | `PARKRR_DATABASE_URL` | full Postgres URL (overrides the discrete values) | – |
 | `PARKRR_DB_HOST` / `PARKRR_DB_PORT` | DB host / port | `db` / `5432` |
-| `PARKRR_DB_USER` / `PARKRR_DB_PASSWORD` / `PARKRR_DB_NAME` | DB credentials | `parkrr` |
-| `PARKRR_DB_SSLMODE` | Postgres SSL mode | `disable` |
+| `PARKRR_DB_USER` / `PARKRR_DB_NAME` | DB user / database name | `parkrr` |
+| `PARKRR_DB_PASSWORD` | **required** (compose); database password | - |
+| `PARKRR_DB_SSLMODE` | `disable` for bundled internal DB; use `verify-full` and a trusted CA for an external database | `disable` |
 | `PARKRR_ADMIN_USERNAME` | admin username | `admin` |
 | `PARKRR_ADMIN_EMAIL` | admin email | `admin@example.com` |
-| `PARKRR_ADMIN_PASSWORD` | **required** — admin password | – |
-| `PARKRR_SESSION_SECRET` | **required** — session secret (min. 32 chars) | – |
+| `PARKRR_ADMIN_PASSWORD` | **required**; 8-72 bytes when applied; public placeholders rejected | - |
+| `PARKRR_SESSION_SECRET` | **required**; at least 32 bytes; public placeholders rejected | - |
 | `PARKRR_SESSION_MAX_AGE` | session lifetime / inactivity window (sec.) | `604800` (7 days) |
 | `PARKRR_SESSION_SLIDING` | extend the session on activity (re-login only after inactivity) | `false` |
 | `PARKRR_SESSION_ABSOLUTE_MAX_AGE` | hard cap on session lifetime (sec., when sliding) | `7776000` (90 days) |
@@ -159,6 +160,7 @@ compose network). Schema migrations run automatically at startup.
 | `PARKRR_METRICS_TOKEN` | Bearer token for `/metrics`. Empty = `/metrics` is open (internal network only) — unless `PARKRR_METRICS_REQUIRE_AUTH=true`, then it is disabled | – |
 | `PARKRR_METRICS_REQUIRE_AUTH` | with no token set, disable `/metrics` instead of serving it openly. GHCR deployments (`docker-compose.ghcr.yml`) default to `true`, so they must set `PARKRR_METRICS_TOKEN` to enable metrics | `false` in the app; `true` in `docker-compose.ghcr.yml` |
 | `PARKRR_CHECK_BREACHED_PASSWORDS` | check new passwords against the HIBP range API (fail-open) | `true` |
+| `PARKRR_CHECK_BREACHED_BOOTSTRAP_PASSWORDS` | explicit opt-in for HIBP when creating or force-resetting the ENV admin password; also requires the preceding switch; sends a five-character SHA-1 prefix; ordinary restarts do no lookup | `false` |
 | `PARKRR_BREACH_CHECK_FAIL_CLOSED` | reject a new password if the HIBP check itself fails (instead of the default fail-open) | `false` |
 | `PARKRR_LOG_FORMAT` / `PARKRR_LOG_LEVEL` | `json`\|`text` / `debug`..`error` | `json` / `info` |
 
@@ -187,6 +189,8 @@ compose network). Schema migrations run automatically at startup.
 | `PARKRR_AUTO_INVOICE_CRON` | 5-field cron for the automatic invoice run (e.g. `0 6 1 * *`); empty = off; uses the same path as the manual button, billed periods are never invoiced twice | – |
 | `PARKRR_TAX_WRITES_ENABLED` | allow manual tax-book changes, receipt uploads, tax settings, payment tax metadata and year locking/unlocking; `false` keeps tax reports, simulations, receipts and exports read-only | `false` |
 | `PARKRR_TAX_EXPORT_MAX_RECEIPT_MB` | total uncompressed receipt bytes staged per tax ZIP export, integer 1–1024; a larger value requires sufficient private `TMPDIR` capacity | `24` |
+
+Restoring requires patched `pg_restore` and `psql` clients: PostgreSQL 16.15+ for the supported server-16 deployment. CLI installations using majors 14/15/17/18 need at least 14.24/15.19/17.11/18.6 respectively. Unsupported or prerelease clients are rejected before any restore SQL runs (CVE-2025-8714, CVE-2026-18408).
 
 Tax-book activation is optional: set `PARKRR_TAX_WRITES_ENABLED=true` and restart
 the application (recreate the container to apply changed environment variables).
@@ -560,7 +564,7 @@ Portainer's stack env vars are used for `${VAR}` **substitution** in the compose
 3. Below the editor → **Environment variables → Advanced mode** → paste your
    whole **`.env`** (based on `.env.example`; every line is a clean `KEY=value`).
    At minimum set `PARKRR_ADMIN_PASSWORD`, `PARKRR_SESSION_SECRET` (≥32 chars)
-   and `PARKRR_DB_PASSWORD` — deployment fails fast if the first two are missing.
+   and `PARKRR_DB_PASSWORD` — deployment fails fast if any of the three are missing.
 4. **Deploy the stack**, then open `http://<host>:${PARKRR_HTTP_PORT}` (default 8080).
 
 Notes:

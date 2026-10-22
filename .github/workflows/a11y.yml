@@ -11,7 +11,10 @@ permissions:
 jobs:
   a11y:
     name: Accessibility (Playwright + axe-core)
-    runs-on: ubuntu-latest
+    # The live restore test needs PostgreSQL 16 clients, matching the service.
+    # ubuntu-latest now rolls to 26.04 (clients 18): pg_restore then emits
+    # SET transaction_timeout, which PostgreSQL 16 cannot execute.
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
 
     services:
@@ -43,6 +46,17 @@ jobs:
       - name: Build parkrr
         run: go build -o parkrr ./cmd/parkrr
 
+      - name: Check PostgreSQL clients match the test server
+        run: |
+          for tool in pg_dump pg_restore psql; do
+            version=$("$tool" --version)
+            echo "$version"
+            if [[ ! "$version" =~ ^${tool}\ \(PostgreSQL\)\ 16\. ]]; then
+              echo "::error::$tool must use PostgreSQL 16 clients to match the test database"
+              exit 1
+            fi
+          done
+
       - name: Start parkrr
         env:
           PARKRR_DATABASE_URL: postgres://parkrr:parkrr@localhost:5432/parkrr?sslmode=disable
@@ -73,7 +87,7 @@ jobs:
           mkdir -p /tmp/parkrr-a11y-backups
           ./parkrr &
           echo "PARKRR_PID=$!" >> "$GITHUB_ENV"
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl -sf http://localhost:18099/ >/dev/null; then echo "parkrr up"; exit 0; fi
             sleep 1
           done
@@ -122,7 +136,8 @@ jobs:
           # Der Live-Test schlaegt hier fehl statt sich zu ueberspringen, falls die
           # Umgebung oben nicht mehr zu seinen Voraussetzungen passt.
           PARKRR_E2E_REQUIRE_LIVE: "1"
-        run: npm test
+        # Keep detailed test errors in GitHub check annotations as well as logs.
+        run: npm test -- --reporter=line,github
 
       - name: Stop parkrr
         if: always()

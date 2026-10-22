@@ -79,3 +79,17 @@ updates:
         update-types:
           - "minor"
           - "patch"
+
+  # Digest-pinned database images in the Compose deployments.
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Vienna"
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "docker"

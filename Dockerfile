@@ -37,7 +37,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # Alpine (not distroless) so pg_dump/pg_restore are available for the encrypted
 # backup feature; pinned to major 16 to match the postgres:16 server. Runs as a
 # dedicated non-root user.
-FROM alpine:3.24
+FROM alpine:3.24@sha256:71e9b7bae160ba167fa17414401b94cbcdaf3c32feeab9298bd794a2a0614c35
 
 # `apk upgrade` first: `apk add` never lifts an already-satisfied base-image
 # package, so libcrypto3/libssl3, busybox etc. would otherwise stay on the

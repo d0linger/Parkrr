@@ -12,12 +12,12 @@
 # it used to silently miss the backup key, S3, SMTP, /backups and the proxy CIDRs.
 services:
   db:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:deb28ee471183cb0c303113dac9b2433c51eeeeb678def7af9a9ec5820367815
     container_name: parkrr-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${PARKRR_DB_USER:-parkrr}
-      POSTGRES_PASSWORD: ${PARKRR_DB_PASSWORD:-parkrr}
+      POSTGRES_PASSWORD: ${PARKRR_DB_PASSWORD:?PARKRR_DB_PASSWORD must be set}
       POSTGRES_DB: ${PARKRR_DB_NAME:-parkrr}
     volumes:
       - parkrr-db-data:/var/lib/postgresql/data
@@ -44,7 +44,7 @@ services:
       PARKRR_DB_HOST: db
       PARKRR_DB_PORT: "5432"
       PARKRR_DB_USER: ${PARKRR_DB_USER:-parkrr}
-      PARKRR_DB_PASSWORD: ${PARKRR_DB_PASSWORD:-parkrr}
+      PARKRR_DB_PASSWORD: ${PARKRR_DB_PASSWORD:?PARKRR_DB_PASSWORD must be set}
       PARKRR_DB_NAME: ${PARKRR_DB_NAME:-parkrr}
       PARKRR_DB_SSLMODE: ${PARKRR_DB_SSLMODE:-disable}
       # --- Admin bootstrap (ADMIN_PASSWORD required) ---
@@ -62,6 +62,7 @@ services:
       # forwarded headers are trusted. Without it the app refuses to start (H-06).
       PARKRR_TRUSTED_PROXY_CIDRS: ${PARKRR_TRUSTED_PROXY_CIDRS:-}
       PARKRR_CHECK_BREACHED_PASSWORDS: ${PARKRR_CHECK_BREACHED_PASSWORDS:-true}
+      PARKRR_CHECK_BREACHED_BOOTSTRAP_PASSWORDS: ${PARKRR_CHECK_BREACHED_BOOTSTRAP_PASSWORDS:-false}
       # --- Passkeys (WebAuthn): set RP_ID + ORIGINS to enable ---
       PARKRR_WEBAUTHN_RP_ID: ${PARKRR_WEBAUTHN_RP_ID:-}
       PARKRR_WEBAUTHN_RP_NAME: ${PARKRR_WEBAUTHN_RP_NAME:-Parkrr}

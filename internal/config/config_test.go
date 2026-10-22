@@ -36,6 +36,51 @@ func setRequired(t *testing.T) {
 	t.Setenv("PARKRR_SESSION_SECRET", "a-very-long-session-secret-with-enough-entropy")
 }
 
+func TestLoadRejectsPlaceholderSecrets(t *testing.T) {
+	for _, tc := range []struct{ name, key, value string }{
+		{"admin example", "PARKRR_ADMIN_PASSWORD", "change-me-admin-password"},
+		{"session example", "PARKRR_SESSION_SECRET", "change-me-to-a-long-random-secret-string"},
+		{"uppercase variant", "PARKRR_SESSION_SECRET", "CHANGEME-this-is-long-enough-to-pass-length"},
+		{"backup variant", "PARKRR_BACKUP_KEY", "change_me-backup-key-that-is-long-enough!!"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("PARKRR_BACKUP_KEY", "")
+			t.Setenv(tc.key, tc.value)
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), tc.key) {
+				t.Fatalf("expected placeholder rejection for %s, got %v", tc.key, err)
+			}
+			if strings.Contains(err.Error(), tc.value) {
+				t.Fatal("configuration error disclosed the credential value")
+			}
+		})
+	}
+}
+
+func TestBootstrapBreachLookupOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		name, value string
+		want        bool
+	}{
+		{name: "unset"},
+		{name: "explicit off", value: "false"},
+		{name: "explicit on", value: "true", want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setRequired(t)
+			t.Setenv("PARKRR_CHECK_BREACHED_BOOTSTRAP_PASSWORDS", tc.value)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.CheckBreachedBootstrapPasswords != tc.want {
+				t.Fatalf("startup lookup enabled=%v, want %v", cfg.CheckBreachedBootstrapPasswords, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadDefaults(t *testing.T) {
 	setRequired(t)
 	t.Setenv("PARKRR_TAX_WRITES_ENABLED", "")
@@ -51,6 +96,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if !cfg.CheckBreachedPasswords {
 		t.Error("CheckBreachedPasswords should default to true")
+	}
+	if cfg.CheckBreachedBootstrapPasswords {
+		t.Error("startup breach lookup must require explicit opt-in")
 	}
 	if cfg.RateLimitPerMin != 600 {
 		t.Errorf("RateLimitPerMin default: got %d want 600", cfg.RateLimitPerMin)

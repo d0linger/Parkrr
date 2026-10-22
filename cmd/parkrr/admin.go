@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -11,6 +14,35 @@ import (
 	"github.com/preining/parkrr/internal/auth"
 	"github.com/preining/parkrr/internal/config"
 )
+
+// These byte limits match passwords created or changed through the GUI.
+const (
+	minBootstrapPasswordLen = 8
+	maxBootstrapPasswordLen = 72
+)
+
+var bootstrapHIBPClient = &http.Client{Timeout: 5 * time.Second}
+
+func checkBootstrapPassword(ctx context.Context, cfg *config.Config, client *http.Client) error {
+	if n := len(cfg.AdminPassword); n < minBootstrapPasswordLen || n > maxBootstrapPasswordLen {
+		return fmt.Errorf("PARKRR_ADMIN_PASSWORD must be between %d and %d bytes long", minBootstrapPasswordLen, maxBootstrapPasswordLen)
+	}
+	// Startup breach checks require a separate, default-off operator opt-in.
+	// The UI setting alone must not introduce a new startup data flow.
+	if !cfg.CheckBreachedPasswords || !cfg.CheckBreachedBootstrapPasswords {
+		return nil
+	}
+	n, err := auth.BreachedPasswordCount(ctx, client, cfg.AdminPassword)
+	switch {
+	case err != nil && cfg.FailClosedOnBreach:
+		return fmt.Errorf("PARKRR_ADMIN_PASSWORD could not be checked against known breaches (fail-closed): %w", err)
+	case err != nil:
+		slog.Warn("breached-password check unavailable for the admin bootstrap password, allowing (fail-open)", "err", err)
+	case n > 0:
+		return errors.New("PARKRR_ADMIN_PASSWORD appears in a known data breach; choose a different password")
+	}
+	return nil
+}
 
 // auditSystem writes an audit row for an action the SYSTEM performed (no request,
 // no logged-in user), such as the boot-time admin bootstrap. Best-effort: a failure
@@ -34,19 +66,27 @@ func auditSystem(ctx context.Context, pool *pgxpool.Pool, action, entity string,
 // made in the UI is not silently reverted on restart — unless
 // PARKRR_ADMIN_PASSWORD_FORCE=true, which re-applies the ENV password.
 func bootstrapAdmin(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) error {
-	hash, err := auth.HashPassword(cfg.AdminPassword)
-	if err != nil {
-		return err
-	}
-
 	var existingID int64
-	err = pool.QueryRow(ctx,
+	err := pool.QueryRow(ctx,
 		`SELECT id FROM users WHERE lower(username) = lower($1)`,
 		cfg.AdminUsername,
 	).Scan(&existingID)
+	exists := err == nil
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	// A stale ENV value is ignored on ordinary restarts after a GUI rotation.
+	var hash string
+	if !exists || cfg.AdminPasswordForce {
+		if err := checkBootstrapPassword(ctx, cfg, bootstrapHIBPClient); err != nil {
+			return err
+		}
+		if hash, err = auth.HashPassword(cfg.AdminPassword); err != nil {
+			return err
+		}
+	}
 
-	switch {
-	case err == nil: //nolint:gocritic // clearest form for this three-way branch
+	if exists {
 		var changed bool
 		if cfg.AdminPasswordForce {
 			// Emergency rotation is ATOMIC: re-apply the ENV password AND revoke every
@@ -103,7 +143,7 @@ func bootstrapAdmin(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config)
 			auditSystem(ctx, pool, "update", "user", existingID,
 				"Admin-Konto aus der Umgebung aktualisiert ("+cfg.AdminUsername+"): "+mode)
 		}
-	case errors.Is(err, pgx.ErrNoRows):
+	} else {
 		var newID int64
 		err = pool.QueryRow(ctx,
 			`INSERT INTO users (username, email, password_hash, is_admin, role)
@@ -115,8 +155,6 @@ func bootstrapAdmin(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config)
 		slog.Info("admin account created from environment", "username", cfg.AdminUsername)
 		auditSystem(ctx, pool, "create", "user", newID,
 			"Admin-Konto aus der Umgebung angelegt: "+cfg.AdminUsername)
-	default:
-		return err
 	}
 	return nil
 }
