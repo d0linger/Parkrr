@@ -365,6 +365,12 @@ func (h *Handler) ReturnFromPause(w http.ResponseWriter, r *http.Request) {
 		}
 		on = *d
 	}
+	// Ausbauplan O6: der Hallendienst trägt die Rückkehr ein, die er in der Halle sieht.
+	// Er startet damit nur die Miete wieder; ein Tag in der Zukunft hielte sie an.
+	if hallStaff(r) && on.After(startOfDayUTC(h.now())) {
+		writeError(w, http.StatusForbidden, "Der Hallendienst trägt eine Rückkehr bis heute ein")
+		return
+	}
 	var p vehiclePause
 	var removed, relinked bool
 	var newPaid *time.Time
@@ -459,6 +465,9 @@ func (h *Handler) ReturnFromPause(w http.ResponseWriter, r *http.Request) {
 			diffFields(map[string]any{"until": dateOrNil(p.Until), "ended": false, "paid_through_before": nil, "paid_through": nil, "spot_id": nil},
 				map[string]any{"until": on.AddDate(0, 0, -1).Format(dateLayout), "ended": true, "paid_through_before": "gemerkt",
 					"paid_through": dateOrNil(newPaid), "spot_id": spotAfter}))
+	}
+	if hallStaff(r) {
+		newPaid = nil // „bezahlt bis“ gehört zum Geld (Ausbau 35)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"removed": removed, "relinked": relinked, "paid_through": newPaid,
 		"prev_spot_id": p.PrevSpotID, "vehicle_id": p.VehicleID})

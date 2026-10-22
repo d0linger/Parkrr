@@ -670,6 +670,13 @@ type unassignedVehicle struct {
 	// Für den Platzvorschlag (Ausbau 33): Strom bei Ladebedarf, frühe Abholung ans Tor.
 	NeedsPower bool    `json:"needs_power"`
 	EndDate    *string `json:"end_date"`
+	// Ausbauplan O3: der letzte Platz, auf dem das Gefährt oder sein Vorgänger aus
+	// „Erneut einstellen“ stand (Belegungshistorie), wenn es diesen Platz noch gibt.
+	// Der Planer nennt ihn zuerst, sofern er frei ist und das Gefährt dort gültig steht.
+	PrevSpotID    *int64  `json:"prev_spot_id,omitempty"`
+	PrevHallID    *int64  `json:"prev_hall_id,omitempty"`
+	PrevSpotLabel *string `json:"prev_spot_label,omitempty"`
+	PrevFromCopy  bool    `json:"prev_from_copy,omitempty"`
 }
 
 // ListUnassignedVehicles returns active Gefährte that stand on no spot yet — the
@@ -682,10 +689,18 @@ func (h *Handler) ListUnassignedVehicles(w http.ResponseWriter, r *http.Request)
 		        v.person_id, trim(p.first_name || ' ' || p.last_name),
 		        COALESCE(v.length_m, cat.default_length_m), COALESCE(v.width_m, cat.default_width_m),
 		        COALESCE(v.height_m, cat.default_height_m), COALESCE(v.weight_t, cat.default_weight_t),
-		        v.needs_power, to_char(v.end_date, 'YYYY-MM-DD')
+		        v.needs_power, to_char(v.end_date, 'YYYY-MM-DD'),
+		        prev.spot_id, prev.hall_id, prev.label, COALESCE(prev.vehicle_id <> v.id, false)
 		   FROM vehicles v
 		   LEFT JOIN categories cat ON cat.id = v.category_id
 		   LEFT JOIN persons    p   ON p.id = v.person_id
+		   LEFT JOIN LATERAL (
+		        SELECT soh.spot_id, s.hall_id, s.label, soh.vehicle_id
+		          FROM spot_occupancy_history soh
+		          JOIN spots s ON s.id = soh.spot_id
+		         WHERE soh.vehicle_id = v.id OR soh.vehicle_id = v.copied_from
+		         ORDER BY soh.started_at DESC, soh.id DESC
+		         LIMIT 1) prev ON true
 		  WHERE v.spot_id IS NULL AND NOT v.archived
 		  ORDER BY lower(COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), cat.name, 'Gefährt'))`)
 	if err != nil {
@@ -697,7 +712,8 @@ func (h *Handler) ListUnassignedVehicles(w http.ResponseWriter, r *http.Request)
 	for rows.Next() {
 		var uv unassignedVehicle
 		if err := rows.Scan(&uv.ID, &uv.Label, &uv.Type, &uv.PersonID, &uv.PersonName,
-			&uv.LengthM, &uv.WidthM, &uv.HeightM, &uv.WeightT, &uv.NeedsPower, &uv.EndDate); err != nil {
+			&uv.LengthM, &uv.WidthM, &uv.HeightM, &uv.WeightT, &uv.NeedsPower, &uv.EndDate,
+			&uv.PrevSpotID, &uv.PrevHallID, &uv.PrevSpotLabel, &uv.PrevFromCopy); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan failed")
 			return
 		}

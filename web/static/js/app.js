@@ -2167,18 +2167,23 @@ import { createRevenueChart } from './revenue-chart.js';
             // UX4 — per-hall occupancy as a small proportional bar chart (inline SVG-free, CSP-safe).
             // Jede Halle ist ein Weg in ihren Planer, auch eine leere: gerade die freie
             // Halle ist die Antwort auf "wo stelle ich das nächste Gefährt hin?".
+            // Ausbauplan O1: der Balken ist die Flächenauslastung, dieselbe Zahl wie im Planer
+            // (belegte m² / nutzbare Fläche). Eine Halle, die noch nie im Planer offen war,
+            // kennt ihre Fläche nicht; sie zeigt die Zahl der Gefährte ohne Balken.
             const halls = occ.halls || [];
-            const maxP = Math.max(1, ...halls.map((hh) => hh.placed || 0));
+            if (halls.length) occCard.append(el('div', { class: 'muted', style: 'font-size:var(--text-xs);margin:.55rem 0 .1rem' }, 'Je Halle · Fläche belegt, wie im Planer'));
+            const m2 = (v) => Math.round(v).toLocaleString('de-DE') + ' m²';
             halls.forEach((hh) => {
-                const n = hh.placed || 0;
+                const n = hh.placed || 0, pct = hh.pct, count = n ? n + (n === 1 ? ' Gefährt' : ' Gefährte') : 'leer';
+                const detail = pct != null ? pct + ' % belegt, ' + m2(hh.used_m2) + ' von ' + m2(hh.park_m2) + ', ' + count : count + ', Fläche im Planer noch nicht gerechnet';
                 occCard.append(el('button', { class: 'status-row dash-occrow dash-occrow-btn', type: 'button',
-                    'aria-label': hh.name + ' (' + hh.garage_name + ') im Planer öffnen, ' + (n ? n + ' platziert' : 'leer'),
+                    'aria-label': hh.name + ' (' + hh.garage_name + ') im Planer öffnen, ' + detail,
                     onclick: () => navigate('hall/' + hh.hall_id) },
                     el('span', { class: 'status-name' },
                         el('span', { class: 'occ-hallnm' }, esc(hh.name)),
                         el('span', { class: 'muted occ-garnm', style: 'font-weight:400;font-size:var(--text-xs);margin-left:.4rem' }, esc(hh.garage_name))),
-                    el('span', { class: 'dash-bar', title: n ? n + ' platziert' : 'leer' }, n ? el('span', { class: 'dash-bar-fill', style: 'width:' + Math.round(n / maxP * 100) + '%' }) : null),
-                    el('span', { class: 'bar-val' + (n ? '' : ' muted') }, n ? String(n) : 'leer')));
+                    el('span', { class: 'dash-bar', title: detail }, pct ? el('span', { class: 'dash-bar-fill', style: 'width:' + Math.min(100, pct) + '%' }) : null),
+                    el('span', { class: 'bar-val' + (pct || n ? '' : ' muted') }, pct != null ? pct + ' %' : (n ? String(n) : 'leer'))));
             });
             page.append(occCard);
         }
@@ -4819,8 +4824,11 @@ import { createRevenueChart } from './revenue-chart.js';
         if (!p) return (canManage() && v.status === 'stored' && !v.archived)
             ? [el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': 'Kurz weg: ' + vehicleTitle(v), onclick: () => pauseSheet(v) }, 'Kurz weg …')] : [];
         const nodes = [el('span', { class: 'badge badge-away', title: p.hold_spot ? 'Platz bleibt reserviert' : 'Platz freigegeben' }, pauseLabel(p))];
-        if (!canManage()) return nodes;
         const name = vehicleTitle(v);
+        // Ausbauplan O6: die Rückkehr sieht, wer in der Halle steht. Eintragen, verlängern
+        // und „Doch abgeholt“ bleiben im Büro, weil sie die Miete anhalten oder beenden.
+        if (isHall() && pauseFrom(p) <= today()) nodes.push(el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': name + ' ist zurück', onclick: () => pauseReturn(v, p) }, 'Ist zurück'));
+        if (!canManage()) return nodes;
         if (pauseFrom(p) > today()) {
             nodes.push(el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': 'Ruhezeit von ' + name + ' absagen', onclick: () => pauseCancel(p) }, 'Absagen'));
             return nodes;
@@ -4912,8 +4920,8 @@ import { createRevenueChart } from './revenue-chart.js';
         // Hallendienst (Ausbau 35): nur der Status, keine Zahlungsschieber.
         if (!seesMoney()) {
             wrap.append(statusBadge(v.status));
-            const op = openPause(v);
-            if (op) wrap.append(el('span', { class: 'badge badge-away' }, pauseLabel(op)));
+            // Unterwegs-Badge, für den Hallendienst mit „Ist zurück“ (Ausbauplan O6).
+            if (openPause(v)) wrap.append(...pauseControls(v));
             return wrap;
         }
         const c = coverage(v);
@@ -5986,6 +5994,9 @@ import { createRevenueChart } from './revenue-chart.js';
                     ctrl.append(el('button', { class: 'btn btn-ghost btn-sm', style: 'margin-top:.7rem', onclick: () => changeStatus(v, 'cancelled') }, icon('close', 14), ' Stornieren'));
                 }
                 page.append(ctrl);
+            } else if (isHall() && openPause(v)) {
+                // Ausbauplan O6: unterwegs; „Ist zurück“ tippt der Hallendienst hier.
+                page.append(el('div', { class: 'card' }, el('h3', {}, 'Unterwegs'), el('div', { class: 'controls-row' }, ...pauseControls(v))));
             }
         }
 
@@ -9005,6 +9016,7 @@ import { createRevenueChart } from './revenue-chart.js';
                 plannerSymbol: s.planner_symbol || null, photoUrl: s.photo_id ? '/api/photos/' + s.photo_id : null,
                 x: num(g.x, 1), y: num(g.y, 1), w: num(g.w, s.length_m || catFoot(s.vehicle_type)[0]), h: num(g.h, s.width_m || catFoot(s.vehicle_type)[1]), rot: num(g.rot, 0), status: g.status || 'busy', noBuf: !!g.noBuf, _dirty: false }; }),
             palette, plannerIcons,
+            storedPark: (typeof geo.park === 'number' && Number.isFinite(geo.park)) ? geo.park : null, // Ausbauplan O1
             mode: 'manage', snap: true, gridStep: 0.5, autoSnap: true, calib: false, autoArea: true, ortho: false, zoom: 1, base: null, buffer: false, bufferM: 1, allowBlocking: false, roomSel: null, wallRef: (geo.wallRef === 'inner' || geo.wallRef === 'outer') ? geo.wallRef : 'axis', sel: null,
             tool: null, chain: null, preview: null, structSel: null, // wall draw/edit state
             openStart: null, snapHint: null, drawKind: 'wall_ext', openKind: 'door', wallThick: null, // opening draw + last-used types + wall-thickness override (m)
@@ -9698,10 +9710,10 @@ import { createRevenueChart } from './revenue-chart.js';
             drawOverlay.style.display = drawActive ? 'block' : 'none';
             drawOverlay.classList.toggle('edit', !P.tool); drawOverlay.style.cursor = ''; // reset; the hover handler re-applies a resize cursor over zone handles
             positionWallPop(); positionRoomBadge();
-            const used = P.spots.length;
-            occN.textContent = used + (used === 1 ? ' Gefährt' : ' Gefährte');
-            const tot = polyArea(P.floor); let ve = 0; P.spots.forEach((b) => { ve += b.w * b.h; });
-            occBar.style.width = Math.round(Math.min(100, ve / Math.max(1, tot) * 100)) + '%';
+            // Dieselbe Auslastung wie in den Kennzahlen und auf der Startseite (Ausbauplan O1).
+            const used = P.spots.length, st = areaStats();
+            occN.textContent = used + (used === 1 ? ' Gefährt' : ' Gefährte') + (st.pct != null ? ' · ' + st.pct + ' %' : '');
+            occBar.style.width = (st.pct != null ? Math.min(100, st.pct) : 0) + '%';
             updateArm();
         }
         function drawFloor() {
@@ -10525,8 +10537,10 @@ import { createRevenueChart } from './revenue-chart.js';
             }
             if (P.snapHint) svg.append(svgEl('circle', { cx: P.snapHint.x * CELL, cy: P.snapHint.y * CELL, r: 6, class: 'gp-snaphint' }));
         }
-        function renderMetrics() {
-            metrics.innerHTML = '';
+        // Flächen der Halle, einmal gerechnet für Kennzahlen, Kopfzeile und den Grundriss
+        // (geometry.park, Ausbauplan O1): net ist die nutzbare Fläche = Parkfläche ohne
+        // Fahrstraßen und Sperrflächen; die Auslastung ist belegt / net.
+        function areaStats() {
             const total = polyArea(P.floor), enc = P.autoArea ? enclosure() : null;
             let zoneA = 0, colA = 0, ve = 0;
             // Columns/walls are structural (already outside enc.area). Only the NON-parkable zones
@@ -10543,23 +10557,37 @@ import { createRevenueChart } from './revenue-chart.js';
                 if (c === 'wall') colA += b.w * b.h;
                 else if (c === 'zone' && !isZoneKind(b.kind)) zoneA += zoneEncArea(b); // markierte Zonen (Stellfläche, Strom) bleiben Stellfläche
             }); P.spots.forEach((b) => ve += b.w * b.h);
-            // Hall dimensions = the ACTUAL floor polygon's bounding box (same source as the
-            // Breite/Tiefe readout), not the P.Wm×P.Hm canvas grid — after „Form bearbeiten"
-            // shrinks the polygon inside the grid the two diverge, and the bbox is the real one.
-            const bb = floorBB(), fw = bb.maxX - bb.minX, fh = bb.maxY - bb.minY;
             // "Frei" is free PARKABLE space = the wall-enclosed usable area (the Parkfläche) minus what
             // is occupied/excluded — NOT the gross floor polygon, which also counts the wall footprint.
             // Using the gross area made Frei read LARGER than the Parkfläche it sits inside. Fall back to
             // the polygon area when there is no wall enclosure.
-            const usable = (enc && enc.area > 0.3) ? enc.area : total;
+            const walled = !!(enc && enc.area > 0.3), usable = walled ? enc.area : total;
             // "Frei" = free PARKABLE = the enclosed usable area minus the marked zones (Fahrstraße/
             // Wartung/Notausgang) AND the vehicles on it. Columns are already out of enc.area (structural);
             // the no-enclosure polygon fallback removes zones + columns explicitly.
-            const free = (enc && enc.area > 0.3) ? (usable - zoneA - ve) : (total - zoneA - colA - ve);
+            const net = Math.max(0, walled ? usable - zoneA : total - zoneA - colA);
+            return { total, enc, walled, zoneA, colA, ve, net, free: net - ve, pct: net > 0.3 ? Math.round(ve / net * 100) : null };
+        }
+        // Hallen, die vor der Flächenauslastung gezeichnet wurden, melden ihre nutzbare Fläche
+        // einmal nach. Nur dieser Wert wird geschrieben, nie der ganze Grundriss: wer die
+        // Halle nur ansieht, überschreibt so keine Wände, die ein anderer gerade zeichnet.
+        function syncParkArea() {
+            if (!canManage()) return;
+            const net = round2(areaStats().net);
+            if (P.storedPark != null && Math.abs(P.storedPark - net) <= 0.05) return;
+            api.put('/halls/' + P.hallId + '/park-area', { park_m2: net }).then(() => { P.storedPark = net; }, () => { /* beim nächsten Öffnen erneut */ });
+        }
+        function renderMetrics() {
+            metrics.innerHTML = '';
+            const { total, enc, zoneA, colA, ve, free, pct } = areaStats();
+            // Hall dimensions = the ACTUAL floor polygon's bounding box (same source as the
+            // Breite/Tiefe readout), not the P.Wm×P.Hm canvas grid — after „Form bearbeiten"
+            // shrinks the polygon inside the grid the two diverge, and the bbox is the real one.
+            const bb = floorBB(), fw = bb.maxX - bb.minX, fh = bb.maxY - bb.minY;
             const m = (val, label, cls) => el('div', { class: 'gp-metric' }, el('div', { class: 'gp-mv ' + (cls || '') }, val), el('div', { class: 'gp-ml' }, label));
             metrics.append(
                 m(Math.round(Math.max(0, free)) + ' m²', 'Frei', 'ok'),
-                m(Math.round(ve) + ' m²', 'Belegt · ' + P.spots.length, 'busy'),
+                m(Math.round(ve) + ' m²', 'Belegt · ' + P.spots.length + (pct != null ? ' · ' + pct + ' %' : ''), 'busy'),
                 m(Math.round(zoneA + colA) + ' m²', 'Ausgenommen', 'excl'),
                 m(fw.toFixed(1).replace('.', ',') + '×' + fh.toFixed(1).replace('.', ',') + ' m', el('span', {}, 'Halle · ' + Math.round(total) + ' ', el('span', { class: 'gp-unit' }, 'm²'))),
                 m(polyPerim(P.floor).toFixed(1).replace('.', ',') + ' m', 'Umfang'));
@@ -10674,7 +10702,7 @@ import { createRevenueChart } from './revenue-chart.js';
         function currentWalls() {
             return { nodes: P.walls.nodes.map((n) => ({ x: round2(n.x), y: round2(n.y) })), edges: P.walls.edges.map((e) => ({ a: e.a, b: e.b, kind: e.kind, thick: round2(e.thick), ops: (e.ops && e.ops.length) ? e.ops.map((o) => ({ c: round2(o.c), w: round2(o.w), kind: o.kind, side: o.side, hinge: o.hinge, frame: o.frame })) : undefined })) };
         }
-        function currentGeometry() { return { floor: P.floor, Wm: P.Wm, Hm: P.Hm, tor: P.tor, load: P.load, shape: P.shape, excl: P.excl.map((e) => ({ kind: e.kind, x: round2(e.x), y: round2(e.y), w: round2(e.w), h: round2(e.h), rot: Math.round(e.rot || 0), label: e.label, mat: e.mat || undefined })), walls: (P.walls.edges.length ? currentWalls() : undefined), wallRef: P.wallRef !== 'axis' ? P.wallRef : undefined, plan: P.plan ? { href: P.plan.href, dxf: P.plan.dxf, x: round2(P.plan.x), y: round2(P.plan.y), w: round2(P.plan.w), h: round2(P.plan.h), opacity: round2(P.plan.opacity), hidden: P.plan.hidden || undefined } : undefined }; }
+        function currentGeometry() { return { floor: P.floor, Wm: P.Wm, Hm: P.Hm, tor: P.tor, load: P.load, shape: P.shape, park: round2(areaStats().net), excl: P.excl.map((e) => ({ kind: e.kind, x: round2(e.x), y: round2(e.y), w: round2(e.w), h: round2(e.h), rot: Math.round(e.rot || 0), label: e.label, mat: e.mat || undefined })), walls: (P.walls.edges.length ? currentWalls() : undefined), wallRef: P.wallRef !== 'axis' ? P.wallRef : undefined, plan: P.plan ? { href: P.plan.href, dxf: P.plan.dxf, x: round2(P.plan.x), y: round2(P.plan.y), w: round2(P.plan.w), h: round2(P.plan.h), opacity: round2(P.plan.opacity), hidden: P.plan.hidden || undefined } : undefined }; }
         // Höchstens EIN Speichern gleichzeitig: überlappende PUTs konnten auf langsamer
         // Leitung in falscher Reihenfolge ankommen. Ein Aufruf währenddessen merkt sich
         // nur einen Nachlauf, der nach dem laufenden startet.
@@ -10703,7 +10731,10 @@ import { createRevenueChart } from './revenue-chart.js';
             P.dirty = false; renderToolbar(); // optimistic; a change during the save re-flags it
             spotErr = null;
             try {
-                await api.put('/halls/' + P.hallId, { name: P.hallName, geometry: currentGeometry() });
+                // Den Grundriss schreiben nur Bearbeiter; der Hallendienst (Ausbau 35) platziert
+                // nur Gefährte. Bisher scheiterte sein Speichern hier mit 403, bevor ein Platz
+                // geschrieben war.
+                if (canManage()) { const geometry = currentGeometry(); await api.put('/halls/' + P.hallId, { name: P.hallName, geometry }); P.storedPark = geometry.park; }
                 // Free placement: an invalid spot (outside / gate / lane / collision) is kept
                 // locally and stays _dirty, but is NOT persisted until it is valid again.
                 let heldInvalid = 0;
@@ -11693,7 +11724,42 @@ import { createRevenueChart } from './revenue-chart.js';
             const days = (new Date(p.end_date + 'T00:00:00') - new Date(today() + 'T00:00:00')) / 86400000;
             return Math.max(0, Math.min(1, 1 - (days - 30) / 150));
         }
+        // Ausbauplan O3: der Platz vom letzten Mal zuerst, beim Saisonwechsel der des
+        // Vorgängers aus „Erneut einstellen“. Nur wenn er in dieser Halle noch steht, leer ist
+        // und das Gefährt dort mittig und in seiner Drehung gültig steht (dieselbe Prüfung
+        // wie beim Ziehen; der leere alte Platz selbst zählt dabei nicht als Hindernis).
+        function prevSpotSuggestion(p) {
+            if (!p.prev_spot_id || Number(p.prev_hall_id) !== Number(P.hallId)) return null;
+            const sp = P.spots.find((b) => b._id === p.prev_spot_id);
+            if (!sp || sp.vehId) return null;
+            const { w, h } = footFor(p), cx = sp.x + sp.w / 2, cy = sp.y + sp.h / 2;
+            const cand = { x: round2(cx - w / 2), y: round2(cy - h / 2), w, h, rot: sp.rot || 0 };
+            if (!validVeh({ kind: 'veh', ...cand }, sp._id)) return null;
+            return { ...cand, spotId: sp._id, reasons: [p.prev_from_copy ? 'Vorjahresplatz' : 'bisheriger Platz'] };
+        }
+        async function placeOnSpot(p, sg) {
+            const sp = P.spots.find((b) => b._id === sg.spotId);
+            if (!sp || sp.vehId) { toast('Der Platz ist inzwischen belegt', 'warn'); return false; }
+            try {
+                const geometry = { x: sg.x, y: sg.y, w: round2(sg.w), h: round2(sg.h), rot: sg.rot || 0, status: 'busy', noBuf: sp.noBuf || undefined };
+                await api.put('/spots/' + sp._id, { label: sp.spotLabel || sp.label, geometry });
+                await api.put('/spots/' + sp._id + '/vehicle', { vehicle_id: p.id });
+                Object.assign(sp, { label: p.label, type: p.type || '', vehId: p.id, personId: p.person_id || null, personName: p.person_name || '',
+                    L: p.length_m, W: p.width_m, H: p.height_m, t: p.weight_t, needsPower: !!p.needs_power,
+                    x: geometry.x, y: geometry.y, w: sg.w, h: sg.h, rot: geometry.rot, status: 'busy', _dirty: false });
+                P.palette = P.palette.filter((x) => x.id !== p.id); P.sel = sp._id;
+                toast('✓ ' + p.label + (p.prev_from_copy ? ' steht wieder auf dem Platz vom Vorjahr' : ' steht wieder auf seinem bisherigen Platz'), 'ok');
+                if (armed && armed.p.id === p.id) armed = null;
+                draw();
+                return true;
+            } catch (err) { toast(err.message || 'Platzieren fehlgeschlagen', 'error'); return false; }
+        }
         function suggestFor(p) {
+            const prev = prevSpotSuggestion(p);
+            const rest = suggestFresh(p, prev ? 2 : 3);
+            return prev ? [prev].concat(rest) : rest;
+        }
+        function suggestFresh(p, limit) {
             const { w, h } = footFor(p), gates = routeGates();
             const routeObs = wallRects().concat(P.excl.filter((e) => EXCL[e.kind] && EXCL[e.kind].cat === 'wall'))
                 .concat(P.spots.map((b) => ({ x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot || 0 })));
@@ -11703,7 +11769,7 @@ import { createRevenueChart } from './revenue-chart.js';
                 valid: (c) => validVeh({ kind: 'veh', ...c }, null),
                 exitOK: (gates.length && !P.allowBlocking)
                     ? (c) => PG.hasExitPath(c, routeObs, gates, bb, { clearance: Math.min(c.w, c.h) / 2 + 0.15, exitTol: 0.5 }) : null,
-                needsPower: !!p.needs_power, powerZones: P.excl.filter((e) => e.kind === 'power'), gates, urgency: pickupUrgency(p), limit: 3,
+                needsPower: !!p.needs_power, powerZones: P.excl.filter((e) => e.kind === 'power'), gates, urgency: pickupUrgency(p), limit,
             });
         }
         function showSuggestions() {
@@ -11728,7 +11794,7 @@ import { createRevenueChart } from './revenue-chart.js';
         async function takeSuggestion(i) {
             const a = armed; if (!a || !a.sugg || !a.sugg[i]) return;
             const sg = a.sugg[i];
-            const ok = await placeFromPalette(a.p, { x: sg.x, y: sg.y, w: sg.w, h: sg.h, rot: sg.rot || 0 });
+            const ok = sg.spotId ? await placeOnSpot(a.p, sg) : await placeFromPalette(a.p, { x: sg.x, y: sg.y, w: sg.w, h: sg.h, rot: sg.rot || 0 });
             if (ok) { updateArm(); requestAnimationFrame(() => rail.querySelector('.gp-vpick')?.focus({ preventScroll: true })); }
         }
         function disarm() {
@@ -11797,7 +11863,7 @@ import { createRevenueChart } from './revenue-chart.js';
         setMode(P.mode);
         // Fit FIRST, then take the undo baseline — fitView() canonicalises coordinates (shiftWorld),
         // so recording the baseline afterwards keeps hist[0] == what's on screen (no undo jump) (F4).
-        requestAnimationFrame(() => { if (P.walls.edges.length) fitView(); else layout(); pushUndo(); if (focusTarget != null) requestAnimationFrame(() => focusSpot(focusTarget));
+        requestAnimationFrame(() => { if (P.walls.edges.length) fitView(); else layout(); pushUndo(); syncParkArea(); if (focusTarget != null) requestAnimationFrame(() => focusSpot(focusTarget));
             if (armTarget && P.mode === 'manage') requestAnimationFrame(() => arm(armTarget, true)); });
     }
 

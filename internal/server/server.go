@@ -357,7 +357,8 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	route("GET /api/pauses/due", authed(hf(h.PausesDue)))
 	route("POST /api/vehicles/{id}/pause", editor(hf(h.StartPause)))
 	route("PUT /api/vehicle-pauses/{id}", editor(hf(h.ExtendPause)))
-	route("POST /api/vehicle-pauses/{id}/return", editor(hf(h.ReturnFromPause)))
+	// Ausbauplan O6: „Ist zurück“ sieht, wer in der Halle steht.
+	route("POST /api/vehicle-pauses/{id}/return", hall(hf(h.ReturnFromPause)))
 	route("POST /api/vehicle-pauses/{id}/collect", editor(hf(h.CollectFromPause)))
 	route("DELETE /api/vehicle-pauses/{id}", editor(hf(h.DeletePause)))
 	route("DELETE /api/vehicle-rate-changes/{id}", editor(hf(h.DeleteRateChange)))
@@ -377,6 +378,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	route("GET /api/garages/{id}/halls", authed(hf(h.ListHalls)))
 	route("POST /api/garages/{id}/halls", editor(hf(h.CreateHall)))
 	route("PUT /api/halls/{id}", editor(hf(h.UpdateHall)))
+	route("PUT /api/halls/{id}/park-area", editor(hf(h.SetHallParkArea)))
 	route("DELETE /api/halls/{id}", editor(hf(h.DeleteHall)))
 	route("GET /api/halls/{id}/plan", authed(hf(h.GetHallPlan)))
 	route("POST /api/halls/{id}/spots", hall(hf(h.CreateSpot)))

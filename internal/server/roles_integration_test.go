@@ -51,6 +51,7 @@ var hallWrites = set(
 	"DELETE /api/spots/{id}", "PUT /api/spots/{id}/vehicle", "DELETE /api/spots/{id}/vehicle", "PUT /api/halls/{id}/spots/geometry",
 	"PUT /api/vehicles/{id}/planner", "PUT /api/vehicles/{id}/dimensions", "POST /api/service-tasks/{id}/done",
 	"DELETE /api/service-task-log/{id}", "POST /api/access-media/{id}/issue", "POST /api/access-media/{id}/return",
+	"POST /api/vehicle-pauses/{id}/return",
 )
 
 // Lesen mit Beträgen: jede Rolle außer dem Hallendienst.

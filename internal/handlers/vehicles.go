@@ -1336,10 +1336,10 @@ func (h *Handler) DuplicateVehicle(w http.ResponseWriter, r *http.Request) {
 	err = tx.QueryRow(ctx,
 		`INSERT INTO vehicles (person_id, category_id, label, license_plate, notes,
 		        billing_period, rate, cost_override, start_date, status, reserved_from,
-		        length_m, width_m, height_m, weight_t, needs_power, planner_symbol)
+		        length_m, width_m, height_m, weight_t, needs_power, planner_symbol, copied_from)
 		 SELECT person_id, category_id, label, license_plate, notes,
 		        billing_period, $3, $4, $2, $5, $6,
-		        length_m, width_m, height_m, weight_t, needs_power, planner_symbol
+		        length_m, width_m, height_m, weight_t, needs_power, planner_symbol, id
 		 FROM vehicles WHERE id = $1
 		 RETURNING id`, id, start, rate, costOverride, status, reservedFrom).Scan(&newID)
 	if err != nil {

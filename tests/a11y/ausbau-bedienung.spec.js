@@ -34,7 +34,7 @@ test('Belegung: jede Halle öffnet ihren Planer, auch eine leere', async ({ page
   const empty = page.getByRole('button', { name: /Halle B \(Nord\) im Planer öffnen, leer/ });
   await expect(empty).toBeVisible();
   await expect(empty).toContainText('leer');
-  await page.getByRole('button', { name: /Halle A \(Nord\) im Planer öffnen, 8 platziert/ }).click();
+  await page.getByRole('button', { name: /Halle A \(Nord\) im Planer öffnen, 8 Gefährte/ }).click();
   await expect(page).toHaveURL(/#\/hall\/3$/);
 });
 

@@ -1267,6 +1267,12 @@ type hallOccupancy struct {
 	Name       string `json:"name"`
 	GarageName string `json:"garage_name"`
 	Placed     int    `json:"placed"`
+	// Ausbauplan O1: belegte m² (alle Plätze der Halle, wie „Belegt“ im Planer), die
+	// nutzbare Fläche aus dem Planer (nil, solange die Halle dort nicht geöffnet wurde)
+	// und daraus die Auslastung in Prozent.
+	UsedM2 float64  `json:"used_m2"`
+	ParkM2 *float64 `json:"park_m2"`
+	Pct    *int     `json:"pct"`
 }
 
 // occupancyResponse answers "how full is the garage" for the dashboard. The plan
@@ -1306,7 +1312,8 @@ func (h *Handler) Occupancy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := tx.Query(ctx,
-		`SELECT h.id, h.name, g.name, count(v.id) FILTER (WHERE v.archived = false)
+		`SELECT h.id, h.name, g.name, count(v.id) FILTER (WHERE v.archived = false),
+		        CASE WHEN jsonb_typeof(h.geometry->'park') = 'number' THEN (h.geometry->>'park')::float8 END
 		   FROM halls h
 		   JOIN garages g ON g.id = h.garage_id
 		   LEFT JOIN spots s ON s.hall_id = h.id
@@ -1320,7 +1327,7 @@ func (h *Handler) Occupancy(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	for rows.Next() {
 		var ho hallOccupancy
-		if err := rows.Scan(&ho.HallID, &ho.Name, &ho.GarageName, &ho.Placed); err != nil {
+		if err := rows.Scan(&ho.HallID, &ho.Name, &ho.GarageName, &ho.Placed, &ho.ParkM2); err != nil {
 			writeError(w, http.StatusInternalServerError, "query failed")
 			return
 		}
@@ -1329,6 +1336,16 @@ func (h *Handler) Occupancy(w http.ResponseWriter, r *http.Request) {
 	if rows.Err() != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
+	}
+	used, err := hallUsedArea(ctx, tx)
+	if err != nil {
+		serverError(w, r, "query failed", err)
+		return
+	}
+	for i := range resp.Halls {
+		ho := &resp.Halls[i]
+		ho.UsedM2 = math.Round(used[ho.HallID]*100) / 100
+		ho.Pct = areaPct(used[ho.HallID], ho.ParkM2)
 	}
 	// FE4: today's snapshot is written by the background occupancy loop (see
 	// RecordOccupancySnapshot), so this dashboard GET stays a pure read and never

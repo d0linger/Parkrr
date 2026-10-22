@@ -12,11 +12,11 @@ Legende: `[x]` umgesetzt · `[~]` teilweise (Grund dahinter) · `[ ]` offen · `
 - [x] 16 Playwright-Browser in CI zwischenspeichern (`actions/cache`, Schlüssel = Playwright-Version)
 - [x] 17 Live-Dashboard-Test in CI wirklich ausführen (Port 18099, Zugangsdaten, `PARKRR_E2E_REQUIRE_LIVE`)
 - [x] 2 Wiederherstellungsprobe in der Betriebsbereitschaft (Punkt „Sicherung geprüft“, 14 Tage)
-- [~] 18 Planer-Farben und Radien auf Tokens: 6 Regeln der Planfläche nutzen jetzt die vorhandenen `--gp*`-Tokens (ohne sichtbare Änderung). Offen: rund 140 weitere Literale sind eine eigene Planer-Palette (Fahrzeugkategorien, Zustände, Schatten) ohne Token in DESIGN.md; die Umstellung braucht zuerst eine Palettenentscheidung, sonst ändert sie Farben.
+- [x] 18 Planer-Farben und Radien auf Tokens: 6 Regeln der Planfläche nutzen die vorhandenen `--gp*`-Tokens. Nachtrag O2: die übrigen 155 festen Farbwerte der Planer-Regeln stehen als 107 Tokens `--gpc-*` mit ihrem bisherigen Wert (Pixel- und Computed-Style-Vergleich gleich), Palette in DESIGN.md.
 
 ## B2 Bedienung
 
-- [~] 3 Hallen-Belegung: jede Halle (auch leer) öffnet ihren Planer. Auslastung in Prozent bewusst nicht: Plätze entstehen im Planer erst beim Platzieren, eine Platzzahl wäre irreführend; Flächenauslastung folgt mit Nr. 38.
+- [x] 3 Hallen-Belegung: jede Halle (auch leer) öffnet ihren Planer. Nachtrag O1: Auslastung als Fläche (belegte m² / nutzbare Fläche), dieselbe Zahl in Startseite, Planer-Kopfzeile und Kennzahlen; die nutzbare Fläche rechnet nur der Planer und legt sie als `geometry.park` ab.
 - [x] 7 Tastenkürzel-Übersicht auf „?“ (Tabelle `APP_SHORTCUTS`; `/` Suche, `N` neu; im Planer gilt dessen eigene Hilfe)
 - [x] 4 Befehlspalette mit Aktionen (Person, Gefährt, Zusatzkosten, Kürzel, Hell/Dunkel; rollenabhängig)
 - [x] 6 Kompakte Listenansicht (Gefährte, Personen; Schalter „Kompakt“, im Browser gemerkt)
@@ -42,7 +42,7 @@ Legende: `[x]` umgesetzt · `[~]` teilweise (Grund dahinter) · `[ ]` offen · `
 
 ## B5 Saison und Kunden
 
-- [x] 21 Saisonwechsel (Dialog in der Gefährte-Liste; je Gefährt über „Erneut einstellen“, neu: aktueller Tarif statt Vorjahrespreis und Reservierung ab Beginn, beides optional). Offen: Platz vom Vorjahr reservieren.
+- [x] 21 Saisonwechsel (Dialog in der Gefährte-Liste; je Gefährt über „Erneut einstellen“, neu: aktueller Tarif statt Vorjahrespreis und Reservierung ab Beginn, beides optional). Nachtrag O3: „Platz vorschlagen“ nennt den Vorjahresplatz zuerst (Migration 088, `vehicles.copied_from`).
 - [x] 22 Vertragsende-Erinnerung per Mail (Standard aus, Tage in der Mail-Automatik, je Gefährt und Ende genau einmal) und Verlängerungswunsch im Portal, „Übernehmen“ speichert das Gefährt über den normalen Weg
 - [x] 23 Abholzeitfenster (Einstellungen), im Portal Auswahl freier Zeitpunkte; der letzte Platz wird unter Sperre nur einmal vergeben; Uhrzeit in Kalender, Wochenliste und Abo
 - [x] 31 Warteliste (eigene Seite, Einwilligung Pflicht, „Übernehmen“ legt die Person an und öffnet das Gefährt-Formular, Hinweis in der Heute-Liste, Löschung nach 12 Monaten)
@@ -58,7 +58,7 @@ Legende: `[x]` umgesetzt · `[~]` teilweise (Grund dahinter) · `[ ]` offen · `
 
 - [x] 27 Kontoauszug (Seite „Kontoauszug“, Migration 085): camt.053 einlesen (nur gebuchte Gutschriften, kein doppelter Import über die Buchungsreferenz); Vorschlag über die Rechnungsnummer im Verwendungszweck, sonst Betrag und Name (bei Mehrdeutigkeit keiner); gebucht wird erst beim Zuordnen, über pay-invoices
 - [x] 28 Datenauskunft (Art. 15): ZIP mit allen Tabellen mit Personenbezug, Rechnungs- und Übergabe-PDFs, Fotos, Anhängen und Mail-Protokoll; nur Admins, im Änderungsprotokoll; ein Test verlangt jede Tabelle mit person_id im Paket
-- [x] 29 Wertsicherung (Tarife → Wertsicherung): VPI-Werte selbst eintragen, je Tarif Basismonat und Schwelle, Vorschau alt → neu je Gefährt, Anpassen ab Beginn der nächsten Periode; die Abrechnung teilt Perioden jetzt an Preisänderungen (models.sliceCents, ohne Änderungen centgenau wie vorher); Mitteilung per Mail nur auf Wunsch. Offen: Pauschalen werden nicht angepasst (in der Vorschau als „nicht angepasst“ genannt)
+- [x] 29 Wertsicherung (Tarife → Wertsicherung): VPI-Werte selbst eintragen, je Tarif Basismonat und Schwelle, Vorschau alt → neu je Gefährt, Anpassen ab Beginn der nächsten Periode; die Abrechnung teilt Perioden jetzt an Preisänderungen (models.sliceCents, ohne Änderungen centgenau wie vorher); Mitteilung per Mail nur auf Wunsch. Pauschalen bleiben fest (Entscheidung O4), in der Vorschau als „nicht angepasst“ genannt
 - [x] 32 Kautionen (Personenseite): eigenes Konto, erhalten und zurückgezahlt sind kein Erlös; Einbehalt nur mit Grund, gebucht über pay-invoices; die Übergabe bei der Abholung erinnert an die offene Kaution
 - [x] 30 Einstellvertrag (Einstellungen): versionierte Vorlage mit Platzhaltern, PDF je Gefährt; im Kundenzugang erst lesen, dann annehmen (genau die gelesene Version); das angenommene PDF wird Anhang der Person
 
@@ -72,3 +72,16 @@ Legende: `[x]` umgesetzt · `[~]` teilweise (Grund dahinter) · `[ ]` offen · `
   Platz je Ruhezeit wählbar, Standard „halten“; Haltegebühr 0 %; gekürzt ab dem ersten Tag;
   Pauschale bleibt, Ruhezeit wird nur vermerkt; vorab bezahlt: „bezahlt bis“ verschiebt sich;
   gebundene Nebenkosten ruhen mit; Kunden können die Ruhezeit im Portal anfragen.
+
+## Offene Punkte (Entscheidungen vom 22.10.2026)
+
+Alle acht nach der Empfehlung im Artifact „Parkrr Ausbauplan“.
+
+- [x] O1 Hallen-Auslastung: Flächenauslastung wie im Planer (siehe Nr. 3). Hallen ohne gespeicherte Fläche melden sie beim ersten Öffnen durch einen Bearbeiter nach (`PUT /api/halls/{id}/park-area`, schreibt nur diesen Schlüssel).
+- [x] O2 Planer-Farben: Tokens mit den heutigen Werten (siehe Nr. 18).
+- [x] O3 Vorjahresplatz: erster Platzvorschlag, wenn der alte Platz in der Halle noch steht, leer ist und das Gefährt dort gültig steht; ein Tipp belegt genau diesen Platz. Frühere Kopien bekommen ihren Vorgänger aus dem Änderungsprotokoll.
+- [x] O4 Pauschalen in der Wertsicherung: bleiben fest, keine Änderung.
+- [x] O5 Ruhezeit, Platz vorab freigeben: bleibt, wie es ist.
+- [x] O6 Hallendienst: darf „Ist zurück“ (bis heute; „bezahlt bis“ sieht er nicht). Dabei behoben: das Speichern des Hallendiensts im Planer scheiterte am Grundriss (403), bevor ein Platz geschrieben war.
+- [x] O7 Live-Tests: vor dem Push lokal gegen eine Wegwerf-Instanz (eigene Datenbank, Port 18099) gelaufen.
+- [x] O8 Einführung in zwei Schritten: Checkliste in `docs/plans/2026-10-22-einfuehrung-zwei-schritte.md`.
