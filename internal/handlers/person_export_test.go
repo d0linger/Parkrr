@@ -48,6 +48,13 @@ func TestPersonDataExportZip(t *testing.T) {
 	h := testHandler(t)
 	ctx := context.Background()
 	pid, vid, _ := seasonFixture(t, h, "")
+	_, otherVehicle, _ := seasonFixture(t, h, "")
+	for _, vehicleID := range []int64{vid, otherVehicle} {
+		if _, err := h.Pool.Exec(ctx, `INSERT INTO vehicle_rate_changes (vehicle_id, effective_from, rate, previous_rate, reason)
+			VALUES ($1, '2027-01-01', 65, 60, 'Wertsicherung')`, vehicleID); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err := h.Pool.Exec(ctx, `UPDATE persons SET email = 'auskunft@example.invalid' WHERE id = $1`, pid); err != nil {
 		t.Fatal(err)
 	}
@@ -81,10 +88,21 @@ func TestPersonDataExportZip(t *testing.T) {
 		files[f.Name] = b
 	}
 	for _, want := range []string{"LIESMICH.txt", "manifest.json", "stammdaten.json", "gefaehrte.json", "mail_protokoll.json",
+		"preisaenderungen.json",
 		"uebergaben/Uebergabeprotokoll-" + strconv.FormatInt(ho.ID, 10) + ".pdf"} {
 		if _, ok := files[want]; !ok {
 			t.Errorf("Paket ohne %s", want)
 		}
+	}
+	var rateChanges []struct {
+		VehicleID int64   `json:"vehicle_id"`
+		Rate      float64 `json:"rate"`
+	}
+	if err := json.Unmarshal(files["preisaenderungen.json"], &rateChanges); err != nil {
+		t.Fatal(err)
+	}
+	if len(rateChanges) != 1 || rateChanges[0].VehicleID != vid || rateChanges[0].Rate != 65 {
+		t.Errorf("exported price history = %+v, want only vehicle %d", rateChanges, vid)
 	}
 	photo := false
 	for name, b := range files {

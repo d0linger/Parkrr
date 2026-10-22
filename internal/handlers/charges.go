@@ -225,7 +225,7 @@ func (h *Handler) ListCharges(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		pid, perr := strconv.ParseInt(raw, 10, 64)
-		if perr != nil {
+		if perr != nil || pid <= 0 {
 			writeError(w, http.StatusBadRequest, "invalid person_id")
 			return
 		}

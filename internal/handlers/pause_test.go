@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -123,6 +124,78 @@ func TestPausePaidThroughShiftsAndRestores(t *testing.T) {
 	}
 	if err := h.Pool.QueryRow(ctx, `SELECT paid_through FROM vehicles WHERE id = $1`, vid).Scan(&through); err != nil || through.Format(dateLayout) != "2026-07-31" {
 		t.Fatalf("bezahlt bis nach dem Löschen: %s %v", through.Format(dateLayout), err)
+	}
+}
+
+func TestPauseConcurrentReturnShiftsPaidThroughOnce(t *testing.T) {
+	h := testHandler(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_, vid := pauseFixture(t, h)
+	h.Now = func() time.Time { return time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC) }
+	if _, err := h.Pool.Exec(ctx, `UPDATE vehicles SET paid = true, paid_through = '2026-07-31' WHERE id = $1`, vid); err != nil {
+		t.Fatal(err)
+	}
+	p, code, msg := startPause(t, h, vid, `{"from":"2026-07-10"}`)
+	if p == nil {
+		t.Fatalf("pause: %d %s", code, msg)
+	}
+	blocker, err := h.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocker.Rollback(context.Background()) }()
+	if _, err := blocker.Exec(ctx, `SELECT id FROM vehicles WHERE id = $1 FOR UPDATE`, vid); err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan *httptest.ResponseRecorder, 2)
+	for range 2 {
+		go func() {
+			r := httptest.NewRequest(http.MethodPost, "/api/vehicle-pauses/x/return", strings.NewReader(`{"on":"2026-07-20"}`)).WithContext(ctx)
+			r.SetPathValue("id", strconv.FormatInt(p.ID, 10))
+			w := httptest.NewRecorder()
+			h.ReturnFromPause(w, r)
+			results <- w
+		}()
+	}
+	// Both requests must reach a database lock before releasing the vehicle.
+	// This reproduces two operators returning the same vehicle simultaneously.
+	for {
+		var waiting int
+		if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting == 2 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("return requests did not reach the locks")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if err := blocker.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	statuses := map[int]int{}
+	for range 2 {
+		select {
+		case w := <-results:
+			statuses[w.Code]++
+		case <-ctx.Done():
+			t.Fatal("return requests did not finish")
+		}
+	}
+	if statuses[http.StatusOK] != 1 || statuses[http.StatusConflict] != 1 {
+		t.Errorf("return statuses = %v, want one 200 and one 409", statuses)
+	}
+	var through time.Time
+	if err := h.Pool.QueryRow(ctx, `SELECT paid_through FROM vehicles WHERE id = $1`, vid).Scan(&through); err != nil {
+		t.Fatal(err)
+	}
+	if got := through.Format(dateLayout); got != "2026-08-10" {
+		t.Errorf("paid through = %s, want 2026-08-10 after ten paused days", got)
 	}
 }
 

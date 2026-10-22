@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/preining/parkrr/internal/auth"
 	"github.com/preining/parkrr/internal/models"
@@ -37,9 +38,16 @@ func TestPasswordLengthPolicy(t *testing.T) {
 		}
 	}
 
-	// ChangePassword answers 400 before touching the rate limiter, HIBP or
-	// the database, so a zero-value handler suffices.
-	ah := &AuthHandler{Handler: &Handler{}}
+	mgr, err := auth.NewManager(nil, auth.SessionConfig{MaxAge: 3600}, false, false, "a-sufficiently-long-test-secret")
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	ah := &AuthHandler{
+		Handler:     &Handler{},
+		Auth:        mgr,
+		Limiter:     auth.NewLoginLimiter(10, 10*time.Minute, 15*time.Minute),
+		UserLimiter: auth.NewLoginLimiter(10, 10*time.Minute, 15*time.Minute),
+	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/change-password",
 		strings.NewReader(`{"current_password":"x","new_password":"`+long+`"}`))
@@ -101,8 +109,11 @@ func TestPasswordLengthPolicy(t *testing.T) {
 			t.Fatalf("failed to create webauthn service: %v", err)
 		}
 		ahPasskey := &AuthHandler{
-			Handler:  &Handler{},
-			WebAuthn: wa,
+			Handler:     &Handler{},
+			Auth:        mgr,
+			Limiter:     auth.NewLoginLimiter(10, 10*time.Minute, 15*time.Minute),
+			UserLimiter: auth.NewLoginLimiter(10, 10*time.Minute, 15*time.Minute),
+			WebAuthn:    wa,
 		}
 		rec = httptest.NewRecorder()
 		req = httptest.NewRequest(http.MethodPost, "/api/passkeys/register/begin",
@@ -135,8 +146,16 @@ func TestUsernameLengthPolicy(t *testing.T) {
 		}
 	}
 
-	// Login rejects an over-long username with a generic 401 before any lookup.
-	ah := &AuthHandler{Handler: &Handler{}}
+	mgr, err := auth.NewManager(nil, auth.SessionConfig{MaxAge: 3600}, false, false, "a-sufficiently-long-test-secret")
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	ah := &AuthHandler{
+		Handler:     &Handler{},
+		Auth:        mgr,
+		Limiter:     auth.NewLoginLimiter(10, 10*time.Minute, 15*time.Minute),
+		UserLimiter: auth.NewLoginLimiter(10, 10*time.Minute, 15*time.Minute),
+	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/login",
 		strings.NewReader(`{"username":"`+long+`","password":"password"}`))
@@ -163,14 +182,55 @@ func TestUsernameLengthPolicy(t *testing.T) {
 		t.Errorf("UpdateUser with %d-byte username: expected 400, got %d", len(long), rec.Code)
 	}
 
-	// ChangePassword rejects an over-long current password with 403 up front
-	// (bcrypt caps at 72 bytes, so it could never match) — before hitting the
-	// rate limiter or an authentication attempt.
+	// ChangePassword rejects an over-long current password with 403.
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/auth/change-password",
 		strings.NewReader(`{"current_password":"`+long+`","new_password":"newpassword1"}`))
+	ctx := auth.ContextWithUser(context.Background(), &models.User{Username: "testuser"})
+	req = req.WithContext(ctx)
 	ah.ChangePassword(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("ChangePassword with %d-byte current password: expected 403, got %d", len(long), rec.Code)
+	}
+}
+
+// Over-long passwords on re-authentication endpoints must pass through rate
+// limiting and consume attempts rather than bypassing the limiter completely.
+func TestReauthOverlongPasswordThrottled(t *testing.T) {
+	long := strings.Repeat("a", 73)
+	mgr, err := auth.NewManager(nil, auth.SessionConfig{MaxAge: 3600}, false, false, "a-sufficiently-long-test-secret")
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	u := &models.User{Username: "testuser", TOTPEnabled: true}
+	ctx := auth.ContextWithUser(context.Background(), u)
+	for _, tc := range []struct {
+		name string
+		body string
+		run  func(*AuthHandler, http.ResponseWriter, *http.Request)
+	}{
+		{name: "change password", body: `{"current_password":"` + long + `","new_password":"newpassword1"}`, run: (*AuthHandler).ChangePassword},
+		{name: "disable two factor", body: `{"password":"` + long + `"}`, run: (*AuthHandler).TOTPDisable},
+		{name: "regenerate recovery codes", body: `{"password":"` + long + `"}`, run: (*AuthHandler).TOTPRegenerateBackup},
+		{name: "step up", body: `{}`, run: func(h *AuthHandler, w http.ResponseWriter, r *http.Request) {
+			h.requireStepUp(w, r, u, long)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ah := &AuthHandler{
+				Handler:     &Handler{},
+				Auth:        mgr,
+				Limiter:     auth.NewLoginLimiter(2, 10*time.Minute, 15*time.Minute),
+				UserLimiter: auth.NewLoginLimiter(2, 10*time.Minute, 15*time.Minute),
+			}
+			for i, want := range []int{http.StatusForbidden, http.StatusForbidden, http.StatusTooManyRequests} {
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodPost, "/api/reauth", strings.NewReader(tc.body)).WithContext(ctx)
+				tc.run(ah, rec, req)
+				if rec.Code != want {
+					t.Fatalf("attempt %d: got %d, want %d: %s", i+1, rec.Code, want, rec.Body.String())
+				}
+			}
+		})
 	}
 }

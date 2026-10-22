@@ -385,6 +385,9 @@ func (h *Handler) BackupValidate(w http.ResponseWriter, r *http.Request) {
 			"Browser-Wiederherstellung ist nicht aktiviert. PARKRR_BROWSER_RESTORE=true setzen oder die CLI verwenden.")
 		return
 	}
+	if !h.restoreStepUpOK(w, r) {
+		return
+	}
 	setBrowserRestoreDeadlines(w)
 	if !acquireBrowserRestoreSlot(w, r) {
 		return
@@ -725,6 +728,9 @@ func (h *Handler) BackupValidateS3(w http.ResponseWriter, r *http.Request) {
 	if h.Restore == nil || !h.Restore.Enabled() {
 		writeError(w, http.StatusConflict,
 			"Browser-Wiederherstellung ist nicht aktiviert. PARKRR_BROWSER_RESTORE=true setzen oder die CLI verwenden.")
+		return
+	}
+	if !h.restoreStepUpOK(w, r) {
 		return
 	}
 	if !h.S3.Enabled() {

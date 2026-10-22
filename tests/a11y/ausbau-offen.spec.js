@@ -93,8 +93,8 @@ test('Platz vorschlagen: der Vorjahresplatz kommt zuerst, ein Tipp legt das Gef�
     '/spots/3/vehicle': route => { calls.push(['vehicle', bodyOf(route)]); return json({ ok: true })(route); } } });
   await open(page, 'hall/1');
   const pick = page.locator('.gp-vehc', { hasText: unassigned[0].label }).locator('.gp-vpick');
-  await pick.focus();
-  await page.keyboard.press('Enter');
+  await pick.press('Enter');
+  await expect(pick).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('button', { name: 'Platz vorschlagen' }).click();
   const first = page.getByRole('button', { name: /^Vorschlag 1 übernehmen/ });
   await expect(first).toHaveAccessibleName('Vorschlag 1 übernehmen: Vorjahresplatz');

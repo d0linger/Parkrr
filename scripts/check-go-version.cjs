@@ -23,9 +23,11 @@ for (const f of fs.readdirSync(wfDir).filter((n) => /\.ya?ml$/.test(n)).sort()) 
   }
 }
 
-const img = read('Dockerfile').match(/^FROM\s+golang:([^\s@]+?)(?:-alpine[^\s@]*)?(?:@\S+)?\s/m);
-if (!img) { console.error('Dockerfile: kein "FROM golang:…"-Build-Image gefunden'); process.exit(1); }
-found.push(['Dockerfile', img[1]]);
+for (const file of ['Dockerfile', 'scripts/validation/Dockerfile']) {
+  const img = read(file).match(/^FROM\s+golang:([^\s@]+?)(?:-alpine[^\s@]*)?(?:@\S+)?\s/m);
+  if (!img) { console.error(`${file}: kein "FROM golang:…"-Build-Image gefunden`); process.exit(1); }
+  found.push([file, img[1]]);
+}
 
 const want = tc[1];
 const bad = found.filter(([, v]) => v !== want);

@@ -82,7 +82,7 @@ test('Serviceaufgaben: fällig, erledigt mit Abrechnung und Rückgängig; Ladevo
   const row = page.locator('.svc-row.is-overdue');
   await expect(row).toContainText('seit 2 Tagen fällig');
   expect((await new AxeBuilder({ page }).include('#page').analyze()).violations.map(v => v.id)).toEqual([]);
-  await row.getByRole('button', { name: /erledigt und 15,00 € abrechnen/ }).click();
+  await row.getByRole('button', { name: /Erledigt \+ 15,00 € abrechnen/ }).click();
   await expect.poll(() => calls[0]).toEqual(['done', { vehicle_id: 1, bill: true }]);
   await page.getByRole('button', { name: 'Rückgängig' }).click();
   await expect.poll(() => calls.map(c => c[0])).toEqual(['done', 'undo', 'charge-del']);
@@ -135,8 +135,8 @@ test('Planer: Platz vorschlagen legt das Gefährt mit Ladebedarf in die Stromzon
     '/spots/50/vehicle': json({ ok: true }) } });
   await open(page, 'hall/1');
   const pick = page.locator('.gp-vehc', { hasText: unassigned[0].label }).locator('.gp-vpick');
-  await pick.focus();
-  await page.keyboard.press('Enter');
+  await pick.press('Enter');
+  await expect(pick).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('button', { name: 'Platz vorschlagen' }).click();
   await expect(page.locator('.gp-suggest')).toHaveCount(3);
   const first = page.getByRole('button', { name: /^Vorschlag 1 übernehmen/ });

@@ -209,7 +209,7 @@ for (const role of ['admin', 'editor', 'reader']) {
       await expect(billing).toHaveCount(0);
       await page.keyboard.press('Escape');
     }
-    await page.getByRole('button', { name: 'Suche', exact: true }).click();
+    await page.getByRole('button', { name: /^Suchen/ }).click();
     const palette = page.getByRole('dialog', { name: 'Suche', exact: true });
     await palette.getByRole('combobox').fill('Rechnung');
     if (role === 'admin') {

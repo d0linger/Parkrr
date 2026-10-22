@@ -199,12 +199,13 @@ func (h *AuthHandler) requireStepUp(w http.ResponseWriter, r *http.Request, u *m
 		writeError(w, http.StatusForbidden, "reauth_required")
 		return false
 	}
-	if len(password) > maxPasswordLen {
-		writeError(w, http.StatusForbidden, "Passwort ist falsch")
-		return false
-	}
 	key, ip, ok := h.checkRateLimit(w, r, u.Username)
 	if !ok {
+		return false
+	}
+	if len(password) > maxPasswordLen {
+		h.recordReauthFailure(key, ip)
+		writeError(w, http.StatusForbidden, "Passwort ist falsch")
 		return false
 	}
 	if _, err := h.Auth.AuthenticateUserID(r.Context(), u.ID, password); err != nil {
@@ -413,19 +414,19 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Das neue Passwort muss sich vom aktuellen unterscheiden")
 		return
 	}
-	// An over-long current password can't match (bcrypt caps at 72 bytes), so
-	// reject it up front rather than spending a bcrypt compare on it.
-	if len(req.CurrentPassword) > maxPasswordLen {
-		writeError(w, http.StatusForbidden, "Aktuelles Passwort ist falsch")
-		return
-	}
-
 	// Gate on the rate limiter and prove knowledge of the current password
 	// (cheap, local bcrypt) BEFORE spending an outbound HIBP breach lookup on
 	// the candidate password — otherwise the endpoint drives external requests
 	// from arbitrary input before any throttle applies.
 	key, ip, ok := h.checkRateLimit(w, r, u.Username)
 	if !ok {
+		return
+	}
+	// An over-long current password can't match (bcrypt caps at 72 bytes), so
+	// reject it up front rather than spending a bcrypt compare on it.
+	if len(req.CurrentPassword) > maxPasswordLen {
+		h.recordReauthFailure(key, ip)
+		writeError(w, http.StatusForbidden, "Aktuelles Passwort ist falsch")
 		return
 	}
 	verified, err := h.Auth.AuthenticateUserID(r.Context(), u.ID, req.CurrentPassword)

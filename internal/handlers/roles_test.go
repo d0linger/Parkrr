@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -51,5 +52,70 @@ func TestHallStaffSeesNoAmounts(t *testing.T) {
 		if c.Monthly != 0 {
 			t.Fatalf("Tarif %d mit Preis %v für den Hallendienst", c.ID, c.Monthly)
 		}
+	}
+}
+
+func TestHallStaffCannotDownloadAcceptedContract(t *testing.T) {
+	h := testHandler(t)
+	pid, vid, _ := seasonFixture(t, h, "")
+	var templateID, contractID, ordinaryID int64
+	if err := h.Pool.QueryRow(t.Context(), `INSERT INTO contract_templates (version, title, body)
+		SELECT COALESCE(max(version), 0) + 1, 'Vertrag', 'Preis: {{preis}}' FROM contract_templates RETURNING id`).Scan(&templateID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = h.Pool.Exec(context.Background(), `DELETE FROM contract_acceptances WHERE template_id = $1`, templateID)
+		_, _ = h.Pool.Exec(context.Background(), `DELETE FROM contract_templates WHERE id = $1`, templateID)
+	})
+	for _, a := range []struct {
+		filename string
+		id       *int64
+	}{{"Einstellvertrag.pdf", &contractID}, {"Zustand.pdf", &ordinaryID}} {
+		if err := h.Pool.QueryRow(t.Context(), `INSERT INTO attachments (person_id, owner_person_id, filename, content_type, byte_size, data)
+			VALUES ($1, $1, $2, 'application/pdf', 5, $3) RETURNING id`, pid, a.filename, []byte("%PDF-")).Scan(a.id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := h.Pool.Exec(t.Context(), `INSERT INTO contract_acceptances (person_id, vehicle_id, template_id, via, attachment_id)
+		VALUES ($1, $2, $3, 'portal', $4)`, pid, vid, templateID, contractID); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		role string
+		want int
+	}{{models.RoleHall, http.StatusNotFound}, {models.RoleAccounting, http.StatusOK}} {
+		t.Run(tc.role, func(t *testing.T) {
+			request := func(path string, id int64) *http.Request {
+				r := httptest.NewRequest(http.MethodGet, path, nil)
+				r.SetPathValue("id", strconv.FormatInt(id, 10))
+				return r.WithContext(auth.ContextWithUser(r.Context(), &models.User{Role: tc.role}))
+			}
+			w := httptest.NewRecorder()
+			h.GetAttachment(w, request("/api/attachments/x", contractID))
+			if w.Code != tc.want {
+				t.Errorf("contract download = %d, want %d", w.Code, tc.want)
+			}
+			w = httptest.NewRecorder()
+			h.GetAttachment(w, request("/api/attachments/x", ordinaryID))
+			if w.Code != http.StatusOK {
+				t.Errorf("ordinary attachment download = %d, want 200", w.Code)
+			}
+			w = httptest.NewRecorder()
+			h.ListAttachments(w, request("/api/persons/x/attachments", pid))
+			if w.Code != http.StatusOK {
+				t.Fatalf("attachment list = %d: %s", w.Code, w.Body.String())
+			}
+			var attachments []attachmentMeta
+			if err := json.Unmarshal(w.Body.Bytes(), &attachments); err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, a := range attachments {
+				found = found || a.ID == contractID
+			}
+			if found != (tc.want == http.StatusOK) {
+				t.Errorf("contract listed = %v for %s", found, tc.role)
+			}
+		})
 	}
 }

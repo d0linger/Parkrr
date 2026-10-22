@@ -4319,7 +4319,7 @@ import { createRevenueChart } from './revenue-chart.js';
                 canHall() ? el('div', { class: 'card-actions' },
                     el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': d.title + ' für ' + d.vehicle_label + ' erledigt', onclick: () => completeService(d, false) }, icon('check', 14), ' Erledigt'),
                     canManage() && d.service_type_id && d.service_amount != null
-                        ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': d.title + ' für ' + d.vehicle_label + ' erledigt und ' + eur(d.service_amount) + ' abrechnen', onclick: () => completeService(d, true) }, 'Erledigt + ' + eur(d.service_amount))
+                        ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': 'Erledigt + ' + eur(d.service_amount) + ' abrechnen: ' + d.title + ' für ' + d.vehicle_label, onclick: () => completeService(d, true) }, 'Erledigt + ' + eur(d.service_amount))
                         : null) : null));
         });
         page.append(dueCard);
@@ -13097,19 +13097,15 @@ import { createRevenueChart } from './revenue-chart.js';
         if (!sum.invoices.length) icard.append(el('p', { class: 'muted' }, P9.no_invoices));
         else sum.invoices.forEach((iv) => {
             icard.append(
-                // Der Name MUSS den Betrag enthalten. aria-label ersetzt den ganzen
-                // Teilbaum: vorher hoerte ein Screenreader nur 'Rechnung 2026-001 PDF'
-                // und nie, worum es geht — auf der einen Seite, die dem Kunden sagt,
-                // was er schuldet.
+                // Der sichtbare Inhalt liefert den Namen einschließlich Datum,
+                // Status, PDF-Hinweis und Beträgen (auch für Sprachsteuerung).
                 el('button', { class: 'portal-row link', type: 'button',
-                    'aria-label': P9.invoice + iv.number + ' · ' + eur(iv.total)
-                        + (iv.open > 0.005 ? ' · ' + P9.open_part + eur(iv.open) : '') + ' · PDF',
                     onclick: () => portalOpenPdf(token, iv.id) },
                     el('span', {}, P9.invoice + esc(iv.number),
                         el('span', { class: 'muted', style: 'display:block;font-size:var(--text-sm)' }, new Date(iv.issued_on).toLocaleDateString(locale) + (iv.status ? ' · ' + (P9.inv_status[iv.status] || esc(iv.status)) : '')),
                         // Sichtbarer Hinweis, dass die Zeile das PDF öffnet — bisher stand
                         // "PDF" nur im aria-label.
-                        el('span', { class: 'portal-pdf', 'aria-hidden': 'true' }, icon('receipt', 13), 'PDF')),
+                        el('span', { class: 'portal-pdf' }, icon('receipt', 13), 'PDF')),
                     el('span', { style: 'text-align:right' }, eur(iv.total),
                         iv.open > 0.005 ? el('span', { class: 'muted', style: 'display:block;font-size:var(--text-sm)' }, P9.open_part + eur(iv.open)) : null)));
             // Scan-to-pay QR for each still-open invoice.
@@ -13293,7 +13289,10 @@ import { createRevenueChart } from './revenue-chart.js';
         const kbd = $('#search-kbd');
         if (kbd && !/Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || '')) {
             kbd.textContent = 'Strg K';
-            if (sb) sb.title = 'Suche · Strg K';
+            if (sb) {
+                sb.title = 'Suche · Strg K';
+                sb.setAttribute('aria-label', 'Suchen … Strg K');
+            }
         }
         document.addEventListener('keydown', (e) => {
             if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K') && state.user) { e.preventDefault(); openCommandPalette(); return; }

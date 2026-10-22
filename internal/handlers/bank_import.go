@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -128,12 +129,15 @@ func parseCamt053(data []byte) ([]bankTx, int, error) {
 					}
 				}
 				amount, err := strconv.ParseFloat(strings.TrimSpace(amt.Value), 64)
-				if err != nil || amount <= 0 {
+				if err != nil || math.IsNaN(amount) || math.IsInf(amount, 0) || amount <= 0 || amount > maxMoneyAmount || round2(amount) <= 0 {
 					return nil, 0, camtError(fmt.Sprintf("Buchung %d ohne gültigen Betrag", ei+1))
 				}
 				ccy := strings.TrimSpace(amt.Ccy)
 				if ccy == "" {
 					ccy = "EUR"
+				}
+				if ccy != "EUR" {
+					return nil, 0, camtError(fmt.Sprintf("Buchung %d: Nur Gutschriften in EUR können zugeordnet werden", ei+1))
 				}
 				name := strings.TrimSpace(d.DbtrNm)
 				if name == "" {
@@ -308,11 +312,21 @@ func containsNumber(s, n string) bool {
 // suggestBankMatch: Rechnungsnummer im Verwendungszweck (sicher), sonst genau eine
 // offene Rechnung mit diesem Betrag, deren Nachname im Auftraggeber steht (Vorschlag).
 func suggestBankMatch(t bankTxOut, open []openInvoiceRef) *bankSuggestion {
+	if t.Currency != "" && t.Currency != "EUR" {
+		return nil
+	}
 	remit := compactUpper(t.Remittance)
+	var numbered *bankSuggestion
 	for _, o := range open {
 		if n := compactUpper(o.Number); len(n) >= 4 && containsNumber(remit, n) {
-			return &bankSuggestion{openInvoiceRef: o, Reason: "Rechnungsnummer im Verwendungszweck", Strong: true}
+			if numbered != nil {
+				return nil
+			}
+			numbered = &bankSuggestion{openInvoiceRef: o, Reason: "Rechnungsnummer im Verwendungszweck", Strong: true}
 		}
+	}
+	if numbered != nil {
+		return numbered
 	}
 	name := strings.ToLower(t.Name)
 	var hit *openInvoiceRef
@@ -397,10 +411,20 @@ func (h *Handler) AssignBankTransaction(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "Rechnung oder Person angeben (genau eins)")
 		return
 	}
+	unlock, err := h.lockBankTransaction(r.Context(), id)
+	if errors.Is(err, ErrTaskBusy) {
+		writeError(w, http.StatusConflict, "Diese Kontobuchung wird gerade bearbeitet")
+		return
+	}
+	if err != nil {
+		serverError(w, r, "could not lock bank transaction", err)
+		return
+	}
+	defer unlock()
 	var t bankTxOut
 	if err := h.Pool.QueryRow(r.Context(),
-		`SELECT id, booked_on, amount, name, remittance, status FROM bank_transactions WHERE id = $1`, id).
-		Scan(&t.ID, &t.BookedOn, &t.Amount, &t.Name, &t.Remittance, &t.Status); err != nil {
+		`SELECT id, booked_on, amount, currency, name, remittance, status FROM bank_transactions WHERE id = $1`, id).
+		Scan(&t.ID, &t.BookedOn, &t.Amount, &t.Currency, &t.Name, &t.Remittance, &t.Status); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not found")
 			return
@@ -410,6 +434,10 @@ func (h *Handler) AssignBankTransaction(w http.ResponseWriter, r *http.Request) 
 	}
 	if t.Status != "offen" {
 		writeError(w, http.StatusConflict, "Buchung ist nicht mehr offen")
+		return
+	}
+	if t.Currency != "EUR" {
+		writeError(w, http.StatusConflict, "Nur Gutschriften in EUR können zugeordnet werden")
 		return
 	}
 	req := payInvoicesRequest{Amount: t.Amount, PaidOn: t.BookedOn.Format(dateLayout), Method: "ueberweisung",
@@ -477,6 +505,16 @@ func (h *Handler) SetBankTransactionIgnored(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	unlock, err := h.lockBankTransaction(r.Context(), id)
+	if errors.Is(err, ErrTaskBusy) {
+		writeError(w, http.StatusConflict, "Diese Kontobuchung wird gerade bearbeitet")
+		return
+	}
+	if err != nil {
+		serverError(w, r, "could not lock bank transaction", err)
+		return
+	}
+	defer unlock()
 	from, to := "offen", "ignoriert"
 	if !in.Ignored {
 		from, to = "ignoriert", "offen"
@@ -500,4 +538,33 @@ func (h *Handler) SetBankTransactionIgnored(w http.ResponseWriter, r *http.Reque
 	h.auditChange(r, "update", "bank_transaction", id, "Kontobuchung "+to,
 		diffFields(map[string]any{"status": from, "resolved_at": nil, "resolved_by": nil}, map[string]any{"status": to, "resolved_at": to, "resolved_by": by}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": to})
+}
+
+// The payment handler uses its own transaction. Keep a session lock until both
+// the payment and its bank reference are saved, across operators and replicas.
+func (h *Handler) lockBankTransaction(ctx context.Context, id int64) (func(), error) {
+	conn, err := h.Pool.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	key := advisoryKey("parkrr.bank.transaction." + strconv.FormatInt(id, 10))
+	var locked bool
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&locked); err != nil {
+		discardLockedConn(conn)
+		conn.Release()
+		return nil, err
+	}
+	if !locked {
+		conn.Release()
+		return nil, ErrTaskBusy
+	}
+	return func() {
+		defer conn.Release()
+		unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		var unlocked bool
+		if err := conn.QueryRow(unlockCtx, `SELECT pg_advisory_unlock($1)`, key).Scan(&unlocked); err != nil || !unlocked {
+			discardLockedConn(conn)
+		}
+	}, nil
 }

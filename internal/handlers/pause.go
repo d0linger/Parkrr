@@ -114,7 +114,7 @@ func shiftPaidThrough(paidThrough, from, until time.Time, end *time.Time, paused
 }
 
 func (h *Handler) loadPause(ctx context.Context, q dbQuerier, id int64) (vehiclePause, error) {
-	return scanPause(q.QueryRow(ctx, `SELECT `+pauseCols+` FROM vehicle_pauses WHERE id = $1`, id))
+	return scanPause(q.QueryRow(ctx, `SELECT `+pauseCols+` FROM vehicle_pauses WHERE id = $1 FOR UPDATE`, id))
 }
 
 func (h *Handler) listPauses(ctx context.Context, q dbQuerier, vehicleID int64) ([]vehiclePause, error) {
