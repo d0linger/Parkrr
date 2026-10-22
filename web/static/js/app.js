@@ -501,6 +501,7 @@ import { createRevenueChart } from './revenue-chart.js';
             catch (e) { toast(e.message, 'error'); if (node) node.hidden = false; onDone && onDone(); }
         };
         toastAction(pendingText, 'Rückgängig', () => { cancelled = true; if (node) node.hidden = false; toast('Abgebrochen'); }, 4500, null, commit);
+        return true;
     }
 
     // ---------- form modal ----------
@@ -2343,13 +2344,10 @@ import { createRevenueChart } from './revenue-chart.js';
                                     : el('span', { class: 'pcard__paid', title: 'Keine offenen Beträge' }, 'Bezahlt'),
                                 overdueByPerson[p.id] ? el('span', { class: 'badge', style: 'background:var(--danger);color:#fff;margin-top:.25rem', title: 'Überfällige Rechnung' }, overdueByPerson[p.id] + ' Tg. überfällig') : null) : null,
                             el('div', { class: 'card-actions' },
-                                // Bearbeiten entfällt bei einer anonymisierten Person: der Server
-                                // lehnt das Wiederbefüllen ohnehin ab (AND NOT anonymized), ein
-                                // sichtbares Formular würde also nur einen stillen Fehlschlag anbieten.
-                                canManage() && !p.anonymized && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' bearbeiten', 'aria-label': personName(p) + ' bearbeiten', onclick: () => personForm(p) }, icon('edit')),
+                                // Anonymisierte Stammdaten bleiben im Dialog schreibgeschützt.
+                                canManage() && el('button', { class: 'btn btn-ghost btn-sm', title: personName(p) + ' bearbeiten', 'aria-label': personName(p) + ' bearbeiten', onclick: () => personForm(p) }, icon('edit')),
                                 // Anonymisieren und Löschen stehen in der Gefahrenzone der
-                                // Personenseite: in jeder Zeile lagen sie gleichrangig neben
-                                // "Öffnen" — ein Fehlgriff auf dem Telefon war unumkehrbar.
+                                // Personenbearbeitung, getrennt von den täglichen Aktionen.
                             )),
                         cardChev()));
             },
@@ -2398,14 +2396,37 @@ import { createRevenueChart } from './revenue-chart.js';
                 { name: 'address', label: 'Adresse', type: 'textarea', value: existing?.address, optional: 'Adresse & Notizen' },
                 { name: 'notes', label: 'Notizen', type: 'textarea', value: existing?.notes, optional: 'Adresse & Notizen' },
             ],
-            onRender: (body) => attachDuplicateWarning(body, {
-                kind: 'person', currentURL: existing ? '#/person/' + existing.id : '',
-                probes: [
-                    { fields: ['first_name', 'last_name'], query: () => [body.querySelector('#f_first_name').value, body.querySelector('#f_last_name').value].join(' ') },
-                    { fields: ['email'], query: () => body.querySelector('#f_email').value },
-                    { fields: ['phone'], query: () => body.querySelector('#f_phone').value },
-                ],
-            }),
+            onRender: (body) => {
+                if (existing?.anonymized) {
+                    body.querySelectorAll('input, textarea').forEach((input) => { input.disabled = true; });
+                    $('#modal-submit').disabled = true;
+                    $('#modal-submit').style.display = 'none';
+                    $('#modal-cancel').textContent = 'Schließen';
+                } else {
+                    attachDuplicateWarning(body, {
+                        kind: 'person', currentURL: existing ? '#/person/' + existing.id : '',
+                        probes: [
+                            { fields: ['first_name', 'last_name'], query: () => [body.querySelector('#f_first_name').value, body.querySelector('#f_last_name').value].join(' ') },
+                            { fields: ['email'], query: () => body.querySelector('#f_email').value },
+                            { fields: ['phone'], query: () => body.querySelector('#f_phone').value },
+                        ],
+                    });
+                }
+                if (!existing || !canManage()) return;
+                const dlg = $('#modal');
+                body.append(el('div', { class: 'person-danger form-field-wide' },
+                    el('div', { class: 'tf-danger-label' }, icon('alert', 13), 'Gefahrenzone'),
+                    el('p', { class: 'card-meta' }, existing.anonymized
+                        ? 'Die Stammdaten sind anonymisiert. Löschen ist nur möglich, solange keine Rechnungen bestehen.'
+                        : 'Löschen entfernt die Person samt Gefährten. Bestehen Rechnungen, bleibt nur Anonymisieren: Stammdaten werden geleert, Belege bleiben erhalten.'),
+                    el('div', { class: 'person-danger-actions' },
+                        existing.anonymized ? null : el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: async () => {
+                            if (await anonymizePerson(existing)) dlg.close();
+                        } }, icon('userx', 15), ' Anonymisieren (DSGVO)'),
+                        el('button', { class: 'btn btn-danger btn-sm', type: 'button', onclick: async () => {
+                            if (await delPerson(existing, null, { leave: true })) dlg.close();
+                        } }, icon('trash', 15), ' Person löschen'))));
+            },
             save: async (data) => {
                 if (existing) await api.put('/persons/' + existing.id, data);
                 else await api.post('/persons', data);
@@ -2419,7 +2440,7 @@ import { createRevenueChart } from './revenue-chart.js';
     function delPerson(p, node, { leave = false } = {}) {
         const here = location.hash;
         let deleted = false;
-        deleteWithUndo('Person löschen?', `„${personName(p)}“ und alle zugehörigen Gefährte werden gelöscht.`,
+        return deleteWithUndo('Person löschen?', `„${personName(p)}“ und alle zugehörigen Gefährte werden gelöscht.`,
             async () => { await api.del('/persons/' + p.id); deleted = true; },
             () => { if (leave && deleted && location.hash === here) navigate('persons'); else render(); }, node);
     }
@@ -2440,6 +2461,7 @@ import { createRevenueChart } from './revenue-chart.js';
             await api.post('/persons/' + p.id + '/anonymize', {});
             toast('Person anonymisiert · Belege bleiben erhalten', 'success');
             render();
+            return true;
         } catch (e) {
             toast(e.message || 'Anonymisieren fehlgeschlagen', 'error');
         }
@@ -2654,6 +2676,7 @@ import { createRevenueChart } from './revenue-chart.js';
         if (isHall()) { await hallPersonView(page, id); return; }
         await refreshLookups();
         const stats = await api.get('/persons/' + id + '/stats');
+        const person = state.persons.find((p) => p.id === Number(id));
         // Load all billing reads together and let a failure propagate to the route's
         // error handling — a failed read must not masquerade as "no data" (which would
         // hide real records and invite writes against a wrong picture). `|| []` only
@@ -2679,6 +2702,7 @@ import { createRevenueChart } from './revenue-chart.js';
         page.append(el('div', { class: 'detail-head' },
             el('button', { class: 'back-btn', onclick: () => navigate('persons'), 'aria-label': 'Zurück' }, '‹'),
             el('h2', { style: 'margin:0;flex:1' }, stats.person_name || 'Person'),
+            canManage() && person && el('button', { class: 'btn btn-ghost', type: 'button', onclick: () => personForm(person) }, icon('edit', 15), ' Bearbeiten'),
             canManage() ? el('button', { class: 'btn btn-ghost btn-sm', title: 'Read-only Kundenzugang (Magic-Link)', onclick: () => portalLinkFor(id) }, icon('mail', 15), ' Self-Service') : null));
 
         // Balance card: lead with the one number the user came for (the open
@@ -2955,19 +2979,6 @@ import { createRevenueChart } from './revenue-chart.js';
                 el('a', { class: 'btn btn-ghost btn-sm', href: '/api/persons/' + id + '/export', download: '' }, icon('download', 15), ' Datenauskunft (ZIP)')));
         }
 
-        // Gefahrenzone: Anonymisieren und Löschen sind unumkehrbar und gehören zur
-        // einzelnen Person, nicht in jede Listenzeile. Muster wie Tarife/Benutzer.
-        if (canManage()) {
-            const person = state.persons.find((x) => x.id === Number(id)) || { id: Number(id), first_name: stats.person_name || '' };
-            page.append(el('div', { class: 'card person-danger' },
-                el('div', { class: 'tf-danger-label' }, icon('alert', 13), 'Gefahrenzone'),
-                el('p', { class: 'card-meta' }, person.anonymized
-                    ? 'Die Stammdaten sind anonymisiert. Löschen ist nur möglich, solange keine Rechnungen bestehen.'
-                    : 'Löschen entfernt die Person samt Gefährten. Bestehen Rechnungen, bleibt nur Anonymisieren: Stammdaten werden geleert, Belege bleiben erhalten.'),
-                el('div', { class: 'person-danger-actions' },
-                    person.anonymized ? null : el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => anonymizePerson(person) }, icon('userx', 15), ' Anonymisieren (DSGVO)'),
-                    el('button', { class: 'btn btn-danger btn-sm', type: 'button', onclick: () => delPerson(person, null, { leave: true }) }, icon('trash', 15), ' Person löschen'))));
-        }
     };
 
     // ---------- Payments (Zahlungen / Kontoauszug) ----------
@@ -7666,7 +7677,7 @@ import { createRevenueChart } from './revenue-chart.js';
         return el('div', { class: 'card restore-section', style: 'margin-top:1rem' },
             el('h3', {}, 'Wiederherstellen · offline'),
             el('div', { class: 'card-meta', style: 'margin:.3rem 0 .7rem;color:var(--accent-text);font-weight:600' },
-                'Eine laufende Anwendung darf nicht gegen ein Schema arbeiten, das gerade ersetzt wird. Online-Restore ist deshalb gesperrt.'),
+                'Die Wiederherstellung im Browser wurde für diese Installation deaktiviert. Zum Aktivieren PARKRR_BROWSER_RESTORE=true setzen.'),
             list,
             helpLink('2. Backups: einrichten, prüfen, wiederherstellen', 'Handbuch: Wiederherstellen Schritt für Schritt'));
     }

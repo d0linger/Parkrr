@@ -434,10 +434,8 @@ textarea { resize: vertical; min-height: 72px; }
 .u-edit { margin-top: 0.55rem; }
 .u-dz-actions, .person-danger-actions { display: flex; gap: 0.5rem; margin-top: 0.55rem; flex-wrap: wrap; }
 .u-dz-actions .btn { flex: 0 1 auto; }
-/* Gefahrenzone der Personenseite: eigene Karte am Seitenende, daher ohne die
-   Trennlinie, die das Etikett innerhalb aufgeklappter Tarif-/Benutzerkarten traegt. */
-.person-danger { margin-top: 1.6rem; }
-.person-danger .tf-danger-label { margin-top: 0; padding-top: 0; border-top: 0; }
+/* Gefahrenzone am Ende des Personenformulars, getrennt von den Stammdaten. */
+.person-danger .tf-danger-label { margin-top: 0; }
 .person-danger .card-meta { margin: 0.35rem 0 0; max-width: 72ch; }
 
 /* Tarife/Dienste: inline-editable config cards (accordion). */
@@ -3345,18 +3343,18 @@ button.portal-row { width:100%; border:0; border-bottom:1px solid var(--border);
 
 /* Eingeklappte Bloecke (Kennzahlen, Verlauf, Kostenstatistik): Titel und die
    wichtigsten Werte stehen schon in der Zeile. */
-.dash-kpis, .person-fold { padding: 0; }
-.dash-kpis > summary, .person-fold > summary { display: flex; align-items: center; flex-wrap: wrap; gap: .3rem .9rem; padding: .85rem 1rem; min-height: 44px; cursor: pointer; list-style: none; border-radius: inherit; }
-.dash-kpis > summary::-webkit-details-marker, .person-fold > summary::-webkit-details-marker { display: none; }
+.dash-kpis, .person-fold, .quick-price { padding: 0; }
+.dash-kpis > summary, .person-fold > summary, .quick-price > summary { display: flex; align-items: center; flex-wrap: wrap; gap: .3rem .9rem; padding: .85rem 1rem; min-height: 44px; cursor: pointer; list-style: none; border-radius: inherit; }
+.dash-kpis > summary::-webkit-details-marker, .person-fold > summary::-webkit-details-marker, .quick-price > summary::-webkit-details-marker { display: none; }
 .fold-chev { display: flex; flex: none; color: var(--text-muted); transition: transform .2s ease; }
-.dash-kpis[open] > summary .fold-chev, .person-fold[open] > summary .fold-chev { transform: rotate(90deg); }
-.dash-kpis[open] > summary, .person-fold[open] > summary { border-bottom: 1px solid var(--border); border-radius: 14px 14px 0 0; }
-.dash-kpis > summary:focus-visible, .person-fold > summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.dash-kpis[open] > summary .fold-chev, .person-fold[open] > summary .fold-chev, .quick-price[open] > summary .fold-chev { transform: rotate(90deg); }
+.dash-kpis[open] > summary, .person-fold[open] > summary, .quick-price[open] > summary { border-bottom: 1px solid var(--border); border-radius: 14px 14px 0 0; }
+.dash-kpis > summary:focus-visible, .person-fold > summary:focus-visible, .quick-price > summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .fold-sum { display: contents; }
 .fold-title { font-weight: 700; }
 .fold-sum h3 { margin: 0; }
 .fold-meta { color: var(--text-muted); font-size: var(--text-base); font-variant-numeric: tabular-nums; }
-.dash-kpis > :not(summary), .person-fold > :not(summary) { margin: .9rem 1rem; }
+.dash-kpis > :not(summary), .person-fold > :not(summary), .quick-price > :not(summary) { margin: .9rem 1rem; }
 .dash-kpis > .stat-grid { margin-bottom: .9rem; }
 .person-fold > .chart-card { border: 0; box-shadow: none; background: none !important; padding: 0; }
 .person-fold > .tl-list { margin-top: .6rem; }

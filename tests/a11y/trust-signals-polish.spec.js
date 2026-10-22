@@ -102,7 +102,7 @@ test('an empty invoice list explains where invoices come from', async ({ page })
   await expect(page.getByText('Noch keine Rechnungen. Eine Rechnung erstellst du auf der Personenseite mit „+ Rechnung“.')).toBeVisible();
 });
 
-test('person rows keep only open and edit; destructive actions live in the person danger zone', async ({ page }) => {
+test('person danger zone lives only in the edit dialog and keeps confirmation and undo', async ({ page }) => {
   const requests = await arrange(page, 390, 'light');
   await open(page, 'persons');
   const list = page.locator('#page');
@@ -110,18 +110,29 @@ test('person rows keep only open and edit; destructive actions live in the perso
   await expect(list.getByRole('button', { name: /löschen$/ })).toHaveCount(0);
   await expect(list.getByRole('button', { name: /bearbeiten$/ }).first()).toBeVisible();
 
+  await list.getByRole('button', { name: /bearbeiten$/ }).first().click();
+  const edit = page.getByRole('dialog', { name: 'Person bearbeiten', exact: true });
+  await expect(edit.locator('.person-danger')).toBeVisible();
+  await page.keyboard.press('Escape');
   await open(page, 'persons/1');
-  const zone = page.locator('.person-danger');
+  await expect(page.locator('#page .person-danger')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Bearbeiten', exact: true }).click();
+  const zone = edit.locator('.person-danger');
   await expect(zone.locator('.tf-danger-label')).toHaveText('Gefahrenzone');
   await zone.getByRole('button', { name: 'Anonymisieren (DSGVO)' }).click();
   await expect(page.locator('#confirm')).toHaveClass(/modal-danger/);
   await expect(page.locator('#confirm-ok')).toHaveClass(/btn-danger/);
   await page.keyboard.press('Escape');
+  await expect(edit).toBeVisible();
   // Löschen fragt immer nach, und Rückgängig im Hinweis nimmt es danach noch zurück,
   // bevor irgendetwas den Server erreicht.
   await zone.getByRole('button', { name: 'Person löschen' }).click();
   await expect(page.locator('#confirm-title')).toHaveText('Person löschen?');
+  await page.keyboard.press('Escape');
+  await expect(edit).toBeVisible();
+  await zone.getByRole('button', { name: 'Person löschen' }).click();
   await page.locator('#confirm-ok').click();
+  await expect(edit).toBeHidden();
   await page.locator('#toast').getByRole('button', { name: 'Rückgängig' }).click();
   await expect(page.locator('#toast')).toContainText('Abgebrochen');
   await noWrites(requests);
