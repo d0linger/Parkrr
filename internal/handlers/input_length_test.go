@@ -443,6 +443,13 @@ func TestInputLengthValidation(t *testing.T) {
 			errMsg:     "handle is too long",
 		},
 		{
+			name:       "ExportCSV: entity parameter too long",
+			path:       "/api/export/" + longName,
+			method:     "GET",
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "entity is too long",
+		},
+		{
 			name:   "CreateHandover: SignerName too long",
 			path:   "/api/vehicles/1/handovers",
 			method: "POST",
@@ -620,6 +627,9 @@ func TestInputLengthValidation(t *testing.T) {
 			case "RevokeSession: handle parameter too long":
 				req.SetPathValue("handle", longSessionHandle)
 				ah.RevokeSession(w, req)
+			case "ExportCSV: entity parameter too long":
+				req.SetPathValue("entity", longName)
+				h.ExportCSV(w, req)
 			case "ReverseTaxExpense: id parameter too long":
 				req.SetPathValue("id", longTaxID)
 				taxHandler.ReverseTaxExpense(w, req)

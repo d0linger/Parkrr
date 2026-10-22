@@ -190,15 +190,16 @@ func (h *AuthHandler) TOTPDisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// An over-long password can't match (bcrypt caps at 72 bytes), so
-	// reject it up front rather than spending a bcrypt compare on it.
-	if len(req.Password) > maxPasswordLen {
-		writeError(w, http.StatusForbidden, "Passwort ist falsch")
+	key, ip, ok := h.checkRateLimit(w, r, u.Username)
+	if !ok {
 		return
 	}
 
-	key, ip, ok := h.checkRateLimit(w, r, u.Username)
-	if !ok {
+	// An over-long password can't match (bcrypt caps at 72 bytes), so
+	// reject it up front rather than spending a bcrypt compare on it.
+	if len(req.Password) > maxPasswordLen {
+		h.recordReauthFailure(key, ip)
+		writeError(w, http.StatusForbidden, "Passwort ist falsch")
 		return
 	}
 
@@ -247,15 +248,16 @@ func (h *AuthHandler) TOTPRegenerateBackup(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// An over-long password can't match (bcrypt caps at 72 bytes), so
-	// reject it up front rather than spending a bcrypt compare on it.
-	if len(req.Password) > maxPasswordLen {
-		writeError(w, http.StatusForbidden, "Passwort ist falsch")
+	key, ip, ok := h.checkRateLimit(w, r, u.Username)
+	if !ok {
 		return
 	}
 
-	key, ip, ok := h.checkRateLimit(w, r, u.Username)
-	if !ok {
+	// An over-long password can't match (bcrypt caps at 72 bytes), so
+	// reject it up front rather than spending a bcrypt compare on it.
+	if len(req.Password) > maxPasswordLen {
+		h.recordReauthFailure(key, ip)
+		writeError(w, http.StatusForbidden, "Passwort ist falsch")
 		return
 	}
 

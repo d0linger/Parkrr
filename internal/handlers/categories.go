@@ -39,6 +39,11 @@ func (h *Handler) ListCategories(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, "query failed", err)
 		return
 	}
+	if hallStaff(r) { // Ausbau 35: Maße ja, Preise nein
+		for i := range cats {
+			cats[i].DefaultMonthlyCost, cats[i].DefaultYearlyCost = 0, 0
+		}
+	}
 	writeJSON(w, http.StatusOK, cats)
 }
 

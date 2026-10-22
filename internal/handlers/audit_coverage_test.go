@@ -191,6 +191,11 @@ var auditIgnoredColumns = map[string]bool{
 // wrong for a column that is a side effect in one handler and the user's actual
 // change in another — a blanket entry would silently license omitting it for good.
 var auditIgnoredPerFunc = map[string]map[string]bool{
+	// UpdateWaitlist: Kontaktdaten eines Interessenten (noch keine Person). Die
+	// Warteliste löscht sich nach 12 Monaten, weil die Einwilligung nur dafür gilt;
+	// Vorher/Nachher-Werte im Änderungsprotokoll würden diese Frist unterlaufen. Der
+	// Eintrag vermerkt deshalb nur „Kontaktdaten geändert“, die Sachfelder stehen im Diff.
+	"UpdateWaitlist": {"name": true, "email": true, "phone": true, "note": true},
 	// DeletePayment reverses a payment and clears `paid` on the vehicles/charges that
 	// payment had stamped. That is the mechanical cascade of un-booking it, not an edit
 	// of those records — the payment's own entry is the trail. Everywhere else `paid` is
@@ -279,7 +284,9 @@ var auditIgnoredPerFunc = map[string]map[string]bool{
 	// die geloeschte Adresse ins Aenderungsprotokoll und hoebe die Loeschung damit auf.
 	// error (mail_log) ebenso: der SMTP-Fehlertext zitiert die abgewiesene Adresse
 	// (PRT-03), geschwärzt wird genau sie.
-	"AnonymizePerson": {"revoked": true, "payload": true, "recipients": true, "sent_to": true, "error": true},
+	// note (access_media_loans, Ausbau 34): die Freitext-Notiz zur Ausgabe eines
+	// Schlüssels kann Personenbezug tragen und gehört in dieselbe Klasse.
+	"AnonymizePerson": {"revoked": true, "payload": true, "recipients": true, "sent_to": true, "error": true, "note": true},
 }
 
 // TestAuditDiffsCoverEveryWrittenColumn fails when a handler records field changes
@@ -487,8 +494,8 @@ var auditExemptHandlers = map[string]string{
 // The per-handler guards elsewhere in this file check the QUALITY of an entry; this
 // one checks that an entry exists at all. It is what catches a newly added endpoint
 // that simply forgot — the gap that let session revocation and TOTP setup ship
-// unlogged. Handlers that audit indirectly (through saveAgreement) are accepted via
-// the delegation check.
+// unlogged. Reachable helper bodies also count, so extracting a transaction helper
+// keeps coverage without an exemption that could hide a later missing audit.
 func TestEveryMutatingRouteIsAudited(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join("..", "server", "server.go"))
 	if err != nil {
@@ -500,7 +507,6 @@ func TestEveryMutatingRouteIsAudited(t *testing.T) {
 	}
 	reRoute := regexp.MustCompile(`"(?:POST|PUT|PATCH|DELETE) (/api[^"]*)"[^\n]*?(?:h|ah)\.([A-Za-z0-9_]+)`)
 	reAudit := regexp.MustCompile(`\.(?:audit|auditAs|auditChange|auditChangeTx|auditInsert|auditCreated|auditCreatedTx|auditDeleted|auditDeletedTx|AuditSystem)\(`)
-	reDelegates := regexp.MustCompile(`\b(?:saveAgreement|persistAgreement)\s*\(`)
 
 	// A guard that silently skips what it cannot parse is worse than no guard: the one
 	// route registered in a shape the pattern misses would be exactly the unaudited
@@ -529,7 +535,7 @@ func TestEveryMutatingRouteIsAudited(t *testing.T) {
 			unknown = append(unknown, path+" -> "+name)
 			continue
 		}
-		if !reAudit.MatchString(hf.Body) && !reDelegates.MatchString(hf.Body) {
+		if !reAudit.MatchString(hf.Reach) {
 			bad = append(bad, path+" -> "+name+" ("+hf.File+")")
 		}
 	}

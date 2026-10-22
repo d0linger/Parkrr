@@ -101,3 +101,6 @@ captures/
 !/web/static/icons/**
 !/web/static/img/**
 backups/
+
+# Per-developer Claude settings and command allow-list.
+.claude/settings.local.json

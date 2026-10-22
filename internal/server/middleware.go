@@ -44,6 +44,15 @@ func requestID() string {
 	return hex.EncodeToString(b)
 }
 
+// logPath schwärzt den Schlüssel eines Kalender-Abos (/ical/<token>), damit er nicht
+// im Zugriffsprotokoll landet; alle anderen Pfade bleiben, wie sie sind.
+func logPath(p string) string {
+	if strings.HasPrefix(p, "/ical/") {
+		return "/ical/[redacted]"
+	}
+	return p
+}
+
 // requestLogger assigns a request ID and logs one structured line per request.
 func requestLogger(mgr *auth.Manager, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -62,9 +71,11 @@ func requestLogger(mgr *auth.Manager, next http.Handler) http.Handler {
 		attrs := []any{
 			"id", id,
 			// Portal tokens are no longer carried in the URL path (they moved to the
-			// Authorization header, finding SEC-01), so the raw path is safe to log.
+			// Authorization header, finding SEC-01). Die einzige Ausnahme ist das
+			// Kalender-Abo: Kalender-Apps kennen nur eine URL. Dessen Schlüssel wird
+			// deshalb hier geschwärzt (logPath).
 			"method", r.Method,
-			"path", r.URL.Path,
+			"path", logPath(r.URL.Path),
 			"status", rec.status,
 			"bytes", rec.bytes,
 			"ip", mgr.ClientIP(r),

@@ -11,7 +11,10 @@ permissions:
 jobs:
   a11y:
     name: Accessibility (Playwright + axe-core)
-    runs-on: ubuntu-latest
+    # The live restore test needs PostgreSQL 16 clients, matching the service.
+    # ubuntu-latest now rolls to 26.04 (clients 18): pg_restore then emits
+    # SET transaction_timeout, which PostgreSQL 16 cannot execute.
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
 
     services:
@@ -37,23 +40,36 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: "1.26.9"
+          go-version: "1.26.10"
           cache: true
 
       - name: Build parkrr
         run: go build -o parkrr ./cmd/parkrr
 
+      - name: Check PostgreSQL clients match the test server
+        run: |
+          for tool in pg_dump pg_restore psql; do
+            version=$("$tool" --version)
+            echo "$version"
+            if [[ ! "$version" =~ ^${tool}\ \(PostgreSQL\)\ 16\. ]]; then
+              echo "::error::$tool must use PostgreSQL 16 clients to match the test database"
+              exit 1
+            fi
+          done
+
       - name: Start parkrr
         env:
           PARKRR_DATABASE_URL: postgres://parkrr:parkrr@localhost:5432/parkrr?sslmode=disable
-          PARKRR_LISTEN_ADDR: ":8080"
+          # Port 18099: der umfassende Live-Test laeuft nur gegen eine ausdruecklich
+          # wegwerfbare Instanz auf 18099/18101. Auf :8080 uebersprang er sich hier still.
+          PARKRR_LISTEN_ADDR: ":18099"
           PARKRR_SESSION_SECRET: ci-a11y-session-secret-not-a-real-secret
           PARKRR_ADMIN_USERNAME: admin
           PARKRR_ADMIN_PASSWORD: ci-a11y-admin-password
           PARKRR_SECURE_COOKIES: "false"
           PARKRR_CHECK_BREACHED_PASSWORDS: "false"
           PARKRR_WEBAUTHN_RP_ID: localhost
-          PARKRR_WEBAUTHN_ORIGINS: http://localhost:8080
+          PARKRR_WEBAUTHN_ORIGINS: http://localhost:18099
           # Der ganze a11y-Lauf kommt aus EINER IP; der Standard von 600/min reicht
           # fuer 41 Tests mit Seed-/Cleanup-Verkehr nicht und die Middleware
           # antwortete mit 429 {"error":"rate limit exceeded"} — das trieb render-race,
@@ -66,12 +82,13 @@ jobs:
           # config.go verlangt mindestens 32 Bytes.
           PARKRR_BACKUP_KEY: ci-a11y-backup-key-not-a-real-secret-0000
           PARKRR_BACKUP_DIR: /tmp/parkrr-a11y-backups
+          PARKRR_BROWSER_RESTORE: "true"
         run: |
           mkdir -p /tmp/parkrr-a11y-backups
           ./parkrr &
           echo "PARKRR_PID=$!" >> "$GITHUB_ENV"
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:8080/ >/dev/null; then echo "parkrr up"; exit 0; fi
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:18099/ >/dev/null; then echo "parkrr up"; exit 0; fi
             sleep 1
           done
           echo "::error::parkrr did not become ready" && exit 1
@@ -81,15 +98,46 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Install test dependencies
+        working-directory: tests/a11y
+        run: npm ci
+
+      # Chromium nicht bei jedem Lauf neu laden (einige hundert MB). Der Schluessel
+      # haengt an der installierten Playwright-Version; bei einem Update wechselt er
+      # von selbst. Die Systempakete installiert install-deps trotzdem jedes Mal.
+      - name: Read Playwright version
+        id: pw
+        working-directory: tests/a11y
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-chromium
+      - name: Install Playwright browser
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        working-directory: tests/a11y
+        run: npx playwright install --with-deps chromium
+      - name: Install Playwright system packages
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        working-directory: tests/a11y
+        run: npx playwright install-deps chromium
+
       - name: Accessibility tests
         working-directory: tests/a11y
         env:
-          PARKRR_BASE_URL: http://localhost:8080
+          PARKRR_BASE_URL: http://localhost:18099
           PARKRR_E2E_ISOLATED: "1"
-        run: |
-          npm ci
-          npx playwright install --with-deps chromium
-          npm test
+          PARKRR_E2E_USER: admin
+          PARKRR_E2E_PASS: ci-a11y-admin-password
+          PARKRR_E2E_RESTORE: "1"
+          PARKRR_E2E_BACKUP_KEY: ci-a11y-backup-key-not-a-real-secret-0000
+          # Der Live-Test schlaegt hier fehl statt sich zu ueberspringen, falls die
+          # Umgebung oben nicht mehr zu seinen Voraussetzungen passt.
+          PARKRR_E2E_REQUIRE_LIVE: "1"
+        # Keep detailed test errors in GitHub check annotations as well as logs.
+        run: npm test -- --reporter=line,github
 
       - name: Stop parkrr
         if: always()

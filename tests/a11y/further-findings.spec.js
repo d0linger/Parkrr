@@ -333,7 +333,7 @@ test('tab labels never break mid-word; at 200 % text the bar shows icons and kee
 test('desktop header shows the search field with its shortcut; icons are distinct', async ({ page }) => {
   await arrange(page, 1440, 'light');
   await open(page, 'dashboard');
-  const search = page.getByRole('button', { name: 'Suche', exact: true });
+  const search = page.getByRole('button', { name: /^Suchen/ });
   await expect(search.locator('.search-hint')).toBeVisible();
   // Kürzel im Feld und im Tooltip passen zur Plattform (Chromium im Test: kein Mac).
   const mac = await page.evaluate(() => /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || ''));

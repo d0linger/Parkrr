@@ -30,6 +30,9 @@ import (
 // New builds the top-level HTTP handler with all routes registered. Background
 // goroutines started here (rate-limiter cleanup, login-throttle cleanup) run
 // until stop is closed.
+// routePatterns listet die geschützten API-Routen der zuletzt gebauten Instanz (Test).
+var routePatterns []string
+
 func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, rateLimitPerMin int, metricsToken string, metricsRequireAuth, checkBreachedPasswords, failClosedOnBreach bool, backupKey, dbURL, backupDir string, s3 backup.S3Config, mailer mail.Sender, publicBaseURL string, stop <-chan struct{}, starters ...func(func())) (http.Handler, *handlers.Handler, error) {
 	startWorker := func(fn func()) { go fn() }
 	if len(starters) > 0 && starters[0] != nil {
@@ -78,7 +81,21 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	// Editors may do everything except user management and the audit log
 	// (admins always satisfy RequireRole as well).
 	editor := authMgr.RequireRole(models.RoleEditor)
+	// Rollen Buchhaltung und Hallendienst (Ausbau 35). money: alles mit Beträgen —
+	// jede Rolle außer dem Hallendienst. hall: die Schreibwege der Halle (Planer,
+	// Übergaben, Fotos, Service, Schlüsselbuch) für Bearbeiter und Hallendienst. tax:
+	// der Steuerbereich für Admins und die Buchhaltung.
+	money := authMgr.RequireRole(models.RoleEditor, models.RoleReader, models.RoleAccounting)
+	hall := authMgr.RequireRole(models.RoleEditor, models.RoleHall)
+	tax := authMgr.RequireRole(models.RoleAccounting)
 	hf := func(f func(http.ResponseWriter, *http.Request)) http.Handler { return http.HandlerFunc(f) }
+	// Jede geschützte Route steht zusätzlich in routePatterns: der Rollentest geht sie
+	// alle durch, statt eine Liste zu pflegen, die neben dem Code veraltet.
+	routePatterns = routePatterns[:0]
+	route := func(pattern string, hd http.Handler) {
+		mux.Handle(pattern, hd)
+		routePatterns = append(routePatterns, pattern)
+	}
 
 	// --- Auth (public) ---
 	mux.HandleFunc("POST /api/auth/login", ah.Login)
@@ -95,262 +112,354 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	// Der einzige öffentliche SCHREIBWEG: ein Briefkasten, kein Stift. Wünsche
 	// (Kontaktdaten, Abholtermin) landen als Anfrage beim Betreiber (Hundert 85/87).
 	mux.HandleFunc("POST /api/portal/requests", h.PortalCreateRequest)
+	mux.HandleFunc("GET /api/portal/pickup-slots", h.PortalPickupSlots)
+	// Einstellvertrag (Ausbau 30): lesen und annehmen, nur für die eigenen Gefährte.
+	mux.HandleFunc("GET /api/portal/contract", h.PortalContractPDF)
+	mux.HandleFunc("POST /api/portal/contract/accept", h.PortalAcceptContract)
+	mux.HandleFunc("GET /ical/{token}", h.CalendarFeed)
 
 	// --- Auth (protected) ---
 	mux.Handle("POST /api/auth/logout", authMgr.RequireLogout(hf(ah.Logout)))
-	mux.Handle("GET /api/auth/me", authed(hf(ah.Me)))
-	mux.Handle("POST /api/auth/change-password", authed(hf(ah.ChangePassword)))
-	mux.Handle("GET /api/auth/sessions", authed(hf(ah.ListSessions)))
-	mux.Handle("DELETE /api/auth/sessions/{handle}", authed(hf(ah.RevokeSession)))
-	mux.Handle("POST /api/auth/sessions/revoke-others", authed(hf(ah.RevokeOtherSessions)))
-	mux.Handle("POST /api/auth/2fa/setup", authed(hf(ah.TOTPSetup)))
-	mux.Handle("POST /api/auth/2fa/enable", authed(hf(ah.TOTPEnable)))
-	mux.Handle("POST /api/auth/2fa/disable", authed(hf(ah.TOTPDisable)))
-	mux.Handle("GET /api/auth/2fa/backup-codes", authed(hf(ah.TOTPBackupCount)))
-	mux.Handle("POST /api/auth/2fa/backup-codes/regenerate", authed(hf(ah.TOTPRegenerateBackup)))
+	route("GET /api/auth/me", authed(hf(ah.Me)))
+	route("POST /api/auth/change-password", authed(hf(ah.ChangePassword)))
+	route("GET /api/auth/sessions", authed(hf(ah.ListSessions)))
+	route("DELETE /api/auth/sessions/{handle}", authed(hf(ah.RevokeSession)))
+	route("POST /api/auth/sessions/revoke-others", authed(hf(ah.RevokeOtherSessions)))
+	route("POST /api/auth/2fa/setup", authed(hf(ah.TOTPSetup)))
+	route("POST /api/auth/2fa/enable", authed(hf(ah.TOTPEnable)))
+	route("POST /api/auth/2fa/disable", authed(hf(ah.TOTPDisable)))
+	route("GET /api/auth/2fa/backup-codes", authed(hf(ah.TOTPBackupCount)))
+	route("POST /api/auth/2fa/backup-codes/regenerate", authed(hf(ah.TOTPRegenerateBackup)))
 
 	// --- Passkeys / WebAuthn (protected: manage your own) ---
-	mux.Handle("GET /api/passkeys", authed(hf(ah.ListPasskeys)))
-	mux.Handle("POST /api/passkeys/register/begin", authed(hf(ah.PasskeyRegisterBegin)))
-	mux.Handle("POST /api/passkeys/register/finish", authed(hf(ah.PasskeyRegisterFinish)))
-	mux.Handle("DELETE /api/passkeys/{id}", authed(hf(ah.DeletePasskey)))
+	route("GET /api/passkeys", authed(hf(ah.ListPasskeys)))
+	route("POST /api/passkeys/register/begin", authed(hf(ah.PasskeyRegisterBegin)))
+	route("POST /api/passkeys/register/finish", authed(hf(ah.PasskeyRegisterFinish)))
+	route("DELETE /api/passkeys/{id}", authed(hf(ah.DeletePasskey)))
 
 	// Globale Suche für die Befehlspalette. authed wie die Listen, die sie durchsucht:
 	// sie zeigt nur, was derselbe Benutzer über GET /api/persons, /vehicles, /garages,
 	// /categories, /services und /invoices/{id} ohnehin abrufen kann — kein neuer Zugang
 	// zu Daten, nur ein schnellerer Weg dorthin.
-	mux.Handle("GET /api/search", authed(hf(h.Search)))
+	route("GET /api/search", authed(hf(h.Search)))
 	// Betreiber-Handbuch für "Hilfe & Handbuch" (eingebettet; nur für Admins).
-	mux.Handle("GET /api/help/handbook", admin(hf(h.Handbook)))
+	route("GET /api/help/handbook", admin(hf(h.Handbook)))
 
 	// --- Persons (read: any; write: manager/admin) ---
-	mux.Handle("GET /api/persons", authed(hf(h.ListPersons)))
-	mux.Handle("GET /api/persons/outstanding", authed(hf(h.OutstandingByPerson)))
-	mux.Handle("POST /api/persons", editor(hf(h.CreatePerson)))
-	mux.Handle("POST /api/import/persons", editor(hf(h.ImportPersons)))
-	mux.Handle("GET /api/import/persons/template", editor(hf(h.ImportTemplate)))
-	mux.Handle("POST /api/persons/{id}/portal-link", editor(hf(h.CreatePortalLink)))
-	mux.Handle("GET /api/persons/{id}/portal-links", editor(hf(h.ListPortalLinks)))
-	mux.Handle("POST /api/persons/{id}/portal-link/revoke", editor(hf(h.RevokePortalLinks)))
-	mux.Handle("POST /api/portal-links/{id}/revoke", editor(hf(h.RevokePortalLink)))
-	mux.Handle("GET /api/portal-requests", editor(hf(h.ListPortalRequests)))
-	mux.Handle("POST /api/portal-requests/{id}/resolve", editor(hf(h.ResolvePortalRequest)))
-	mux.Handle("PUT /api/persons/{id}", editor(hf(h.UpdatePerson)))
-	mux.Handle("DELETE /api/persons/{id}", editor(hf(h.DeletePerson)))
+	route("GET /api/persons", authed(hf(h.ListPersons)))
+	route("GET /api/persons/outstanding", money(hf(h.OutstandingByPerson)))
+	route("POST /api/persons", editor(hf(h.CreatePerson)))
+	route("POST /api/import/persons", editor(hf(h.ImportPersons)))
+	route("GET /api/import/persons/template", editor(hf(h.ImportTemplate)))
+	route("POST /api/import/vehicles", editor(hf(h.ImportVehicles)))
+	route("GET /api/import/vehicles/template", editor(hf(h.VehicleImportTemplate)))
+	route("POST /api/persons/{id}/portal-link", editor(hf(h.CreatePortalLink)))
+	route("GET /api/persons/{id}/portal-links", editor(hf(h.ListPortalLinks)))
+	route("POST /api/persons/{id}/portal-link/revoke", editor(hf(h.RevokePortalLinks)))
+	route("POST /api/portal-links/{id}/revoke", editor(hf(h.RevokePortalLink)))
+	route("GET /api/portal-requests", editor(hf(h.ListPortalRequests)))
+	route("POST /api/portal-requests/{id}/resolve", editor(hf(h.ResolvePortalRequest)))
+	route("PUT /api/persons/{id}", editor(hf(h.UpdatePerson)))
+	route("DELETE /api/persons/{id}", editor(hf(h.DeletePerson)))
 	// Anonymisieren ist der Ausweg, wenn DeletePerson wegen bestehender Rechnungen
 	// ablehnt — dieselbe Rolle wie das Löschen, weil es dieselbe Entscheidung ist.
-	mux.Handle("POST /api/persons/{id}/anonymize", editor(hf(h.AnonymizePerson)))
-	mux.Handle("GET /api/persons/{id}/stats", authed(hf(h.PersonStats)))
+	route("POST /api/persons/{id}/anonymize", editor(hf(h.AnonymizePerson)))
+	route("GET /api/persons/{id}/stats", money(hf(h.PersonStats)))
 	// Aktivitäts-Verlauf: Zahlungen, Rechnungen, Posten, Statuswechsel, Übergaben,
 	// Pauschalen in EINEM Strom (Hundert 56).
-	mux.Handle("GET /api/persons/{id}/timeline", authed(hf(h.PersonTimeline)))
+	route("GET /api/persons/{id}/timeline", money(hf(h.PersonTimeline)))
 	// Datei-Anhänge (PDF/JPEG/PNG) je Person und Gefährt (Hundert 57).
-	mux.Handle("GET /api/persons/{id}/attachments", authed(hf(h.ListAttachments)))
-	mux.Handle("POST /api/persons/{id}/attachments", editor(hf(h.UploadAttachment)))
-	mux.Handle("GET /api/vehicles/{id}/attachments", authed(hf(h.ListAttachments)))
-	mux.Handle("POST /api/vehicles/{id}/attachments", editor(hf(h.UploadAttachment)))
-	mux.Handle("GET /api/attachments/{id}", authed(hf(h.GetAttachment)))
-	mux.Handle("DELETE /api/attachments/{id}", editor(hf(h.DeleteAttachment)))
+	route("GET /api/persons/{id}/attachments", authed(hf(h.ListAttachments)))
+	route("POST /api/persons/{id}/attachments", editor(hf(h.UploadAttachment)))
+	route("GET /api/vehicles/{id}/attachments", authed(hf(h.ListAttachments)))
+	route("POST /api/vehicles/{id}/attachments", editor(hf(h.UploadAttachment)))
+	route("GET /api/attachments/{id}", authed(hf(h.GetAttachment)))
+	route("DELETE /api/attachments/{id}", editor(hf(h.DeleteAttachment)))
 
 	// --- Payments (recorded money-in / Kontoauszug) ---
-	mux.Handle("GET /api/persons/{id}/payments", authed(hf(h.ListPayments)))
-	mux.Handle("POST /api/persons/{id}/payments", editor(hf(h.CreatePayment)))
-	mux.Handle("DELETE /api/payments/{id}", editor(hf(h.DeletePayment)))
-	mux.Handle("GET /api/persons/{id}/open-items", authed(hf(h.OpenItems)))
-	mux.Handle("POST /api/persons/{id}/apply-credit", editor(hf(h.ApplyCredit)))
+	route("GET /api/persons/{id}/payments", money(hf(h.ListPayments)))
+	route("POST /api/persons/{id}/payments", editor(hf(h.CreatePayment)))
+	route("DELETE /api/payments/{id}", editor(hf(h.DeletePayment)))
+	route("GET /api/persons/{id}/open-items", money(hf(h.OpenItems)))
+	route("POST /api/persons/{id}/apply-credit", editor(hf(h.ApplyCredit)))
 
 	// --- Invoicing (Rechnungen) ---
-	mux.Handle("GET /api/billing/settings", admin(hf(h.GetBillingSettings)))
-	mux.Handle("POST /api/billing/settings", admin(hf(h.SaveBillingSettings)))
-	mux.Handle("GET /api/persons/{id}/invoices", authed(hf(h.ListInvoices)))
-	mux.Handle("POST /api/persons/{id}/invoices", editor(hf(h.CreateInvoice)))
-	mux.Handle("GET /api/invoices", authed(hf(h.AllInvoices)))
-	mux.Handle("GET /api/invoices/{id}", authed(hf(h.GetInvoice)))
-	mux.Handle("GET /api/invoices/{id}/pdf", authed(hf(h.InvoicePDF)))
-	mux.Handle("GET /api/invoices/{id}/pay-qr", authed(hf(h.PayQR)))
-	mux.Handle("POST /api/invoices/{id}/remind", editor(hf(h.RemindInvoice)))
-	mux.Handle("POST /api/invoices/{id}/cancel", editor(hf(h.CancelInvoice)))
-	mux.Handle("POST /api/persons/{id}/pay-invoices", editor(hf(h.PayInvoices)))
-	mux.Handle("GET /api/invoices/overdue", authed(hf(h.OverdueInvoices)))
+	route("GET /api/billing/settings", admin(hf(h.GetBillingSettings)))
+	route("POST /api/billing/settings", admin(hf(h.SaveBillingSettings)))
+	route("GET /api/persons/{id}/invoices", money(hf(h.ListInvoices)))
+	route("POST /api/persons/{id}/invoices", editor(hf(h.CreateInvoice)))
+	route("GET /api/invoices", money(hf(h.AllInvoices)))
+	route("GET /api/invoices/{id}", money(hf(h.GetInvoice)))
+	route("GET /api/invoices/{id}/pdf", money(hf(h.InvoicePDF)))
+	route("GET /api/invoices/{id}/pay-qr", money(hf(h.PayQR)))
+	route("POST /api/invoices/{id}/remind", editor(hf(h.RemindInvoice)))
+	// Mail-Versand und Mahnautomatik (Ausbau 1, 19, 20, 26, 36).
+	route("POST /api/invoices/remind", editor(hf(h.RemindInvoices)))
+	route("GET /api/invoices/preview", editor(hf(h.InvoiceRunPreview)))
+	route("POST /api/invoices/{id}/send", editor(hf(h.SendInvoiceMail)))
+	route("GET /api/invoices/{id}/mailings", money(hf(h.InvoiceMailings)))
+	route("GET /api/mail-outbox", editor(hf(h.ListOutbox)))
+	route("POST /api/mail-outbox/{id}/retry", editor(hf(h.RetryOutbox)))
+	route("GET /api/mail-automation", admin(hf(h.GetMailAutomation)))
+	route("PUT /api/mail-automation", admin(hf(h.SaveMailAutomation)))
+	route("PUT /api/persons/{id}/dunning", editor(hf(h.SetPersonDunning)))
+	// Saison und Kunden (Ausbau 21–23, 31).
+	route("GET /api/pickup-windows", editor(hf(h.GetPickupWindows)))
+	route("PUT /api/pickup-windows", editor(hf(h.SavePickupWindows)))
+	route("GET /api/waitlist", editor(hf(h.ListWaitlist)))
+	route("GET /api/waitlist/summary", authed(hf(h.WaitlistSummary)))
+	route("POST /api/waitlist", editor(hf(h.CreateWaitlist)))
+	route("PUT /api/waitlist/{id}", editor(hf(h.UpdateWaitlist)))
+	route("DELETE /api/waitlist/{id}", editor(hf(h.DeleteWaitlist)))
+	route("POST /api/waitlist/{id}/convert", editor(hf(h.ConvertWaitlist)))
+	route("POST /api/invoices/{id}/cancel", editor(hf(h.CancelInvoice)))
+	route("POST /api/persons/{id}/pay-invoices", editor(hf(h.PayInvoices)))
+	// Kautionen (Ausbau 32): eigenes Konto je Person, Einbehalt über pay-invoices.
+	route("GET /api/persons/{id}/deposits", money(hf(h.ListDeposits)))
+	route("POST /api/persons/{id}/deposits", editor(hf(h.CreateDeposit)))
+	route("DELETE /api/deposits/{id}", admin(hf(h.DeleteDeposit)))
+	// Kontoauszug (Ausbau 27): camt.053 einlesen, per Klick zuordnen.
+	route("POST /api/bank-import", editor(hf(h.ImportBankStatement)))
+	route("GET /api/bank-transactions", money(hf(h.ListBankTransactions)))
+	route("POST /api/bank-transactions/{id}/assign", editor(hf(h.AssignBankTransaction)))
+	route("POST /api/bank-transactions/{id}/ignore", editor(hf(h.SetBankTransactionIgnored)))
+	route("GET /api/invoices/overdue", money(hf(h.OverdueInvoices)))
 	// Offene-Posten-Liste als druckfertiges Dokument mit Stichtag (Hundert 17).
-	mux.Handle("GET /api/reports/outstanding.pdf", authed(hf(h.OutstandingReportPDF)))
+	route("GET /api/reports/outstanding.pdf", money(hf(h.OutstandingReportPDF)))
+	route("GET /api/reports/week.pdf", authed(hf(h.WeekSchedulePDF)))
+	// Kalender-Abo (Ausbau 10): Verwaltung angemeldet, der Feed selbst öffentlich über
+	// einen widerrufbaren Schlüssel im Pfad (siehe handlers/schedule.go, server.logPath).
+	route("GET /api/calendar/feed", authed(hf(h.CalendarFeedStatus)))
+	route("POST /api/calendar/feed", authed(hf(h.CalendarFeedCreate)))
+	route("DELETE /api/calendar/feed", authed(hf(h.CalendarFeedRevoke)))
 	// Steuerjahr (Einnahmenaufstellung): admin-only, like the invoice settings.
-	mux.Handle("GET /api/reports/tax-year", admin(hf(h.TaxYear)))
-	mux.Handle("GET /api/reports/tax-year.csv", admin(hf(h.TaxYearCSV)))
-	mux.Handle("GET /api/reports/tax-year.pdf", admin(hf(h.TaxYearPDF)))
-	mux.Handle("GET /api/reports/tax-year.zip", admin(hf(h.TaxYearPackage)))
+	route("GET /api/reports/tax-year", tax(hf(h.TaxYear)))
+	route("GET /api/reports/tax-year.csv", tax(hf(h.TaxYearCSV)))
+	route("GET /api/reports/tax-year.pdf", tax(hf(h.TaxYearPDF)))
+	route("GET /api/reports/tax-year.zip", tax(hf(h.TaxYearPackage)))
 	// Stateless calculation only: usable in tax read-only mode, still admin/CSRF protected.
-	mux.Handle("POST /api/reports/tax-review/preview", admin(hf(h.TaxReviewPreview)))
-	mux.Handle("POST /api/reports/tax-import/preview", admin(hf(h.TaxImportPreview)))
-	mux.Handle("GET /api/tax/properties", admin(hf(h.ListTaxProperties)))
-	mux.Handle("POST /api/tax/properties", admin(hf(h.CreateTaxProperty)))
-	mux.Handle("PUT /api/tax/properties/{id}", admin(hf(h.UpdateTaxProperty)))
-	mux.Handle("GET /api/tax/categories", admin(hf(h.ListTaxCategories)))
-	mux.Handle("GET /api/tax/settings", admin(hf(h.GetTaxSettings)))
-	mux.Handle("PUT /api/tax/settings", admin(hf(h.SaveTaxSettings)))
-	mux.Handle("GET /api/tax/expenses", admin(hf(h.ListTaxExpenses)))
-	mux.Handle("POST /api/tax/expenses", admin(hf(h.CreateTaxExpense)))
-	mux.Handle("POST /api/tax/expenses/{id}/reverse", admin(hf(h.ReverseTaxExpense)))
-	mux.Handle("POST /api/tax/expenses/{id}/receipts", admin(hf(h.UploadTaxReceipt)))
-	mux.Handle("GET /api/tax/expenses/{id}/receipts", admin(hf(h.ListTaxReceipts)))
-	mux.Handle("GET /api/tax/receipts/{id}", admin(hf(h.GetTaxReceipt)))
-	mux.Handle("GET /api/tax/recurring", admin(hf(h.ListTaxRecurring)))
-	mux.Handle("POST /api/tax/recurring", admin(hf(h.CreateTaxRecurring)))
-	mux.Handle("PUT /api/tax/recurring/{id}", admin(hf(h.UpdateTaxRecurring)))
-	mux.Handle("POST /api/tax/recurring/{id}/book", admin(hf(h.BookTaxRecurring)))
-	mux.Handle("GET /api/tax/assets", admin(hf(h.ListTaxAssets)))
-	mux.Handle("POST /api/tax/assets", admin(hf(h.CreateTaxAsset)))
-	mux.Handle("PUT /api/tax/payments/{id}", admin(hf(h.UpdatePaymentTaxMetadata)))
-	mux.Handle("POST /api/tax/years/{year}/lock", admin(hf(h.LockTaxYear)))
-	mux.Handle("DELETE /api/tax/years/{year}/lock", admin(hf(h.UnlockTaxYear)))
+	route("POST /api/reports/tax-review/preview", tax(hf(h.TaxReviewPreview)))
+	route("POST /api/reports/tax-import/preview", tax(hf(h.TaxImportPreview)))
+	route("GET /api/tax/properties", tax(hf(h.ListTaxProperties)))
+	route("POST /api/tax/properties", tax(hf(h.CreateTaxProperty)))
+	route("PUT /api/tax/properties/{id}", tax(hf(h.UpdateTaxProperty)))
+	route("GET /api/tax/categories", tax(hf(h.ListTaxCategories)))
+	route("GET /api/tax/settings", tax(hf(h.GetTaxSettings)))
+	route("PUT /api/tax/settings", tax(hf(h.SaveTaxSettings)))
+	route("GET /api/tax/expenses", tax(hf(h.ListTaxExpenses)))
+	route("POST /api/tax/expenses", tax(hf(h.CreateTaxExpense)))
+	route("POST /api/tax/expenses/{id}/reverse", tax(hf(h.ReverseTaxExpense)))
+	route("POST /api/tax/expenses/{id}/receipts", tax(hf(h.UploadTaxReceipt)))
+	route("GET /api/tax/expenses/{id}/receipts", tax(hf(h.ListTaxReceipts)))
+	route("GET /api/tax/receipts/{id}", tax(hf(h.GetTaxReceipt)))
+	route("GET /api/tax/recurring", tax(hf(h.ListTaxRecurring)))
+	route("POST /api/tax/recurring", tax(hf(h.CreateTaxRecurring)))
+	route("PUT /api/tax/recurring/{id}", tax(hf(h.UpdateTaxRecurring)))
+	route("POST /api/tax/recurring/{id}/book", tax(hf(h.BookTaxRecurring)))
+	route("GET /api/tax/assets", tax(hf(h.ListTaxAssets)))
+	route("POST /api/tax/assets", tax(hf(h.CreateTaxAsset)))
+	route("PUT /api/tax/payments/{id}", tax(hf(h.UpdatePaymentTaxMetadata)))
+	route("POST /api/tax/years/{year}/lock", tax(hf(h.LockTaxYear)))
+	route("DELETE /api/tax/years/{year}/lock", tax(hf(h.UnlockTaxYear)))
 
 	// --- Flat-rate agreements (Pauschale-Einträge) ---
-	mux.Handle("GET /api/persons/{id}/agreements", authed(hf(h.ListAgreements)))
-	mux.Handle("POST /api/persons/{id}/agreements", editor(hf(h.CreateAgreement)))
-	mux.Handle("PUT /api/agreements/{id}", editor(hf(h.UpdateAgreement)))
-	mux.Handle("DELETE /api/agreements/{id}", editor(hf(h.DeleteAgreement)))
-	mux.Handle("POST /api/agreements/{id}/paid", editor(hf(h.SetAgreementPaid)))
-	mux.Handle("POST /api/agreements/{id}/period-paid", editor(hf(h.SetAgreementPeriodPaid)))
+	route("GET /api/persons/{id}/agreements", money(hf(h.ListAgreements)))
+	route("POST /api/persons/{id}/agreements", editor(hf(h.CreateAgreement)))
+	route("PUT /api/agreements/{id}", editor(hf(h.UpdateAgreement)))
+	route("DELETE /api/agreements/{id}", editor(hf(h.DeleteAgreement)))
+	route("POST /api/agreements/{id}/paid", editor(hf(h.SetAgreementPaid)))
+	route("POST /api/agreements/{id}/period-paid", editor(hf(h.SetAgreementPeriodPaid)))
 
 	// --- Recurring extra costs (Wiederkehrende Nebenkosten) ---
-	mux.Handle("GET /api/persons/{id}/recurring", authed(hf(h.ListRecurringCharges)))
-	mux.Handle("POST /api/persons/{id}/recurring", editor(hf(h.CreateRecurringCharge)))
-	mux.Handle("PUT /api/recurring/{id}", editor(hf(h.UpdateRecurringCharge)))
-	mux.Handle("DELETE /api/recurring/{id}", editor(hf(h.DeleteRecurringCharge)))
-	mux.Handle("POST /api/recurring/{id}/paid", editor(hf(h.SetRecurringChargePaid)))
-	mux.Handle("POST /api/recurring/{id}/period-paid", editor(hf(h.SetRecurringChargePeriodPaid)))
+	route("GET /api/persons/{id}/recurring", money(hf(h.ListRecurringCharges)))
+	route("POST /api/persons/{id}/recurring", editor(hf(h.CreateRecurringCharge)))
+	route("PUT /api/recurring/{id}", editor(hf(h.UpdateRecurringCharge)))
+	route("DELETE /api/recurring/{id}", editor(hf(h.DeleteRecurringCharge)))
+	route("POST /api/recurring/{id}/paid", editor(hf(h.SetRecurringChargePaid)))
+	route("POST /api/recurring/{id}/period-paid", editor(hf(h.SetRecurringChargePeriodPaid)))
 
 	// --- Vehicles ---
-	mux.Handle("GET /api/vehicles", authed(hf(h.ListVehicles)))
-	mux.Handle("POST /api/vehicles", editor(hf(h.CreateVehicle)))
-	mux.Handle("PUT /api/vehicles/{id}", editor(hf(h.UpdateVehicle)))
-	mux.Handle("DELETE /api/vehicles/{id}", editor(hf(h.DeleteVehicle)))
-	mux.Handle("POST /api/vehicles/{id}/status", editor(hf(h.ChangeVehicleStatus)))
-	mux.Handle("POST /api/vehicles/{id}/paid", editor(hf(h.MarkPaid)))
-	mux.Handle("POST /api/vehicles/{id}/reactivate", editor(hf(h.ReactivateVehicle)))
-	mux.Handle("POST /api/vehicles/{id}/duplicate", editor(hf(h.DuplicateVehicle)))
-	mux.Handle("GET /api/vehicles/{id}/history", authed(hf(h.VehicleHistory)))
-	mux.Handle("GET /api/vehicles/{id}/label", authed(hf(h.VehicleLabel)))
+	route("GET /api/vehicles", authed(hf(h.ListVehicles)))
+	route("POST /api/vehicles", editor(hf(h.CreateVehicle)))
+	route("PUT /api/vehicles/{id}", editor(hf(h.UpdateVehicle)))
+	route("DELETE /api/vehicles/{id}", editor(hf(h.DeleteVehicle)))
+	route("POST /api/vehicles/{id}/status", editor(hf(h.ChangeVehicleStatus)))
+	route("POST /api/vehicles/{id}/paid", editor(hf(h.MarkPaid)))
+	route("POST /api/vehicles/{id}/reactivate", editor(hf(h.ReactivateVehicle)))
+	route("POST /api/vehicles/{id}/duplicate", editor(hf(h.DuplicateVehicle)))
+	route("GET /api/vehicles/{id}/history", authed(hf(h.VehicleHistory)))
+	route("GET /api/vehicles/{id}/label", authed(hf(h.VehicleLabel)))
+	route("GET /api/halls/{id}/labels", authed(hf(h.HallLabels)))
 	// Literal segment beats the {id} pattern in Go's ServeMux, so this is safe.
-	mux.Handle("GET /api/vehicles/unassigned", authed(hf(h.ListUnassignedVehicles)))
+	route("GET /api/vehicles/unassigned", authed(hf(h.ListUnassignedVehicles)))
 
 	// --- Vehicle photos ---
-	mux.Handle("GET /api/vehicles/{id}/photos", authed(hf(h.ListPhotos)))
-	mux.Handle("POST /api/vehicles/{id}/photos", editor(hf(h.UploadPhoto)))
+	route("GET /api/vehicles/{id}/photos", authed(hf(h.ListPhotos)))
+	route("POST /api/vehicles/{id}/photos", hall(hf(h.UploadPhoto)))
 	// Fotoreihenfolge in einem Zug; Position 0 = Titelbild (Hundert 58).
-	mux.Handle("PUT /api/vehicles/{id}/photos/order", editor(hf(h.ReorderPhotos)))
-	mux.Handle("GET /api/photos/{id}", authed(hf(h.GetPhoto)))
-	mux.Handle("DELETE /api/photos/{id}", editor(hf(h.DeletePhoto)))
+	route("PUT /api/vehicles/{id}/photos/order", hall(hf(h.ReorderPhotos)))
+	route("GET /api/photos/{id}", authed(hf(h.GetPhoto)))
+	route("DELETE /api/photos/{id}", hall(hf(h.DeletePhoto)))
 
 	// --- Handover protocols (Übergabeprotokoll) ---
-	mux.Handle("GET /api/vehicles/{id}/handovers", authed(hf(h.ListHandovers)))
-	mux.Handle("POST /api/vehicles/{id}/handovers", editor(hf(h.CreateHandover)))
-	mux.Handle("GET /api/handover-templates", authed(hf(h.ListHandoverTemplates)))
-	mux.Handle("POST /api/handover-templates", editor(hf(h.CreateHandoverTemplate)))
-	mux.Handle("PUT /api/handover-templates/{id}", editor(hf(h.UpdateHandoverTemplate)))
-	mux.Handle("DELETE /api/handover-templates/{id}", editor(hf(h.DeleteHandoverTemplate)))
-	mux.Handle("GET /api/handovers/{id}/signature", authed(hf(h.GetHandoverSignature)))
-	mux.Handle("GET /api/handovers/{id}/pdf", authed(hf(h.HandoverPDF)))
+	route("GET /api/vehicles/{id}/handovers", authed(hf(h.ListHandovers)))
+	route("POST /api/vehicles/{id}/handovers", hall(hf(h.CreateHandover)))
+	route("GET /api/handover-templates", authed(hf(h.ListHandoverTemplates)))
+	route("POST /api/handover-templates", editor(hf(h.CreateHandoverTemplate)))
+	route("PUT /api/handover-templates/{id}", editor(hf(h.UpdateHandoverTemplate)))
+	route("DELETE /api/handover-templates/{id}", editor(hf(h.DeleteHandoverTemplate)))
+	route("GET /api/handovers/{id}/signature", authed(hf(h.GetHandoverSignature)))
+	route("GET /api/handovers/{id}/pdf", authed(hf(h.HandoverPDF)))
+	// Zustandsfotos zum Protokoll (Ausbau 24), nur bis 24 h nach dem Protokoll.
+	route("POST /api/handovers/{id}/photos", hall(hf(h.UploadHandoverPhoto)))
 	// Ein unterschriebenes Übergabeprotokoll ist ein Beleg: nur Admins dürfen es
 	// entfernen, nicht jeder Bearbeiter (Hundert SEC-79). Gegen nachträgliche
 	// Änderungen schützt zusätzlich der Trigger aus Migration 051.
-	mux.Handle("DELETE /api/handovers/{id}", admin(hf(h.DeleteHandover)))
+	route("DELETE /api/handovers/{id}", admin(hf(h.DeleteHandover)))
+
+	// --- Serviceaufgaben (Ausbau 25) ---
+	route("GET /api/service-tasks", authed(hf(h.ListServiceTasks)))
+	route("GET /api/service-tasks/due", authed(hf(h.ServiceTasksDue)))
+	route("POST /api/service-tasks", editor(hf(h.CreateServiceTask)))
+	route("PUT /api/service-tasks/{id}", editor(hf(h.UpdateServiceTask)))
+	route("DELETE /api/service-tasks/{id}", editor(hf(h.DeleteServiceTask)))
+	route("POST /api/service-tasks/{id}/done", hall(hf(h.CompleteServiceTask)))
+	route("DELETE /api/service-task-log/{id}", hall(hf(h.UndoServiceTask)))
+
+	// --- Schlüssel- und Handsenderbuch (Ausbau 34) ---
+	route("GET /api/access-media", authed(hf(h.ListAccessMedia)))
+	route("POST /api/access-media", editor(hf(h.CreateAccessMedium)))
+	route("PUT /api/access-media/{id}", editor(hf(h.UpdateAccessMedium)))
+	route("DELETE /api/access-media/{id}", editor(hf(h.DeleteAccessMedium)))
+	route("POST /api/access-media/{id}/issue", hall(hf(h.IssueAccessMedium)))
+	route("POST /api/access-media/{id}/return", hall(hf(h.ReturnAccessMedium)))
+	route("GET /api/access-media/{id}/loans", authed(hf(h.AccessMediumLoans)))
+	route("GET /api/persons/{id}/access-media", authed(hf(h.PersonAccessMedia)))
+	// Datenauskunft nach Art. 15 DSGVO (Ausbau 28): nur Admins, steht im Änderungsprotokoll.
+	route("GET /api/persons/{id}/export", admin(hf(h.PersonDataExport)))
+	// Einstellvertrag (Ausbau 30): versionierte Vorlage, PDF je Gefährt, Annahmen.
+	route("GET /api/contract-template", authed(hf(h.GetContractTemplate)))
+	route("POST /api/contract-template", admin(hf(h.SaveContractTemplate)))
+	route("GET /api/vehicles/{id}/contract.pdf", money(hf(h.VehicleContractPDF)))
+	route("GET /api/persons/{id}/contracts", authed(hf(h.PersonContracts)))
+	// Wertsicherung (Ausbau 29): VPI-Werte, Tarif-Basis, Vorschau, Anpassen.
+	route("GET /api/cpi", money(hf(h.ListCPI)))
+	route("PUT /api/cpi", editor(hf(h.SaveCPI)))
+	route("DELETE /api/cpi/{month}", editor(hf(h.DeleteCPI)))
+	route("GET /api/indexation", money(hf(h.IndexationSettings)))
+	route("PUT /api/categories/{id}/indexation", editor(hf(h.SetCategoryIndexation)))
+	route("GET /api/indexation/preview", money(hf(h.IndexationPreview)))
+	route("POST /api/indexation/apply", editor(hf(h.ApplyIndexation)))
+	route("GET /api/vehicles/{id}/rate-changes", money(hf(h.VehicleRateChanges)))
+	// Ruhezeit „Kurz weg“: Miete und gebundene Nebenkosten ruhen, Status bleibt eingelagert.
+	route("GET /api/vehicles/{id}/pauses", authed(hf(h.VehiclePauses)))
+	route("GET /api/vehicles/{id}/pause-preview", money(hf(h.PausePreview)))
+	route("GET /api/pauses/due", authed(hf(h.PausesDue)))
+	route("POST /api/vehicles/{id}/pause", editor(hf(h.StartPause)))
+	route("PUT /api/vehicle-pauses/{id}", editor(hf(h.ExtendPause)))
+	// Ausbauplan O6: „Ist zurück“ sieht, wer in der Halle steht.
+	route("POST /api/vehicle-pauses/{id}/return", hall(hf(h.ReturnFromPause)))
+	route("POST /api/vehicle-pauses/{id}/collect", editor(hf(h.CollectFromPause)))
+	route("DELETE /api/vehicle-pauses/{id}", editor(hf(h.DeletePause)))
+	route("DELETE /api/vehicle-rate-changes/{id}", editor(hf(h.DeleteRateChange)))
 
 	// --- Categories (tariffs) ---
-	mux.Handle("GET /api/categories", authed(hf(h.ListCategories)))
-	mux.Handle("POST /api/categories", editor(hf(h.CreateCategory)))
-	mux.Handle("PUT /api/categories/{id}", editor(hf(h.UpdateCategory)))
-	mux.Handle("POST /api/categories/{id}/archived", editor(hf(h.SetCategoryArchived)))
-	mux.Handle("DELETE /api/categories/{id}", editor(hf(h.DeleteCategory)))
+	route("GET /api/categories", authed(hf(h.ListCategories)))
+	route("POST /api/categories", editor(hf(h.CreateCategory)))
+	route("PUT /api/categories/{id}", editor(hf(h.UpdateCategory)))
+	route("POST /api/categories/{id}/archived", editor(hf(h.SetCategoryArchived)))
+	route("DELETE /api/categories/{id}", editor(hf(h.DeleteCategory)))
 
 	// --- Stellplatz / Garagenplaner (read: any; write: editor) ---
-	mux.Handle("GET /api/garages", authed(hf(h.ListGarages)))
-	mux.Handle("POST /api/garages", editor(hf(h.CreateGarage)))
-	mux.Handle("PUT /api/garages/{id}", editor(hf(h.UpdateGarage)))
-	mux.Handle("DELETE /api/garages/{id}", editor(hf(h.DeleteGarage)))
-	mux.Handle("GET /api/garages/{id}/halls", authed(hf(h.ListHalls)))
-	mux.Handle("POST /api/garages/{id}/halls", editor(hf(h.CreateHall)))
-	mux.Handle("PUT /api/halls/{id}", editor(hf(h.UpdateHall)))
-	mux.Handle("DELETE /api/halls/{id}", editor(hf(h.DeleteHall)))
-	mux.Handle("GET /api/halls/{id}/plan", authed(hf(h.GetHallPlan)))
-	mux.Handle("POST /api/halls/{id}/spots", editor(hf(h.CreateSpot)))
-	mux.Handle("PUT /api/spots/{id}", editor(hf(h.UpdateSpot)))
+	route("GET /api/garages", authed(hf(h.ListGarages)))
+	route("POST /api/garages", editor(hf(h.CreateGarage)))
+	route("PUT /api/garages/{id}", editor(hf(h.UpdateGarage)))
+	route("DELETE /api/garages/{id}", editor(hf(h.DeleteGarage)))
+	route("GET /api/garages/{id}/halls", authed(hf(h.ListHalls)))
+	route("POST /api/garages/{id}/halls", editor(hf(h.CreateHall)))
+	route("PUT /api/halls/{id}", editor(hf(h.UpdateHall)))
+	route("PUT /api/halls/{id}/park-area", editor(hf(h.SetHallParkArea)))
+	route("DELETE /api/halls/{id}", editor(hf(h.DeleteHall)))
+	route("GET /api/halls/{id}/plan", authed(hf(h.GetHallPlan)))
+	route("POST /api/halls/{id}/spots", hall(hf(h.CreateSpot)))
+	route("PUT /api/spots/{id}", hall(hf(h.UpdateSpot)))
 	// Batch: die Geometrie vieler Plätze EINER Halle in einer Transaktion — der
 	// Weg fürs Auto-Anordnen, damit ein Abbruch keine halbe Anordnung hinterlässt.
-	mux.Handle("PUT /api/halls/{id}/spots/geometry", editor(hf(h.BatchUpdateSpotGeometry)))
-	mux.Handle("DELETE /api/spots/{id}", editor(hf(h.DeleteSpot)))
-	mux.Handle("PUT /api/spots/{id}/vehicle", editor(hf(h.AssignSpotVehicle)))
-	mux.Handle("DELETE /api/spots/{id}/vehicle", editor(hf(h.UnassignSpotVehicle)))
+	route("PUT /api/halls/{id}/spots/geometry", hall(hf(h.BatchUpdateSpotGeometry)))
+	route("DELETE /api/spots/{id}", hall(hf(h.DeleteSpot)))
+	route("PUT /api/spots/{id}/vehicle", hall(hf(h.AssignSpotVehicle)))
+	route("DELETE /api/spots/{id}/vehicle", hall(hf(h.UnassignSpotVehicle)))
 	// Belegungshistorie: wer stand wann auf dem Platz / wo stand das Gefährt (Hundert 79).
-	mux.Handle("GET /api/spots/{id}/history", authed(hf(h.SpotHistory)))
-	mux.Handle("GET /api/vehicles/{id}/spot-history", authed(hf(h.VehicleSpotHistory)))
-	mux.Handle("PUT /api/vehicles/{id}/dimensions", editor(hf(h.SetVehicleDimensions)))
-	mux.Handle("PUT /api/vehicles/{id}/planner", editor(hf(h.UpdateVehiclePlanner)))
+	route("GET /api/spots/{id}/history", authed(hf(h.SpotHistory)))
+	route("GET /api/vehicles/{id}/spot-history", authed(hf(h.VehicleSpotHistory)))
+	route("PUT /api/vehicles/{id}/dimensions", hall(hf(h.SetVehicleDimensions)))
+	route("PUT /api/vehicles/{id}/planner", hall(hf(h.UpdateVehiclePlanner)))
 
 	// Custom Garagenplaner icons ("tags").
-	mux.Handle("GET /api/planner-icons", authed(hf(h.ListPlannerIcons)))
-	mux.Handle("POST /api/planner-icons", editor(hf(h.UploadPlannerIcon)))
-	mux.Handle("GET /api/planner-icons/{id}", authed(hf(h.GetPlannerIcon)))
-	mux.Handle("PUT /api/planner-icons/{id}", editor(hf(h.UpdatePlannerIcon)))
-	mux.Handle("DELETE /api/planner-icons/{id}", editor(hf(h.DeletePlannerIcon)))
-	mux.Handle("GET /api/wall-templates", authed(hf(h.ListWallTemplates)))
-	mux.Handle("POST /api/wall-templates", editor(hf(h.CreateWallTemplate)))
-	mux.Handle("DELETE /api/wall-templates/{id}", editor(hf(h.DeleteWallTemplate)))
+	route("GET /api/planner-icons", authed(hf(h.ListPlannerIcons)))
+	route("POST /api/planner-icons", editor(hf(h.UploadPlannerIcon)))
+	route("GET /api/planner-icons/{id}", authed(hf(h.GetPlannerIcon)))
+	route("PUT /api/planner-icons/{id}", editor(hf(h.UpdatePlannerIcon)))
+	route("DELETE /api/planner-icons/{id}", editor(hf(h.DeletePlannerIcon)))
+	route("GET /api/wall-templates", authed(hf(h.ListWallTemplates)))
+	route("POST /api/wall-templates", editor(hf(h.CreateWallTemplate)))
+	route("DELETE /api/wall-templates/{id}", editor(hf(h.DeleteWallTemplate)))
 
 	// --- Service catalog ---
-	mux.Handle("GET /api/services", authed(hf(h.ListServiceTypes)))
-	mux.Handle("POST /api/services", editor(hf(h.CreateServiceType)))
-	mux.Handle("PUT /api/services/{id}", editor(hf(h.UpdateServiceType)))
-	mux.Handle("POST /api/services/{id}/archived", editor(hf(h.SetServiceArchived)))
-	mux.Handle("DELETE /api/services/{id}", editor(hf(h.DeleteServiceType)))
+	route("GET /api/services", authed(hf(h.ListServiceTypes)))
+	route("POST /api/services", editor(hf(h.CreateServiceType)))
+	route("PUT /api/services/{id}", editor(hf(h.UpdateServiceType)))
+	route("POST /api/services/{id}/archived", editor(hf(h.SetServiceArchived)))
+	route("DELETE /api/services/{id}", editor(hf(h.DeleteServiceType)))
 
 	// --- Charges ---
-	mux.Handle("GET /api/charges", authed(hf(h.ListCharges)))
-	mux.Handle("POST /api/charges", editor(hf(h.CreateCharge)))
-	mux.Handle("PUT /api/charges/{id}", editor(hf(h.UpdateCharge)))
-	mux.Handle("POST /api/charges/{id}/paid", editor(hf(h.SetChargePaid)))
-	mux.Handle("DELETE /api/charges/{id}", editor(hf(h.DeleteCharge)))
+	route("GET /api/charges", money(hf(h.ListCharges)))
+	route("POST /api/charges", editor(hf(h.CreateCharge)))
+	route("PUT /api/charges/{id}", editor(hf(h.UpdateCharge)))
+	route("POST /api/charges/{id}/paid", editor(hf(h.SetChargePaid)))
+	route("DELETE /api/charges/{id}", editor(hf(h.DeleteCharge)))
 
 	// --- Stats ---
-	mux.Handle("GET /api/overview", authed(hf(h.Overview)))
-	mux.Handle("GET /api/overview/forecast", authed(hf(h.OverviewForecast)))
-	mux.Handle("GET /api/occupancy", authed(hf(h.Occupancy)))
-	mux.Handle("GET /api/vehicles/ending-soon", authed(hf(h.EndingSoon)))
+	route("GET /api/overview", money(hf(h.Overview)))
+	route("GET /api/overview/forecast", money(hf(h.OverviewForecast)))
+	route("GET /api/occupancy", authed(hf(h.Occupancy)))
+	route("GET /api/vehicles/ending-soon", authed(hf(h.EndingSoon)))
+	route("GET /api/vehicles/incomplete", authed(hf(h.IncompleteVehicles)))
 
 	// --- CSV export (outstanding | payments | persons | vehicles) ---
-	mux.Handle("GET /api/export/{entity}", authed(hf(h.ExportCSV)))
+	route("GET /api/export/{entity}", money(hf(h.ExportCSV)))
 
 	// --- Users & audit (admin only) ---
-	mux.Handle("GET /api/users", admin(hf(h.ListUsers)))
-	mux.Handle("POST /api/users", admin(hf(h.CreateUser)))
-	mux.Handle("PUT /api/users/{id}", admin(hf(h.UpdateUser)))
-	mux.Handle("DELETE /api/users/{id}", admin(hf(h.DeleteUser)))
-	mux.Handle("POST /api/users/{id}/reset-2fa", admin(hf(h.ResetUserTOTP)))
-	mux.Handle("GET /api/audit", admin(hf(h.ListAudit)))
+	route("GET /api/users", admin(hf(h.ListUsers)))
+	route("POST /api/users", admin(hf(h.CreateUser)))
+	route("PUT /api/users/{id}", admin(hf(h.UpdateUser)))
+	route("DELETE /api/users/{id}", admin(hf(h.DeleteUser)))
+	route("POST /api/users/{id}/reset-2fa", admin(hf(h.ResetUserTOTP)))
+	route("GET /api/audit", admin(hf(h.ListAudit)))
 	// Revisionssicherer Export: JSONL mit SHA-256-Hashkette, prüfbar ohne Parkrr.
-	mux.Handle("GET /api/audit/export", admin(hf(h.ExportAudit)))
+	route("GET /api/audit/export", admin(hf(h.ExportAudit)))
 	// E-Mail-Versandprotokoll: jeder Versuch mit Empfänger, Betreff, Ausgang (Hundert 86).
-	mux.Handle("GET /api/mail-log", admin(hf(h.ListMailLog)))
-	mux.Handle("POST /api/backup", admin(hf(h.CreateBackup)))
+	route("GET /api/mail-log", admin(hf(h.ListMailLog)))
+	route("POST /api/backup", admin(hf(h.CreateBackup)))
 	// Nur die Ampel, bewusst editor+ statt admin: Bearbeiter arbeiten den ganzen Tag
 	// in der App und sollen ein totes Backup sehen, ohne Admin zu sein. Liefert weder
 	// Verzeichnis noch Bucket noch Dateiliste — dafür bleibt /status admin-only.
-	mux.Handle("GET /api/backup/health", editor(hf(h.BackupHealth)))
-	mux.Handle("GET /api/backup/status", admin(hf(h.BackupStatus)))
-	mux.Handle("GET /api/admin/readiness", admin(hf(h.OperationalReadiness)))
-	mux.Handle("POST /api/backup/schedule", admin(hf(h.SaveBackupSchedule)))
-	mux.Handle("POST /api/backup/run", admin(hf(h.RunScheduledBackup)))
-	mux.Handle("GET /api/backup/file/{name}", admin(hf(h.BackupDownloadFile)))
-	mux.Handle("POST /api/backup/validate", admin(hf(h.BackupValidate)))
-	mux.Handle("POST /api/backup/restore", admin(hf(h.BackupRestore)))
-	mux.Handle("POST /api/backup/s3/test", admin(hf(h.BackupS3Test)))
-	mux.Handle("POST /api/backup/s3", admin(hf(h.CreateBackupS3)))
-	mux.Handle("GET /api/backup/s3/file/{name}", admin(hf(h.BackupS3Download)))
-	mux.Handle("POST /api/backup/validate-s3", admin(hf(h.BackupValidateS3)))
-	mux.Handle("POST /api/backup/restore-s3", admin(hf(h.BackupRestoreS3)))
+	route("GET /api/backup/health", editor(hf(h.BackupHealth)))
+	route("GET /api/backup/status", admin(hf(h.BackupStatus)))
+	route("GET /api/admin/readiness", admin(hf(h.OperationalReadiness)))
+	route("POST /api/backup/schedule", admin(hf(h.SaveBackupSchedule)))
+	route("POST /api/backup/run", admin(hf(h.RunScheduledBackup)))
+	route("GET /api/backup/file/{name}", admin(hf(h.BackupDownloadFile)))
+	route("POST /api/backup/validate", admin(hf(h.BackupValidate)))
+	route("POST /api/backup/restore", admin(hf(h.BackupRestore)))
+	route("POST /api/backup/s3/test", admin(hf(h.BackupS3Test)))
+	route("POST /api/backup/s3", admin(hf(h.CreateBackupS3)))
+	route("GET /api/backup/s3/file/{name}", admin(hf(h.BackupS3Download)))
+	route("POST /api/backup/validate-s3", admin(hf(h.BackupValidateS3)))
+	route("POST /api/backup/restore-s3", admin(hf(h.BackupRestoreS3)))
 
 	// Client-side error telemetry (SPA window.onerror → server log).
-	mux.Handle("POST /api/client-error", authed(hf(h.ClientError)))
+	route("POST /api/client-error", authed(hf(h.ClientError)))
 
 	// --- Health, readiness and metrics ---
 	registerObservability(mux, pool, metricsToken, metricsRequireAuth)
@@ -698,6 +807,9 @@ var expirySweeps = []struct {
 	// Abgelaufene Sitzungen; identisch zu auth.CleanupExpired, hier nur der Vollständigkeit
 	// halber NICHT aufgeführt — die läuft weiter über den Manager (eigener Pool-Zugriff).
 	{"webauthn_ceremonies", `DELETE FROM webauthn_ceremonies WHERE expires_at < now()`},
+	// Warteliste (Ausbau 31): die Einwilligung gilt für ein Jahr, danach geht der
+	// Eintrag, gleich ob offen, übernommen oder abgesagt.
+	{"waitlist", `DELETE FROM waitlist WHERE created_at < now() - interval '12 months'`},
 	// 30 Tage Nachlauf: ein gerade abgelaufener ODER widerrufener Link soll in der
 	// Verwaltung noch als "abgelaufen"/"widerrufen" sichtbar sein, statt spurlos zu
 	// verschwinden.

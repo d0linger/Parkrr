@@ -61,7 +61,9 @@ func (h *Handler) ListAttachments(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := h.Pool.Query(r.Context(),
 		`SELECT id, filename, content_type, byte_size, created_at
-		   FROM attachments WHERE `+col+`=$1 ORDER BY created_at DESC`, id)
+		   FROM attachments a WHERE `+col+`=$1
+		    AND (NOT $2 OR NOT EXISTS (SELECT 1 FROM contract_acceptances c WHERE c.attachment_id = a.id))
+		  ORDER BY created_at DESC`, id, hallStaff(r))
 	if err != nil {
 		serverError(w, r, "query failed", err)
 		return
@@ -214,7 +216,8 @@ func (h *Handler) GetAttachment(w http.ResponseWriter, r *http.Request) {
 	var ct, filename string
 	var data []byte
 	if err := h.Pool.QueryRow(r.Context(),
-		`SELECT content_type, filename, data FROM attachments WHERE id=$1`, id).Scan(&ct, &filename, &data); err != nil {
+		`SELECT content_type, filename, data FROM attachments a WHERE id=$1
+		    AND (NOT $2 OR NOT EXISTS (SELECT 1 FROM contract_acceptances c WHERE c.attachment_id = a.id))`, id, hallStaff(r)).Scan(&ct, &filename, &data); err != nil {
 		writeError(w, http.StatusNotFound, "attachment not found")
 		return
 	}

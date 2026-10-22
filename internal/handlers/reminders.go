@@ -155,6 +155,19 @@ func (h *Handler) RemindInvoice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "Für diese Rechnung läuft bereits eine Mahnung")
 		return
 	}
+	// Eine automatische Mahnung aus der Warteschlange (Ausbau 20) ist schon vorgemerkt:
+	// ihre Stufe stünde sonst zweimal draußen.
+	var pending bool
+	if err := conn.QueryRow(r.Context(),
+		`SELECT EXISTS (SELECT 1 FROM mail_outbox WHERE kind='reminder' AND ref_id=$1 AND status IN ('queued','sending'))`,
+		iv.ID).Scan(&pending); err != nil {
+		serverError(w, r, "query failed", err)
+		return
+	}
+	if pending {
+		writeError(w, http.StatusConflict, "Für diese Rechnung ist bereits eine automatische Mahnung unterwegs")
+		return
+	}
 	defer func() {
 		// Eigene Frist: context.WithoutCancel allein hat GAR keine, und eine hängende
 		// Verbindung hielte sonst Bearbeiter und Poolplatz fest, bis TCP aufgibt.

@@ -32,6 +32,9 @@ func (h *Handler) ListServiceTypes(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "scan failed")
 			return
 		}
+		if hallStaff(r) { // Ausbau 35: keine Beträge für den Hallendienst
+			s.DefaultAmount = 0
+		}
 		out = append(out, s)
 	}
 	if err := rows.Err(); err != nil {
@@ -222,7 +225,7 @@ func (h *Handler) ListCharges(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		pid, perr := strconv.ParseInt(raw, 10, 64)
-		if perr != nil {
+		if perr != nil || pid <= 0 {
 			writeError(w, http.StatusBadRequest, "invalid person_id")
 			return
 		}

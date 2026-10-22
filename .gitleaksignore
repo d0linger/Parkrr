@@ -1,0 +1,7 @@
+# Only these historical public training examples are not credentials.
+# Both occur in explicitly Bad / DON'T examples in the deleted skill document.
+# Exact values match the immutable upstream documentation:
+# https://github.com/samber/cc-skills-golang/blob/8e899e20ff0cd4dc524af3993e4c62d8ee8c5717/skills/golang-security/references/secrets.md
+# Commit/path/rule/line fingerprints do not ignore future findings in this path.
+44eeff6c4c7683bb5d72d997f9f2b2f2e833da1c:.claude/skills/golang-security/references/secrets.md:generic-api-key:20
+44eeff6c4c7683bb5d72d997f9f2b2f2e833da1c:.claude/skills/golang-security/references/secrets.md:generic-api-key:26

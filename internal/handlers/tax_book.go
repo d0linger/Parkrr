@@ -1042,6 +1042,10 @@ func (h *Handler) GetTaxReceipt(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, "Beleg konnte nicht geladen werden", err)
 		return
 	}
+	contentType = strings.ToLower(strings.TrimSpace(contentType))
+	if contentType != "application/pdf" && contentType != "image/jpeg" && contentType != "image/png" {
+		contentType = "application/octet-stream"
+	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+safeDownloadFilename(filename)+`"`)

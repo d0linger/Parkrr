@@ -60,9 +60,14 @@ func TestDeletePasskeyRequestValidation(t *testing.T) {
 			if w.Code != tc.want {
 				t.Fatalf("got %d: %s, want %d", w.Code, w.Body.String(), tc.want)
 			}
-			// No credential was checked: neither malformed requests nor step-up
-			// prompts may spend the user's failed-authentication budget.
-			assertDeletePasskeyBudget(t, ah, u.Username, "192.0.2.8", 3)
+			// No credential was checked (except for overlong password attempts,
+			// which record a re-authentication failure): neither malformed requests nor
+			// step-up prompts without credentials spend the user's failed-authentication budget.
+			wantBudget := 3
+			if tc.name == "overlong password" {
+				wantBudget = 2
+			}
+			assertDeletePasskeyBudget(t, ah, u.Username, "192.0.2.8", wantBudget)
 		})
 	}
 }

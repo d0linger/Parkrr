@@ -50,6 +50,10 @@ func csvSafe(s string) string {
 // user), since it only re-serves data the caller can already see in the UI.
 func (h *Handler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 	entity := r.PathValue("entity")
+	if !validNameLength(entity) {
+		writeError(w, http.StatusBadRequest, "entity is too long")
+		return
+	}
 	var name string
 	var header []string
 	var rows [][]string

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"math"
@@ -77,7 +78,14 @@ const vehicleSelect = `SELECT v.id, v.person_id, v.category_id, v.label, v.licen
 	        c.name, c.default_monthly_cost, c.default_yearly_cost,
 	        p.first_name, p.last_name,
 	        (SELECT count(*) FROM vehicle_photos vp WHERE vp.vehicle_id = v.id),
-	        v.spot_id, sp.hall_id, hl.name, v.paid_through
+	        v.spot_id, sp.hall_id, hl.name, v.paid_through,
+	        (SELECT jsonb_agg(jsonb_build_object('from', to_char(rc.effective_from, 'YYYY-MM-DD"T"00:00:00"Z"'), 'amount', rc.rate)
+	                ORDER BY rc.effective_from) FROM vehicle_rate_changes rc WHERE rc.vehicle_id = v.id),
+	        (SELECT jsonb_agg(jsonb_build_object('id', vp.id,
+	                'from', to_char(vp.start_date, 'YYYY-MM-DD"T"00:00:00"Z"'),
+	                'until', CASE WHEN vp.ended THEN to_char(vp.until, 'YYYY-MM-DD"T"00:00:00"Z"') ELSE '9999-12-31T00:00:00Z' END,
+	                'planned', to_char(vp.until, 'YYYY-MM-DD"T"00:00:00"Z"'), 'ended', vp.ended, 'hold_spot', vp.hold_spot)
+	                ORDER BY vp.start_date) FROM vehicle_pauses vp WHERE vp.vehicle_id = v.id)
 	 FROM vehicles v
 	 JOIN categories c ON c.id = v.category_id
 	 JOIN persons p ON p.id = v.person_id
@@ -150,6 +158,11 @@ func (h *Handler) ListVehicles(w http.ResponseWriter, r *http.Request) {
 	if err := h.setVehicleInvoiceStatus(r.Context(), vehicles); err != nil {
 		serverError(w, r, "query failed", err)
 		return
+	}
+	if hallStaff(r) {
+		for i := range vehicles {
+			redactVehicleMoney(&vehicles[i])
+		}
 	}
 	writeJSON(w, http.StatusOK, vehicles)
 }
@@ -241,6 +254,12 @@ func (h *Handler) parseVehicleRequest(r *http.Request) (*parsedVehicle, error) {
 	if err := decodeJSON(r, &req); err != nil {
 		return nil, errors.New("invalid request body")
 	}
+	return h.validateVehicleRequest(r.Context(), req)
+}
+
+// validateVehicleRequest normalizes and checks a vehicle request. Shared by the JSON
+// endpoints and the CSV import, so an imported Gefährt passes the same rules.
+func (h *Handler) validateVehicleRequest(ctx context.Context, req vehicleRequest) (*parsedVehicle, error) {
 	req.Label = trim(req.Label)
 	req.LicensePlate = trim(req.LicensePlate)
 	req.Notes = trim(req.Notes)
@@ -304,7 +323,7 @@ func (h *Handler) parseVehicleRequest(r *http.Request) (*parsedVehicle, error) {
 	} else if err != nil {
 		return nil, errors.New("reserved_until must be YYYY-MM-DD")
 	}
-	sym, err := h.normPlannerSymbol(r.Context(), req.PlannerSymbol)
+	sym, err := h.normPlannerSymbol(ctx, req.PlannerSymbol)
 	if err != nil {
 		return nil, err
 	}
@@ -453,50 +472,20 @@ func (h *Handler) CreateVehicle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
-	var fallback float64
-	if pv.req.Rate == nil && pv.req.CostOverride == nil {
-		def, derr := categoryDefaultRate(r.Context(), tx, pv.req.CategoryID, pv.req.BillingPeriod)
-		if derr != nil {
-			if errors.Is(derr, pgx.ErrNoRows) {
-				writeError(w, http.StatusBadRequest, "category does not exist")
-				return
-			}
-			writeError(w, http.StatusInternalServerError, "could not create vehicle")
-			return
-		}
-		fallback = def
-	}
-	rate := effectiveRate(pv.req, fallback)
-	// A zero Tarif is also a deliberately free booking. Mark it now so a later
-	// edit of the Tarif cannot re-price this already locked vehicle.
-	costOverride := markZeroRate(rate, persistedCostOverride(pv.req, nil))
-	var id int64
-	err = tx.QueryRow(r.Context(),
-		`INSERT INTO vehicles (person_id, category_id, label, license_plate, notes,
-		        billing_period, rate, cost_override, start_date, end_date, status,
-		        reserved_from, reserved_until, needs_power, planner_symbol)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
-		pv.req.PersonID, pv.req.CategoryID, pv.req.Label, pv.req.LicensePlate,
-		pv.req.Notes, pv.req.BillingPeriod, rate, costOverride,
-		pv.startDate, pv.endDate, pv.req.Status, pv.reservedFrom, pv.reservedUntil, pv.req.NeedsPower, pv.req.PlannerSymbol,
-	).Scan(&id)
+	id, err := h.insertVehicleTx(r, tx, pv)
 	if err != nil {
-		if isForeignKeyViolation(err) {
+		switch {
+		case errors.Is(err, errVehicleCategoryMissing):
+			writeError(w, http.StatusBadRequest, "category does not exist")
+		case isForeignKeyViolation(err):
 			writeError(w, http.StatusBadRequest, "person or category does not exist")
-			return
+		default:
+			writeError(w, http.StatusInternalServerError, "could not create vehicle")
 		}
-		writeError(w, http.StatusInternalServerError, "could not create vehicle")
-		return
-	}
-	if err := h.recordStatusTx(r, tx, id, "", pv.req.Status, "angelegt"); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not create vehicle")
 		return
 	}
 	if err := h.auditCreatedTx(r.Context(), tx, r, "vehicle", id, "created vehicle "+vehicleLabel(pv.req.Label, pv.req.LicensePlate),
-		map[string]any{"label": pv.req.Label, "license_plate": pv.req.LicensePlate,
-			"person_id": pv.req.PersonID, "category_id": pv.req.CategoryID,
-			"status": pv.req.Status, "billing_period": pv.req.BillingPeriod,
-			"start_date": pv.req.StartDate}); err != nil {
+		vehicleCreatedSnapshot(pv)); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create vehicle")
 		return
 	}
@@ -505,6 +494,53 @@ func (h *Handler) CreateVehicle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeVehicle(w, r.Context(), id, http.StatusCreated)
+}
+
+var errVehicleCategoryMissing = errors.New("category does not exist")
+
+// vehicleCreatedSnapshot is the audit snapshot of a newly created vehicle.
+func vehicleCreatedSnapshot(pv *parsedVehicle) map[string]any {
+	return map[string]any{"label": pv.req.Label, "license_plate": pv.req.LicensePlate,
+		"person_id": pv.req.PersonID, "category_id": pv.req.CategoryID,
+		"status": pv.req.Status, "billing_period": pv.req.BillingPeriod,
+		"start_date": pv.req.StartDate}
+}
+
+// insertVehicleTx creates a validated vehicle inside tx: locks the price (Tarif
+// default unless a rate was given) and writes the first status entry. Shared by
+// CreateVehicle and the CSV import; each caller writes its own audit entry.
+func (h *Handler) insertVehicleTx(r *http.Request, tx pgx.Tx, pv *parsedVehicle) (int64, error) {
+	var fallback float64
+	if pv.req.Rate == nil && pv.req.CostOverride == nil {
+		def, derr := categoryDefaultRate(r.Context(), tx, pv.req.CategoryID, pv.req.BillingPeriod)
+		if derr != nil {
+			if errors.Is(derr, pgx.ErrNoRows) {
+				return 0, errVehicleCategoryMissing
+			}
+			return 0, derr
+		}
+		fallback = def
+	}
+	rate := effectiveRate(pv.req, fallback)
+	// A zero Tarif is also a deliberately free booking. Mark it now so a later
+	// edit of the Tarif cannot re-price this already locked vehicle.
+	costOverride := markZeroRate(rate, persistedCostOverride(pv.req, nil))
+	var id int64
+	if err := tx.QueryRow(r.Context(),
+		`INSERT INTO vehicles (person_id, category_id, label, license_plate, notes,
+		        billing_period, rate, cost_override, start_date, end_date, status,
+		        reserved_from, reserved_until, needs_power, planner_symbol)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+		pv.req.PersonID, pv.req.CategoryID, pv.req.Label, pv.req.LicensePlate,
+		pv.req.Notes, pv.req.BillingPeriod, rate, costOverride,
+		pv.startDate, pv.endDate, pv.req.Status, pv.reservedFrom, pv.reservedUntil, pv.req.NeedsPower, pv.req.PlannerSymbol,
+	).Scan(&id); err != nil {
+		return 0, err
+	}
+	if err := h.recordStatusTx(r, tx, id, "", pv.req.Status, "angelegt"); err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
 // UpdateVehicle edits a vehicle.
@@ -818,11 +854,6 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "notes is too long")
 		return
 	}
-	var oldStatus string
-	var oldEnd *time.Time // a status change can set or clear the end date — audit it
-	var start time.Time
-	var personID int64
-	var archived bool
 	ctx := r.Context()
 	tx, err := h.Pool.Begin(ctx)
 	if err != nil {
@@ -830,29 +861,79 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := tx.QueryRow(ctx, `SELECT person_id FROM vehicles WHERE id=$1`, id).Scan(&personID); err != nil {
-		ensureVehicleWritable(w, false, err)
+	if err := h.changeVehicleStatusTx(r, tx, id, req); err != nil {
+		writeVehicleStatusError(w, r, err)
 		return
 	}
-	if err := lockInvoicePersonTx(ctx, tx, personID); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		serverError(w, r, "could not change status", err)
 		return
+	}
+	h.autoArchiveIfClosed(r, id)
+	h.writeVehicle(w, r.Context(), id, http.StatusOK)
+}
+
+type vehicleStatusError struct {
+	status int
+	msg    string
+	cause  error
+}
+
+func (e *vehicleStatusError) Error() string { return e.msg }
+func (e *vehicleStatusError) Unwrap() error { return e.cause }
+
+func writeVehicleStatusError(w http.ResponseWriter, r *http.Request, err error) {
+	var statusErr *vehicleStatusError
+	if errors.As(err, &statusErr) {
+		if statusErr.cause != nil {
+			serverError(w, r, statusErr.msg, statusErr.cause)
+		} else {
+			writeError(w, statusErr.status, statusErr.msg)
+		}
+		return
+	}
+	if !writeSettlementConflict(w, err) {
+		serverError(w, r, "could not change status", err)
+	}
+}
+
+// changeVehicleStatusTx shares the status, history and audit writes with pause
+// collection so removing a pause and closing its vehicle commit together.
+func (h *Handler) changeVehicleStatusTx(r *http.Request, tx pgx.Tx, id int64, req statusRequest) error {
+	var oldStatus string
+	var oldEnd *time.Time // a status change can set or clear the end date — audit it
+	var start time.Time
+	var personID int64
+	var archived bool
+	ctx := r.Context()
+	if err := tx.QueryRow(ctx, `SELECT person_id FROM vehicles WHERE id=$1`, id).Scan(&personID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &vehicleStatusError{status: http.StatusNotFound, msg: "vehicle not found"}
+		}
+		return &vehicleStatusError{msg: "query failed", cause: err}
+	}
+	if err := lockInvoicePersonTx(ctx, tx, personID); err != nil {
+		return err
 	}
 	var lockedPersonID int64
 	scanErr := tx.QueryRow(ctx,
 		`SELECT status, archived, end_date, start_date, person_id FROM vehicles WHERE id=$1 FOR UPDATE`, id).
 		Scan(&oldStatus, &archived, &oldEnd, &start, &lockedPersonID)
-	if !ensureVehicleWritable(w, archived, scanErr) {
-		return
+	if errors.Is(scanErr, pgx.ErrNoRows) {
+		return &vehicleStatusError{status: http.StatusNotFound, msg: "vehicle not found"}
+	}
+	if scanErr != nil {
+		return &vehicleStatusError{msg: "query failed", cause: scanErr}
+	}
+	if archived {
+		return &vehicleStatusError{status: http.StatusConflict, msg: errArchived}
 	}
 	if lockedPersonID != personID {
-		writeError(w, http.StatusConflict, "Kundenzuordnung wurde geändert – bitte neu laden")
-		return
+		return &vehicleStatusError{status: http.StatusConflict, msg: "Kundenzuordnung wurde geändert – bitte neu laden"}
 	}
 	var billingPeriod string
 	if err := tx.QueryRow(ctx, `SELECT billing_period FROM vehicles WHERE id=$1`, id).Scan(&billingPeriod); err != nil {
-		serverError(w, r, "could not check rental period", err)
-		return
+		return &vehicleStatusError{msg: "could not check rental period", cause: err}
 	}
 	date := trim(req.Date)
 	var proposedEnd *time.Time
@@ -863,23 +944,22 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		if date != "" {
 			if !validDateLength(date) {
-				writeError(w, http.StatusBadRequest, "date is too long")
-				return
+				return &vehicleStatusError{status: http.StatusBadRequest, msg: "date is too long"}
 			}
 			parsed, err := time.Parse(dateLayout, date)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, "date must be YYYY-MM-DD")
-				return
+				return &vehicleStatusError{status: http.StatusBadRequest, msg: "date must be YYYY-MM-DD"}
 			}
 			end = parsed
 		}
 		proposedEnd = &end
 	}
 	if err := h.guardInvoicedPartialExtension(ctx, tx, "vehicle", id, oldEnd, proposedEnd, billingPeriod); err != nil {
-		if !writeSettlementConflict(w, err) {
-			serverError(w, r, "could not check billed rental end", err)
+		var conflict *settlementConflictError
+		if errors.As(err, &conflict) {
+			return err
 		}
-		return
+		return &vehicleStatusError{msg: "could not check billed rental end", cause: err}
 	}
 	// When collecting, set the pickup/end date: use the caller-supplied date if
 	// given (allows back-dating), otherwise keep any existing end date or today.
@@ -893,18 +973,15 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 	case (req.Status == models.StatusCollected || req.Status == models.StatusCancelled) && date != "":
 		end := *proposedEnd
 		if end.Before(start) {
-			writeError(w, http.StatusBadRequest, "Enddatum darf nicht vor Mietbeginn liegen")
-			return
+			return &vehicleStatusError{status: http.StatusBadRequest, msg: "Enddatum darf nicht vor Mietbeginn liegen"}
 		}
 		// A back-dated close must not fall below an already-invoiced period — that
 		// would drop it from accrual while its payment stays → phantom Guthaben
 		// (mirrors the UpdateVehicle guard).
 		if retract, ierr := h.endDateRetractsBelowInvoiced(ctx, tx, "vehicle", id, &end); ierr != nil {
-			writeError(w, http.StatusInternalServerError, "could not check invoices")
-			return
+			return &vehicleStatusError{msg: "could not check invoices", cause: ierr}
 		} else if retract {
-			writeError(w, http.StatusConflict, "Enddatum liegt vor einer fakturierten Periode – Storno über die Rechnung")
-			return
+			return &vehicleStatusError{status: http.StatusConflict, msg: "Enddatum liegt vor einer fakturierten Periode – Storno über die Rechnung"}
 		}
 		ct, uerr = tx.Exec(ctx,
 			`UPDATE vehicles SET status=$1, end_date=$2, spot_id=NULL, updated_at=now() WHERE id=$3`,
@@ -920,15 +997,12 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 			end = start
 		}
 		if end.Before(start) {
-			writeError(w, http.StatusBadRequest, "Enddatum darf nicht vor Mietbeginn liegen")
-			return
+			return &vehicleStatusError{status: http.StatusBadRequest, msg: "Enddatum darf nicht vor Mietbeginn liegen"}
 		}
 		if retract, err := h.endDateRetractsBelowInvoiced(ctx, tx, "vehicle", id, &end); err != nil {
-			serverError(w, r, "could not check invoices", err)
-			return
+			return &vehicleStatusError{msg: "could not check invoices", cause: err}
 		} else if retract {
-			writeError(w, http.StatusConflict, "Enddatum liegt vor einer fakturierten Periode – Storno über die Rechnung")
-			return
+			return &vehicleStatusError{status: http.StatusConflict, msg: "Enddatum liegt vor einer fakturierten Periode – Storno über die Rechnung"}
 		}
 		ct, uerr = tx.Exec(ctx,
 			`UPDATE vehicles SET status=$1, end_date=$2, spot_id=NULL, updated_at=now() WHERE id=$3`,
@@ -944,36 +1018,26 @@ func (h *Handler) ChangeVehicleStatus(w http.ResponseWriter, r *http.Request) {
 	// (or 0 rows) would claim a transition that didn't happen — and for a closing
 	// status that means rent keeps accruing while the log says "collected".
 	if uerr != nil {
-		writeError(w, http.StatusInternalServerError, "could not change status")
-		return
+		return &vehicleStatusError{msg: "could not change status", cause: uerr}
 	}
 	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "vehicle not found")
-		return
+		return &vehicleStatusError{status: http.StatusNotFound, msg: "vehicle not found"}
 	}
 	if err := h.recordStatusTx(r, tx, id, oldStatus, req.Status, trim(req.Note)); err != nil {
-		serverError(w, r, "could not record status history", err)
-		return
+		return &vehicleStatusError{msg: "could not record status history", cause: err}
 	}
 	// Re-read the end date: the branches above set, keep or clear it.
 	var newEnd *time.Time
 	if err := tx.QueryRow(ctx, `SELECT end_date FROM vehicles WHERE id=$1`, id).Scan(&newEnd); err != nil {
-		serverError(w, r, "could not read status", err)
-		return
+		return &vehicleStatusError{msg: "could not read status", cause: err}
 	}
 	if err := h.auditChangeTx(ctx, tx, r, "update", "vehicle", id,
 		"Status Gefährt #"+strconv.FormatInt(id, 10)+": "+oldStatus+" → "+req.Status,
 		diffFields(map[string]any{"status": oldStatus, "end_date": auditDate(oldEnd)},
 			map[string]any{"status": req.Status, "end_date": auditDate(newEnd)})); err != nil {
-		serverError(w, r, "could not record status audit", err)
-		return
+		return &vehicleStatusError{msg: "could not record status audit", cause: err}
 	}
-	if err := tx.Commit(ctx); err != nil {
-		serverError(w, r, "could not change status", err)
-		return
-	}
-	h.autoArchiveIfClosed(r, id)
-	h.writeVehicle(w, r.Context(), id, http.StatusOK)
+	return nil
 }
 
 // VehicleHistory returns the status history of a vehicle, newest first.
@@ -1210,6 +1274,11 @@ func (h *Handler) vehicleDesc(r *http.Request, id int64) string {
 
 type duplicateRequest struct {
 	StartDate string `json:"start_date"`
+	// Saisonwechsel (Ausbau 21), beide optional und standardmäßig aus:
+	// CurrentTariff nimmt den heutigen Tarifpreis statt des vereinbarten Preises,
+	// Reserve legt die Kopie als Reservierung ab dem Beginn an statt eingelagert.
+	CurrentTariff bool `json:"current_tariff"`
+	Reserve       bool `json:"reserve"`
 }
 
 // DuplicateVehicle re-stores a vehicle for a new period, reusing all master
@@ -1251,9 +1320,16 @@ func (h *Handler) DuplicateVehicle(w http.ResponseWriter, r *http.Request) {
 	var period string
 	var sourceRate float64
 	var sourceOverride *float64
+	var applicableRate *float64
+	// Der vereinbarte Preis gilt zum Beginn der Kopie; spätere Änderungen dürfen
+	// weder vorgezogen werden noch beim Saisonwechsel verloren gehen.
 	if err := tx.QueryRow(ctx,
-		`SELECT category_id, billing_period, rate, cost_override FROM vehicles WHERE id=$1`, id).
-		Scan(&categoryID, &period, &sourceRate, &sourceOverride); err != nil {
+		`SELECT v.category_id, v.billing_period, v.rate, v.cost_override,
+		        (SELECT rc.rate FROM vehicle_rate_changes rc
+		                   WHERE rc.vehicle_id = v.id AND rc.effective_from <= $2
+		                   ORDER BY rc.effective_from DESC LIMIT 1)
+		   FROM vehicles v WHERE v.id=$1`, id, start).
+		Scan(&categoryID, &period, &sourceRate, &sourceOverride, &applicableRate); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "vehicle not found")
 			return
@@ -1269,17 +1345,37 @@ func (h *Handler) DuplicateVehicle(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, "could not resolve vehicle price", err)
 		return
 	}
+	if applicableRate != nil {
+		rate = *applicableRate
+		sourceOverride = nil
+	}
 	costOverride := markZeroRate(rate, sourceOverride)
+	if req.CurrentTariff {
+		// Der heutige Tarif statt des Vorjahrespreises; wie beim Anlegen festgeschrieben.
+		def, derr := categoryDefaultRate(ctx, tx, categoryID, period)
+		if derr != nil {
+			serverError(w, r, "could not resolve tariff", derr)
+			return
+		}
+		rate = def
+		costOverride = markZeroRate(rate, nil)
+	}
+	status := models.StatusStored
+	var reservedFrom *time.Time
+	if req.Reserve {
+		status = models.StatusReserved
+		reservedFrom = &start
+	}
 	var newID int64
 	err = tx.QueryRow(ctx,
 		`INSERT INTO vehicles (person_id, category_id, label, license_plate, notes,
-		        billing_period, rate, cost_override, start_date, status,
-		        length_m, width_m, height_m, weight_t, needs_power, planner_symbol)
+		        billing_period, rate, cost_override, start_date, status, reserved_from,
+		        length_m, width_m, height_m, weight_t, needs_power, planner_symbol, copied_from)
 		 SELECT person_id, category_id, label, license_plate, notes,
-		        billing_period, $3, $4, $2, 'stored',
-		        length_m, width_m, height_m, weight_t, needs_power, planner_symbol
+		        billing_period, $3, $4, $2, $5, $6,
+		        length_m, width_m, height_m, weight_t, needs_power, planner_symbol, id
 		 FROM vehicles WHERE id = $1
-		 RETURNING id`, id, start, rate, costOverride).Scan(&newID)
+		 RETURNING id`, id, start, rate, costOverride, status, reservedFrom).Scan(&newID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "vehicle not found")
@@ -1289,20 +1385,31 @@ func (h *Handler) DuplicateVehicle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Copy the photos so the new period reuses the existing images.
+	if !req.CurrentTariff {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO vehicle_rate_changes (vehicle_id, effective_from, rate, previous_rate, index_month, reason, created_by)
+			 SELECT $1, effective_from, rate, previous_rate, index_month, reason, created_by
+			 FROM vehicle_rate_changes WHERE vehicle_id=$2 AND effective_from > $3 ORDER BY effective_from`,
+			newID, id, start); err != nil {
+			serverError(w, r, "could not copy planned price changes", err)
+			return
+		}
+	}
+	// Copy the photos so the new period reuses the existing images. Nur die Galerie:
+	// Protokollfotos gehören zum Protokoll der alten Einlagerung (Ausbau 24).
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO vehicle_photos (vehicle_id, filename, content_type, byte_size, data, sort_order)
 		 SELECT $1, filename, content_type, byte_size, data, sort_order
-		 FROM vehicle_photos WHERE vehicle_id = $2 ORDER BY sort_order, id`, newID, id); err != nil {
+		 FROM vehicle_photos WHERE vehicle_id = $2 AND handover_id IS NULL ORDER BY sort_order, id`, newID, id); err != nil {
 		serverError(w, r, "could not copy vehicle photos", err)
 		return
 	}
-	if err := h.recordStatusTx(r, tx, newID, "", models.StatusStored, "erneut eingestellt"); err != nil {
+	if err := h.recordStatusTx(r, tx, newID, "", status, "erneut eingestellt"); err != nil {
 		serverError(w, r, "could not copy vehicle history", err)
 		return
 	}
 	if err := h.auditCreatedTx(ctx, tx, r, "vehicle", newID, "re-stored vehicle from #"+strconv.FormatInt(id, 10),
-		map[string]any{"restored_from_vehicle_id": id, "status": models.StatusStored}); err != nil {
+		map[string]any{"restored_from_vehicle_id": id, "status": status, "rate": rate, "current_tariff": req.CurrentTariff}); err != nil {
 		serverError(w, r, "could not record vehicle copy", err)
 		return
 	}
@@ -1352,15 +1459,29 @@ func scanVehicleRow(row rowScanner) (models.Vehicle, models.Category, error) {
 	var cat models.Category
 	var firstName, lastName string
 	var hallName *string
+	var rateChanges, pauses []byte
 	err := row.Scan(&v.ID, &v.PersonID, &v.CategoryID, &v.Label, &v.LicensePlate,
 		&v.Notes, &v.BillingPeriod, &v.Rate, &v.CostOverride, &v.StartDate, &v.EndDate,
 		&v.Status, &v.ReservedFrom, &v.ReservedUntil, &v.Paid, &v.Archived, &v.CreatedAt, &v.UpdatedAt,
 		&v.NeedsPower, &v.PlannerSymbol,
 		&cat.Name, &cat.DefaultMonthlyCost, &cat.DefaultYearlyCost,
 		&firstName, &lastName, &v.PhotoCount,
-		&v.SpotID, &v.HallID, &hallName, &v.PaidThrough)
+		&v.SpotID, &v.HallID, &hallName, &v.PaidThrough, &rateChanges, &pauses)
 	if err != nil {
 		return v, cat, err
+	}
+	// Preisänderungen der Wertsicherung (Ausbau 29) gehören zur Abrechnung des
+	// Gefährts: jede Ladung über vehicleSelect bringt sie mit.
+	if len(rateChanges) > 0 {
+		if err := json.Unmarshal(rateChanges, &v.RateChanges); err != nil {
+			return v, cat, err
+		}
+	}
+	// Ruhezeiten (Kurz weg): die Abrechnung ruht in ihnen, die Oberfläche zeigt sie.
+	if len(pauses) > 0 {
+		if err := json.Unmarshal(pauses, &v.Pauses); err != nil {
+			return v, cat, err
+		}
 	}
 	cat.ID = v.CategoryID
 	v.CategoryName = cat.Name
@@ -1438,7 +1559,8 @@ func (h *Handler) setVehicleInvoiceStatusFrom(ctx context.Context, q dbQuerier, 
 
 // enrich fills in derived cost/status fields on a vehicle as of the given time.
 func enrich(v *models.Vehicle, cat models.Category, now time.Time) {
-	v.EffectiveRate = v.EffectiveRateFor(cat)
+	// Der heute gültige Satz: nach einer Wertsicherung nicht mehr der vereinbarte.
+	v.EffectiveRate = v.RateAt(cat, now)
 	v.AccruedCost = round2(v.AccruedCostAsOf(cat, now))
 	v.IsActive = v.Status == models.StatusStored || v.Status == models.StatusReserved
 }

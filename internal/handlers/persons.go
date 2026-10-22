@@ -17,12 +17,12 @@ import (
 // columns are frozen (no writer remains) and must not drive the badge.
 const personColumns = `id, first_name, last_name, email, phone, address, notes,
 	created_at, updated_at, anonymized,
-	EXISTS(SELECT 1 FROM flat_rate_periods fp WHERE fp.person_id = persons.id)`
+	EXISTS(SELECT 1 FROM flat_rate_periods fp WHERE fp.person_id = persons.id), no_dunning`
 
 func scanPerson(row rowScanner) (models.Person, error) {
 	var p models.Person
 	err := row.Scan(&p.ID, &p.FirstName, &p.LastName, &p.Email, &p.Phone, &p.Address,
-		&p.Notes, &p.CreatedAt, &p.UpdatedAt, &p.Anonymized, &p.HasFlatRate)
+		&p.Notes, &p.CreatedAt, &p.UpdatedAt, &p.Anonymized, &p.HasFlatRate, &p.NoDunning)
 	return p, err
 }
 
@@ -276,10 +276,27 @@ func anonymizeUnlinkedTraces(
 		}
 	}
 	// Ownership identifies these recipients, not the current email value.
-	_, err = q.Exec(ctx,
+	if _, err := q.Exec(ctx,
 		`UPDATE invoice_reminders SET sent_to = 'anonymisiert'
          WHERE invoice_id IN (SELECT id FROM invoices WHERE person_id = $1)
-           AND sent_to <> 'anonymisiert'`, personID)
+           AND sent_to <> 'anonymisiert'`, personID); err != nil {
+		return err
+	}
+	// Mail-Warteschlange (Ausbau 36): Empfänger, Text und Anhang gehen; was noch
+	// wartete, wird nicht mehr verschickt. Art, Zeitpunkt und Ausgang bleiben als
+	// Versandnachweis wie im mail_log.
+	_, err = q.Exec(ctx,
+		`UPDATE mail_outbox
+		    SET recipient = 'anonymisiert', body = '', attachment = NULL,
+		        last_error = CASE WHEN status IN ('queued', 'sending') THEN 'Person anonymisiert, nicht gesendet' ELSE last_error END,
+		        status = CASE WHEN status IN ('queued', 'sending') THEN 'failed' ELSE status END
+		  WHERE person_id = $1`, personID)
+	if err != nil {
+		return err
+	}
+	// Schlüsselbuch (Ausbau 34): die Ausgabe bleibt (welches Zugangsmittel wann draußen
+	// war), die Freitext-Notiz dazu kann Personenbezug tragen und geht.
+	_, err = q.Exec(ctx, `UPDATE access_media_loans SET note = '' WHERE person_id = $1 AND note <> ''`, personID)
 	return err
 }
 
@@ -296,6 +313,8 @@ func personKnownEmails(ctx context.Context, q pgx.Tx, personID int64, current st
              WHERE i.person_id = $1
             UNION ALL
             SELECT payload->>'email' FROM portal_requests WHERE person_id = $1
+            UNION ALL
+            SELECT recipient FROM mail_outbox WHERE person_id = $1
             UNION ALL
             SELECT e.v
               FROM audit_log a
@@ -389,6 +408,13 @@ func (h *Handler) DeletePerson(w http.ResponseWriter, r *http.Request) {
 			"Person hat erfasste Zahlungen und kann nicht gelöscht werden (Aufbewahrungspflicht).")
 		return
 	}
+	if open, err := h.openAccessLoans(r.Context(), id); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete person")
+		return
+	} else if open != "" {
+		writeError(w, http.StatusConflict, "Person hat noch Zugangsmittel: "+open+". Erst zurücknehmen.")
+		return
+	}
 	// RETURNING captures who was deleted, atomically with the delete — once the row
 	// is gone an id-only audit entry could never be resolved back to a person.
 	//
@@ -421,7 +447,7 @@ func (h *Handler) DeletePerson(w http.ResponseWriter, r *http.Request) {
 			// Invoices reference the person (ON DELETE RESTRICT) for immutability —
 			// a person with issued invoices must be kept (storniere statt löschen).
 			writeError(w, http.StatusConflict,
-				"Person hat geschützte Rechnungen oder Übergabeprotokolle und kann nicht gelöscht werden.")
+				"Person hat geschützte Rechnungen, Übergabeprotokolle oder Kautionsbuchungen und kann nicht gelöscht werden.")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "could not delete person")

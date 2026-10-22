@@ -307,8 +307,21 @@ func (h *Handler) RevokePortalLinks(w http.ResponseWriter, r *http.Request) {
 }
 
 type portalVehicle struct {
-	Label  string `json:"label"`
-	Status string `json:"status"`
+	// ID und Vertragsende braucht der Verlängerungswunsch (Ausbau 22); beides nur für
+	// die eigenen Gefährte der Person hinter dem Link.
+	ID      int64      `json:"id"`
+	Label   string     `json:"label"`
+	Status  string     `json:"status"`
+	EndDate *time.Time `json:"end_date,omitempty"`
+	// Höchste angenommene Version des Einstellvertrags für dieses Gefährt (Ausbau 30).
+	ContractAccepted *int `json:"contract_accepted,omitempty"`
+}
+
+// portalContract ist die aktuelle Vertragsfassung (Ausbau 30), ohne den Text: den
+// liefert /api/portal/contract je Gefährt als PDF mit eingesetzten Angaben.
+type portalContract struct {
+	Version int    `json:"version"`
+	Title   string `json:"title"`
 }
 
 type portalInvoice struct {
@@ -337,6 +350,7 @@ type portalSummary struct {
 	// personenbezogenste Datenpunkt der Anwendung — wer den Link mitliest, bekommt
 	// sie nicht dazu.
 	Handovers []portalHandover `json:"handovers"`
+	Contract  *portalContract  `json:"contract"`
 }
 
 type portalHandover struct {
@@ -372,7 +386,9 @@ func (h *Handler) PortalSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	vrows, err := h.Pool.Query(r.Context(),
-		`SELECT COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), cat.name, 'Gefährt'), v.status
+		`SELECT v.id, COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), cat.name, 'Gefährt'), v.status, v.end_date,
+		        (SELECT max(t.version) FROM contract_acceptances a JOIN contract_templates t ON t.id = a.template_id
+		          WHERE a.vehicle_id = v.id AND a.person_id = v.person_id)
 		   FROM vehicles v JOIN categories cat ON cat.id = v.category_id
 		  WHERE v.person_id=$1 AND NOT v.archived
 		  ORDER BY v.id`, pid)
@@ -383,7 +399,7 @@ func (h *Handler) PortalSummary(w http.ResponseWriter, r *http.Request) {
 	defer vrows.Close()
 	for vrows.Next() {
 		var pv portalVehicle
-		if err := vrows.Scan(&pv.Label, &pv.Status); err != nil {
+		if err := vrows.Scan(&pv.ID, &pv.Label, &pv.Status, &pv.EndDate, &pv.ContractAccepted); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan failed")
 			return
 		}
@@ -471,6 +487,12 @@ func (h *Handler) PortalSummary(w http.ResponseWriter, r *http.Request) {
 	out.OpenTotal = round2(bal[pid])
 	if out.OpenTotal < 0 {
 		out.OpenTotal = 0 // credit balance → nothing to pay
+	}
+	if c, err := h.currentContract(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	} else if c != nil {
+		out.Contract = &portalContract{Version: c.Version, Title: c.Title}
 	}
 	writeJSON(w, http.StatusOK, out)
 }

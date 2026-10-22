@@ -45,6 +45,10 @@ func cleanupPersons(t *testing.T, pool *pgxpool.Pool) {
 		OR person_id IN (SELECT id FROM persons WHERE last_name='Integration')`); err != nil {
 		t.Logf("cleanup handovers: %v", err)
 	}
+	// Kautionsbuchungen (Ausbau 32) halten die Person wie Rechnungen fest (RESTRICT).
+	if err := purgeExec(ctx, pool, `DELETE FROM deposits WHERE person_id IN (SELECT id FROM persons WHERE last_name='Integration')`); err != nil {
+		t.Logf("cleanup deposits: %v", err)
+	}
 	// Records of account are immutable (migration 034); teardown uses the purge
 	// escape hatch. Invoices are ON DELETE RESTRICT (immutable), so drop them
 	// before their persons; payments cascade with the person.

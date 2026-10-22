@@ -58,8 +58,9 @@ type Config struct {
 	AuditRetentionShortDays int
 
 	// Account security
-	CheckBreachedPasswords bool // check new passwords against the HIBP range API
-	FailClosedOnBreach     bool // if the HIBP check is unavailable, reject the password (default false = allow)
+	CheckBreachedPasswords          bool // check new passwords against the HIBP range API
+	CheckBreachedBootstrapPasswords bool // explicit opt-in for the new startup-time HIBP lookup
+	FailClosedOnBreach              bool // if the HIBP check is unavailable, reject the password (default false = allow)
 
 	// Backup (encrypted pg_dump). Enabled only when BackupKey is set. The
 	// schedule and retention are stored in the DB (backup_settings) and edited in
@@ -173,8 +174,9 @@ func Load() (*Config, error) {
 		// Auth/ops noise does not need the 7-year window; business changes still do.
 		AuditRetentionShortDays: getenvInt("PARKRR_AUDIT_RETENTION_SHORT_DAYS", 365),
 
-		CheckBreachedPasswords: getenvBool("PARKRR_CHECK_BREACHED_PASSWORDS", true),
-		FailClosedOnBreach:     getenvBool("PARKRR_BREACH_CHECK_FAIL_CLOSED", false),
+		CheckBreachedPasswords:          getenvBool("PARKRR_CHECK_BREACHED_PASSWORDS", true),
+		CheckBreachedBootstrapPasswords: getenvBool("PARKRR_CHECK_BREACHED_BOOTSTRAP_PASSWORDS", false),
+		FailClosedOnBreach:              getenvBool("PARKRR_BREACH_CHECK_FAIL_CLOSED", false),
 
 		BackupKey:      os.Getenv("PARKRR_BACKUP_KEY"),
 		BackupDir:      os.Getenv("PARKRR_BACKUP_DIR"),
@@ -273,6 +275,16 @@ func Load() (*Config, error) {
 	if cfg.BackupKey != "" && len(cfg.BackupKey) < 32 {
 		return nil, fmt.Errorf("PARKRR_BACKUP_KEY must be at least 32 bytes long when set (supply a random value, e.g. `openssl rand -base64 48`)")
 	}
+	// The examples are public values, not usable deployment credentials.
+	for _, secret := range []struct{ name, value string }{
+		{"PARKRR_ADMIN_PASSWORD", cfg.AdminPassword},
+		{"PARKRR_SESSION_SECRET", cfg.SessionSecret},
+		{"PARKRR_BACKUP_KEY", cfg.BackupKey},
+	} {
+		if isPlaceholderSecret(secret.value) {
+			return nil, fmt.Errorf("%s contains a public placeholder; replace it with your own value", secret.name)
+		}
+	}
 	// Reject an unknown SMTP TLS mode rather than silently degrading to cleartext:
 	// only none|tls|starttls are handled by the mailer.
 	switch strings.ToLower(cfg.SMTPTLS) {
@@ -282,6 +294,11 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func isPlaceholderSecret(value string) bool {
+	value = strings.ToLower(value)
+	return strings.Contains(value, "change-me") || strings.Contains(value, "changeme") || strings.Contains(value, "change_me")
 }
 
 func getenv(key, def string) string {

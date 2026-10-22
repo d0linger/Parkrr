@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 )
 
@@ -19,11 +20,15 @@ const (
 	RoleAdmin  = "admin"  // full access, including user management and the audit log
 	RoleEditor = "editor" // everything except user management and the audit log
 	RoleReader = "reader" // read-only access
+	// RoleAccounting (Ausbau 35): liest alles wie RoleReader, dazu Steuerbereich und Exporte.
+	RoleAccounting = "buchhaltung"
+	// RoleHall (Ausbau 35): Planer, Übergaben, Fotos, Service, Schlüsselbuch — keine Beträge.
+	RoleHall = "hallendienst"
 )
 
 // ValidRoles is the set of assignable roles.
 var ValidRoles = map[string]bool{
-	RoleAdmin: true, RoleEditor: true, RoleReader: true,
+	RoleAdmin: true, RoleEditor: true, RoleReader: true, RoleAccounting: true, RoleHall: true,
 }
 
 // VehicleStatus enumerates the lifecycle states of a vehicle.
@@ -175,6 +180,10 @@ type Person struct {
 
 	// Derived (not stored): whether the person has any Pauschale.
 	HasFlatRate bool `json:"has_flat_rate"`
+
+	// NoDunning nimmt die Person von automatischen Mahnungen aus (Ausbau 20);
+	// manuelle Erinnerungen bleiben möglich.
+	NoDunning bool `json:"no_dunning"`
 }
 
 // FlatRatePeriod is a dated flat-rate agreement ("Pauschale-Eintrag"): one
@@ -202,6 +211,12 @@ type FlatRatePeriod struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 
+	// RateChanges und Pauses machen den Satz zeitabhängig (Wertsicherung, Ausbau 29;
+	// Ruhezeit). Leer heißt: Amount gilt durchgehend — die Rechnung ist dann centgenau
+	// dieselbe wie vor ihrer Einführung (sliceCents).
+	RateChanges []RateChange `json:"-"`
+	Pauses      []Pause      `json:"-"`
+
 	// Derived (not stored).
 	Accrued float64 `json:"accrued"`
 	// Settled is true when everything accrued so far is paid (whole periods, fixed
@@ -216,6 +231,86 @@ type FlatRatePeriod struct {
 	// reads "bezahlt", not "0 % bezahlt" (the Pauschale twin of the charge/vehicle
 	// invoice status).
 	InvoicePaidPeriods []string `json:"invoice_paid_periods,omitempty"`
+}
+
+// RateChange: ab From (einschließlich) gilt Amount statt des bisherigen Satzes
+// (Wertsicherung, Ausbau 29). Angelegt wird sie nur zum Beginn einer künftigen
+// Periode, eine abgeschlossene Periode ändert sie also nie.
+type RateChange struct {
+	From   time.Time `json:"from"`
+	Amount float64   `json:"amount"`
+}
+
+// Pause: von From bis einschließlich Until ruht die Berechnung (Ruhezeit). Die
+// übrigen Felder braucht nur die Oberfläche; gerechnet wird mit From und Until (bei
+// einer noch nicht beendeten Ruhezeit ist Until offen, 9999-12-31).
+type Pause struct {
+	From     time.Time  `json:"from"`
+	Until    time.Time  `json:"until"`
+	ID       int64      `json:"id,omitempty"`
+	Planned  *time.Time `json:"planned,omitempty"`
+	Ended    bool       `json:"ended,omitempty"`
+	HoldSpot bool       `json:"hold_spot,omitempty"`
+}
+
+// rateAt liefert den Satz, der am Tag t gilt: die jüngste Änderung mit From <= t,
+// sonst Amount.
+func (a *FlatRatePeriod) rateAt(t time.Time) float64 {
+	amount, best := a.Amount, time.Time{}
+	for _, rc := range a.RateChanges {
+		if !rc.From.After(t) && !rc.From.Before(best) {
+			amount, best = rc.Amount, rc.From
+		}
+	}
+	return amount
+}
+
+// pausedAt meldet, ob der Tag t in einer Ruhezeit liegt.
+func (a *FlatRatePeriod) pausedAt(t time.Time) bool {
+	for _, p := range a.Pauses {
+		if !t.Before(p.From) && t.Before(DayAfter(p.Until)) {
+			return true
+		}
+	}
+	return false
+}
+
+// RateAt ist rateAt für Aufrufer außerhalb des Pakets (Anzeige des heute gültigen Satzes).
+func (a *FlatRatePeriod) RateAt(t time.Time) float64 { return a.rateAt(t) }
+
+// sliceCents liefert die Kosten (Cent) des Ausschnitts [s, e) der Teilperiode
+// [pStart, pEnd). Ohne Preisänderungen und Ruhezeiten ist das genau
+// fractionCents(toCents(Amount), …) wie bisher. Sonst wird der Ausschnitt an jeder
+// Grenze geteilt und jedes Stück mit seinem eigenen Satz anteilig gerechnet; ein
+// Stück in einer Ruhezeit kostet nichts. Alle Rechenwege (Kosten, Perioden, Bezahlt)
+// laufen hierüber, damit sie sich weiter centgenau decken.
+func (a *FlatRatePeriod) sliceCents(s, e, pStart, pEnd time.Time) int64 {
+	if len(a.RateChanges) == 0 && len(a.Pauses) == 0 {
+		return fractionCents(toCents(a.Amount), days(s, e), days(pStart, pEnd))
+	}
+	cuts := []time.Time{s, e}
+	add := func(t time.Time) {
+		if t.After(s) && t.Before(e) {
+			cuts = append(cuts, t)
+		}
+	}
+	for _, rc := range a.RateChanges {
+		add(rc.From)
+	}
+	for _, p := range a.Pauses {
+		add(p.From)
+		add(DayAfter(p.Until))
+	}
+	sort.Slice(cuts, func(i, j int) bool { return cuts[i].Before(cuts[j]) })
+	var total int64
+	for i := 0; i+1 < len(cuts); i++ {
+		ps, pe := cuts[i], cuts[i+1]
+		if !pe.After(ps) || a.pausedAt(ps) {
+			continue
+		}
+		total += fractionCents(toCents(a.rateAt(ps)), days(ps, pe), days(pStart, pEnd))
+	}
+	return total
 }
 
 // paidKeySet returns the set of sub-period keys explicitly marked paid.
@@ -290,19 +385,18 @@ func (a *FlatRatePeriod) subPeriods(from, to time.Time, fn func(s, e, pStart, pE
 // toCents(CostInRange), so the legacy "fully paid" behavior is preserved.
 func (a *FlatRatePeriod) PaidCentsInRange(from, to time.Time) int64 {
 	paid := a.paidKeySet()
-	cents := toCents(a.Amount)
 	var total int64
 	a.subPeriods(from, to, func(s, e, pStart, pEnd time.Time, key string) {
 		if a.Paid || paid[key] {
 			// Whole period paid (prepaid): credit the accrued portion, so a fully
 			// paid period always nets to zero.
-			total += fractionCents(cents, days(s, e), days(pStart, pEnd))
+			total += a.sliceCents(s, e, pStart, pEnd)
 		} else if fx, ok := a.PaidFixed[key]; ok {
 			// Fixed partial payment: credit the lump once, CAPPED at the period's
 			// accrued cost — matching the balance path (periodPaidUnlocked) — so an
 			// over-large partial (mis-entry) can't over-settle the period or archive
 			// its vehicles prematurely.
-			periodCents := fractionCents(cents, days(s, e), days(pStart, pEnd))
+			periodCents := a.sliceCents(s, e, pStart, pEnd)
 			if fxc := toCents(fx); fxc < periodCents {
 				total += fxc
 			} else {
@@ -329,9 +423,8 @@ func (a *FlatRatePeriod) ElapsedPeriodKeys(asOf time.Time) []string {
 // sum to the agreement's accrued total.
 func (a *FlatRatePeriod) ElapsedPeriodCosts(asOf time.Time) map[string]float64 {
 	out := map[string]float64{}
-	cents := toCents(a.Amount)
 	a.subPeriods(a.StartDate, DayAfter(asOf), func(s, e, pStart, pEnd time.Time, key string) {
-		out[key] += float64(fractionCents(cents, days(s, e), days(pStart, pEnd))) / 100
+		out[key] += float64(a.sliceCents(s, e, pStart, pEnd)) / 100
 	})
 	return out
 }
@@ -350,7 +443,6 @@ type OpenPeriod struct {
 // EndDate, if earlier) is not after asOf. Only a complete period has a final cost and may be locked, so
 // the still-running current period is never billed twice as it grows.
 func (a *FlatRatePeriod) ElapsedPeriodsDetailed(asOf time.Time) []OpenPeriod {
-	cents := toCents(a.Amount)
 	var out []OpenPeriod
 	a.subPeriods(a.StartDate, DayAfter(asOf), func(s, e, pStart, pEnd time.Time, key string) {
 		end := pEnd
@@ -364,7 +456,7 @@ func (a *FlatRatePeriod) ElapsedPeriodsDetailed(asOf time.Time) []OpenPeriod {
 		out = append(out, OpenPeriod{
 			Key:   key,
 			Start: s,
-			Cost:  float64(fractionCents(cents, days(s, e), days(pStart, pEnd))) / 100,
+			Cost:  float64(a.sliceCents(s, e, pStart, pEnd)) / 100,
 			// Complete (billable) only once the period has FULLY elapsed: its
 			// exclusive end must fall strictly before the day-after-today cutoff, so
 			// the running period is deferred even on its own last calendar day and
@@ -415,7 +507,14 @@ func (a *FlatRatePeriod) CostInRange(from, to time.Time) float64 {
 	if !e.After(s) {
 		return 0
 	}
-	return prorate(a.Amount, a.Period, s, e)
+	if len(a.RateChanges) == 0 && len(a.Pauses) == 0 {
+		return prorate(a.Amount, a.Period, s, e)
+	}
+	var total int64
+	walkSubPeriods(a.Period, s, e, func(ss, ee, pStart, pEnd time.Time) {
+		total += a.sliceCents(ss, ee, pStart, pEnd)
+	})
+	return float64(total) / 100
 }
 
 // AccruedAsOf returns the agreement cost accrued through asOf (inclusive).
@@ -454,6 +553,8 @@ type RecurringCharge struct {
 	Settled      bool               `json:"settled"`
 	PeriodCosts  map[string]float64 `json:"period_costs,omitempty"`
 	VehicleLabel string             `json:"vehicle_label,omitempty"` // display label when bound
+	// Pauses: Ruhezeiten des gebundenen Gefährts — gebundene Nebenkosten ruhen mit.
+	Pauses []Pause `json:"-"`
 }
 
 // AsPeriod returns a FlatRatePeriod view so the recurring charge reuses the exact
@@ -468,7 +569,7 @@ func (rc *RecurringCharge) AsPeriod() FlatRatePeriod {
 	}
 	return FlatRatePeriod{
 		Amount: rc.Amount, Period: rc.Period, StartDate: rc.StartDate, EndDate: rc.EndDate,
-		PaidPeriods: rc.PaidPeriods, PaidFixed: rc.PaidFixed, VehicleIDs: vids,
+		PaidPeriods: rc.PaidPeriods, PaidFixed: rc.PaidFixed, VehicleIDs: vids, Pauses: rc.Pauses,
 	}
 }
 
@@ -572,6 +673,12 @@ type Vehicle struct {
 	// vehicle is settled through a paid invoice (shown as "bezahlt", archivable).
 	Invoiced    bool `json:"invoiced"`
 	InvoiceOpen bool `json:"invoice_open"`
+
+	// RateChanges: Preisänderungen der Wertsicherung (Ausbau 29); Rate bleibt der
+	// ursprünglich vereinbarte Satz, EffectiveRate zeigt den heute gültigen.
+	RateChanges []RateChange `json:"rate_changes,omitempty"`
+	// Pauses: Ruhezeiten, in denen die Berechnung ruht.
+	Pauses []Pause `json:"pauses,omitempty"`
 
 	// SpotID is the (optional) physical Stellplatz this Gefährt stands on — a
 	// purely organizational link (Garagenplaner) with no effect on billing.
@@ -679,22 +786,30 @@ func (v *Vehicle) EffectiveRateFor(cat Category) float64 {
 	return cat.DefaultMonthlyCost
 }
 
+// AsPeriod ist die Abrechnungssicht des Gefährts: derselbe Periodenweg wie Pauschalen
+// und wiederkehrende Kosten, mit dem vereinbarten Satz, seinen Preisänderungen und
+// Ruhezeiten. Rechnung, Saldo und Anzeige rechnen alle hierüber.
+func (v *Vehicle) AsPeriod(cat Category) FlatRatePeriod {
+	return FlatRatePeriod{
+		Amount: v.EffectiveRateFor(cat), Period: v.BillingPeriod,
+		StartDate: v.StartDate, EndDate: v.EndDate,
+		RateChanges: v.RateChanges, Pauses: v.Pauses,
+	}
+}
+
+// RateAt liefert den am Tag t gültigen Satz (vereinbart oder nach Wertsicherung).
+func (v *Vehicle) RateAt(cat Category, t time.Time) float64 {
+	p := v.AsPeriod(cat)
+	return p.rateAt(t)
+}
+
 // CostInRange computes the accrued cost for the vehicle within [from, to).
-// The vehicle's own start/end dates further constrain the interval.
+// The vehicle's own start/end dates further constrain the interval (EndDate is
+// inclusive: the vehicle occupies the space through its last day). Ohne
+// Preisänderungen und Ruhezeiten ist das genau prorate(EffectiveRateFor, …).
 func (v *Vehicle) CostInRange(cat Category, from, to time.Time) float64 {
-	start := maxTime(v.StartDate, from)
-	end := to
-	// EndDate is inclusive: the vehicle occupies the space through its last day
-	// (e.g. the collection day), so the half-open window extends to the next day.
-	if v.EndDate != nil {
-		if endIncl := v.EndDate.AddDate(0, 0, 1); endIncl.Before(end) {
-			end = endIncl
-		}
-	}
-	if !end.After(start) {
-		return 0
-	}
-	return prorate(v.EffectiveRateFor(cat), v.BillingPeriod, start, end)
+	p := v.AsPeriod(cat)
+	return p.CostInRange(from, to)
 }
 
 // AccruedCostAsOf returns the total cost accrued from the start date until the
@@ -768,6 +883,8 @@ type Spot struct {
 	NeedsPower    bool     `json:"needs_power"`              // Ladebedarf of the Gefährt on this spot
 	PlannerSymbol *string  `json:"planner_symbol,omitempty"` // per-vehicle symbol override
 	PhotoID       *int64   `json:"photo_id,omitempty"`       // first photo of the Gefährt (foto mode)
+	// Away: das Gefährt ist kurz weg (Ruhezeit läuft); der gehaltene Platz bleibt belegt.
+	Away bool `json:"away,omitempty"`
 }
 
 func maxTime(a, b time.Time) time.Time {

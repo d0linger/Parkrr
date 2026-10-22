@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http/httptest"
@@ -285,6 +286,14 @@ func runAutoInvoice(pool *pgxpool.Pool, h *handlers.Handler) bool {
 		switch {
 		case rec.Code == 201:
 			created++
+			// Ausbau 19: bei eingeschaltetem Rechnungsversand die neue Rechnung in die
+			// Mail-Warteschlange. Ein Fehler dabei ändert nichts an der Rechnung.
+			var made struct {
+				ID int64 `json:"id"`
+			}
+			if json.Unmarshal(rec.Body.Bytes(), &made) == nil && made.ID > 0 {
+				h.QueueInvoiceMailAuto(ctx, made.ID)
+			}
 		case rec.Code == 400 && outcome == handlers.OutcomeNoOpenItems:
 			skipped++
 		case rec.Code == 409 && outcome == handlers.OutcomeRaced:

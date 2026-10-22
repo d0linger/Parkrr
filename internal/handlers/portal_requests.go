@@ -22,14 +22,20 @@ import (
 const maxOpenPortalRequests = 5
 
 type portalRequestIn struct {
-	Kind string `json:"kind"` // contact_update | pickup
+	Kind string `json:"kind"` // contact_update | pickup | extend | pause
 	// contact_update: gewünschte neue Werte (leere Felder = unverändert lassen)
 	Email   string `json:"email"`
 	Phone   string `json:"phone"`
 	Address string `json:"address"`
-	// pickup: Wunschtermin + Freitext
+	// pickup: Wunschtermin + Freitext; Time (HH:MM) ist Pflicht, sobald der Betreiber
+	// Abholzeitfenster festgelegt hat (Ausbau 23).
 	Date string `json:"date"` // YYYY-MM-DD
+	Time string `json:"time"`
 	Note string `json:"note"`
+	// extend (Ausbau 22): Verlängerung eines eigenen Gefährts bis Until.
+	// pause (Ruhezeit): „Kurz abholen“ ab Date, Rückkehr Until (leer = offen).
+	VehicleID int64  `json:"vehicle_id"`
+	Until     string `json:"until"`
 }
 
 // PortalCreateRequest nimmt einen Wunsch entgegen (PUBLIC, token-scoped).
@@ -100,6 +106,97 @@ func (h *Handler) PortalCreateRequest(w http.ResponseWriter, r *http.Request) {
 		if req.Note != "" {
 			payload["note"] = req.Note
 		}
+		active, err := h.pickupWindowsActive(r.Context(), h.Pool)
+		if err != nil {
+			serverError(w, r, "could not check pickup windows", err)
+			return
+		}
+		if active {
+			req.Time = trim(req.Time)
+			if _, terr := time.Parse("15:04", req.Time); terr != nil || len(req.Time) != 5 {
+				writeError(w, http.StatusBadRequest, "Bitte einen der angebotenen Zeitpunkte wählen")
+				return
+			}
+			payload["time"] = req.Time
+		}
+	case "extend":
+		if !validDateLength(trim(req.Until)) || !validNoteLength(req.Note) {
+			writeError(w, http.StatusBadRequest, "Eingabe ist zu lang")
+			return
+		}
+		until, err := time.Parse(dateLayout, trim(req.Until))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "until must be YYYY-MM-DD")
+			return
+		}
+		var end *time.Time
+		var label string
+		if err := h.Pool.QueryRow(r.Context(),
+			`SELECT v.end_date, COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), 'Gefährt')
+			   FROM vehicles v WHERE v.id=$1 AND v.person_id=$2 AND NOT v.archived AND v.status IN ('stored','reserved')`,
+			req.VehicleID, pid).Scan(&end, &label); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeError(w, http.StatusBadRequest, "Gefährt nicht gefunden")
+				return
+			}
+			serverError(w, r, "query failed", err)
+			return
+		}
+		if !until.After(startOfDayUTC(h.now())) || (end != nil && !until.After(*end)) {
+			writeError(w, http.StatusBadRequest, "Das neue Ende muss nach dem bisherigen liegen")
+			return
+		}
+		payload["vehicle_id"] = strconv.FormatInt(req.VehicleID, 10)
+		payload["vehicle"] = label
+		payload["until"] = until.Format(dateLayout)
+		if end != nil {
+			payload["previous_end"] = end.Format(dateLayout)
+		}
+		if req.Note != "" {
+			payload["note"] = req.Note
+		}
+	case "pause":
+		// Ruhezeit (Kurz weg): der Kunde fragt an, der Betreiber trägt sie mit einem
+		// Tipp ein. Nur für eigene, eingelagerte Gefährte.
+		if !validDateLength(req.Date) || !validDateLength(trim(req.Until)) || !validNoteLength(req.Note) {
+			writeError(w, http.StatusBadRequest, "Eingabe ist zu lang")
+			return
+		}
+		from, err := time.Parse(dateLayout, req.Date)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "date must be YYYY-MM-DD")
+			return
+		}
+		if from.Before(startOfDayUTC(h.now())) {
+			writeError(w, http.StatusBadRequest, "Der Abholtag liegt in der Vergangenheit")
+			return
+		}
+		var label string
+		if err := h.Pool.QueryRow(r.Context(),
+			`SELECT COALESCE(NULLIF(v.label,''), NULLIF(v.license_plate,''), 'Gefährt')
+			   FROM vehicles v WHERE v.id=$1 AND v.person_id=$2 AND NOT v.archived AND v.status = 'stored'`,
+			req.VehicleID, pid).Scan(&label); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeError(w, http.StatusBadRequest, "Gefährt nicht gefunden")
+				return
+			}
+			serverError(w, r, "query failed", err)
+			return
+		}
+		payload["vehicle_id"] = strconv.FormatInt(req.VehicleID, 10)
+		payload["vehicle"] = label
+		payload["from"] = from.Format(dateLayout)
+		if u := trim(req.Until); u != "" {
+			until, err := time.Parse(dateLayout, u)
+			if err != nil || until.Before(from) {
+				writeError(w, http.StatusBadRequest, "Die Rückkehr liegt vor dem Abholtag")
+				return
+			}
+			payload["until"] = until.Format(dateLayout)
+		}
+		if req.Note != "" {
+			payload["note"] = req.Note
+		}
 	default:
 		writeError(w, http.StatusBadRequest, "unknown kind")
 		return
@@ -113,7 +210,7 @@ func (h *Handler) PortalCreateRequest(w http.ResponseWriter, r *http.Request) {
 	// Zahlungsabgleich (payments.go) und bei den Planer-Icons.
 	raw, _ := json.Marshal(payload)
 	var reqID int64
-	var capped bool
+	var capped, slotTaken bool
 	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
 		// Über advisoryKey, nicht über `hashtext($1)::bigint`: hashtext liefert einen
 		// vorzeichenbehafteten int4 und schnitte den Schlüsselraum von 2^64 auf 2^32
@@ -133,6 +230,23 @@ func (h *Handler) PortalCreateRequest(w http.ResponseWriter, r *http.Request) {
 			capped = true
 			return nil
 		}
+		// Der letzte freie Platz eines Zeitpunkts darf nur EINMAL vergeben werden: die
+		// Sperre je Zeitpunkt serialisiert gleichzeitige Einreichungen verschiedener
+		// Personen, die Prüfung danach sieht die schon eingetragenen.
+		if t, ok := payload["time"]; ok {
+			if _, e := tx.Exec(r.Context(), `SELECT pg_advisory_xact_lock($1)`,
+				advisoryKey("parkrr.pickup.slot."+payload["date"]+" "+t)); e != nil {
+				return e
+			}
+			free, e := h.slotStillFree(r.Context(), tx, payload["date"], t)
+			if e != nil {
+				return e
+			}
+			if !free {
+				slotTaken = true
+				return nil
+			}
+		}
 		return tx.QueryRow(r.Context(),
 			`INSERT INTO portal_requests (person_id, kind, payload) VALUES ($1,$2,$3) RETURNING id`,
 			pid, req.Kind, raw).Scan(&reqID)
@@ -143,6 +257,10 @@ func (h *Handler) PortalCreateRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	if capped {
 		writeError(w, http.StatusTooManyRequests, "zu viele offene Anfragen — bitte warten Sie auf eine Antwort")
+		return
+	}
+	if slotTaken {
+		writeError(w, http.StatusConflict, "Dieser Zeitpunkt ist inzwischen vergeben – bitte einen anderen wählen")
 		return
 	}
 	// Der Wunsch ist eine Handlung von außen und gehört ins Protokoll — als

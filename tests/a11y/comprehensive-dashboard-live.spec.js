@@ -1,9 +1,16 @@
 const { test, expect } = require('@playwright/test');
 
 // This scenario is deliberately unavailable on developer/production instances.
-test.skip(process.env.PARKRR_E2E_ISOLATED !== '1' ||
-  !['http://localhost:18099', 'http://localhost:18101'].includes(process.env.PARKRR_BASE_URL),
-  'Requires an explicitly disposable comprehensive-test app on localhost:18099 or localhost:18101');
+const LIVE_READY = process.env.PARKRR_E2E_ISOLATED === '1' &&
+  ['http://localhost:18099', 'http://localhost:18101'].includes(process.env.PARKRR_BASE_URL);
+const USER = process.env.PARKRR_E2E_USER || 'admin';
+const PASS = process.env.PARKRR_E2E_PASS || 'ci-a11y-admin-password';
+// CI setzt PARKRR_E2E_REQUIRE_LIVE: dort ist ein Überspringen ein Fehler, sonst
+// läuft der Test nie und meldet trotzdem Grün.
+if (!LIVE_READY && process.env.PARKRR_E2E_REQUIRE_LIVE === '1') {
+  throw new Error('PARKRR_E2E_REQUIRE_LIVE=1, but the live scenario needs PARKRR_E2E_ISOLATED=1 and PARKRR_BASE_URL localhost:18099 or :18101');
+}
+test.skip(!LIVE_READY, 'Requires an explicitly disposable comprehensive-test app on localhost:18099 or localhost:18101');
 
 test('live forecast uses real read-only responses while planning stays inside the chart', async ({ page, context }, testInfo) => {
   const errors = [], serverErrors = [], chartRequests = [];
@@ -12,8 +19,8 @@ test('live forecast uses real read-only responses while planning stays inside th
     if (response.status() >= 500) serverErrors.push({ status: response.status(), url: response.url() });
   });
   await page.goto('/');
-  await page.locator('#login-username').fill(process.env.PARKRR_E2E_USER);
-  await page.locator('#login-password').fill(process.env.PARKRR_E2E_PASS);
+  await page.locator('#login-username').fill(USER);
+  await page.locator('#login-password').fill(PASS);
   const overviewResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/overview');
   await page.locator('#login-form button[type="submit"]').click();
   await expect(page.locator('#app-view')).toBeVisible();

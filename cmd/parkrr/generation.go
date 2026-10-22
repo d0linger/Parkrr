@@ -95,6 +95,10 @@ func startAppGeneration(
 	}
 	startWorker(func() { server.StartExpiryCleanup(pool, authMgr, g.stop) })
 	startWorker(func() { server.StartAutoInvoice(pool, apiHandler, cfg.AutoInvoiceCron, g.stop) })
+	// Mail-Warteschlange: der Kanal entsteht VOR dem Start, damit ein Klick auf
+	// „Per Mail senden“ den Lauf auch in den ersten Sekunden sofort weckt.
+	apiHandler.OutboxKick = make(chan struct{}, 1)
+	startWorker(func() { server.StartMailQueue(apiHandler, g.stop) })
 	startWorker(func() {
 		server.StartAuditRetention(pool,
 			time.Duration(cfg.AuditRetentionDays)*24*time.Hour,

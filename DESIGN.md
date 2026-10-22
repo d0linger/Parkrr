@@ -229,6 +229,19 @@ A green-tinted slate in two themes, one petrol voice for action, one copper voic
 ### Hallenplan
 The planner's plan surface stays dark in both themes so vehicles, walls and clearances read like a blueprint: ground #070D14 / #0A141E, ink #EEF4FB, teal #2EE6CF / #16B7A3, and status hues for the hall (#26A56B), occupied (#2F9E63), ok (#6FE0A6), reserved (#EAB452), invalid (#F26B63) and moving (#4EA8F5). Around the plan, the planner's toolbar and side cards take the app's own tokens.
 
+**Fixed planner palette.** Every fixed color in the planner rules has a name, `--gpc-<family>-<lightness %>[-a<opacity %>]`, defined once on `:root` at the top of the planner section in `style.css` with exactly the value it had before (October 2026; screenshots and computed colors unchanged in both themes). Equal values share one name; a palette change is now an edit in one place. The theme-dependent planner colors stay the `--gp*` tokens on `.gp`. Colors the planner writes as SVG attributes from script live in named tables in `app.js` (`WALLCOL`, `OPENCOL`, `ZONECOL`, the vehicle symbol inks), and the printable SVG export keeps its own light print colors.
+
+- **Teal** (`--gpc-teal-…`): `04-a70` rgba(4,16,12,.7), `04-a78` rgba(4,16,12,.78), `04-a82` rgba(4,16,12,.82), `04-a85` rgba(4,16,12,.85), `05` #04140c, `05-a70` rgba(4,20,16,.7), `05-a90` rgba(4,20,16,.9), `07` #0c1a14, `08` #06231d, `13` #123028, `34` #2f7d63, `40` #26a56b, `40-a22` rgba(38,165,107,.22), `42-a14` rgba(34,180,120,.14), `44` #2bb47a, `50-a12` rgba(45,212,191,.12), `50-a18` rgba(45,212,191,.18), `54-a06` rgba(46,230,207,.06), `54-a08` rgba(46,230,207,.08), `54-a10` rgba(46,230,207,.1), `54-a14` rgba(46,230,207,.14), `54-a30` rgba(46,230,207,.3), `54-a40` rgba(46,230,207,.4), `54-a50` rgba(46,230,207,.5), `54-a55` rgba(46,230,207,.55), `61` #5adcb4, `61-a30` rgba(90,220,180,.3), `72` #8fe0d4, `75` #8ff0e0, `76` #8ff3e7, `79` #a8ead4, `85` #cfe4dd
+- **Green** (`--gpc-green-…`): `14` #0f3a20, `73` #8fe6b0
+- **Blue** (`--gpc-blue-…`): `04-a60` rgba(4,10,18,.6), `05` #060b11, `05-a04` rgba(6,12,20,.04), `05-a74` rgba(6,12,20,.74), `08` #0b1620, `10` #0c1a26, `12` #12202d, `14` #0f2a3a, `15` #102c3a, `63` #4ea8f5, `63-a35` rgba(78,168,245,.35), `72-a28` rgba(120,190,245,.28), `87` #bcdcff, `95` #eaf1f8, `96` #eaf6ff
+- **Slate** (`--gpc-slate-…`): `08` #0c141d, `13` #151f2b, `14` #16222f, `14b` #1a232e, `19` #26313d, `21` #243547, `21b` #2b3540, `23` #2a3b4d, `29` #3c4a5a, `35` #46586c, `42` #5b6b7d, `67` #93a9c2, `70` #9fb2c4, `86` #cfdae6
+- **Amber** (`--gpc-amber-…`): `05-a78` rgba(24,16,3,.78), `15` #392c12, `35` #8a6b2a, `60` #e0b452, `62-a25` rgba(234,180,82,.25), `65` #f0b45a, `65-a14` rgba(240,180,90,.14), `68` #ffd35b, `68-a12` rgba(255,211,91,.12), `76` #f0d194, `77` #ffd98a, `77b` #f4d894, `82` #ffe7a3
+- **Orange** (`--gpc-orange-…`): `18` #3a2c22, `28` #5a4433
+- **Red** (`--gpc-red-…`): `12` #2a1211, `17` #3a1c1c, `36` #8a3030, `57-a22` rgba(220,80,70,.22), `59-a15` rgba(229,72,77,.15), `67-a22` rgba(242,107,99,.22), `67-a40` rgba(242,107,99,.4), `84` #ffb4ad, `88` #ffc7c0
+- **Gray** (`--gpc-gray-…`): `04-a60` rgba(6,12,10,.6), `04-a62` rgba(8,14,11,.62), `04-a66` rgba(8,14,11,.66), `97-a70` rgba(242,247,251,.7), `97-a92` rgba(242,247,251,.92)
+- **White** (`--gpc-white-…`): `--gpc-white` #ffffff, `a05` rgba(255,255,255,.05), `a06` rgba(255,255,255,.06), `a10` rgba(255,255,255,.1), `a50` rgba(255,255,255,.5), `a80` rgba(255,255,255,.8)
+- **Black** (`--gpc-black-…`): `--gpc-black` #000000, `a05` rgba(0,0,0,.05), `a18` rgba(0,0,0,.18), `a36` rgba(0,0,0,.36), `a42` rgba(0,0,0,.42), `a50` rgba(0,0,0,.5), `a55` rgba(0,0,0,.55), `a60` rgba(0,0,0,.6), `a65` rgba(0,0,0,.65)
+
 ### Calendar
 Event fills: pickup in Deep Petrol, reservation in Amber, due invoice #B4552F, portal pickup wish #8A6D1F. Each event also carries its icon and, for screen readers, its kind as text.
 

@@ -341,15 +341,17 @@ func setStatus(t *testing.T, h *Handler, vid int64, status, date string) {
 	}
 }
 
-// TestListChargesRejectsBadPersonID (review: ListCharges): a non-numeric
-// ?person_id must yield 400, not a 500 from a failed SQL int cast.
+// TestListChargesRejectsBadPersonID (review: ListCharges): non-numeric or non-positive
+// ?person_id must yield 400, not a 500 from a failed SQL int cast or query against 0/negative ID.
 func TestListChargesRejectsBadPersonID(t *testing.T) {
 	h := testHandler(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/charges?person_id=abc", nil)
-	rec := httptest.NewRecorder()
-	h.ListCharges(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("bad person_id must be 400, got %d %s", rec.Code, rec.Body.String())
+	for _, bad := range []string{"abc", "0", "-1"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/charges?person_id="+bad, nil)
+		rec := httptest.NewRecorder()
+		h.ListCharges(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("bad person_id=%q must be 400, got %d %s", bad, rec.Code, rec.Body.String())
+		}
 	}
 }
 

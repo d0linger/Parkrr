@@ -14,8 +14,10 @@ const charges = [
   { id: 2, person_id: 2, person_name: 'Demo Gruber 2', description: 'Stromanschluss', amount: 20, quantity: 2, total: 40, charged_on: '2026-09-01', paid: true },
   { id: 3, person_id: 1, person_name: 'Demo Berger 1', vehicle_id: 1, vehicle_label: 'Demo Wohnmobil 1', description: 'Batterieservice', amount: 30, quantity: 1, total: 30, charged_on: '2026-08-30', paid: false },
 ];
+// park: nutzbare Fläche, wie sie der Planer seit Ausbauplan O1 mit dem Grundriss speichert
+// (14 × 9 m ohne Wände). Ohne sie trüge der Planer sie beim Öffnen nach.
 const hall = { id: 1, garage_id: 1, name: 'Halle Nord', spot_count: 1, geometry: { Wm: 14, Hm: 9, shape: 'rect', tor: 3, load: 5,
-  floor: [[0, 0], [14, 0], [14, 9], [0, 9]], excl: [] } };
+  floor: [[0, 0], [14, 0], [14, 9], [0, 9]], excl: [], park: 126 } };
 const overrides = {
   '/categories': [{ id: 1, name: 'Wohnmobil', default_monthly_cost: 85, default_yearly_cost: 1020 }],
   '/persons': persons, '/vehicles': fleet, '/vehicles/unassigned': fleet.slice(1), '/charges': charges,

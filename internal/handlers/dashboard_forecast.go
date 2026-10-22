@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -213,7 +214,12 @@ func loadForecastVehicles(ctx context.Context, q dbQuerier, data *dashboardForec
 	rows, err := q.Query(ctx, `
 		SELECT v.id, v.person_id, v.category_id, v.billing_period, v.rate, v.cost_override,
 		       v.start_date, v.end_date, v.status, v.archived, v.reserved_from, v.reserved_until,
-		       c.default_monthly_cost, c.default_yearly_cost
+		       c.default_monthly_cost, c.default_yearly_cost,
+		       (SELECT jsonb_agg(jsonb_build_object('from', to_char(rc.effective_from, 'YYYY-MM-DD"T"00:00:00"Z"'), 'amount', rc.rate)
+		               ORDER BY rc.effective_from) FROM vehicle_rate_changes rc WHERE rc.vehicle_id = v.id),
+		       (SELECT jsonb_agg(jsonb_build_object('from', to_char(vp.start_date, 'YYYY-MM-DD"T"00:00:00"Z"'),
+		               'until', CASE WHEN vp.ended THEN to_char(vp.until, 'YYYY-MM-DD"T"00:00:00"Z"') ELSE '9999-12-31T00:00:00Z' END)
+		               ORDER BY vp.start_date) FROM vehicle_pauses vp WHERE vp.vehicle_id = v.id)
 		  FROM vehicles v JOIN categories c ON c.id=v.category_id ORDER BY v.id`)
 	if err != nil {
 		return fmt.Errorf("load forecast vehicles: %w", err)
@@ -222,13 +228,24 @@ func loadForecastVehicles(ctx context.Context, q dbQuerier, data *dashboardForec
 	for rows.Next() {
 		var vehicle models.Vehicle
 		var category models.Category
+		var rateChanges, pauses []byte
 		if err := rows.Scan(
 			&vehicle.ID, &vehicle.PersonID, &vehicle.CategoryID, &vehicle.BillingPeriod,
 			&vehicle.Rate, &vehicle.CostOverride, &vehicle.StartDate, &vehicle.EndDate,
 			&vehicle.Status, &vehicle.Archived, &vehicle.ReservedFrom, &vehicle.ReservedUntil,
-			&category.DefaultMonthlyCost, &category.DefaultYearlyCost,
+			&category.DefaultMonthlyCost, &category.DefaultYearlyCost, &rateChanges, &pauses,
 		); err != nil {
 			return fmt.Errorf("scan forecast vehicle: %w", err)
+		}
+		if len(rateChanges) > 0 {
+			if err := json.Unmarshal(rateChanges, &vehicle.RateChanges); err != nil {
+				return fmt.Errorf("forecast rate changes: %w", err)
+			}
+		}
+		if len(pauses) > 0 {
+			if err := json.Unmarshal(pauses, &vehicle.Pauses); err != nil {
+				return fmt.Errorf("forecast pauses: %w", err)
+			}
 		}
 		category.ID = vehicle.CategoryID
 		data.Vehicles = append(data.Vehicles, vehicle)
@@ -262,16 +279,24 @@ func loadForecastAgreements(ctx context.Context, q dbQuerier, data *dashboardFor
 }
 
 func loadForecastRecurring(ctx context.Context, q dbQuerier, data *dashboardForecastData) error {
+	pausesByVehicle := make(map[int64][]models.Pause, len(data.Vehicles))
+	for _, vehicle := range data.Vehicles {
+		pausesByVehicle[vehicle.ID] = vehicle.Pauses
+	}
 	rows, err := q.Query(ctx, `
-		SELECT amount, period, start_date, end_date FROM recurring_charges ORDER BY id`)
+		SELECT amount, period, start_date, end_date, vehicle_id FROM recurring_charges ORDER BY id`)
 	if err != nil {
 		return fmt.Errorf("load forecast recurring charges: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var period models.FlatRatePeriod
-		if err := rows.Scan(&period.Amount, &period.Period, &period.StartDate, &period.EndDate); err != nil {
+		var vehicleID *int64
+		if err := rows.Scan(&period.Amount, &period.Period, &period.StartDate, &period.EndDate, &vehicleID); err != nil {
 			return fmt.Errorf("scan forecast recurring charge: %w", err)
+		}
+		if vehicleID != nil {
+			period.Pauses = pausesByVehicle[*vehicleID]
 		}
 		data.Recurring = append(data.Recurring, period)
 	}
@@ -322,10 +347,9 @@ func buildForecastSources(data dashboardForecastData, now time.Time) (forecastSo
 			}
 			continue
 		}
-		period := models.FlatRatePeriod{
-			Amount: vehicle.EffectiveRateFor(data.Categories[vehicle.CategoryID]),
-			Period: vehicle.BillingPeriod, StartDate: vehicle.StartDate, EndDate: vehicle.EndDate,
-		}
+		// Mit Preisänderungen (Ausbau 29): die Prognose rechnet künftige Monate mit dem
+		// dann gültigen Satz.
+		period := vehicle.AsPeriod(data.Categories[vehicle.CategoryID])
 		sources.Actual = append(sources.Actual, period)
 		legacyPrice = legacyPrice || (vehicle.Rate == 0 && vehicle.CostOverride == nil)
 		closed := vehicle.Archived || vehicle.Status == models.StatusCancelled || vehicle.Status == models.StatusCollected
@@ -471,6 +495,7 @@ func buildDashboardForecast(
 			"Ab morgen werden bestehende Mietpreise und Laufzeiten fortgeführt; keine neuen Buchungen, Preissteigerungen oder saisonalen Zusatzerlöse erfunden.",
 			"Reservierungen sind ein gesondertes optionales Szenario ohne Eintrittswahrscheinlichkeit; pauschalgebundene Fahrzeuge zählen nicht zusätzlich.",
 			"Pauschalen und wiederkehrende Nebenkosten gelten nach ihren eigenen Zeiträumen. Erfasste Einmalkosten zählen einmal am Leistungsdatum; Strombedarf allein erzeugt keinen Preis.",
+			"Ruhezeiten setzen Einzelmiete und gefährtgebundene Nebenkosten aus; offene Ruhezeiten gelten bis zur bestätigten Rückkehr. Pauschalen laufen weiter.",
 			"Ein Vorjahresvergleich verwendet ausschließlich das unmittelbar vorherige Kalenderjahr; Datenlücken werden nicht durch andere Jahre ersetzt.",
 		},
 	}

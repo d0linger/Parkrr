@@ -519,3 +519,48 @@ func TestTaxBookFlow(t *testing.T) {
 		t.Error("ZIP missing uploaded receipt")
 	}
 }
+
+// TestGetTaxReceiptSanitizesContentType verifies GetTaxReceipt normalizes unexpected content_type values to application/octet-stream.
+func TestGetTaxReceiptSanitizesContentType(t *testing.T) {
+	h := testHandler(t)
+	ctx := context.Background()
+
+	var propertyID, categoryID int64
+	if err := h.Pool.QueryRow(ctx, `SELECT id FROM tax_properties ORDER BY is_default DESC,id LIMIT 1`).Scan(&propertyID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Pool.QueryRow(ctx, `SELECT id FROM tax_expense_categories ORDER BY id LIMIT 1`).Scan(&categoryID); err != nil {
+		t.Fatal(err)
+	}
+	var expenseID int64
+	if err := h.Pool.QueryRow(ctx,
+		`INSERT INTO tax_expenses(tax_property_id,category_id,paid_on,amount,vat_amount,description,payment_method)
+		 VALUES($1,$2,'2099-01-01',10.0,0.0,'MIME Test','bar') RETURNING id`,
+		propertyID, categoryID).Scan(&expenseID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = h.Pool.Exec(context.Background(), `DELETE FROM tax_expense_receipts WHERE expense_id=$1`, expenseID)
+		_, _ = h.Pool.Exec(context.Background(), `DELETE FROM tax_expenses WHERE id=$1`, expenseID)
+	})
+
+	var receiptID int64
+	if err := h.Pool.QueryRow(ctx,
+		`INSERT INTO tax_expense_receipts(expense_id,filename,content_type,byte_size,sha256,data)
+		 VALUES($1,'malicious.html','text/html',12,'sha256',$2) RETURNING id`,
+		expenseID, []byte("Hello World")).Scan(&receiptID); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tax/receipts/1", nil)
+	req.SetPathValue("id", strconv.FormatInt(receiptID, 10))
+	rec := httptest.NewRecorder()
+	h.GetTaxReceipt(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if gotCT := rec.Header().Get("Content-Type"); gotCT != "application/octet-stream" {
+		t.Errorf("expected Content-Type application/octet-stream, got %q", gotCT)
+	}
+}

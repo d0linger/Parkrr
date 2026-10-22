@@ -78,3 +78,61 @@ func TestVehicleLabel(t *testing.T) {
 		t.Errorf("unknown vehicle: want 404, got %d", w2.Code)
 	}
 }
+
+// The A4 sheet lists every placed, active Gefährt of the hall, escaped like the
+// single label and under the same tight CSP; an unknown hall is a 404.
+func TestHallLabels(t *testing.T) {
+	h := testHandler(t)
+	ctx := t.Context()
+	pid := createIntegrationPerson(t, h)
+	tag := strconv.FormatInt(time.Now().UnixNano(), 10)
+	var catID, garageID, hallID, spotID int64
+	if err := h.Pool.QueryRow(ctx, `INSERT INTO categories (name, default_monthly_cost, default_yearly_cost) VALUES ($1, 20, 200) RETURNING id`, "Sheet-"+tag).Scan(&catID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Pool.QueryRow(ctx, `INSERT INTO garages (name) VALUES ($1) RETURNING id`, "Sheet-Garage-"+tag).Scan(&garageID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = h.Pool.Exec(t.Context(), `UPDATE vehicles SET spot_id=NULL WHERE person_id=$1`, pid)
+		_, _ = h.Pool.Exec(t.Context(), `DELETE FROM garages WHERE id=$1`, garageID)
+	})
+	if err := h.Pool.QueryRow(ctx, `INSERT INTO halls (garage_id, name) VALUES ($1, 'Halle <A>') RETURNING id`, garageID).Scan(&hallID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Pool.QueryRow(ctx, `INSERT INTO spots (hall_id, label, geometry) VALUES ($1, 'B-07', '{"x":0,"y":0,"w":4,"h":2}') RETURNING id`, hallID).Scan(&spotID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Pool.Exec(ctx, `INSERT INTO vehicles (person_id, category_id, label, license_plate, billing_period, rate, start_date, status, spot_id)
+		VALUES ($1, $2, '<i>Bulli</i>', 'W-1', 'monthly', 20, '2026-01-01', 'stored', $3)`, pid, catID, spotID); err != nil {
+		t.Fatal(err)
+	}
+
+	call := func(id int64) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/halls/"+strconv.FormatInt(id, 10)+"/labels", nil)
+		req.SetPathValue("id", strconv.FormatInt(id, 10))
+		req.Host = "parkrr.example.com"
+		w := httptest.NewRecorder()
+		h.HallLabels(w, req)
+		return w
+	}
+	w := call(hallID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("labels: %d %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, want := range []string{"&lt;i&gt;Bulli&lt;/i&gt;", "Halle &lt;A&gt; · 1 Etiketten", "Platz B-07", "data:image/png;base64,", "@page { size: A4"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("sheet is missing %q", want)
+		}
+	}
+	if strings.Contains(body, "<i>Bulli</i>") {
+		t.Error("vehicle label rendered unescaped")
+	}
+	if csp := w.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'none'") {
+		t.Errorf("CSP = %q", csp)
+	}
+	if w := call(987654321987); w.Code != http.StatusNotFound {
+		t.Errorf("unknown hall: %d, want 404", w.Code)
+	}
+}
