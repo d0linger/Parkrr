@@ -58,6 +58,13 @@ updates:
       - "docker"
     commit-message:
       prefix: "docker"
+    # Go release-line upgrades must update go.mod and all CI compilers together.
+    # Keep patch/digest updates visible; check-go-version.cjs enforces alignment.
+    ignore:
+      - dependency-name: "golang"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
 
   # npm — accessibility test tooling (Playwright + axe-core), lockfile committed.
   - package-ecosystem: "npm"
