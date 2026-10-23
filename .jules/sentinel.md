@@ -57,3 +57,8 @@
 *Vulnerability:* In `PasskeyLoginFinish`, when a passkey assertion verified for a disabled user account (`u.Disabled`), the handler explicitly refunded the rate-limiter attempt budget via `h.Limiter.Refund(key)`. This allowed repeated passkey login attempts against disabled accounts to bypass IP-based throttling and avoid rate-limiting penalties.
 *Learning:* Authentication rejections due to account status (such as disabled accounts) represent failed login attempts and must retain their consumed rate-limit penalty rather than being treated like transient server/database errors.
 *Prevention:* Never refund rate-limiter reservations on account-status authentication failures; ensure disabled-account login attempts consume rate limiting consistently across all authentication methods.
+
+## 2026-07-21 - [Persisting 2FA Failure Lockouts and Replay Step Tracking Across Disablement]
+*Vulnerability:* When disabling 2FA (`TOTPDisable`) or enabling 2FA (`TOTPEnable`), `totp_failures`, `totp_locked_until`, and `last_totp_step` were not reset to initial clean values (0 / NULL / 0). Leftover second-factor failure lockouts or step tracking from past MFA sessions persisted and affected future re-enrollment lifecycles.
+*Learning:* Removing or toggling multi-factor credentials must explicitly reset all secondary security state (failure counts, lockouts, replay step guards) on the user account to guarantee a clean state upon re-enrolment.
+*Prevention:* Always include `totp_failures=0, totp_locked_until=NULL, last_totp_step=0` in SQL updates that disable, enable, or reset 2FA factor status.

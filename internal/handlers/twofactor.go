@@ -156,7 +156,7 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 		`UPDATE users
 		    SET totp_secret=pending_totp_secret, totp_enabled=TRUE,
 		        pending_totp_secret='', pending_totp_nonce='', pending_totp_expires_at=NULL,
-		        totp_failures=0, totp_locked_until=NULL,
+		        totp_failures=0, totp_locked_until=NULL, last_totp_step=0,
 		        updated_at=now()
 		  WHERE id=$1`, u.ID); err != nil {
 		h.refundReauth(key, ip)
@@ -212,7 +212,9 @@ func (h *AuthHandler) TOTPDisable(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := h.Pool.Exec(r.Context(),
 		`UPDATE users SET totp_enabled=FALSE, totp_secret='', pending_totp_secret='',
-		        pending_totp_nonce='', pending_totp_expires_at=NULL, updated_at=now() WHERE id=$1`,
+		        pending_totp_nonce='', pending_totp_expires_at=NULL,
+		        totp_failures=0, totp_locked_until=NULL, last_totp_step=0,
+		        updated_at=now() WHERE id=$1`,
 		u.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "Zwei-Faktor konnte nicht deaktiviert werden")
 		return

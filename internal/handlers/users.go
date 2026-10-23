@@ -364,7 +364,7 @@ func (h *Handler) ResetUserTOTP(w http.ResponseWriter, r *http.Request) {
 		`WITH prev AS (SELECT totp_enabled FROM users WHERE id=$1)
 		 UPDATE users SET totp_enabled=FALSE, totp_secret='',
 		        pending_totp_secret='', pending_totp_nonce='', pending_totp_expires_at=NULL,
-		        totp_failures=0, totp_locked_until=NULL, updated_at=now()
+		        totp_failures=0, totp_locked_until=NULL, last_totp_step=0, updated_at=now()
 		  WHERE id=$1
 		 RETURNING (SELECT totp_enabled FROM prev)`,
 		id).Scan(&prevTOTP); err != nil {
