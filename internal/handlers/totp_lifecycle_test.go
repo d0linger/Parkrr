@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -197,6 +198,53 @@ func TestTOTPEnrollmentReplacesOldReplayStateAndConsumesAcceptedCode(t *testing.
 	}
 	if replayed := readTOTPLifecycleState(t, f, uid); replayed.Sessions != state.Sessions || replayed.LastStep != state.LastStep {
 		t.Error("reused login OTP created another session or changed the consumed step")
+	}
+}
+
+func TestTOTPConcurrentLoginsRedeemOneCodeOnce(t *testing.T) {
+	f := newAuthFixture(t)
+	const name, password = "totp-concurrent-redeem-Integration", "concurrent-redeem-password"
+	uid, secret := f.totpUser(t, name, password)
+	before := readTOTPLifecycleState(t, f, uid)
+	generatedAt := time.Now()
+	code, err := totp.GenerateCode(secret, generatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqs := make([]*http.Request, 2)
+	for i := range reqs {
+		reqs[i] = authJSONReq(t, http.MethodPost, "/api/auth/login",
+			loginRequest{Username: name, Password: password, TOTPCode: code})
+	}
+	// Both logins wait at one barrier, so they race for the same unconsumed step.
+	start := make(chan struct{})
+	results := make(chan int, len(reqs))
+	var ready sync.WaitGroup
+	for _, r := range reqs {
+		ready.Add(1)
+		go func(r *http.Request) {
+			w := httptest.NewRecorder()
+			ready.Done()
+			<-start
+			f.ah.Login(w, r)
+			results <- w.Code
+		}(r)
+	}
+	ready.Wait()
+	close(start)
+	got := map[int]int{}
+	for range reqs {
+		got[<-results]++
+	}
+	if got[http.StatusOK] != 1 || got[http.StatusUnauthorized] != 1 {
+		t.Fatalf("concurrent redemption of one code: %v, want exactly one 200 and one 401", got)
+	}
+	after := readTOTPLifecycleState(t, f, uid)
+	if after.Sessions != before.Sessions+1 {
+		t.Fatalf("concurrent redemption created %d sessions, want 1", after.Sessions-before.Sessions)
+	}
+	if want := generatedAt.Unix() / 30; after.LastStep != want {
+		t.Fatalf("consumed step %d, want %d", after.LastStep, want)
 	}
 }
 
