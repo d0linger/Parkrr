@@ -29,6 +29,21 @@ function totp(secretB32, at = Date.now()) {
   return code;
 }
 
+function nextTOTP(secret, consumedStep) {
+  const currentStep = Math.floor(Date.now() / 30000);
+  // The server accepts one step of clock skew; avoid sleeping or reusing the
+  // enrollment code, including when the browser crosses a 30-second boundary.
+  return totp(secret, Math.max(consumedStep + 1, currentStep) * 30000);
+}
+
+async function submitLoginTOTP(page, code) {
+  for (let i = 0; i < 6; i++) await page.fill('#login-otp-' + i, code[i]);
+  const response = page.waitForResponse(res =>
+    new URL(res.url()).pathname === '/api/auth/login' && res.request().method() === 'POST');
+  await page.click('#login-form button[type="submit"]');
+  return response;
+}
+
 async function loginAs(page, user, pass) {
   await page.goto('/');
   await page.waitForSelector('#login-view:not([hidden])', { timeout: 15000 });
@@ -78,8 +93,10 @@ test('2FA: Einrichtung, Login mit TOTP-Code und mit Recovery-Code', async ({ pag
   const setup = await apiCall(page, 'POST', '/auth/2fa/setup');
   expect(setup.status, JSON.stringify(setup.data)).toBe(200);
   const secret = setup.data.secret;
+  const enrolledAt = Date.now();
+  const enrollmentCode = totp(secret, enrolledAt);
   // setup_id bindet die Aktivierung an genau diese Einrichtung (sonst 400 "start setup first").
-  const enable = await apiCall(page, 'POST', '/auth/2fa/enable', { code: totp(secret), setup_id: setup.data.setup_id });
+  const enable = await apiCall(page, 'POST', '/auth/2fa/enable', { code: enrollmentCode, setup_id: setup.data.setup_id });
   expect(enable.status, JSON.stringify(enable.data)).toBe(200);
   const backupCodes = enable.data.backup_codes || [];
   expect(backupCodes.length).toBeGreaterThan(0);
@@ -89,9 +106,9 @@ test('2FA: Einrichtung, Login mit TOTP-Code und mit Recovery-Code', async ({ pag
   // sechs Ziffernfelder.
   await loginAs(page, uname, upass);
   await page.waitForSelector('#login-totp-wrap:not([hidden])', { timeout: 15000 });
-  const code = totp(secret);
-  for (let i = 0; i < 6; i++) await page.fill('#login-otp-' + i, code[i]);
-  await page.click('#login-form button[type="submit"]');
+  expect((await submitLoginTOTP(page, enrollmentCode)).status()).toBe(401);
+  await expect(page.locator('#app-view')).toBeHidden();
+  expect((await submitLoginTOTP(page, nextTOTP(secret, Math.floor(enrolledAt / 30000)))).status()).toBe(200);
   await page.waitForSelector('#app-view:not([hidden])', { timeout: 15000 });
   await apiCall(page, 'POST', '/auth/logout');
 
@@ -110,6 +127,83 @@ test('2FA: Einrichtung, Login mit TOTP-Code und mit Recovery-Code', async ({ pag
   const list = await apiCall(page, 'GET', '/users');
   const hit = (list.data || []).find((u) => u.username === uname);
   if (hit) await apiCall(page, 'DELETE', '/users/' + hit.id);
+});
+
+test('2FA: deaktivieren und neu einrichten verwirft alte Codes und verbraucht den neuen Einrichtungscode', async ({ page }) => {
+  test.skip(process.env.PARKRR_E2E_ISOLATED !== '1' ||
+    !['http://localhost:18099', 'http://localhost:18101', 'http://localhost:18102'].includes(process.env.PARKRR_BASE_URL),
+  'Requires an explicitly disposable E2E server.');
+  const username = 'e2e2falifecycle' + Date.now();
+  const password = 'e2e-zwei-faktor-neue-einrichtung';
+  await loginAs(page, ADMIN, APASS);
+  await expect(page.locator('#app-view')).toBeVisible();
+  const created = await apiCall(page, 'POST', '/users', {
+    username, email: username + '@example.invalid', role: 'editor', password,
+  });
+  expect(created.status, JSON.stringify(created.data)).toBe(201);
+  try {
+    await apiCall(page, 'POST', '/auth/logout');
+    await loginAs(page, username, password);
+    await expect(page.locator('#app-view')).toBeVisible();
+    await page.goto('/#/settings');
+    const enroll = async () => {
+      const setupResponse = page.waitForResponse(res =>
+        new URL(res.url()).pathname === '/api/auth/2fa/setup' && res.request().method() === 'POST');
+      await page.getByRole('button', { name: '2FA einrichten', exact: true }).click();
+      const setup = await setupResponse;
+      expect(setup.status()).toBe(200);
+      const { secret } = await setup.json();
+      const enrolledAt = Date.now();
+      const code = totp(secret, enrolledAt);
+      await page.getByLabel('6-stelligen Code aus der App eingeben', { exact: true }).fill(code);
+      const enabled = page.waitForResponse(res =>
+        new URL(res.url()).pathname === '/api/auth/2fa/enable' && res.request().method() === 'POST');
+      await page.getByRole('button', { name: 'Aktivieren', exact: true }).click();
+      expect((await enabled).status()).toBe(200);
+      await expect(page.locator('.backup-codes code')).toHaveCount(10);
+      const backupCodes = await page.locator('.backup-codes code').allTextContents();
+      await page.getByRole('checkbox', { name: 'Ich habe die Codes sicher gespeichert.', exact: true }).check();
+      await page.getByRole('button', { name: 'Erledigt', exact: true }).click();
+      await expect(page.locator('#modal')).toBeHidden();
+      return { secret, code, backupCodes, step: Math.floor(enrolledAt / 30000) };
+    };
+    const first = await enroll();
+    await page.getByRole('button', { name: /^2FA deaktivieren/ }).click();
+    await page.getByLabel(/^Passwort zur Bestätigung/).fill(password);
+    const disabled = page.waitForResponse(res =>
+      new URL(res.url()).pathname === '/api/auth/2fa/disable' && res.request().method() === 'POST');
+    await page.locator('#modal').getByRole('button', { name: 'Deaktivieren', exact: true }).click();
+    expect((await disabled).status()).toBe(200);
+    await expect(page.locator('#modal')).toBeHidden();
+    await expect(page.getByRole('button', { name: '2FA einrichten', exact: true })).toBeVisible();
+    expect((await apiCall(page, 'GET', '/auth/me')).data.totp_enabled).toBe(false);
+
+    const second = await enroll();
+    expect(second.secret).not.toBe(first.secret);
+    expect((await apiCall(page, 'GET', '/auth/me')).data.totp_enabled).toBe(true);
+    await apiCall(page, 'POST', '/auth/logout');
+    await loginAs(page, username, password);
+    await expect(page.locator('#login-totp-wrap')).toBeVisible();
+    await page.locator('#login-backup-toggle').click();
+    await page.locator('#login-backup').fill(first.backupCodes[0]);
+    const oldRecovery = page.waitForResponse(res =>
+      new URL(res.url()).pathname === '/api/auth/login' && res.request().method() === 'POST');
+    await page.locator('#login-form button[type="submit"]').click();
+    expect((await oldRecovery).status()).toBe(401);
+    await expect(page.locator('#app-view')).toBeHidden();
+    await page.locator('#login-backup-toggle').click();
+    expect((await submitLoginTOTP(page, second.code)).status()).toBe(401);
+    await expect(page.locator('#app-view')).toBeHidden();
+    expect((await submitLoginTOTP(page, nextTOTP(second.secret, second.step))).status()).toBe(200);
+    await expect(page.locator('#app-view')).toBeVisible();
+  } finally {
+    await apiCall(page, 'POST', '/auth/logout').catch(() => {});
+    await loginAs(page, ADMIN, APASS);
+    await expect(page.locator('#app-view')).toBeVisible();
+    const list = await apiCall(page, 'GET', '/users');
+    const account = (list.data || []).find(user => user.username === username);
+    if (account) await apiCall(page, 'DELETE', '/users/' + account.id);
+  }
 });
 
 test('Passkey: registrieren, abmelden, per Passkey anmelden', async ({ page }) => {

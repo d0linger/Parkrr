@@ -26,13 +26,8 @@ func GenerateTOTP(account string) (*otp.Key, error) {
 	})
 }
 
-// ValidateTOTP checks a 6-digit code against the secret.
-func ValidateTOTP(secret, code string) bool {
-	return totp.Validate(code, secret)
-}
-
 // ValidateTOTPStep checks a code against the secret across the accepted ±1 skew
-// window (matching ValidateTOTP) and, on success, returns the 30-second time-step
+// window and, on success, returns the 30-second time-step
 // it matched. The step lets the caller reject replays: accept a code only if its
 // step is newer than the last one already consumed for that user.
 func ValidateTOTPStep(secret, code string, now time.Time) (int64, bool) {

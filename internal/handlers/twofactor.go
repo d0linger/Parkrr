@@ -141,7 +141,8 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "two-factor setup expired or was replaced")
 		return
 	}
-	if !h.Auth.ValidateEncryptedTOTP(encSecret, trim(req.Code)) {
+	step, valid := h.Auth.ValidateEncryptedTOTPStep(encSecret, trim(req.Code), time.Now())
+	if !valid {
 		h.recordReauthFailure(key, ip)
 		writeError(w, http.StatusBadRequest, "invalid code")
 		return
@@ -152,13 +153,15 @@ func (h *AuthHandler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not generate backup codes")
 		return
 	}
+	// The new factor replaces the old replay history, but its enrollment code
+	// has already been used and must not be accepted again at login.
 	if _, err := tx.Exec(r.Context(),
 		`UPDATE users
 		    SET totp_secret=pending_totp_secret, totp_enabled=TRUE,
 		        pending_totp_secret='', pending_totp_nonce='', pending_totp_expires_at=NULL,
-		        totp_failures=0, totp_locked_until=NULL,
+		        totp_failures=0, totp_locked_until=NULL, last_totp_step=$2,
 		        updated_at=now()
-		  WHERE id=$1`, u.ID); err != nil {
+		  WHERE id=$1`, u.ID, step); err != nil {
 		h.refundReauth(key, ip)
 		writeError(w, http.StatusInternalServerError, "could not enable two-factor")
 		return
@@ -208,16 +211,32 @@ func (h *AuthHandler) TOTPDisable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "Passwort ist falsch")
 		return
 	}
-	h.resetReauth(key, ip)
-
-	if _, err := h.Pool.Exec(r.Context(),
+	// Keep the reset and recovery-code removal under the same user-row lock as
+	// enrollment, so a concurrent enrollment cannot lose its newly issued codes.
+	tx, err := h.Pool.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Zwei-Faktor konnte nicht deaktiviert werden")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	if _, err := tx.Exec(r.Context(),
 		`UPDATE users SET totp_enabled=FALSE, totp_secret='', pending_totp_secret='',
-		        pending_totp_nonce='', pending_totp_expires_at=NULL, updated_at=now() WHERE id=$1`,
+		        pending_totp_nonce='', pending_totp_expires_at=NULL,
+		        totp_failures=0, totp_locked_until=NULL, last_totp_step=0,
+		        updated_at=now() WHERE id=$1`,
 		u.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "Zwei-Faktor konnte nicht deaktiviert werden")
 		return
 	}
-	h.Auth.DeleteBackupCodes(r.Context(), u.ID)
+	if _, err := tx.Exec(r.Context(), `DELETE FROM totp_backup_codes WHERE user_id=$1`, u.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "Zwei-Faktor konnte nicht deaktiviert werden")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "Zwei-Faktor konnte nicht deaktiviert werden")
+		return
+	}
+	h.resetReauth(key, ip)
 	h.auditChange(r, "update", "user", u.ID, u.Username+" disabled two-factor authentication",
 		diffFields(map[string]any{"totp_enabled": true}, map[string]any{"totp_enabled": false}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "disabled"})

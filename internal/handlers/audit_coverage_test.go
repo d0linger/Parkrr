@@ -256,9 +256,11 @@ var auditIgnoredPerFunc = map[string]map[string]bool{
 	"TOTPSetup": {"totp_enabled": true},
 	// Pending enrollment material is intentionally never copied into the trail.
 	// The setup/enable audit events record the ceremony outcome; the nonce, encrypted
-	// secret, and expiry are short-lived authentication internals.
+	// secret, and expiry are short-lived authentication internals. Failure counters,
+	// lockouts, and the replay step are discarded with the factor, not user edits.
 	"TOTPDisable": {
 		"pending_totp_secret": true, "pending_totp_nonce": true, "pending_totp_expires_at": true,
+		"totp_failures": true, "totp_locked_until": true, "last_totp_step": true,
 	},
 	// The admin 2FA reset discards a half-finished enrollment (audit AUTH-04) and
 	// clears the second-factor failure counter and lock (AUTH-03). Both are
@@ -266,7 +268,7 @@ var auditIgnoredPerFunc = map[string]map[string]bool{
 	// entry (totp_enabled diff plus passkey count) is the trail.
 	"ResetUserTOTP": {
 		"pending_totp_secret": true, "pending_totp_nonce": true, "pending_totp_expires_at": true,
-		"totp_failures": true, "totp_locked_until": true,
+		"totp_failures": true, "totp_locked_until": true, "last_totp_step": true,
 	},
 	// AnonymizePerson revokes the person's self-service portal tokens as a mechanical
 	// side-effect of anonymizing them — a live magic link must not survive the erasure.
