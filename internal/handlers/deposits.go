@@ -1,13 +1,10 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"math"
 	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"time"
 
@@ -32,6 +29,7 @@ type deposit struct {
 	Method    string    `json:"method"`
 	Note      string    `json:"note"`
 	PaymentID *int64    `json:"payment_id"`
+	Reversed  bool      `json:"reversed"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -41,8 +39,9 @@ var depositKindLabel = map[string]string{"erhalten": "Kaution erhalten", "einbeh
 func depositBalanceCents(ctx context.Context, q dbQuerier, personID int64) (int64, error) {
 	var cents int64
 	err := q.QueryRow(ctx,
-		`SELECT COALESCE(sum(CASE kind WHEN 'erhalten' THEN amount ELSE -amount END) * 100, 0)::bigint
-		   FROM deposits WHERE person_id = $1`, personID).Scan(&cents)
+		`SELECT COALESCE(sum(CASE d.kind WHEN 'erhalten' THEN d.amount ELSE -d.amount END) * 100, 0)::bigint
+		   FROM deposits d LEFT JOIN payments p ON p.id = d.payment_id
+		  WHERE d.person_id = $1 AND NOT COALESCE(p.reversed, false)`, personID).Scan(&cents)
 	return cents, err
 }
 
@@ -54,8 +53,10 @@ func (h *Handler) ListDeposits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := h.Pool.Query(r.Context(),
-		`SELECT id, person_id, vehicle_id, kind, amount, booked_on, method, note, payment_id, created_at
-		   FROM deposits WHERE person_id = $1 ORDER BY booked_on, id`, id)
+		`SELECT d.id, d.person_id, d.vehicle_id, d.kind, d.amount, d.booked_on, d.method, d.note,
+		        d.payment_id, d.created_at, COALESCE(p.reversed, false)
+		   FROM deposits d LEFT JOIN payments p ON p.id = d.payment_id
+		  WHERE d.person_id = $1 ORDER BY d.booked_on, d.id`, id)
 	if err != nil {
 		serverError(w, r, "query failed", err)
 		return
@@ -65,14 +66,16 @@ func (h *Handler) ListDeposits(w http.ResponseWriter, r *http.Request) {
 	var cents int64
 	for rows.Next() {
 		var d deposit
-		if err := rows.Scan(&d.ID, &d.PersonID, &d.VehicleID, &d.Kind, &d.Amount, &d.BookedOn, &d.Method, &d.Note, &d.PaymentID, &d.CreatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.PersonID, &d.VehicleID, &d.Kind, &d.Amount, &d.BookedOn, &d.Method, &d.Note, &d.PaymentID, &d.CreatedAt, &d.Reversed); err != nil {
 			serverError(w, r, "scan failed", err)
 			return
 		}
-		if d.Kind == "erhalten" {
-			cents += toCentsH(d.Amount)
-		} else {
-			cents -= toCentsH(d.Amount)
+		if !d.Reversed {
+			if d.Kind == "erhalten" {
+				cents += toCentsH(d.Amount)
+			} else {
+				cents -= toCentsH(d.Amount)
+			}
 		}
 		out = append(out, d)
 	}
@@ -141,8 +144,12 @@ func (h *Handler) CreateDeposit(w http.ResponseWriter, r *http.Request) {
 	// Saldo prüfen und buchen unter der Personensperre: zwei gleichzeitige Rückzahlungen
 	// können die Kaution nicht zweimal auszahlen.
 	var depID int64
+	var paymentID *int64
 	var tooMuch, notFound bool
 	err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		if err := lockInvoicePersonTx(r.Context(), tx, pid); err != nil {
+			return err
+		}
 		var anonymized bool
 		if err := tx.QueryRow(r.Context(), `SELECT anonymized FROM persons WHERE id = $1 FOR UPDATE`, pid).Scan(&anonymized); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -153,7 +160,11 @@ func (h *Handler) CreateDeposit(w http.ResponseWriter, r *http.Request) {
 		}
 		if in.VehicleID != nil {
 			var owner int64
-			if err := tx.QueryRow(r.Context(), `SELECT person_id FROM vehicles WHERE id = $1`, *in.VehicleID).Scan(&owner); err != nil || owner != pid {
+			err := tx.QueryRow(r.Context(), `SELECT person_id FROM vehicles WHERE id = $1`, *in.VehicleID).Scan(&owner)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+			if errors.Is(err, pgx.ErrNoRows) || owner != pid {
 				notFound = true
 				return nil
 			}
@@ -168,15 +179,38 @@ func (h *Handler) CreateDeposit(w http.ResponseWriter, r *http.Request) {
 				return nil
 			}
 		}
-		return tx.QueryRow(r.Context(),
+		if err := tx.QueryRow(r.Context(),
 			`INSERT INTO deposits (person_id, vehicle_id, kind, amount, booked_on, method, note, created_by)
 			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-			pid, in.VehicleID, in.Kind, in.Amount, booked, in.Method, in.Note, createdBy).Scan(&depID)
+			pid, in.VehicleID, in.Kind, in.Amount, booked, in.Method, in.Note, createdBy).Scan(&depID); err != nil {
+			return err
+		}
+		if in.Kind == "einbehalten" {
+			prepared, err := h.prepareInvoicePayment(r, pid, payInvoicesRequest{
+				Amount: in.Amount, PaidOn: booked.Format(dateLayout), Method: "sonstiges",
+				Note: "Kaution einbehalten: " + in.Note, Auto: true,
+			}, "deposit-"+strconv.FormatInt(depID, 10))
+			if err != nil {
+				return err
+			}
+			out, _, err := h.recordInvoicePaymentTx(r, tx, prepared)
+			if err != nil {
+				return err
+			}
+			paymentID = &out.PaymentID
+			if _, err := tx.Exec(r.Context(), `UPDATE deposits SET payment_id = $2 WHERE id = $1`, depID, out.PaymentID); err != nil {
+				return err
+			}
+		}
+		return h.auditCreatedTx(r.Context(), tx, r, "deposit", depID,
+			depositKindLabel[in.Kind]+": "+strconv.FormatFloat(in.Amount, 'f', 2, 64)+" €", map[string]any{
+				"person_id": pid, "kind": in.Kind, "amount": in.Amount, "booked_on": booked.Format(dateLayout), "payment_id": paymentID,
+			})
 	})
-	switch {
-	case err != nil:
-		serverError(w, r, "could not save", err)
+	if writeInvoicePaymentError(w, r, err) {
 		return
+	}
+	switch {
 	case notFound:
 		writeError(w, http.StatusNotFound, "Person oder Gefährt nicht gefunden")
 		return
@@ -184,34 +218,14 @@ func (h *Handler) CreateDeposit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "Mehr als die offene Kaution")
 		return
 	}
-	var paymentID *int64
 	if in.Kind == "einbehalten" {
-		// Erst jetzt Erlös: über den normalen Zahlungsweg. Scheitert er, wird die Buchung
-		// zurückgenommen, damit Konto und Zahlungen nicht auseinanderlaufen.
-		payID, status, msg := h.payViaHandler(r, pid, payInvoicesRequest{Amount: in.Amount, PaidOn: booked.Format(dateLayout),
-			Method: "sonstiges", Note: "Kaution einbehalten: " + in.Note, Auto: true}, "deposit-"+strconv.FormatInt(depID, 10))
-		if payID == 0 {
-			if _, derr := h.Pool.Exec(r.Context(), `DELETE FROM deposits WHERE id = $1 AND payment_id IS NULL`, depID); derr != nil {
-				serverError(w, r, "could not roll back", derr)
-				return
-			}
-			writeError(w, status, "Einbehalt nicht gebucht: "+msg)
-			return
-		}
-		paymentID = &payID
-		if _, err := h.Pool.Exec(r.Context(), `UPDATE deposits SET payment_id = $2 WHERE id = $1`, depID, payID); err != nil {
-			serverError(w, r, "could not save", err)
-			return
-		}
+		h.archiveInvoiceSettledCollected(r.Context(), pid)
 	}
-	h.auditCreated(r, "deposit", depID, depositKindLabel[in.Kind]+": "+strconv.FormatFloat(in.Amount, 'f', 2, 64)+" €", map[string]any{
-		"person_id": pid, "kind": in.Kind, "amount": in.Amount, "booked_on": booked.Format(dateLayout), "payment_id": paymentID,
-	})
 	writeJSON(w, http.StatusCreated, map[string]any{"id": depID, "payment_id": paymentID})
 }
 
-// DeleteDeposit: DELETE /api/deposits/{id} (Admin). Ein Einbehalt hängt an einer Zahlung
-// und geht nur über deren Storno; der Saldo darf durch das Löschen nicht negativ werden.
+// DeleteDeposit: DELETE /api/deposits/{id} (Admin). Ein Einbehalt bleibt als Beleg
+// erhalten und wird über die Zahlung storniert. Löschen darf den Saldo nicht negativ machen.
 func (h *Handler) DeleteDeposit(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(r)
 	if !ok {
@@ -226,11 +240,19 @@ func (h *Handler) DeleteDeposit(w http.ResponseWriter, r *http.Request) {
 			Scan(&d.PersonID, &d.Kind, &d.Amount, &d.BookedOn, &d.PaymentID); err != nil {
 			return err
 		}
+		if err := lockInvoicePersonTx(r.Context(), tx, d.PersonID); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(r.Context(), `SELECT 1 FROM persons WHERE id = $1 FOR UPDATE`, d.PersonID); err != nil {
 			return err
 		}
+		if err := tx.QueryRow(r.Context(),
+			`SELECT person_id, kind, amount, booked_on, payment_id FROM deposits WHERE id = $1 FOR UPDATE`, id).
+			Scan(&d.PersonID, &d.Kind, &d.Amount, &d.BookedOn, &d.PaymentID); err != nil {
+			return err
+		}
 		if d.PaymentID != nil {
-			blocked = "Der Einbehalt ist als Zahlung gebucht – erst die Zahlung stornieren."
+			blocked = "Der Einbehalt bleibt als Beleg erhalten. Die zugehörige Zahlung kann storniert werden."
 			return nil
 		}
 		if d.Kind == "erhalten" {
@@ -243,8 +265,12 @@ func (h *Handler) DeleteDeposit(w http.ResponseWriter, r *http.Request) {
 				return nil
 			}
 		}
-		_, err := tx.Exec(r.Context(), `DELETE FROM deposits WHERE id = $1`, id)
-		return err
+		if _, err := tx.Exec(r.Context(), `DELETE FROM deposits WHERE id = $1`, id); err != nil {
+			return err
+		}
+		return h.auditDeletedTx(r.Context(), tx, r, "deposit", id, depositKindLabel[d.Kind]+" gelöscht", map[string]any{
+			"person_id": d.PersonID, "kind": d.Kind, "amount": d.Amount, "booked_on": d.BookedOn.Format(dateLayout),
+		})
 	})
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -257,36 +283,5 @@ func (h *Handler) DeleteDeposit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, blocked)
 		return
 	}
-	h.auditDeleted(r, "deposit", id, depositKindLabel[d.Kind]+" gelöscht", map[string]any{
-		"person_id": d.PersonID, "kind": d.Kind, "amount": d.Amount, "booked_on": d.BookedOn.Format(dateLayout),
-	})
 	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
-}
-
-// payViaHandler bucht eine Zahlung über PayInvoices (gleiche Prüfungen, Sperren und
-// Idempotenz wie die Oberfläche) und liefert die Zahlungs-ID oder Status und Meldung.
-func (h *Handler) payViaHandler(r *http.Request, personID int64, req payInvoicesRequest, idemKey string) (int64, int, string) {
-	body, err := json.Marshal(req)
-	if err != nil {
-		return 0, http.StatusInternalServerError, err.Error()
-	}
-	pid := strconv.FormatInt(personID, 10)
-	sub := httptest.NewRequest(http.MethodPost, "/api/persons/"+pid+"/pay-invoices", bytes.NewReader(body)).WithContext(r.Context())
-	sub.Header.Set("Content-Type", "application/json")
-	sub.Header.Set("Idempotency-Key", idemKey)
-	sub.SetPathValue("id", pid)
-	rec := httptest.NewRecorder()
-	h.PayInvoices(rec, sub)
-	var out struct {
-		PaymentID int64  `json:"payment_id"`
-		Error     string `json:"error"`
-	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &out)
-	if rec.Code != http.StatusCreated && rec.Code != http.StatusOK || out.PaymentID == 0 {
-		if out.Error == "" {
-			out.Error = http.StatusText(rec.Code)
-		}
-		return 0, rec.Code, out.Error
-	}
-	return out.PaymentID, rec.Code, ""
 }

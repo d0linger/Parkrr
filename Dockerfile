@@ -6,7 +6,7 @@
 # "1.27-alpine" baute also mit einem Compiler, gegen den kein Test lief.
 # scripts/check-go-version.cjs hält alle Stellen gleich; ein Update ändert sie
 # gemeinsam in einem Commit.
-FROM golang:1.26.10-alpine3.24@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b292c88e7f6bdf7ca AS build
+FROM golang:1.27.3-alpine3.24@sha256:d530cf60723abf1ffae0cd16bb546b379ec0550d2f3815e5b16ed69dbc00fba4 AS build
 
 WORKDIR /src
 

@@ -357,8 +357,12 @@ func (h *Handler) ListBankTransactions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := h.Pool.Query(r.Context(),
-		`SELECT id, booked_on, amount, currency, name, iban, remittance, status, payment_id, person_id
-		   FROM bank_transactions WHERE status = $1 ORDER BY booked_on DESC, id DESC LIMIT 500`, status)
+		`SELECT b.id, b.booked_on, b.amount, b.currency, b.name, b.iban, b.remittance,
+		        CASE WHEN b.status = 'zugeordnet' AND COALESCE(p.reversed, false) THEN 'offen' ELSE b.status END,
+		        b.payment_id, b.person_id
+		   FROM bank_transactions b LEFT JOIN payments p ON p.id = b.payment_id
+		  WHERE CASE WHEN b.status = 'zugeordnet' AND COALESCE(p.reversed, false) THEN 'offen' ELSE b.status END = $1
+		  ORDER BY b.booked_on DESC, b.id DESC LIMIT 500`, status)
 	if err != nil {
 		serverError(w, r, "query failed", err)
 		return
@@ -411,83 +415,106 @@ func (h *Handler) AssignBankTransaction(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "Rechnung oder Person angeben (genau eins)")
 		return
 	}
-	unlock, err := h.lockBankTransaction(r.Context(), id)
+	ctx := r.Context()
+	var personID, paymentID int64
+	var by *int64
+	if u, ok := auth.UserFrom(ctx); ok {
+		by = &u.ID
+	}
+	err := pgx.BeginFunc(ctx, h.Pool, func(tx pgx.Tx) error {
+		t, err := loadBankTransactionTx(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if t.effectiveStatus() != "offen" || (t.PaymentID != nil && !t.paymentReversed) {
+			return &paymentRequestError{status: http.StatusConflict, message: "Buchung ist nicht mehr offen"}
+		}
+		if t.Currency != "EUR" {
+			return &paymentRequestError{status: http.StatusConflict, message: "Nur Gutschriften in EUR können zugeordnet werden"}
+		}
+		if in.InvoiceID != nil {
+			if err := tx.QueryRow(ctx, `SELECT person_id FROM invoices WHERE id = $1`, *in.InvoiceID).Scan(&personID); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return &paymentRequestError{status: http.StatusBadRequest, message: "Rechnung gibt es nicht"}
+				}
+				return err
+			}
+		} else {
+			personID = *in.PersonID
+		}
+		// Match reversal's bank-before-person lock order, then read invoice state
+		// again under the person's settlement lock.
+		if err := lockInvoicePersonTx(ctx, tx, personID); err != nil {
+			return err
+		}
+		req := payInvoicesRequest{Amount: t.Amount, PaidOn: t.BookedOn.Format(dateLayout), Method: "ueberweisung",
+			Note: truncRunes(strings.TrimSpace("Kontoauszug: "+t.Remittance), 200)}
+		if in.InvoiceID != nil {
+			var owner int64
+			var open float64
+			var canceled bool
+			if err := tx.QueryRow(ctx,
+				`SELECT person_id, round(total - paid_amount, 2), canceled OR cancels_id IS NOT NULL FROM invoices WHERE id = $1`, *in.InvoiceID).
+				Scan(&owner, &open, &canceled); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return &paymentRequestError{status: http.StatusBadRequest, message: "Rechnung gibt es nicht"}
+				}
+				return err
+			}
+			if owner != personID || canceled || open <= 0.005 {
+				return &paymentRequestError{status: http.StatusConflict, message: "Rechnung ist nicht mehr offen"}
+			}
+			req.Allocations = []invoiceAlloc{{InvoiceID: *in.InvoiceID, Amount: round2(min(t.Amount, open))}}
+		} else {
+			var exists bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM persons WHERE id = $1 AND NOT anonymized)`, personID).Scan(&exists); err != nil {
+				return err
+			}
+			if !exists {
+				return &paymentRequestError{status: http.StatusBadRequest, message: "Person gibt es nicht"}
+			}
+		}
+		key := "bank-tx-" + strconv.FormatInt(id, 10)
+		if t.PaymentID != nil {
+			// Retain the prior receipt as the generation marker. Its original key
+			// would replay reversed money instead of recording a new receipt.
+			key += "-after-" + strconv.FormatInt(*t.PaymentID, 10)
+		}
+		prepared, err := h.prepareInvoicePayment(r, personID, req, key)
+		if err != nil {
+			return err
+		}
+		out, _, err := h.recordInvoicePaymentTx(r, tx, prepared)
+		if err != nil {
+			return err
+		}
+		var reversed bool
+		if err := tx.QueryRow(ctx, `SELECT reversed FROM payments WHERE id = $1 FOR UPDATE`, out.PaymentID).Scan(&reversed); err != nil {
+			return err
+		}
+		if reversed {
+			return &paymentRequestError{status: http.StatusConflict, message: "Die frühere Zahlung ist bereits storniert – Kontobuchung bitte neu laden"}
+		}
+		paymentID = out.PaymentID
+		if _, err := tx.Exec(ctx,
+			`UPDATE bank_transactions SET status = 'zugeordnet', payment_id = $2, person_id = $3, resolved_at = now(), resolved_by = $4 WHERE id = $1`,
+			id, paymentID, personID, by); err != nil {
+			return err
+		}
+		return h.auditChangeTx(ctx, tx, r, "assign", "bank_transaction", id, "Kontobuchung zugeordnet",
+			diffFields(t.auditValues(), map[string]any{
+				"status": "zugeordnet", "payment_id": paymentID, "person_id": personID, "resolved_at": "jetzt", "resolved_by": by,
+			}))
+	})
 	if errors.Is(err, ErrTaskBusy) {
 		writeError(w, http.StatusConflict, "Diese Kontobuchung wird gerade bearbeitet")
 		return
 	}
-	if err != nil {
-		serverError(w, r, "could not lock bank transaction", err)
+	if writeInvoicePaymentError(w, r, err) {
 		return
 	}
-	defer unlock()
-	var t bankTxOut
-	if err := h.Pool.QueryRow(r.Context(),
-		`SELECT id, booked_on, amount, currency, name, remittance, status FROM bank_transactions WHERE id = $1`, id).
-		Scan(&t.ID, &t.BookedOn, &t.Amount, &t.Currency, &t.Name, &t.Remittance, &t.Status); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "not found")
-			return
-		}
-		serverError(w, r, "query failed", err)
-		return
-	}
-	if t.Status != "offen" {
-		writeError(w, http.StatusConflict, "Buchung ist nicht mehr offen")
-		return
-	}
-	if t.Currency != "EUR" {
-		writeError(w, http.StatusConflict, "Nur Gutschriften in EUR können zugeordnet werden")
-		return
-	}
-	req := payInvoicesRequest{Amount: t.Amount, PaidOn: t.BookedOn.Format(dateLayout), Method: "ueberweisung",
-		Note: truncRunes(strings.TrimSpace("Kontoauszug: "+t.Remittance), 200)}
-	var personID int64
-	if in.InvoiceID != nil {
-		var open float64
-		var canceled bool
-		if err := h.Pool.QueryRow(r.Context(),
-			`SELECT person_id, round(total - paid_amount, 2), canceled OR cancels_id IS NOT NULL FROM invoices WHERE id = $1`, *in.InvoiceID).
-			Scan(&personID, &open, &canceled); err != nil {
-			writeError(w, http.StatusBadRequest, "Rechnung gibt es nicht")
-			return
-		}
-		if canceled || open <= 0.005 {
-			writeError(w, http.StatusConflict, "Rechnung ist nicht mehr offen")
-			return
-		}
-		alloc := t.Amount
-		if open < alloc {
-			alloc = open
-		}
-		req.Allocations = []invoiceAlloc{{InvoiceID: *in.InvoiceID, Amount: round2(alloc)}}
-	} else {
-		personID = *in.PersonID
-		var exists bool
-		if err := h.Pool.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM persons WHERE id = $1 AND NOT anonymized)`, personID).Scan(&exists); err != nil || !exists {
-			writeError(w, http.StatusBadRequest, "Person gibt es nicht")
-			return
-		}
-	}
-	payID, status, msg := h.payViaHandler(r, personID, req, "bank-tx-"+strconv.FormatInt(id, 10))
-	if payID == 0 {
-		writeError(w, status, "Zahlung nicht gebucht: "+msg)
-		return
-	}
-	var by *int64
-	if u, ok := auth.UserFrom(r.Context()); ok {
-		by = &u.ID
-	}
-	if _, err := h.Pool.Exec(r.Context(),
-		`UPDATE bank_transactions SET status = 'zugeordnet', payment_id = $2, person_id = $3, resolved_at = now(), resolved_by = $4 WHERE id = $1`,
-		id, payID, personID, by); err != nil {
-		serverError(w, r, "could not save", err)
-		return
-	}
-	h.auditChange(r, "assign", "bank_transaction", id, "Kontobuchung zugeordnet",
-		diffFields(map[string]any{"status": "offen", "payment_id": nil, "person_id": nil, "resolved_at": nil, "resolved_by": nil},
-			map[string]any{"status": "zugeordnet", "payment_id": payID, "person_id": personID, "resolved_at": "jetzt", "resolved_by": by}))
-	writeJSON(w, http.StatusOK, map[string]any{"payment_id": payID, "person_id": personID})
+	h.archiveInvoiceSettledCollected(ctx, personID)
+	writeJSON(w, http.StatusOK, map[string]any{"payment_id": paymentID, "person_id": personID})
 }
 
 // SetBankTransactionIgnored: POST /api/bank-transactions/{id}/ignore {ignored}. Für
@@ -505,16 +532,6 @@ func (h *Handler) SetBankTransactionIgnored(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	unlock, err := h.lockBankTransaction(r.Context(), id)
-	if errors.Is(err, ErrTaskBusy) {
-		writeError(w, http.StatusConflict, "Diese Kontobuchung wird gerade bearbeitet")
-		return
-	}
-	if err != nil {
-		serverError(w, r, "could not lock bank transaction", err)
-		return
-	}
-	defer unlock()
 	from, to := "offen", "ignoriert"
 	if !in.Ignored {
 		from, to = "ignoriert", "offen"
@@ -523,48 +540,90 @@ func (h *Handler) SetBankTransactionIgnored(w http.ResponseWriter, r *http.Reque
 	if u, ok := auth.UserFrom(r.Context()); ok {
 		by = &u.ID
 	}
-	ct, err := h.Pool.Exec(r.Context(),
-		`UPDATE bank_transactions SET status = $3, resolved_at = CASE WHEN $3 = 'ignoriert' THEN now() END,
-		        resolved_by = CASE WHEN $3 = 'ignoriert' THEN $4::bigint END
-		  WHERE id = $1 AND status = $2`, id, from, to, by)
-	if err != nil {
-		serverError(w, r, "could not save", err)
+	err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		t, err := loadBankTransactionTx(r.Context(), tx, id)
+		if err != nil {
+			return err
+		}
+		if t.effectiveStatus() != from || (t.PaymentID != nil && !t.paymentReversed) {
+			return &paymentRequestError{status: http.StatusConflict, message: "Buchung ist nicht " + from}
+		}
+		if _, err := tx.Exec(r.Context(),
+			`UPDATE bank_transactions SET status = $2, person_id = NULL,
+			        resolved_at = CASE WHEN $2 = 'ignoriert' THEN now() END,
+			        resolved_by = CASE WHEN $2 = 'ignoriert' THEN $3::bigint END
+			  WHERE id = $1`, id, to, by); err != nil {
+			return err
+		}
+		var resolvedAt, resolvedBy any
+		if in.Ignored {
+			resolvedAt, resolvedBy = "jetzt", by
+		}
+		return h.auditChangeTx(r.Context(), tx, r, "update", "bank_transaction", id, "Kontobuchung "+to,
+			diffFields(t.auditValues(), map[string]any{
+				"status": to, "payment_id": t.PaymentID, "person_id": nil, "resolved_at": resolvedAt, "resolved_by": resolvedBy,
+			}))
+	})
+	if errors.Is(err, ErrTaskBusy) {
+		writeError(w, http.StatusConflict, "Diese Kontobuchung wird gerade bearbeitet")
 		return
 	}
-	if ct.RowsAffected() == 0 {
-		writeError(w, http.StatusConflict, "Buchung ist nicht "+from)
+	if writeInvoicePaymentError(w, r, err) {
 		return
 	}
-	h.auditChange(r, "update", "bank_transaction", id, "Kontobuchung "+to,
-		diffFields(map[string]any{"status": from, "resolved_at": nil, "resolved_by": nil}, map[string]any{"status": to, "resolved_at": to, "resolved_by": by}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": to})
 }
 
-// The payment handler uses its own transaction. Keep a session lock until both
-// the payment and its bank reference are saved, across operators and replicas.
-func (h *Handler) lockBankTransaction(ctx context.Context, id int64) (func(), error) {
-	conn, err := h.Pool.Acquire(ctx)
-	if err != nil {
-		return nil, err
+type bankTransactionState struct {
+	bankTxOut
+	resolvedAt      *time.Time
+	resolvedBy      *int64
+	paymentReversed bool
+}
+
+func (t bankTransactionState) effectiveStatus() string {
+	if t.Status == "zugeordnet" && t.paymentReversed {
+		return "offen"
 	}
+	return t.Status
+}
+
+func (t bankTransactionState) auditValues() map[string]any {
+	return map[string]any{
+		"status": t.Status, "payment_id": t.PaymentID, "person_id": t.PersonID,
+		"resolved_at": t.resolvedAt, "resolved_by": t.resolvedBy,
+	}
+}
+
+func loadBankTransactionTx(ctx context.Context, tx pgx.Tx, id int64) (bankTransactionState, error) {
+	var t bankTransactionState
+	if err := lockBankTransactionTx(ctx, tx, id); err != nil {
+		return t, err
+	}
+	err := tx.QueryRow(ctx,
+		`SELECT b.id, b.booked_on, b.amount, b.currency, b.name, b.remittance, b.status,
+		        b.payment_id, b.person_id, b.resolved_at, b.resolved_by, COALESCE(p.reversed, false)
+		   FROM bank_transactions b LEFT JOIN payments p ON p.id = b.payment_id
+		  WHERE b.id = $1 FOR UPDATE OF b`, id).
+		Scan(&t.ID, &t.BookedOn, &t.Amount, &t.Currency, &t.Name, &t.Remittance, &t.Status,
+			&t.PaymentID, &t.PersonID, &t.resolvedAt, &t.resolvedBy, &t.paymentReversed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return t, &paymentRequestError{status: http.StatusNotFound, message: "not found"}
+	}
+	return t, err
+}
+
+// Assignment, ignore and reversal share a transaction lock across operators and
+// replicas. Take it before person or payment locks so competing mutations return
+// a retryable conflict instead of booking the same bank receipt twice.
+func lockBankTransactionTx(ctx context.Context, tx pgx.Tx, id int64) error {
 	key := advisoryKey("parkrr.bank.transaction." + strconv.FormatInt(id, 10))
 	var locked bool
-	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&locked); err != nil {
-		discardLockedConn(conn)
-		conn.Release()
-		return nil, err
+	if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock($1)`, key).Scan(&locked); err != nil {
+		return err
 	}
 	if !locked {
-		conn.Release()
-		return nil, ErrTaskBusy
+		return ErrTaskBusy
 	}
-	return func() {
-		defer conn.Release()
-		unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		var unlocked bool
-		if err := conn.QueryRow(unlockCtx, `SELECT pg_advisory_unlock($1)`, key).Scan(&unlocked); err != nil || !unlocked {
-			discardLockedConn(conn)
-		}
-	}, nil
+	return nil
 }

@@ -2940,7 +2940,8 @@ import { createRevenueChart } from './revenue-chart.js';
                 save: async (d) => {
                     await api.post('/persons/' + id + '/deposits', { kind, amount: Number(d.amount), booked_on: d.booked_on || null, method: d.method || '', note: d.note || '' });
                     toast(kind === 'einbehalten' ? 'Einbehalten und als Zahlung gebucht' : 'Gebucht', 'success');
-                    loadDeposits();
+                    if (kind === 'einbehalten') render();
+                    else loadDeposits();
                 },
             });
             const loadDeposits = async () => {
@@ -2956,7 +2957,7 @@ import { createRevenueChart } from './revenue-chart.js';
                     el('strong', { class: 'amt' }, open ? 'offen ' + eur(dep.balance) : (dep.entries.length ? 'ausgeglichen' : '–'))));
                 if (!dep.entries.length) depCard.append(el('p', { class: 'card-meta' }, 'Keine Kaution. Eine Kaution ist kein Erlös, solange sie nicht einbehalten wird.'));
                 dep.entries.slice().reverse().forEach((e) => depCard.append(el('div', { class: 'balance' },
-                    el('span', {}, fmtDate(e.booked_on) + ' · ' + DEP[e.kind] + (e.note ? ' · ' + e.note : '')),
+                    el('span', {}, fmtDate(e.booked_on) + ' · ' + DEP[e.kind] + (e.reversed ? ' · storniert' : '') + (e.note ? ' · ' + e.note : '')),
                     el('span', { class: 'dep-amt' }, (e.kind === 'erhalten' ? '+' : '−') + eur(e.amount),
                         isAdmin() && !e.payment_id ? el('button', { class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': 'Kautionsbuchung vom ' + fmtDate(e.booked_on) + ' löschen', onclick: async () => {
                             if (!await confirmDialog('Kautionsbuchung löschen?', DEP[e.kind] + ' ' + eur(e.amount) + ' vom ' + fmtDate(e.booked_on) + ' wird gelöscht.', 'Löschen')) return;

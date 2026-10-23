@@ -17,14 +17,21 @@ jobs:
         with:
           persist-credentials: false
 
-      # gosec 2.27.x needs a newer Go to build than the app targets; pin both
-      # the Go version and the gosec version so the scan is deterministic and
-      # a new gosec release cannot break CI with newly added default rules.
+      # Pin the scanner and its Go export-data reader in a separate tool module.
+      # gosec's original x/tools cannot read Go 1.27.2+ export data (v5).
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: "1.26.10"
+          go-version: "1.27.3"
           cache: true
+          cache-dependency-path: |
+            go.sum
+            .github/tools/gosec/go.sum
+
+      - name: Build pinned gosec
+        run: |
+          go -C .github/tools/gosec build -mod=readonly -o "${RUNNER_TEMP}/gosec" github.com/securego/gosec/v2/cmd/gosec
+          go version -m "${RUNNER_TEMP}/gosec"
 
       - name: Run gosec
         # G706 (log injection) is excluded project-wide: all logging goes through
@@ -33,5 +40,4 @@ jobs:
         # reviewed exceptions (G124 cookies, G120 bounded multipart) are handled
         # with inline #nosec annotations.
         run: |
-          go install github.com/securego/gosec/v2/cmd/gosec@v2.27.1
-          gosec -exclude-dir=.github -exclude=G706 ./...
+          "${RUNNER_TEMP}/gosec" -concurrency=2 -exclude-dir=.github -exclude=G706 ./...
