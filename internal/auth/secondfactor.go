@@ -40,7 +40,11 @@ const (
 //
 // A successful check must call ResetSecondFactorFailures; a check that could not
 // be completed for a server-side reason should call ReleaseSecondFactorAttempt.
-func (m *Manager) ReserveSecondFactorAttempt(ctx context.Context, userID int64) (failures int, lockedFor time.Duration, err error) {
+// expectedTOTPSecret is the encrypted credential the login loaded. A reset or
+// re-enrollment invalidates the attempt instead of charging the new credential.
+func (m *Manager) ReserveSecondFactorAttempt(
+	ctx context.Context, userID int64, expectedTOTPSecret string,
+) (failures int, lockedFor time.Duration, err error) {
 	err = m.pool.QueryRow(ctx,
 		`UPDATE users
 		    SET totp_failures = totp_failures + 1,
@@ -49,19 +53,26 @@ func (m *Manager) ReserveSecondFactorAttempt(ctx context.Context, userID int64) 
 		                make_interval(mins => 1) * power(2, LEAST(totp_failures + 1 - $2, 20)),
 		                make_interval(secs => $3))
 		            ELSE NULL END
-		  WHERE id = $1 AND (totp_locked_until IS NULL OR totp_locked_until <= now())
+		  WHERE id = $1 AND totp_enabled AND totp_secret = $4
+		    AND (totp_locked_until IS NULL OR totp_locked_until <= now())
 		  RETURNING totp_failures`,
-		userID, SecondFactorFreeFailures, SecondFactorMaxLock.Seconds()).Scan(&failures)
+		userID, SecondFactorFreeFailures, SecondFactorMaxLock.Seconds(), expectedTOTPSecret).Scan(&failures)
 	if err == nil {
 		return failures, 0, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return 0, 0, err
 	}
-	// No row updated: the account is locked (or vanished).
+	// No row updated: distinguish the current credential's lock from a revoked
+	// credential without reading or exposing the replacement's failure state.
 	var until *time.Time
 	if err := m.pool.QueryRow(ctx,
-		`SELECT totp_failures, totp_locked_until FROM users WHERE id = $1`, userID).Scan(&failures, &until); err != nil {
+		`SELECT totp_failures, totp_locked_until FROM users
+		  WHERE id = $1 AND totp_enabled AND totp_secret = $2`,
+		userID, expectedTOTPSecret).Scan(&failures, &until); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, 0, ErrCredentialChanged
+		}
 		return 0, 0, err
 	}
 	lockedFor = time.Second
@@ -75,17 +86,33 @@ func (m *Manager) ReserveSecondFactorAttempt(ctx context.Context, userID int64) 
 
 // ReleaseSecondFactorAttempt takes back a reservation whose check failed for a
 // server-side reason, so a transient database error does not count as a guess.
-func (m *Manager) ReleaseSecondFactorAttempt(ctx context.Context, userID int64) error {
-	_, err := m.pool.Exec(ctx,
-		`UPDATE users SET totp_failures = GREATEST(totp_failures - 1, 0) WHERE id = $1`, userID)
-	return err
+// A revoked encrypted credential returns ErrCredentialChanged without changing
+// the failure count of a replacement factor.
+func (m *Manager) ReleaseSecondFactorAttempt(ctx context.Context, userID int64, expectedTOTPSecret string) error {
+	ct, err := m.pool.Exec(ctx,
+		`UPDATE users SET totp_failures = GREATEST(totp_failures - 1, 0)
+		  WHERE id = $1 AND totp_enabled AND totp_secret = $2`, userID, expectedTOTPSecret)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() != 1 {
+		return ErrCredentialChanged
+	}
+	return nil
 }
 
 // ResetSecondFactorFailures clears the counter and any lock after a successful
 // second factor. It is deliberately NOT called on a password-only success.
-func (m *Manager) ResetSecondFactorFailures(ctx context.Context, userID int64) error {
-	_, err := m.pool.Exec(ctx,
+// The success only clears the encrypted credential that was actually checked.
+func (m *Manager) ResetSecondFactorFailures(ctx context.Context, userID int64, expectedTOTPSecret string) error {
+	ct, err := m.pool.Exec(ctx,
 		`UPDATE users SET totp_failures = 0, totp_locked_until = NULL
-		  WHERE id = $1 AND (totp_failures <> 0 OR totp_locked_until IS NOT NULL)`, userID)
-	return err
+		  WHERE id = $1 AND totp_enabled AND totp_secret = $2`, userID, expectedTOTPSecret)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() != 1 {
+		return ErrCredentialChanged
+	}
+	return nil
 }

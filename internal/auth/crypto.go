@@ -60,15 +60,6 @@ func (m *Manager) EncryptTOTPSecret(plaintext string) (string, error) {
 	return m.encrypt(plaintext)
 }
 
-// ValidateEncryptedTOTP decrypts the stored secret and checks the code.
-func (m *Manager) ValidateEncryptedTOTP(encoded, code string) bool {
-	secret, err := m.decrypt(encoded)
-	if err != nil {
-		return false
-	}
-	return ValidateTOTP(secret, code)
-}
-
 // ValidateEncryptedTOTPStep decrypts the stored secret and checks the code,
 // returning the matched 30-second time-step for replay protection (see
 // ValidateTOTPStep).

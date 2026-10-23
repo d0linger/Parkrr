@@ -116,11 +116,6 @@ func (m *Manager) ConsumeBackupCode(ctx context.Context, userID int64, code stri
 	return false
 }
 
-// DeleteBackupCodes removes all backup codes for a user (on 2FA disable).
-func (m *Manager) DeleteBackupCodes(ctx context.Context, userID int64) {
-	_, _ = m.pool.Exec(ctx, `DELETE FROM totp_backup_codes WHERE user_id=$1`, userID)
-}
-
 // RemainingBackupCodes counts a user's unused backup codes.
 func (m *Manager) RemainingBackupCodes(ctx context.Context, userID int64) (int, error) {
 	var n int

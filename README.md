@@ -550,6 +550,8 @@ every push to `main` (and for `v*` tags). Start without a local build:
 cp .env.example .env   # set the required values (admin password, session secret …)
 docker compose -f docker-compose.ghcr.yml up -d
 # pin a version instead of latest:  PARKRR_TAG=1.2 docker compose -f docker-compose.ghcr.yml up -d
+# pin immutable image content (replace <digest> with the published SHA256):
+# PARKRR_TAG='1.2@sha256:<digest>' docker compose -f docker-compose.ghcr.yml up -d
 ```
 
 ### Deploy with Portainer (paste your .env)

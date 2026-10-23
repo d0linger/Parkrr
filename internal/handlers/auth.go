@@ -280,8 +280,12 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		}
 		// Persistent per-account second-factor budget (audit AUTH-03). Counted
 		// BEFORE the check; only a successful second factor clears it below.
-		failures, lockedFor, lerr := h.Auth.ReserveSecondFactorAttempt(r.Context(), u.ID)
+		failures, lockedFor, lerr := h.Auth.ReserveSecondFactorAttempt(r.Context(), u.ID, u.TOTPSecret)
 		if lerr != nil {
+			if errors.Is(lerr, auth.ErrCredentialChanged) {
+				writeError(w, http.StatusUnauthorized, "Benutzername oder Passwort ist falsch")
+				return
+			}
 			h.refundLogin(key, ip)
 			writeError(w, http.StatusInternalServerError, "Zwei-Faktor-Code konnte nicht geprüft werden")
 			return
@@ -302,12 +306,18 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 			// Replay guard: consume the code by advancing last_totp_step atomically.
 			// A code from an already-used (or older) step affects no row -> rejected.
 			ct, uerr := h.Pool.Exec(r.Context(),
-				`UPDATE users SET last_totp_step=$1 WHERE id=$2 AND last_totp_step < $1`, step, u.ID)
+				`UPDATE users SET last_totp_step=$1
+				  WHERE id=$2 AND last_totp_step < $1 AND totp_enabled AND totp_secret=$3`,
+				step, u.ID, u.TOTPSecret)
 			if uerr != nil {
 				// Fail closed on a DB error rather than mislabelling a valid code as a
 				// replay and counting it toward the account lockout.
 				h.refundLogin(key, ip)
-				if rerr := h.Auth.ReleaseSecondFactorAttempt(r.Context(), u.ID); rerr != nil {
+				if rerr := h.Auth.ReleaseSecondFactorAttempt(r.Context(), u.ID, u.TOTPSecret); rerr != nil {
+					if errors.Is(rerr, auth.ErrCredentialChanged) {
+						writeError(w, http.StatusUnauthorized, "Benutzername oder Passwort ist falsch")
+						return
+					}
 					slog.Warn("could not release second-factor attempt", "user_id", u.ID, "err", rerr)
 				}
 				writeError(w, http.StatusInternalServerError, "Zwei-Faktor-Code konnte nicht geprüft werden")
@@ -340,7 +350,11 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		if err := h.Auth.ResetSecondFactorFailures(r.Context(), u.ID); err != nil {
+		if err := h.Auth.ResetSecondFactorFailures(r.Context(), u.ID, u.TOTPSecret); err != nil {
+			if errors.Is(err, auth.ErrCredentialChanged) {
+				writeError(w, http.StatusUnauthorized, "Benutzername oder Passwort ist falsch")
+				return
+			}
 			slog.Warn("could not reset second-factor failures", "user_id", u.ID, "err", err)
 		}
 	}
