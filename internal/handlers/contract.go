@@ -282,12 +282,17 @@ func (h *Handler) PersonContracts(w http.ResponseWriter, r *http.Request) {
 
 // PortalContractPDF: GET /api/portal/contract?vehicle_id= — der Vertrag zum Lesen.
 func (h *Handler) PortalContractPDF(w http.ResponseWriter, r *http.Request) {
+	rawVid := r.URL.Query().Get("vehicle_id")
+	if !validNumericParamLength(rawVid) {
+		writeError(w, http.StatusBadRequest, "vehicle_id is too long")
+		return
+	}
 	pid, ok := h.portalPerson(r)
 	if !ok {
 		writeError(w, http.StatusNotFound, "Link ungültig oder abgelaufen")
 		return
 	}
-	vid, err := strconv.ParseInt(r.URL.Query().Get("vehicle_id"), 10, 64)
+	vid, err := strconv.ParseInt(rawVid, 10, 64)
 	if err != nil || vid <= 0 {
 		writeError(w, http.StatusBadRequest, "vehicle_id fehlt")
 		return

@@ -415,7 +415,12 @@ func vehicleTitleGo(v *models.Vehicle) string {
 
 // IndexationPreview: GET /api/indexation/preview?month=YYYY-MM.
 func (h *Handler) IndexationPreview(w http.ResponseWriter, r *http.Request) {
-	month, ok := parseMonth(r.URL.Query().Get("month"))
+	m := r.URL.Query().Get("month")
+	if !validDateLength(m) {
+		writeError(w, http.StatusBadRequest, "month is too long")
+		return
+	}
+	month, ok := parseMonth(m)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "month als JJJJ-MM")
 		return
