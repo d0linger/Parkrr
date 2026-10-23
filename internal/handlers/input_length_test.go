@@ -540,6 +540,27 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "Ungültiges Wirtschaftsgut",
 		},
+		{
+			name:       "ServiceTasksDue: days parameter too long",
+			path:       "/api/service-tasks/due?days=" + longNumericParam,
+			method:     "GET",
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "days is too long",
+		},
+		{
+			name:       "PortalContractPDF: vehicle_id parameter too long",
+			path:       "/api/portal/contract?vehicle_id=" + longNumericParam,
+			method:     "GET",
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "vehicle_id is too long",
+		},
+		{
+			name:       "IndexationPreview: month parameter too long",
+			path:       "/api/indexation/preview?month=" + longDate,
+			method:     "GET",
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "month is too long",
+		},
 	}
 
 	for _, tt := range tests {
@@ -642,6 +663,12 @@ func TestInputLengthValidation(t *testing.T) {
 				taxHandler.CreateTaxRecurring(w, req)
 			case "CreateTaxAsset: InServiceOn too long":
 				taxHandler.CreateTaxAsset(w, req)
+			case "ServiceTasksDue: days parameter too long":
+				h.ServiceTasksDue(w, req)
+			case "PortalContractPDF: vehicle_id parameter too long":
+				h.PortalContractPDF(w, req)
+			case "IndexationPreview: month parameter too long":
+				h.IndexationPreview(w, req)
 			}
 
 			if w.Code != tt.wantStatus {
