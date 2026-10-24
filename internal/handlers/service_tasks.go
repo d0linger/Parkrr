@@ -314,6 +314,10 @@ func (h *Handler) serviceDueList(ctx context.Context, until time.Time) ([]servic
 func (h *Handler) ServiceTasksDue(w http.ResponseWriter, r *http.Request) {
 	days := serviceDueDefaultDay
 	if s := r.URL.Query().Get("days"); s != "" {
+		if !validNumericParamLength(s) {
+			writeError(w, http.StatusBadRequest, "days is too long")
+			return
+		}
 		n, err := strconv.Atoi(s)
 		if err != nil || n < 0 || n > 365 {
 			writeError(w, http.StatusBadRequest, "days must be 0..365")

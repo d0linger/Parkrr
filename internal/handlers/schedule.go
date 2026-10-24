@@ -148,6 +148,10 @@ var germanWeekday = [...]string{"So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"}
 func (h *Handler) WeekSchedulePDF(w http.ResponseWriter, r *http.Request) {
 	ref := h.now()
 	if q := r.URL.Query().Get("from"); q != "" {
+		if !validDateLength(q) {
+			writeError(w, http.StatusBadRequest, "from must be YYYY-MM-DD")
+			return
+		}
 		d, err := time.Parse("2006-01-02", q)
 		if err != nil || len(q) != 10 {
 			writeError(w, http.StatusBadRequest, "from must be YYYY-MM-DD")

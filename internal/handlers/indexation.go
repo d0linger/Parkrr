@@ -29,7 +29,11 @@ type cpiValue struct {
 }
 
 func parseMonth(s string) (time.Time, bool) {
-	t, err := time.Parse("2006-01", strings.TrimSpace(s))
+	s = strings.TrimSpace(s)
+	if !validDateLength(s) {
+		return time.Time{}, false
+	}
+	t, err := time.Parse("2006-01", s)
 	if err != nil {
 		return time.Time{}, false
 	}
@@ -415,7 +419,12 @@ func vehicleTitleGo(v *models.Vehicle) string {
 
 // IndexationPreview: GET /api/indexation/preview?month=YYYY-MM.
 func (h *Handler) IndexationPreview(w http.ResponseWriter, r *http.Request) {
-	month, ok := parseMonth(r.URL.Query().Get("month"))
+	raw := r.URL.Query().Get("month")
+	if !validDateLength(raw) {
+		writeError(w, http.StatusBadRequest, "month is too long")
+		return
+	}
+	month, ok := parseMonth(raw)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "month als JJJJ-MM")
 		return
