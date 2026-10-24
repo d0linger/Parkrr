@@ -287,7 +287,12 @@ func (h *Handler) PortalContractPDF(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "Link ungültig oder abgelaufen")
 		return
 	}
-	vid, err := strconv.ParseInt(r.URL.Query().Get("vehicle_id"), 10, 64)
+	rawVid := r.URL.Query().Get("vehicle_id")
+	if !validNumericParamLength(rawVid) {
+		writeError(w, http.StatusBadRequest, "vehicle_id is too long")
+		return
+	}
+	vid, err := strconv.ParseInt(rawVid, 10, 64)
 	if err != nil || vid <= 0 {
 		writeError(w, http.StatusBadRequest, "vehicle_id fehlt")
 		return

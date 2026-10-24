@@ -415,6 +415,27 @@ func TestInputLengthValidation(t *testing.T) {
 			errMsg:     "days is too long",
 		},
 		{
+			name:       "ServiceTasksDue: days parameter too long",
+			path:       "/api/service-tasks/due?days=" + longNumericParam,
+			method:     "GET",
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "days is too long",
+		},
+		{
+			name:       "IndexationPreview: month parameter too long",
+			path:       "/api/indexation/preview?month=" + longDate,
+			method:     "GET",
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "month is too long",
+		},
+		{
+			name:       "WeekSchedulePDF: from parameter too long",
+			path:       "/api/reports/week.pdf?from=" + longDate,
+			method:     "GET",
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "from must be YYYY-MM-DD",
+		},
+		{
 			name:       "Search: q parameter too long",
 			path:       "/api/search?q=" + longSearchQuery,
 			method:     "GET",
@@ -618,6 +639,12 @@ func TestInputLengthValidation(t *testing.T) {
 				h.OverdueInvoices(w, req)
 			case "EndingSoon: days parameter too long":
 				h.EndingSoon(w, req)
+			case "ServiceTasksDue: days parameter too long":
+				h.ServiceTasksDue(w, req)
+			case "IndexationPreview: month parameter too long":
+				h.IndexationPreview(w, req)
+			case "WeekSchedulePDF: from parameter too long":
+				h.WeekSchedulePDF(w, req)
 			case "Search: q parameter too long":
 				h.Search(w, req)
 			case "ListVehicles: person_id parameter too long":
