@@ -415,6 +415,13 @@ func TestInputLengthValidation(t *testing.T) {
 			errMsg:     "days is too long",
 		},
 		{
+			name:       "PortalContractPDF: vehicle_id parameter too long",
+			path:       "/api/portal/contract?vehicle_id=" + longNumericParam,
+			method:     "GET",
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "vehicle_id ungültig oder zu lang",
+		},
+		{
 			name:       "Search: q parameter too long",
 			path:       "/api/search?q=" + longSearchQuery,
 			method:     "GET",
@@ -618,6 +625,8 @@ func TestInputLengthValidation(t *testing.T) {
 				h.OverdueInvoices(w, req)
 			case "EndingSoon: days parameter too long":
 				h.EndingSoon(w, req)
+			case "PortalContractPDF: vehicle_id parameter too long":
+				h.PortalContractPDF(w, req)
 			case "Search: q parameter too long":
 				h.Search(w, req)
 			case "ListVehicles: person_id parameter too long":
