@@ -320,8 +320,8 @@ wer ihn hat, sieht Saldo, Rechnungen (mit Zahlungs-QR), Gefährte und
 - Abgelaufene Links räumen sich selbst auf (stündlicher Sweep).
 - Auch Verlängerung und „Kurz abholen“ (Ruhezeit) sind im Portal nur Anfragen,
   die du übernimmst. Einen Abholtermin wählen Kunden aus den freien
-  Abholzeitfenstern, einen hinterlegten Einstellvertrag lesen und nehmen sie im
-  Portal an (§10).
+  Abholzeitfenstern; einen hinterlegten Einstellvertrag lesen sie und nehmen ihn
+  im Portal an (§10).
 
 ## 6. Nachweise und Aufbewahrung
 
@@ -368,7 +368,7 @@ unempfindlich — nachschärfen gehört zum Betrieb.
 | Login klemmt trotz richtigem Passwort | Konto gesperrt? (Benutzerverwaltung). Lockout nach Fehlversuchen? 10 Minuten warten. `disabled`-Konten bekommen absichtlich dieselbe Meldung wie falsche Zugangsdaten. |
 | Backup-Kachel rot | Änderungsprotokoll → Aktion „Backup fehlgeschlagen": dort steht die Stufe (Dump, Prüfung, Upload) samt Fehler. |
 | Mail kommt nicht an | Audit-Log → „E-Mail-Versand": jeder Versuch mit SMTP-Diagnose. |
-| Rechnung oder Mahnung ging nicht automatisch raus | Mail-Automatik eingeschaltet (§10)? Bei der Person „Nicht automatisch mahnen" gesetzt? Danach Audit-Log → „E-Mail-Versand". Eine Sendung mit „Zustellung unklar" wiederholt Parkrr absichtlich nicht von selbst, damit nichts doppelt ankommt; bei Bedarf von Hand erneut senden. |
+| Rechnung oder Mahnung ging nicht automatisch raus | Mail-Automatik eingeschaltet (§10)? Für Rechnungen außerdem: Läuft der automatische Rechnungslauf (`PARKRR_AUTO_INVOICE_CRON`, §4)? Bei der Person „Nicht automatisch mahnen" gesetzt? Danach Audit-Log → „E-Mail-Versand". Eine Sendung mit „Zustellung unklar" wiederholt Parkrr absichtlich nicht von selbst, damit nichts doppelt ankommt; bei Bedarf von Hand erneut senden. |
 | Startseite zeigt bei einer Halle keine Prozent | Die Halle war seit dem Update nicht im Planer offen. Einmal als Bearbeiter öffnen; der Planer trägt die nutzbare Fläche nach. |
 | Ruhezeit lässt sich nicht eintragen (409) | Der Monat ist schon abgerechnet; die Meldung nennt den frühesten möglichen Tag. Eine Korrektur geht über Storno und Gutschrift. |
 | Hallendienst sieht keine Beträge | Gewollt (§10, Rollen). |
@@ -503,7 +503,8 @@ Alles ist freiwillig; was du nicht nutzt, bleibt einfach aus.
 7. Ab und zu Audit-Log → „E-Mail-Versand“ ansehen: Nichts darf hängen bleiben.
 
 **Schritt 2, nach etwa zwei Wochen** (SMTP eingerichtet, Verkäufer-Pflichtangaben
-vollständig):
+vollständig; für den Rechnungsversand außerdem der automatische Rechnungslauf,
+`PARKRR_AUTO_INVOICE_CRON`, §4):
 
 1. Die drei Mail-Schalter einzeln einschalten, mit ein paar Tagen Abstand, und
    danach jeweils den E-Mail-Versand ansehen. Vor dem automatischen Mahnen die
