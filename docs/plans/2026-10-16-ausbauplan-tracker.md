@@ -85,3 +85,4 @@ Alle acht nach der Empfehlung im Artifact „Parkrr Ausbauplan“.
 - [x] O6 Hallendienst: darf „Ist zurück“ (bis heute; „bezahlt bis“ sieht er nicht). Dabei behoben: das Speichern des Hallendiensts im Planer scheiterte am Grundriss (403), bevor ein Platz geschrieben war.
 - [x] O7 Live-Tests: vor dem Push lokal gegen eine Wegwerf-Instanz (eigene Datenbank, Port 18099) gelaufen.
 - [x] O8 Einführung in zwei Schritten: Checkliste in `docs/plans/2026-10-22-einfuehrung-zwei-schritte.md`.
+- [x] N1 Betreiber-Handbuch (Wahl vom 23.10.2026: je Bereich ein Abschnitt): neue Kapitel 10 (Rollen, Halle und Betrieb, Saison und Kunden, Geld und Recht, Ruhezeit, Mail-Automatik) und 11 (Einführung in zwei Schritten), Ergänzungen in §4, §5, §6 und §8.

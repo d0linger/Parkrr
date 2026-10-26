@@ -155,6 +155,11 @@ Wiederherstellung des Backups von vor dem Update (deshalb Schritt 1).
 | `PARKRR_TIMEZONE` | Geschäftszeitzone (z. B. `Europe/Vienna`). Wichtig, wenn der Container in UTC läuft: zwischen 00:00 und 02:00 Wiener Zeit ist in UTC noch gestern — Zahlungen bekämen das Datum von gestern. |
 | `PARKRR_ALERT_EMAIL` | Betriebsalarme (fehlgeschlagene Backups) per Mail. Braucht konfiguriertes SMTP. |
 
+Dazu kommen Schalter in der Oberfläche, die nach außen wirken und ebenfalls
+ausgeschaltet ausgeliefert werden: die Mail-Automatik und die Preis-Mitteilung
+der Wertsicherung (§10). Welche Reihenfolge sich beim Einschalten bewährt, steht
+in §11.
+
 ### Steuerbereich: zuerst nur lesen, später aktivieren
 
 Der Steuerbereich ist standardmäßig im **Lesemodus**. Administratoren können
@@ -313,6 +318,10 @@ wer ihn hat, sieht Saldo, Rechnungen (mit Zahlungs-QR), Gefährte und
 - Das Portal kann nichts ändern: Kundenwünsche (Kontaktdaten, Abholtermin)
   landen als Anfrage auf dem Dashboard und werden dort übernommen — oder nicht.
 - Abgelaufene Links räumen sich selbst auf (stündlicher Sweep).
+- Auch Verlängerung und „Kurz abholen“ (Ruhezeit) sind im Portal nur Anfragen,
+  die du übernimmst. Einen Abholtermin wählen Kunden aus den freien
+  Abholzeitfenstern, einen hinterlegten Einstellvertrag lesen und nehmen sie im
+  Portal an (§10).
 
 ## 6. Nachweise und Aufbewahrung
 
@@ -326,6 +335,16 @@ wer ihn hat, sieht Saldo, Rechnungen (mit Zahlungs-QR), Gefährte und
   Konten ausscheidender MITARBEITER dagegen: **sperren statt löschen**
   (Benutzerverwaltung → „Zugang sperren"), sonst verlieren Rechnungen und
   Zahlungen ihre Urheber-Zuordnung.
+- **Datenauskunft (Art. 15 DSGVO):** Person → „Datenauskunft (ZIP)“ (nur
+  Admins) packt alle Daten zur Person in ein Archiv, samt Rechnungs- und
+  Übergabe-PDFs, Fotos, Anhängen und Mail-Protokoll. Der Abruf steht im
+  Änderungsprotokoll.
+- **Zustandsfotos** hängen am Übergabeprotokoll, lassen sich bis 24 Stunden
+  danach ergänzen und sind einzeln nicht löschbar.
+- **Angenommene Einstellverträge** liegen als PDF bei der Person, in genau der
+  Version, die der Kunde gelesen hat.
+- **Warteliste:** kein Eintrag ohne Einwilligung; Einträge werden nach
+  zwölf Monaten gelöscht.
 - **Revisionsexport** (Audit-Log): JSONL, jede Zeile durch eine SHA-256-Kette an
   alle vorigen gebunden. Das Manifest am Ende (Zeilenzahl + Endglied) getrennt
   ablegen; jeder spätere Export lässt sich dagegen prüfen — mit nichts als
@@ -349,9 +368,146 @@ unempfindlich — nachschärfen gehört zum Betrieb.
 | Login klemmt trotz richtigem Passwort | Konto gesperrt? (Benutzerverwaltung). Lockout nach Fehlversuchen? 10 Minuten warten. `disabled`-Konten bekommen absichtlich dieselbe Meldung wie falsche Zugangsdaten. |
 | Backup-Kachel rot | Änderungsprotokoll → Aktion „Backup fehlgeschlagen": dort steht die Stufe (Dump, Prüfung, Upload) samt Fehler. |
 | Mail kommt nicht an | Audit-Log → „E-Mail-Versand": jeder Versuch mit SMTP-Diagnose. |
+| Rechnung oder Mahnung ging nicht automatisch raus | Mail-Automatik eingeschaltet (§10)? Bei der Person „Nicht automatisch mahnen" gesetzt? Danach Audit-Log → „E-Mail-Versand". Eine Sendung mit „Zustellung unklar" wiederholt Parkrr absichtlich nicht von selbst, damit nichts doppelt ankommt; bei Bedarf von Hand erneut senden. |
+| Startseite zeigt bei einer Halle keine Prozent | Die Halle war seit dem Update nicht im Planer offen. Einmal als Bearbeiter öffnen; der Planer trägt die nutzbare Fläche nach. |
+| Ruhezeit lässt sich nicht eintragen (409) | Der Monat ist schon abgerechnet; die Meldung nennt den frühesten möglichen Tag. Eine Korrektur geht über Storno und Gutschrift. |
+| Hallendienst sieht keine Beträge | Gewollt (§10, Rollen). |
 
 ## 9. Demo & Spielwiese
 
 `parkrr seed-demo` befüllt eine FRISCHE Datenbank mit erkennbaren Demo-Daten
 (Präfix „Demo:", idempotent). Auf einer Datenbank mit echten Personen verweigert
 das Kommando den Dienst — absichtlich und ohne `--force`.
+
+## 10. Die Funktionen aus dem Ausbau (Oktober 2026)
+
+Je Bereich: was es tut, wo es liegt und was ausgeschaltet ausgeliefert wird. Alles
+mit Wirkung nach außen ist aus, bis du es einschaltest.
+
+### Rollen
+
+Neben Administrator, Bearbeiter und Nur-Lesen gibt es zwei Rollen (Benutzer →
+Rolle):
+
+- **Buchhaltung** liest alles, dazu Steuerbereich und Exporte, und schreibt sonst
+  nichts. Gedacht für Steuerberatung oder Buchhaltung.
+- **Hallendienst** platziert Gefährte im Planer, macht Übergaben und Fotos,
+  erledigt Serviceaufgaben, gibt Schlüssel aus und tippt bei Rückkehr aus einer
+  Ruhezeit „Ist zurück“. Beträge sieht er nirgends; der Server schwärzt sie und
+  lehnt Geld-Seiten ab. Seine Startseite ist „Heute in der Halle“. Den Grundriss
+  ändern weiterhin nur Bearbeiter.
+
+Die Rechte prüft der Server, nicht nur die Oberfläche: Jede Route ist für jede
+Rolle getestet.
+
+### Halle und Betrieb
+
+- **Flächenauslastung:** Startseite, Planer-Kopfzeile und Kennzahlen zeigen
+  dieselbe Zahl, belegte m² geteilt durch die nutzbare Fläche (ohne Wände,
+  Fahrstraßen und Sperrflächen). Die Fläche rechnet der Planer und speichert sie
+  mit dem Grundriss. Eine Halle aus der Zeit davor trägt sie beim ersten Öffnen
+  durch einen Bearbeiter nach; bis dahin zeigt die Startseite nur die Zahl der
+  Gefährte.
+- **Platz vorschlagen** (Planer, beim bereiten Gefährt): drei gültige Plätze,
+  bewertet nach Strom, Abholtermin und dichtem Packen. Steht der Platz vom
+  letzten Mal noch leer in der Halle, kommt er zuerst; beim Saisonwechsel ist das
+  der Platz des Vorjahres.
+- **Zustandsfotos** gehören zur Übergabe, mit festen Ansichten und einer
+  Schadenliste (siehe §6).
+- **Serviceaufgaben** (Menü): fällig nach Intervall, je Gefährt, Tarif oder für
+  alle mit Ladebedarf. „Erledigt“ kann eine Leistung als Zusatzkosten buchen.
+- **Schlüsselbuch** (Menü): Schlüssel, Handsender und Karten mit Ausgabe und
+  Rückgabe. Es speichert nie einen Code. Eine Person mit offenem Zugangsmittel
+  lässt sich nicht löschen.
+- **Wochenliste** (Kalender) und **Etikettenbogen** (je Halle) als PDF.
+- **Kalender-Abo** (Einstellungen): Abholungen und Einlagerungen im eigenen
+  Kalender, ohne Namen und Beträge. Die Adresse ist ein Geheimnis wie ein
+  Portal-Link; gespeichert wird nur ihr Hash, widerrufen geht jederzeit.
+
+### Saison und Kunden
+
+- **Saisonwechsel** (Gefährte): stellt abgeholte Gefährte der letzten zwölf
+  Monate in einem Zug neu ein, wahlweise zum aktuellen Tarif und als Reservierung
+  ab dem neuen Beginn. Jede Kopie merkt sich ihren Vorgänger.
+- **Warteliste** (Personen → Warteliste): Interessenten ohne freien Platz; nur
+  mit Einwilligung, Löschung nach zwölf Monaten.
+- **Abholzeitfenster** (Einstellungen): Wochenfenster, aus denen Kunden im Portal
+  einen freien Zeitpunkt wählen. Ohne Fenster nennen Kunden wie bisher ein
+  Wunschdatum.
+- **Verlängerung und „Kurz abholen“** fragen Kunden im Portal an; beides landet
+  als Kundenwunsch auf dem Dashboard (§5).
+
+### Geld und Recht
+
+- **Kontoauszug** (Menü): camt.053 einlesen. Es zählen nur gebuchte Gutschriften,
+  ein Auszug wird nie doppelt eingelesen. Parkrr schlägt die Rechnung über die
+  Nummer im Verwendungszweck vor, sonst über Betrag und Name; bei Mehrdeutigkeit
+  keine. Gebucht wird erst beim Zuordnen.
+- **Kautionen** (Personenseite): eigenes Konto. Erhaltene und zurückgezahlte
+  Kautionen sind kein Erlös; ein Einbehalt braucht einen Grund. Die Übergabe bei
+  der Abholung erinnert an eine offene Kaution.
+- **Wertsicherung** (Tarife & Dienste → Wertsicherung (VPI)): VPI-Werte trägst du
+  selbst ein, je Tarif Basismonat und Schwelle. Die Vorschau zeigt alt und neu je
+  Gefährt; angepasst wird erst ab Beginn der nächsten Periode. Pauschalen bleiben
+  fest. Die Mitteilung an Kunden per Mail ist eine eigene Wahl beim Anpassen.
+- **Einstellvertrag** (Einstellungen, nur Admins): versionierte Vorlage mit
+  Platzhaltern. Sobald eine Vorlage gespeichert ist, lesen und nehmen Kunden sie
+  im Portal an.
+- **Datenauskunft** nach Art. 15 DSGVO: siehe §6.
+
+### Ruhezeit („Kurz weg“)
+
+Ein eingelagertes Gefährt ist ein paar Wochen unterwegs (Urlaub, Messe) und kommt
+zurück. Am Gefährt: „Kurz weg …“, danach „Ist zurück“, „+1 Woche“ oder „Doch
+abgeholt“.
+
+- Miete und gebundene Nebenkosten ruhen tagesgenau ab dem ersten Tag, ohne
+  Haltegebühr. Unter einer Pauschale wird die Ruhezeit nur vermerkt.
+- Eine offene Ruhezeit ruht weiter, bis jemand „Ist zurück“ tippt; nichts springt
+  von selbst auf volle Miete zurück. Die Heute-Liste meldet fällige Rückkehren.
+- Der Platz wird standardmäßig gehalten; freigeben geht erst am Abfahrtstag.
+- Abgerechnete Monate sind gesperrt. Vorab Bezahltes verschiebt „bezahlt bis“
+  um die Ruhetage.
+
+### Mail-Automatik
+
+Alle Mails laufen über eine Warteschlange. Fehlschläge versucht Parkrr nach
+1 Minute, 5 und 30 Minuten, 2 und 6 Stunden erneut; den Verlauf zeigt Audit-Log →
+„E-Mail-Versand“. Auch eine von Hand verschickte Rechnung läuft über die
+Warteschlange; nur eine von Hand ausgelöste Zahlungserinnerung geht sofort.
+
+Die Schalter liegen unter Rechnungs-Einstellungen → Mail-Automatik und sind aus:
+
+| Schalter | Wirkung |
+|---|---|
+| Rechnungen aus dem automatischen Lauf per Mail senden | Nach dem Rechnungslauf geht jede neue Rechnung als PDF an die Person. Wirkt nur mit `PARKRR_AUTO_INVOICE_CRON`. |
+| Automatisch mahnen | Zahlungserinnerung, 1. und 2. Mahnung nach den eingestellten Tagen. Eine Stufe zählt erst, wenn die Mail zugestellt ist. Personen lassen sich einzeln ausnehmen („Nicht automatisch mahnen“). |
+| Erinnerung vor Vertragsende (Tage) | So viele Tage vor dem Ende eine Mail: verlängern oder Abholtermin vereinbaren. Je Gefährt und Ende genau einmal. 0 = aus. |
+
+## 11. Einführung in zwei Schritten
+
+Erst alles ohne Kundenkontakt, nach etwa zwei Wochen die Mail-Automatik. So
+fällt eine falsche Einstellung auf, bevor ein Kunde eine falsche Mail bekommt.
+Alles ist freiwillig; was du nicht nutzt, bleibt einfach aus.
+
+**Schritt 1, ohne Kundenkontakt:**
+
+1. Update eingespielt (§3), Backup-Kachel grün.
+2. Bei Bedarf Konten für Buchhaltung und Hallendienst anlegen und mit dem
+   Hallendienst-Konto einmal ausprobieren.
+3. Jede Halle einmal als Bearbeiter im Planer öffnen (Flächenauslastung).
+4. Serviceaufgaben anlegen, Schlüsselbuch füllen.
+5. Einen Kontoauszug einlesen und die Vorschläge prüfen.
+6. Wertsicherung: VPI-Werte eintragen und die Vorschau ansehen, noch nichts
+   anpassen.
+7. Ab und zu Audit-Log → „E-Mail-Versand“ ansehen: Nichts darf hängen bleiben.
+
+**Schritt 2, nach etwa zwei Wochen** (SMTP eingerichtet, Verkäufer-Pflichtangaben
+vollständig):
+
+1. Die drei Mail-Schalter einzeln einschalten, mit ein paar Tagen Abstand, und
+   danach jeweils den E-Mail-Versand ansehen. Vor dem automatischen Mahnen die
+   Personen ausnehmen, die keine Mahnung bekommen sollen.
+2. Einstellvertrag-Vorlage speichern.
+3. Abholzeitfenster eintragen.
+4. Die erste Wertsicherung anpassen, mit Mail an die Kunden nur, wenn gewollt.
