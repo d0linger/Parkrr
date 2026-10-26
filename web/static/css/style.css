@@ -539,14 +539,17 @@ textarea { resize: vertical; min-height: 72px; }
     12% { opacity: .5; transform: scale(1); }
     26%, 100% { opacity: 0; transform: scale(1); }
 }
-/* Unter `reduce` steht dieser Marken-Moment STILL. Früher hob eine Regel an dieser
-   Stelle den globalen Reset gezielt wieder auf (!important + infinite), damit die
-   Bucht-Animation auch bei erzwungenem reduce lief. Das stellte die Rangfolge auf den
-   Kopf: reines Dekor lief endlos weiter, während der Reset gleichzeitig die
-   Lade-Spirale einfror — die einzige Rückmeldung, dass überhaupt etwas passiert.
-   `.lv-bays i` trägt als Grundzustand opacity:0, die Buchten bleiben also schlicht
-   unsichtbar; es entsteht kein Rest-Artefakt. Was Information trägt, läuft weiter —
-   siehe die `.spin`-Ausnahme im Abschnitt "Accessibility: respect reduced motion". */
+/* Der globale reduced-motion-Reset (weiter unten) friert per !important ALLES ein.
+   Für diesen EINEN sanften Login-Marken-Moment (Skalieren + Ausblenden, kein Blitzen/
+   Rotieren) heben wir ihn gezielt wieder auf (höhere Spezifität + !important), damit
+   er auch unter erzwungenem reduce läuft (z. B. Remote-Desktop, Windows ohne
+   Animationen). Die per CSSOM gesetzten Zell-Delays bleiben; der App-Hintergrund
+   selbst bleibt statisch. Ausdrücklicher Wunsch des Betreibers (25.10.2026), nachdem
+   ad83586 die Regel entfernt hatte. Die Lade-Spirale läuft unter reduce weiter
+   (siehe .spin unter "Accessibility: respect reduced motion"). */
+@media (prefers-reduced-motion: reduce) {
+    .lv-bays i { animation-duration: 20s !important; animation-iteration-count: infinite !important; }
+}
 .login-card {
     position: relative; overflow: hidden; z-index: 1;
     width: 100%; max-width: 380px;

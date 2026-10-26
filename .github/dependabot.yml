@@ -47,9 +47,12 @@ updates:
           - "minor"
           - "patch"
 
-  # Docker base image (Dockerfile)
+  # Docker base images: the release Dockerfile and the isolated validation toolchain
+  # (scripts/validation) pin the same golang image and must move together.
   - package-ecosystem: "docker"
-    directory: "/"
+    directories:
+      - "/"
+      - "/scripts/validation"
     schedule:
       interval: "weekly"
       day: "monday"

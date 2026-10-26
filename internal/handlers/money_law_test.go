@@ -281,6 +281,29 @@ func TestContractTemplateAndPortalAcceptance(t *testing.T) {
 // Ausbau 29: Vorschau und Anpassen rechnen gleich; der neue Satz gilt ab der nächsten
 // Periode, abgeschlossene Perioden und die schon gestellte Rechnung bleiben unberührt;
 // die Rechnung danach rechnet den neuen Satz; zurücknehmen geht nur vor Beginn.
+// Portal-Vertrag: erst der Zugang, dann die Länge von vehicle_id, wie in allen
+// Portal-Handlern. Ohne gültigen Link bleibt es 404, auch bei überlangem Parameter.
+func TestPortalContractPDFChecksAccessBeforeVehicleID(t *testing.T) {
+	h := testHandler(t)
+	pid, _, _ := seasonFixture(t, h, "")
+	token := createPortalLink(t, h, pid)
+	call := func(token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/portal/contract?vehicle_id="+strings.Repeat("9", 64), nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		h.PortalContractPDF(w, req)
+		return w
+	}
+	if w := call(""); w.Code != http.StatusNotFound {
+		t.Fatalf("ohne Link: %d %s, want 404", w.Code, w.Body.String())
+	}
+	if w := call(token); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "vehicle_id is too long") {
+		t.Fatalf("überlange vehicle_id mit Link: %d %s, want 400", w.Code, w.Body.String())
+	}
+}
+
 func TestIndexationAppliesFromNextPeriod(t *testing.T) {
 	h := testHandler(t)
 	ctx := context.Background()

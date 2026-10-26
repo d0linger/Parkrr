@@ -11933,7 +11933,9 @@ import { createRevenueChart } from './revenue-chart.js';
                 while (i < lines.length && !lines[i].startsWith('```')) body.push(lines[i++]);
                 i++;
                 const code = body.join('\n');
-                root.append(el('div', { class: 'md-pre' }, el('pre', {}, el('code', {}, code)),
+                // Wie die Tabellen: scrollt der Block seitlich (Telefon), muss er per
+                // Tastatur erreichbar sein (axe: scrollable-region-focusable).
+                root.append(el('div', { class: 'md-pre' }, el('pre', { tabindex: '0', role: 'region', 'aria-label': 'Codeblock' }, el('code', {}, code)),
                     el('button', { class: 'btn btn-ghost btn-sm copy-btn', type: 'button', title: 'Kopieren', 'aria-label': 'Codeblock kopieren',
                         onclick: () => copyToClipboard(code, 'Kopiert') }, icon('copy', 14))));
                 continue;
