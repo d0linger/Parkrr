@@ -156,3 +156,33 @@ func TestPasskeyLoginDisabledAccountKeepsThrottle(t *testing.T) {
 		t.Errorf("the disabled-account attempt was refunded: next begin got %d, want 429", w.Code)
 	}
 }
+
+func TestPasskeyLoginFinish_RecordUserLimiterFailure(t *testing.T) {
+	f := newAuthFixture(t)
+	wa, err := auth.NewWebAuthnService(f.h.Pool, "example.com", "Example", []string{"https://example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.ah.WebAuthn = wa
+	t.Cleanup(func() { _, _ = f.h.Pool.Exec(context.Background(), `DELETE FROM webauthn_ceremonies`) })
+
+	off := f.createUser(t, "disabled-user", "password-123")
+	pOff := newSoftPasskey(t, "disabled-user-key")
+	pOff.register(t, f, off)
+	if _, err := f.h.Pool.Exec(context.Background(), `UPDATE users SET disabled = TRUE WHERE id = $1`, off); err != nil {
+		t.Fatal(err)
+	}
+
+	// Configure a UserLimiter with capacity 1 to observe the failure recording.
+	f.ah.UserLimiter = auth.NewStickyLoginLimiter(1, time.Minute, time.Minute)
+
+	// Attempt passkey login for the disabled user.
+	if code := pOff.login(t, f, off); code != http.StatusUnauthorized {
+		t.Fatalf("disabled account: want 401, got %d", code)
+	}
+
+	// UserLimiter should now be exhausted for "disabled-user".
+	if allowed, _ := f.ah.UserLimiter.Allowed("disabled-user"); allowed {
+		t.Errorf("expected UserLimiter to be throttled after passkey login on disabled account, but allowed is true")
+	}
+}

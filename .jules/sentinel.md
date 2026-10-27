@@ -57,3 +57,8 @@
 *Vulnerability:* In `PasskeyLoginFinish`, when a passkey assertion verified for a disabled user account (`u.Disabled`), the handler explicitly refunded the rate-limiter attempt budget via `h.Limiter.Refund(key)`. This allowed repeated passkey login attempts against disabled accounts to bypass IP-based throttling and avoid rate-limiting penalties.
 *Learning:* Authentication rejections due to account status (such as disabled accounts) represent failed login attempts and must retain their consumed rate-limit penalty rather than being treated like transient server/database errors.
 *Prevention:* Never refund rate-limiter reservations on account-status authentication failures; ensure disabled-account login attempts consume rate limiting consistently across all authentication methods.
+
+## 2026-07-21 - [Missing Account-Level Rate Limiting on Usernameless Passkey Login Failures]
+*Vulnerability:* When `PasskeyLoginFinish` rejected an assertion because the user account was disabled (`u.Disabled`) or because session creation failed due to credential revocation (`ErrCredentialChanged`), `UserLimiter` was not updated with a failure count. An attacker rotating source IPs could repeatedly attempt passkey logins against the account without triggering account-level rate limits.
+*Learning:* In usernameless authentication flows where identity is resolved after cryptographic assertion, any subsequent failure for a resolved account must record a failure against the per-account rate limiter (`UserLimiter`) to prevent IP-rotation throttling bypasses.
+*Prevention:* Explicitly invoke `UserLimiter.RecordFailure(strings.ToLower(u.Username))` whenever passkey login fails after the target user account is resolved.
