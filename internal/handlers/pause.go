@@ -638,6 +638,14 @@ func (h *Handler) PausePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
+	if raw := q.Get("from"); raw != "" && !validDateLength(raw) {
+		writeError(w, http.StatusBadRequest, "from is too long")
+		return
+	}
+	if raw := q.Get("until"); raw != "" && !validDateLength(raw) {
+		writeError(w, http.StatusBadRequest, "until is too long")
+		return
+	}
 	parse := func(s string) *time.Time {
 		if s == "" {
 			return nil
