@@ -429,6 +429,20 @@ func TestInputLengthValidation(t *testing.T) {
 			errMsg:     "month is too long",
 		},
 		{
+			name:       "PausePreview: from parameter too long",
+			path:       "/api/vehicles/1/pause-preview?from=" + longDate,
+			method:     "GET",
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "from is too long",
+		},
+		{
+			name:       "PausePreview: until parameter too long",
+			path:       "/api/vehicles/1/pause-preview?until=" + longDate,
+			method:     "GET",
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "until is too long",
+		},
+		{
 			name:       "WeekSchedulePDF: from parameter too long",
 			path:       "/api/reports/week.pdf?from=" + longDate,
 			method:     "GET",
@@ -643,6 +657,9 @@ func TestInputLengthValidation(t *testing.T) {
 				h.ServiceTasksDue(w, req)
 			case "IndexationPreview: month parameter too long":
 				h.IndexationPreview(w, req)
+			case "PausePreview: from parameter too long", "PausePreview: until parameter too long":
+				req.SetPathValue("id", "1")
+				h.PausePreview(w, req)
 			case "WeekSchedulePDF: from parameter too long":
 				h.WeekSchedulePDF(w, req)
 			case "Search: q parameter too long":
