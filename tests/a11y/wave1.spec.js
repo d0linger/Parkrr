@@ -17,8 +17,12 @@ test('dashboard work list and KPI deep links preserve prepared filters', async (
 });
 
 test('person form warns about likely duplicates without blocking save', async ({ page }) => {
+  const asked = [];
   await mockUI(page, { overrides: {
-    '/search': [{ kind: 'person', label: 'Demo Berger 1', sub: 'demo0@example.invalid · +43 000 000000', url: '#/person/1' }],
+    '/persons/duplicates': route => {
+      asked.push(Object.fromEntries(new URL(route.request().url()).searchParams));
+      return route.fulfill({ json: [{ kind: 'person', label: 'Demo Berger', sub: 'gleicher Name · demo0@example.invalid', url: '#/person/1' }] });
+    },
   } });
   await page.goto(origin + '/#/persons');
   await page.getByRole('button', { name: '+ Person', exact: true }).click();
@@ -26,6 +30,7 @@ test('person form warns about likely duplicates without blocking save', async ({
   await page.locator('#f_last_name').fill('Berger');
   await page.locator('#f_last_name').blur();
   await expect(page.getByText('Möglicher Doppeleintrag', { exact: true })).toBeVisible();
+  expect(asked.at(-1)).toEqual({ first_name: 'Demo', last_name: 'Berger' }); // neue Person: nichts auszuschließen
   await expect(page.getByRole('button', { name: 'Speichern' })).toBeEnabled();
   await expect(page.locator('.duplicate-warning a')).toHaveAttribute('href', '#/person/1');
 });

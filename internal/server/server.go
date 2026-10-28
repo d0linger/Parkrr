@@ -148,6 +148,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 	// --- Persons (read: any; write: manager/admin) ---
 	route("GET /api/persons", authed(hf(h.ListPersons)))
 	route("GET /api/persons/outstanding", money(hf(h.OutstandingByPerson)))
+	route("GET /api/persons/duplicates", authed(hf(h.PersonDuplicates)))
 	route("POST /api/persons", editor(hf(h.CreatePerson)))
 	route("POST /api/import/persons", editor(hf(h.ImportPersons)))
 	route("GET /api/import/persons/template", editor(hf(h.ImportTemplate)))
@@ -280,6 +281,7 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 
 	// --- Vehicles ---
 	route("GET /api/vehicles", authed(hf(h.ListVehicles)))
+	route("GET /api/vehicles/duplicates", authed(hf(h.VehicleDuplicates)))
 	route("POST /api/vehicles", editor(hf(h.CreateVehicle)))
 	route("PUT /api/vehicles/{id}", editor(hf(h.UpdateVehicle)))
 	route("DELETE /api/vehicles/{id}", editor(hf(h.DeleteVehicle)))

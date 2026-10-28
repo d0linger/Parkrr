@@ -49,13 +49,19 @@ for (const failure of ['server', 'network']) {
 }
 
 for (const kind of ['person', 'vehicle']) {
-  test(`${kind} duplicate warning excludes the edited record using the backend search URL`, async ({ page }) => {
-    // Search emits singular hash routes, unlike the plural collection API paths.
-    let searchResults = [{ kind, label: 'Aktueller Eintrag', url: `#/${kind}/1` }];
-    let searches = 0;
+  test(`${kind} duplicate warning asks the exact duplicate check and excludes the edited record`, async ({ page }) => {
+    // The fuzzy palette search reported "Wolfgang Atzmüller" while editing "Günter
+    // Kitzmüller"; the dialog now asks /duplicates, which compares exactly on the
+    // server and leaves out the record being edited (exclude).
+    let duplicates = [];
+    const asked = [];
     await mockUI(page, { overrides: {
       '/persons': [persons[0]], '/vehicles': [vehicles[0]],
-      '/search': route => { searches++; return route.fulfill({ json: searchResults }); },
+      [`/${kind}s/duplicates`]: route => {
+        asked.push(Object.fromEntries(new URL(route.request().url()).searchParams));
+        return route.fulfill({ json: duplicates });
+      },
+      '/search': route => route.fulfill({ json: [{ kind, label: 'Unscharfer Treffer', url: `#/${kind}/9` }] }),
     } });
     await page.goto(origin + '/#/' + (kind === 'person' ? 'persons' : 'vehicles'));
     await page.getByRole('button', {
@@ -64,19 +70,20 @@ for (const kind of ['person', 'vehicle']) {
     const modal = page.locator('#modal');
     const probe = modal.getByLabel(kind === 'person' ? 'E-Mail' : 'Kennzeichen', { exact: true });
     const check = async () => {
-      const before = searches;
+      const before = asked.length;
       await probe.focus();
       await probe.press('Tab');
-      await expect.poll(() => searches).toBeGreaterThan(before);
+      await expect.poll(() => asked.length).toBeGreaterThan(before);
     };
     await check();
+    expect(asked.at(-1).exclude).toBe('1');
+    expect(asked.at(-1)[kind === 'person' ? 'email' : 'license_plate']).toBe(await probe.inputValue());
     await expect(modal.locator('.duplicate-warning')).toBeHidden();
-    searchResults = [...searchResults, { kind, label: 'Anderer Eintrag', url: `#/${kind}/2` },
-      { kind: kind === 'person' ? 'vehicle' : 'person', label: 'Falsche Art', url: '#/other/1' }];
+    duplicates = [{ kind, label: 'Anderer Eintrag', sub: 'gleiche E-Mail', url: `#/${kind}/2` }];
     await check();
     await expect(modal.locator('.duplicate-links a')).toHaveCount(1);
     await expect(modal.locator('.duplicate-links a')).toHaveAttribute('href', `#/${kind}/2`);
-    await expect(modal.locator('.duplicate-warning')).not.toContainText('Aktueller Eintrag');
+    await expect(modal.locator('.duplicate-warning')).not.toContainText('Unscharfer Treffer');
     await expect(modal.getByRole('button', { name: 'Speichern', exact: true })).toBeEnabled();
   });
 }
