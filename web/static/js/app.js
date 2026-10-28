@@ -2354,18 +2354,24 @@ import { createRevenueChart } from './revenue-chart.js';
         });
     };
 
-    function attachDuplicateWarning(body, { probes, kind, currentURL }) {
+    // Doppeleintrag-Hinweis: fragt eine eigene, genaue Prüfung (gleicher Name, gleiche
+    // E-Mail oder Telefonnummer, gleiches Kennzeichen). Vorher lief er über die Suche der
+    // Befehlspalette; die ist absichtlich unscharf und meldete beim Bearbeiten von
+    // „Günter Kitzmüller“ einen „Wolfgang Atzmüller“. Das bearbeitete Objekt schließt
+    // der Server über exclude aus.
+    function attachDuplicateWarning(body, { path, fields, params }) {
         const region = el('div', { class: 'duplicate-warning', role: 'status', 'aria-live': 'polite', hidden: true });
         body.append(region);
         let sequence = 0;
-        const check = async (probe) => {
-            const query = String(probe.query() || '').trim();
+        const check = async () => {
             const mySequence = ++sequence;
-            if (query.length < 3) { region.hidden = true; region.replaceChildren(); return; }
+            const query = new URLSearchParams();
+            Object.entries(params()).forEach(([key, value]) => { const v = String(value ?? '').trim(); if (v) query.set(key, v); });
+            if (![...query.keys()].some((key) => key !== 'exclude')) { region.hidden = true; region.replaceChildren(); return; }
             try {
-                const results = await api.get('/search?q=' + encodeURIComponent(query));
+                const results = await api.get(path + '?' + query.toString());
                 if (mySequence !== sequence) return;
-                const matches = (results || []).filter((result) => result.kind === kind && result.url !== currentURL).slice(0, 3);
+                const matches = (results || []).slice(0, 3);
                 region.replaceChildren();
                 if (!matches.length) { region.hidden = true; return; }
                 region.hidden = false;
@@ -2379,10 +2385,10 @@ import { createRevenueChart } from './revenue-chart.js';
                 region.hidden = true;
             }
         };
-        probes.forEach((probe) => probe.fields.forEach((fieldName) => {
+        fields.forEach((fieldName) => {
             const input = body.querySelector('#f_' + fieldName);
-            if (input) input.addEventListener('blur', () => check(probe));
-        }));
+            if (input) input.addEventListener('blur', check);
+        });
     }
 
     async function personForm(existing) {
@@ -2403,13 +2409,10 @@ import { createRevenueChart } from './revenue-chart.js';
                     $('#modal-submit').style.display = 'none';
                     $('#modal-cancel').textContent = 'Schließen';
                 } else {
+                    const field = (name) => body.querySelector('#f_' + name)?.value;
                     attachDuplicateWarning(body, {
-                        kind: 'person', currentURL: existing ? '#/person/' + existing.id : '',
-                        probes: [
-                            { fields: ['first_name', 'last_name'], query: () => [body.querySelector('#f_first_name').value, body.querySelector('#f_last_name').value].join(' ') },
-                            { fields: ['email'], query: () => body.querySelector('#f_email').value },
-                            { fields: ['phone'], query: () => body.querySelector('#f_phone').value },
-                        ],
+                        path: '/persons/duplicates', fields: ['first_name', 'last_name', 'email', 'phone'],
+                        params: () => ({ first_name: field('first_name'), last_name: field('last_name'), email: field('email'), phone: field('phone'), exclude: existing?.id }),
                     });
                 }
                 if (!existing || !canManage()) return;
@@ -5882,8 +5885,8 @@ import { createRevenueChart } from './revenue-chart.js';
                 segmentedField(body, 'billing_period', [{ v: 'monthly', l: 'monatlich' }, { v: 'yearly', l: 'jährlich' }]);
                 enhanceVehicleBookingFields(body, state.categories.filter((c) => !c.archived || c.id === initCat), existing, catDefault);
                 attachDuplicateWarning(body, {
-                    kind: 'vehicle', currentURL: existing ? '#/vehicle/' + existing.id : '',
-                    probes: [{ fields: ['license_plate'], query: () => body.querySelector('#f_license_plate').value }],
+                    path: '/vehicles/duplicates', fields: ['license_plate'],
+                    params: () => ({ license_plate: body.querySelector('#f_license_plate')?.value, exclude: existing?.id }),
                 });
             },
             save: async (data) => {
