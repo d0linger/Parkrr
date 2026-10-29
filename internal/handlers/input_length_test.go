@@ -561,6 +561,56 @@ func TestInputLengthValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			errMsg:     "Ungültiges Wirtschaftsgut",
 		},
+		{
+			name:   "ApplyIndexation: CategoryIDs too long",
+			path:   "/api/indexation/apply",
+			method: "POST",
+			body: struct {
+				Month       string  `json:"month"`
+				CategoryIDs []int64 `json:"category_ids"`
+			}{Month: "2025-01", CategoryIDs: make([]int64, 101)},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "too many category_ids",
+		},
+		{
+			name:       "CreateAgreement: VehicleIDs too long",
+			path:       "/api/persons/1/agreements",
+			method:     "POST",
+			body:       agreementRequest{Amount: floatPtr(10.0), StartDate: "2023-01-01", VehicleIDs: make([]int64, 101)},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "too many vehicles",
+		},
+		{
+			name:       "CreateWaitlist: Name too long",
+			path:       "/api/waitlist",
+			method:     "POST",
+			body:       waitlistIn{Name: longName},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "Eingabe ist zu lang",
+		},
+		{
+			name:   "CreateDeposit: Note too long",
+			path:   "/api/persons/1/deposits",
+			method: "POST",
+			body: struct {
+				Kind   string  `json:"kind"`
+				Amount float64 `json:"amount"`
+				Note   string  `json:"note"`
+			}{Kind: "erhalten", Amount: 10, Note: longNote},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "Eingabe ist zu lang",
+		},
+		{
+			name:   "SaveContractTemplate: Title too long",
+			path:   "/api/contract-template",
+			method: "POST",
+			body: struct {
+				Title string `json:"title"`
+				Body  string `json:"body"`
+			}{Title: strings.Repeat("a", 121), Body: "Valid"},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "Eingabe ist zu lang",
+		},
 	}
 
 	for _, tt := range tests {
@@ -669,6 +719,18 @@ func TestInputLengthValidation(t *testing.T) {
 				taxHandler.CreateTaxRecurring(w, req)
 			case "CreateTaxAsset: InServiceOn too long":
 				taxHandler.CreateTaxAsset(w, req)
+			case "ApplyIndexation: CategoryIDs too long":
+				h.ApplyIndexation(w, req)
+			case "CreateAgreement: VehicleIDs too long":
+				req.SetPathValue("id", "1")
+				h.CreateAgreement(w, req)
+			case "CreateWaitlist: Name too long":
+				h.CreateWaitlist(w, req)
+			case "CreateDeposit: Note too long":
+				req.SetPathValue("id", "1")
+				h.CreateDeposit(w, req)
+			case "SaveContractTemplate: Title too long":
+				h.SaveContractTemplate(w, req)
 			}
 
 			if w.Code != tt.wantStatus {
