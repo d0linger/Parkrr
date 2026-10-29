@@ -589,10 +589,10 @@ func TestInputLengthValidation(t *testing.T) {
 			errMsg:     "Eingabe ist zu lang",
 		},
 		{
-			name:       "CreateDeposit: Note too long",
-			path:       "/api/persons/1/deposits",
-			method:     "POST",
-			body:       struct {
+			name:   "CreateDeposit: Note too long",
+			path:   "/api/persons/1/deposits",
+			method: "POST",
+			body: struct {
 				Kind   string  `json:"kind"`
 				Amount float64 `json:"amount"`
 				Note   string  `json:"note"`
@@ -601,10 +601,10 @@ func TestInputLengthValidation(t *testing.T) {
 			errMsg:     "Eingabe ist zu lang",
 		},
 		{
-			name:       "SaveContractTemplate: Title too long",
-			path:       "/api/contract-template",
-			method:     "POST",
-			body:       struct {
+			name:   "SaveContractTemplate: Title too long",
+			path:   "/api/contract-template",
+			method: "POST",
+			body: struct {
 				Title string `json:"title"`
 				Body  string `json:"body"`
 			}{Title: strings.Repeat("a", 121), Body: "Valid"},
