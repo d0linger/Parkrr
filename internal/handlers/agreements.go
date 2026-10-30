@@ -367,6 +367,9 @@ func (req *agreementRequest) parse() (models.FlatRatePeriod, string) {
 	if !validNoteLength(req.Note) {
 		return a, "note is too long"
 	}
+	if len(req.VehicleIDs) > 100 || len(req.NewVehicles) > 100 || len(req.EditVehicles) > 100 {
+		return a, "too many vehicles specified"
+	}
 	// Vehicles created/edited inline via the Pauschale bypass parseVehicleRequest,
 	// so their label/plate length is capped here too.
 	for _, nv := range req.NewVehicles {

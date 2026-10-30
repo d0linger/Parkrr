@@ -207,6 +207,25 @@ func TestInputLengthValidation(t *testing.T) {
 			errMsg:     "license_plate is too long",
 		},
 		{
+			name:       "CreateAgreement: VehicleIDs too many items",
+			path:       "/api/persons/1/agreements",
+			method:     "POST",
+			body:       agreementRequest{Amount: floatPtr(10.0), StartDate: "2023-01-01", VehicleIDs: make([]int64, 101)},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "too many vehicles specified",
+		},
+		{
+			name:   "ApplyIndexation: CategoryIDs too many items",
+			path:   "/api/indexation/apply",
+			method: "POST",
+			body: struct {
+				Month       string  `json:"month"`
+				CategoryIDs []int64 `json:"category_ids"`
+			}{Month: "2023-01", CategoryIDs: make([]int64, 101)},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "zu viele Tarife angegeben",
+		},
+		{
 			name:       "CreateAgreement: EditVehicles Label too long",
 			path:       "/api/persons/1/agreements",
 			method:     "POST",
@@ -586,9 +605,11 @@ func TestInputLengthValidation(t *testing.T) {
 			case "UpdatePerson: First Name too long":
 				req.SetPathValue("id", "1")
 				h.UpdatePerson(w, req)
-			case "CreateAgreement: Note too long", "CreateAgreement: NewVehicles Label too long", "CreateAgreement: NewVehicles LicensePlate too long", "CreateAgreement: EditVehicles Label too long", "CreateAgreement: EditVehicles LicensePlate too long":
+			case "CreateAgreement: Note too long", "CreateAgreement: NewVehicles Label too long", "CreateAgreement: NewVehicles LicensePlate too long", "CreateAgreement: EditVehicles Label too long", "CreateAgreement: EditVehicles LicensePlate too long", "CreateAgreement: VehicleIDs too many items":
 				req.SetPathValue("id", "1")
 				h.CreateAgreement(w, req)
+			case "ApplyIndexation: CategoryIDs too many items":
+				h.ApplyIndexation(w, req)
 			case "CreateHandover: SignerName too long":
 				req.SetPathValue("id", "1")
 				h.CreateHandover(w, req)
