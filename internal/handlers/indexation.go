@@ -459,6 +459,10 @@ func (h *Handler) ApplyIndexation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Monat und mindestens ein Tarif")
 		return
 	}
+	if len(in.CategoryIDs) > 100 {
+		writeError(w, http.StatusBadRequest, "zu viele Tarife angegeben")
+		return
+	}
 	plan, err := h.indexationPlan(r, month)
 	if errors.Is(err, errNoCPI) {
 		writeError(w, http.StatusBadRequest, "Für "+month.Format("01/2006")+" ist kein Indexwert eingetragen")
