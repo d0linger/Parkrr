@@ -39,6 +39,10 @@ test('Tarif: Öffnen zeigt alle Tarife, der gewählte ist markiert; erst Tippen 
   await expect(page.locator('.combo-label mark')).toHaveText('Pferd');
   await field.fill('xyz');
   await expect(options(page)).toHaveText(['Kein Treffer']);
+  // Hier muss ein Tarif aus der Liste kommen: Enter übernimmt den ersten Treffer.
+  await field.fill('wohn');
+  await field.press('Enter');
+  await expect(field).toHaveValue('Wohnmobil');
 });
 
 test('Tarif: Tastatur wählt, Escape schließt nur die Liste, der Preis zieht nach', async ({ page }) => {
@@ -70,6 +74,21 @@ test('Zusatzkosten: Dienste-Liste zeigt alle Dienste trotz Text im Feld, freier 
   await page.goto(origin + '/#/finance');
   await page.getByRole('button', { name: '+ Position', exact: true }).click();
   const field = page.getByRole('combobox', { name: /^Bezeichnung/ });
+  // Freier Text: beim Tippen ist nichts vorgewählt, Enter ersetzt „Strom“ nicht durch
+  // „Stromanschluss“ und schickt das Formular ab (der Pflicht-Betrag fehlt noch).
+  await field.fill('Strom');
+  await expect(page.getByRole('listbox', { name: 'Dienste' }).getByRole('option')).toHaveText([/^Stromanschluss/]);
+  await expect(field).not.toHaveAttribute('aria-activedescendant', /.+/);
+  await field.press('Enter');
+  await expect(field).toHaveValue('Strom');
+  await expect(page.locator('#f_amount')).toHaveValue('');
+  await expect(page.locator('#f_amount')).toBeFocused();
+  // Per Pfeiltaste gewählt übernimmt Enter den Dienst samt Betrag.
+  await field.fill('Strom');
+  await field.press('ArrowDown');
+  await field.press('Enter');
+  await expect(field).toHaveValue('Stromanschluss');
+  await expect(page.locator('#f_amount')).toHaveValue('20');
   await field.fill('Individuelle Reinigung');
   await page.getByRole('button', { name: 'Dienste anzeigen', exact: true }).click();
   await expect(page.getByRole('listbox', { name: 'Dienste' }).getByRole('option')).toHaveCount(2);

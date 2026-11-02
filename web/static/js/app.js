@@ -5707,7 +5707,10 @@ import { createRevenueChart } from './revenue-chart.js';
     // alle Einträge (der gewählte ist markiert); gefiltert wird erst, wenn jemand tippt.
     // Muster: WAI-ARIA-Combobox mit Listbox. options() liefert { value, label, meta, badge };
     // onPick bekommt den gewählten Eintrag, danach feuert 'change' am Feld.
-    function comboBox(input, { options, onPick, listLabel }) {
+    // freeText: das Feld nimmt auch eigenen Text. Beim Tippen ist dann kein Treffer
+    // vorgewählt; Enter übernimmt nur einen per Pfeiltaste gewählten Eintrag und
+    // schickt sonst wie gewohnt das Formular ab.
+    function comboBox(input, { options, onPick, listLabel, freeText = false }) {
         const listId = input.id + '-list';
         const wrap = el('div', { class: 'combo' });
         input.replaceWith(wrap);
@@ -5752,7 +5755,7 @@ import { createRevenueChart } from './revenue-chart.js';
             });
             if (!shown.length) list.append(el('li', { class: 'combo-empty', role: 'option', 'aria-disabled': 'true' }, 'Kein Treffer'));
             const current = shown.findIndex((o) => o.label === input.value);
-            setActive(query ? (shown.length ? 0 : -1) : current);
+            setActive(query ? (shown.length && !freeText ? 0 : -1) : current);
         };
         // Im Dialog scrollt .modal-body: reicht der Platz darunter nicht, klappt die Liste
         // nach oben, und ihre Höhe richtet sich nach dem sichtbaren Raum.
@@ -5800,8 +5803,9 @@ import { createRevenueChart } from './revenue-chart.js';
                 const step = e.key === 'ArrowDown' ? 1 : -1;
                 setActive(active < 0 ? (step > 0 ? 0 : shown.length - 1) : (active + step + shown.length) % shown.length);
             } else if (e.key === 'Enter' && isOpen()) {
-                e.preventDefault();
-                if (active >= 0 && shown[active]) pick(shown[active]); else close();
+                if (active >= 0 && shown[active]) { e.preventDefault(); pick(shown[active]); return; }
+                if (!freeText) e.preventDefault();
+                close();
             } else if (e.key === 'Escape' && isOpen()) {
                 // Nur die Liste schließen, nicht den Dialog.
                 e.preventDefault(); e.stopPropagation(); close();
@@ -7001,7 +7005,7 @@ import { createRevenueChart } from './revenue-chart.js';
                 // keine Dienst-Nummer, nur Beschreibung und Betrag.
                 const updateTotal = enhanceChargeFields(body, 'billing');
                 comboBox(desc, {
-                    listLabel: 'Dienste',
+                    listLabel: 'Dienste', freeText: true,
                     options: () => services.map((s) => ({ value: s.id, label: s.name, meta: eur(s.default_amount) })),
                     onPick: (o) => {
                         const s = services.find((x) => x.id === o.value);
