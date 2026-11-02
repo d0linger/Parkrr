@@ -181,8 +181,11 @@ func (h *Handler) ListAgreements(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
-// maxAgreementVehicles begrenzt die Gefährte einer Pauschale je Anfrage (bestehende,
-// neue und geänderte je für sich); jede ID kostet eigene Prüfungen.
+// maxAgreementVehicles begrenzt die Gefährte einer Pauschale, gebundene und neu
+// angelegte zusammen; jede ID kostet eigene Prüfungen. Weil die Grenze für das
+// Ergebnis gilt, bleibt jede so angelegte Pauschale bearbeitbar. Eine schon vorher
+// größer gespeicherte behält beim Bearbeiten ihren Umfang, wächst aber nicht weiter
+// (UpdateAgreement).
 const maxAgreementVehicles = 100
 
 type agreementRequest struct {
@@ -336,8 +339,9 @@ type agreementValidationError struct {
 func (e *agreementValidationError) Error() string { return e.message }
 
 // parse validates the request and returns a partially-filled agreement (without
-// person id). VehicleIDs is normalised (deduplicated).
-func (req *agreementRequest) parse() (models.FlatRatePeriod, string) {
+// person id). VehicleIDs is normalised (deduplicated). maxVehicles caps bound plus
+// newly created vehicles together.
+func (req *agreementRequest) parse(maxVehicles int) (models.FlatRatePeriod, string) {
 	var a models.FlatRatePeriod
 	if req.Amount == nil || *req.Amount <= 0 {
 		return a, "amount must be greater than zero"
@@ -371,7 +375,9 @@ func (req *agreementRequest) parse() (models.FlatRatePeriod, string) {
 	if !validNoteLength(req.Note) {
 		return a, "note is too long"
 	}
-	if len(req.VehicleIDs) > maxAgreementVehicles || len(req.NewVehicles) > maxAgreementVehicles || len(req.EditVehicles) > maxAgreementVehicles {
+	// Gebundene und neu angelegte Gefährte ergeben zusammen die Pauschale; geändert
+	// werden nur gebundene.
+	if len(req.VehicleIDs)+len(req.NewVehicles) > maxVehicles || len(req.EditVehicles) > maxVehicles {
 		return a, "too many vehicles specified"
 	}
 	// Vehicles created/edited inline via the Pauschale bypass parseVehicleRequest,
@@ -582,7 +588,7 @@ func (h *Handler) CreateAgreement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	h.persistAgreement(w, r, 0, pid)
+	h.persistAgreement(w, r, 0, pid, maxAgreementVehicles)
 }
 
 // UpdateAgreement edits an existing agreement.
@@ -593,8 +599,10 @@ func (h *Handler) UpdateAgreement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var pid int64
+	var bound int
 	if err := h.Pool.QueryRow(r.Context(),
-		`SELECT person_id FROM flat_rate_periods WHERE id=$1`, id).Scan(&pid); err != nil {
+		`SELECT person_id, (SELECT count(*) FROM flat_rate_period_vehicles WHERE period_id=$1)
+		   FROM flat_rate_periods WHERE id=$1`, id).Scan(&pid, &bound); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "agreement not found")
 			return
@@ -602,21 +610,22 @@ func (h *Handler) UpdateAgreement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
-	h.persistAgreement(w, r, id, pid)
+	h.persistAgreement(w, r, id, pid, max(maxAgreementVehicles, bound))
 }
 
 // persistAgreement runs the shared create/update pipeline: parse, validate,
 // save in one transaction, then audit and an immediate archive sweep. id==0
 // inserts (verb/audit wording and the failure message are derived from that);
-// everything else is identical between the two entry points.
-func (h *Handler) persistAgreement(w http.ResponseWriter, r *http.Request, id, pid int64) {
+// everything else is identical between the two entry points. maxVehicles caps the
+// resulting vehicle count (see maxAgreementVehicles).
+func (h *Handler) persistAgreement(w http.ResponseWriter, r *http.Request, id, pid int64, maxVehicles int) {
 	create := id == 0
 	var req agreementRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	cand, msg := req.parse()
+	cand, msg := req.parse(maxVehicles)
 	if msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
