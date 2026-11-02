@@ -3440,7 +3440,7 @@ button.portal-row { width:100%; border:0; border-bottom:1px solid var(--border);
 .combo-btn:hover { background: var(--bg-elev-2); color: var(--text); }
 .combo-toggle svg { transform: rotate(90deg); transition: transform .15s ease; }
 .combo.is-open .combo-toggle svg { transform: rotate(-90deg); }
-.combo-list { position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 40; margin: 0; padding: .35rem; list-style: none; overflow-y: auto; overscroll-behavior: contain; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--radius-sm); box-shadow: var(--shadow); }
+.combo-list { position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 40; margin: 0; padding: .35rem; list-style: none; max-height: min(20rem, 60vh); overflow-y: auto; overscroll-behavior: contain; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--radius-sm); box-shadow: var(--shadow); }
 .combo.combo-up .combo-list { top: auto; bottom: calc(100% + 6px); }
 .combo-option { display: grid; grid-template-columns: minmax(0, 1fr) 1.25rem; column-gap: .75rem; align-items: center; padding: .55rem .65rem; border-radius: 8px; cursor: pointer; }
 .combo-option + .combo-option { margin-top: 2px; }
@@ -3453,4 +3453,4 @@ button.portal-row { width:100%; border:0; border-bottom:1px solid var(--border);
 .combo-check { grid-column: 2; grid-row: 1 / span 2; display: grid; place-items: center; color: var(--primary); }
 .combo-badge { font-size: var(--text-xs); font-weight: 600; color: var(--text-muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 .45rem; }
 .combo-empty { padding: .6rem .65rem; color: var(--text-muted); cursor: default; }
-@media (pointer: coarse) { .combo-option { padding: .7rem .65rem; } .combo-btn { width: 2.5rem; height: 2.5rem; } }
+@media (pointer: coarse) { .combo > input { padding-right: 5.9rem; } .combo-option { padding: .7rem .65rem; } .combo-btn { width: 2.5rem; height: 2.5rem; } }
