@@ -5701,6 +5701,128 @@ import { createRevenueChart } from './revenue-chart.js';
         return result;
     }
 
+    // Auswahlliste mit Suche, statt <input list> + <datalist>. Das native datalist filtert
+    // beim Öffnen nach dem Text im Feld: steht „Anhänger“ darin, zeigt der Browser nur noch
+    // die Anhänger, die übrigen Tarife erst nach dem Löschen. Hier zeigt das Öffnen immer
+    // alle Einträge (der gewählte ist markiert); gefiltert wird erst, wenn jemand tippt.
+    // Muster: WAI-ARIA-Combobox mit Listbox. options() liefert { value, label, meta, badge };
+    // onPick bekommt den gewählten Eintrag, danach feuert 'change' am Feld.
+    // freeText: das Feld nimmt auch eigenen Text. Beim Tippen ist dann kein Treffer
+    // vorgewählt; Enter übernimmt nur einen per Pfeiltaste gewählten Eintrag und
+    // schickt sonst wie gewohnt das Formular ab.
+    function comboBox(input, { options, onPick, listLabel, freeText = false }) {
+        const listId = input.id + '-list';
+        const wrap = el('div', { class: 'combo' });
+        input.replaceWith(wrap);
+        input.type = 'text';
+        input.removeAttribute('list');
+        Object.entries({ role: 'combobox', autocomplete: 'off', 'aria-autocomplete': 'list', 'aria-expanded': 'false', 'aria-controls': listId })
+            .forEach(([k, v]) => input.setAttribute(k, v));
+        const list = el('ul', { class: 'combo-list', id: listId, role: 'listbox', 'aria-label': listLabel, hidden: true });
+        const clear = el('button', { class: 'combo-btn combo-clear', type: 'button', tabindex: '-1', 'aria-label': 'Eingabe leeren', hidden: true }, icon('close', 14));
+        const toggle = el('button', { class: 'combo-btn combo-toggle', type: 'button', tabindex: '-1', 'aria-label': listLabel + ' anzeigen' }, icon('chevron', 16));
+        wrap.append(input, el('span', { class: 'combo-btns' }, clear, toggle), list);
+
+        const fold = (s) => String(s ?? '').toLocaleLowerCase('de').normalize('NFD').replace(/\p{Diacritic}/gu, '');
+        let typed = false, shown = [], active = -1;
+        const isOpen = () => !list.hidden;
+        const syncClear = () => { clear.hidden = !input.value; };
+        // Treffer im Namen hervorheben, ohne innerHTML.
+        const highlight = (text, query) => {
+            if (!query) return [text];
+            const at = fold(text).indexOf(fold(query));
+            if (at < 0) return [text];
+            return [text.slice(0, at), el('mark', {}, text.slice(at, at + query.length)), text.slice(at + query.length)];
+        };
+        const setActive = (i) => {
+            active = i;
+            list.querySelectorAll('[role="option"]').forEach((node, n) => node.classList.toggle('is-active', n === i));
+            const node = i >= 0 ? list.querySelector('#' + listId + '-' + i) : null;
+            if (node) { input.setAttribute('aria-activedescendant', node.id); node.scrollIntoView({ block: 'nearest' }); }
+            else input.removeAttribute('aria-activedescendant');
+        };
+        const render = () => {
+            const query = typed ? input.value.trim() : '';
+            shown = options().filter((o) => !query || fold(o.label + ' ' + (o.meta || '')).includes(fold(query)));
+            list.replaceChildren();
+            shown.forEach((o, i) => {
+                const selected = o.label === input.value;
+                list.append(el('li', { id: listId + '-' + i, role: 'option', 'aria-selected': String(selected), class: 'combo-option',
+                    onmousedown: (e) => e.preventDefault(), onclick: () => pick(o) },
+                    el('span', { class: 'combo-label' }, el('span', {}, ...highlight(o.label, query)), o.badge ? el('span', { class: 'combo-badge' }, o.badge) : null),
+                    o.meta ? el('span', { class: 'combo-meta' }, o.meta) : null,
+                    el('span', { class: 'combo-check', 'aria-hidden': 'true' }, selected ? icon('check', 16) : null)));
+            });
+            if (!shown.length) list.append(el('li', { class: 'combo-empty', role: 'option', 'aria-disabled': 'true' }, 'Kein Treffer'));
+            const current = shown.findIndex((o) => o.label === input.value);
+            setActive(query ? (shown.length && !freeText ? 0 : -1) : current);
+        };
+        // Im Dialog scrollt .modal-body: reicht der Platz darunter nicht, klappt die Liste
+        // nach oben, und ihre Höhe richtet sich nach dem sichtbaren Raum.
+        const place = () => {
+            const box = wrap.getBoundingClientRect();
+            const scroller = wrap.closest('.modal-body')?.getBoundingClientRect();
+            const bottom = Math.min(innerHeight, scroller ? scroller.bottom : innerHeight);
+            const top = Math.max(0, scroller ? scroller.top : 0);
+            const below = bottom - box.bottom - 8, above = box.top - top - 8;
+            const up = below < 220 && above > below;
+            wrap.classList.toggle('combo-up', up);
+            list.style.maxHeight = Math.max(140, Math.min(320, up ? above : below)) + 'px';
+        };
+        const open = (showAll) => {
+            if (showAll) typed = false;
+            render();
+            if (!isOpen()) {
+                list.hidden = false; wrap.classList.add('is-open'); input.setAttribute('aria-expanded', 'true');
+                document.addEventListener('pointerdown', outside, true);
+            }
+            place();
+            if (active >= 0) list.querySelector('#' + listId + '-' + active)?.scrollIntoView({ block: 'nearest' });
+        };
+        const close = () => {
+            if (!isOpen()) return;
+            list.hidden = true; wrap.classList.remove('is-open', 'combo-up'); input.setAttribute('aria-expanded', 'false');
+            input.removeAttribute('aria-activedescendant');
+            document.removeEventListener('pointerdown', outside, true);
+        };
+        const outside = (e) => { if (!wrap.contains(e.target)) close(); };
+        const pick = (o) => {
+            input.value = o.label; typed = false; syncClear(); close();
+            onPick?.(o);
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+
+        input.addEventListener('input', () => { typed = true; syncClear(); open(false); });
+        input.addEventListener('click', () => (isOpen() ? close() : open(true)));
+        input.addEventListener('blur', close);
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (!isOpen()) { open(true); return; }
+                if (!shown.length) return;
+                const step = e.key === 'ArrowDown' ? 1 : -1;
+                setActive(active < 0 ? (step > 0 ? 0 : shown.length - 1) : (active + step + shown.length) % shown.length);
+            } else if (e.key === 'Enter' && isOpen()) {
+                if (active >= 0 && shown[active]) { e.preventDefault(); pick(shown[active]); return; }
+                if (!freeText) e.preventDefault();
+                close();
+            } else if (e.key === 'Escape' && isOpen()) {
+                // Nur die Liste schließen, nicht den Dialog.
+                e.preventDefault(); e.stopPropagation(); close();
+            } else if (e.key === 'Tab') close();
+        });
+        toggle.addEventListener('mousedown', (e) => e.preventDefault());
+        // Der Pfeil zeigt immer die ganze Liste; ist sie schon ungefiltert offen, schließt er sie.
+        toggle.addEventListener('click', () => { input.focus(); if (isOpen() && !typed) close(); else open(true); });
+        clear.addEventListener('mousedown', (e) => e.preventDefault());
+        clear.addEventListener('click', () => {
+            input.value = ''; input.focus();
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        syncClear();
+        return { refresh: syncClear };
+    }
+
     function enhanceVehicleBookingFields(body, categories, existing, catDefault) {
         const dlg = $('#modal');
         dlg.classList.add('modal-booking');
@@ -5715,15 +5837,10 @@ import { createRevenueChart } from './revenue-chart.js';
         // UX: searchable tariff/type input replaces the dense select while the
         // original select remains the single submitted source of truth.
         categoryField.hidden = true;
-        const list = el('datalist', { id: 'vehicle-category-options' });
-        categories.forEach((c) => list.append(el('option', {
-            value: c.name,
-            label: `${eur(c.default_monthly_cost)} / Monat · ${eur(c.default_yearly_cost)} / Jahr${c.archived ? ' · archiviert' : ''}`,
-        })));
         const categoryError = el('div', { class: 'field-error', id: 'err_category_lookup', role: 'alert', hidden: true });
         const categoryInput = el('input', {
-            id: 'vehicle-category-search', name: 'category_lookup', type: 'search', list: list.id,
-            required: true, autocomplete: 'off', 'aria-required': 'true', 'aria-autocomplete': 'list',
+            id: 'vehicle-category-search', name: 'category_lookup',
+            required: true, 'aria-required': 'true',
             'aria-describedby': 'err_category_lookup help_category_lookup', placeholder: 'Tarif oder Fahrzeugtyp suchen',
         });
         const selectedCategory = categories.find((c) => String(c.id) === String(categorySelect.value));
@@ -5731,12 +5848,22 @@ import { createRevenueChart } from './revenue-chart.js';
         const categoryHelp = el('div', { class: 'card-meta', id: 'help_category_lookup' });
         const categoryLookup = el('div', { class: 'form-field vehicle-category-field' },
             el('label', { for: categoryInput.id }, 'Tarif / Typ', el('span', { 'aria-hidden': 'true' }, ' *')),
-            categoryInput, list, categoryError, categoryHelp);
+            categoryInput, categoryError, categoryHelp);
         personField.after(categoryLookup);
+        let pickedCategory = null;
+        comboBox(categoryInput, {
+            listLabel: 'Tarife',
+            options: () => categories.map((c) => ({ value: c.id, label: c.name, badge: c.archived ? 'archiviert' : '',
+                meta: `${eur(c.default_monthly_cost)} / Monat · ${eur(c.default_yearly_cost)} / Jahr` })),
+            // Aus der Liste gewählt zählt der Tarif selbst, auch wenn zwei gleich heißen.
+            onPick: (o) => { pickedCategory = String(o.value); },
+        });
 
         let manualRate = !!existing; // existing locked rates must never be overwritten
         const syncRate = () => { if (!manualRate) rate.value = catDefault(categorySelect.value, period.value); };
         const findCategory = (query) => {
+            const picked = pickedCategory && categories.find((c) => String(c.id) === pickedCategory && c.name === query);
+            if (picked) return { match: picked, ambiguous: false };
             const exact = categories.find((c) => c.name === query);
             if (exact) return { match: exact, ambiguous: false };
             const folded = categories.filter((c) => c.name.toLocaleLowerCase('de') === query.toLocaleLowerCase('de'));
@@ -6814,7 +6941,6 @@ import { createRevenueChart } from './revenue-chart.js';
     async function chargeForm(presetPerson, existing) {
         if (!state.persons.length) { toast('Zuerst eine Person anlegen', 'error'); return; }
         const services = state.services.filter((s) => !s.archived);
-        const serviceLabel = (s) => `${s.name} (${eur(s.default_amount)})`;
         const initPerson = existing?.person_id ?? presetPerson ?? state.persons[0].id;
         // Bindable vehicles: active + not archived, plus the charge's own bound one
         // (keepId) so editing a charge on an archived vehicle keeps the binding.
@@ -6874,22 +7000,23 @@ import { createRevenueChart } from './revenue-chart.js';
 
                 const desc = body.querySelector('#f_description');
                 const amt = body.querySelector('#f_amount');
-                // Native autocomplete combines catalog selection and free entry.
-                // No service ID is persisted: description and amount remain editable.
-                const suggestions = el('datalist', { id: 'charge-services' },
-                    ...services.map((s) => el('option', { value: serviceLabel(s) })));
-                desc.setAttribute('list', suggestions.id);
-                desc.after(suggestions);
+                // Katalog und freie Eingabe in einem Feld: aus der Liste gewählt übernimmt
+                // Name und Betrag, beides bleibt danach frei änderbar. Gespeichert wird
+                // keine Dienst-Nummer, nur Beschreibung und Betrag.
                 const updateTotal = enhanceChargeFields(body, 'billing');
-                desc.addEventListener('input', () => {
-                    const s = services.find((x) => serviceLabel(x) === desc.value);
-                    if (!s) return;
-                    desc.value = s.name; amt.value = s.default_amount;
-                    for (const [node, errId] of [[desc, 'err_description'], [amt, 'err_amount']]) {
-                        node.removeAttribute('aria-invalid');
-                        const e = body.querySelector('#' + errId); if (e) e.hidden = true;
-                    }
-                    updateTotal();
+                comboBox(desc, {
+                    listLabel: 'Dienste', freeText: true,
+                    options: () => services.map((s) => ({ value: s.id, label: s.name, meta: eur(s.default_amount) })),
+                    onPick: (o) => {
+                        const s = services.find((x) => x.id === o.value);
+                        if (!s) return;
+                        desc.value = s.name; amt.value = s.default_amount;
+                        for (const [node, errId] of [[desc, 'err_description'], [amt, 'err_amount']]) {
+                            node.removeAttribute('aria-invalid');
+                            const e = body.querySelector('#' + errId); if (e) e.hidden = true;
+                        }
+                        updateTotal();
+                    },
                 });
                 // Switching person reloads the bindable vehicles. A request token
                 // guards against an earlier (slower) response overwriting a newer one.

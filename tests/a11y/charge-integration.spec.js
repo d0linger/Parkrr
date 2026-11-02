@@ -51,8 +51,8 @@ test('switching modes restores quantity and ignores inactive invalid end date', 
     writes.push(route.request().postDataJSON()); return route.fulfill({ json: { id: 7 } });
   } } });
   await openCharge(page);
-  // Use the actual native catalog value (currency spacing is locale-specific).
-  await page.locator('#f_description').fill(await page.locator('#charge-services option').first().getAttribute('value'));
+  await page.getByRole('button', { name: 'Dienste anzeigen', exact: true }).click();
+  await page.getByRole('option', { name: /^Innenreinigung/ }).click();
   await page.locator('#f_quantity').fill('2.5');
   await page.getByRole('button', { name: 'jährlich', exact: true }).click();
   await expect(page.locator('#charge-total')).toContainText('45,00');

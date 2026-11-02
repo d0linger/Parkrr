@@ -83,8 +83,8 @@ test('catalog autocomplete, custom description, total and date shortcuts preserv
     writes.push(route.request().postDataJSON()); return route.fulfill({ json: { id: 7 } });
   } } });
   await openNew(page, 'finance');
-  const suggestion = await page.locator('#charge-services option').first().getAttribute('value');
-  await page.locator('#f_description').fill(suggestion);
+  await page.getByRole('button', { name: 'Dienste anzeigen', exact: true }).click();
+  await page.getByRole('option', { name: /^Innenreinigung/ }).click();
   await expect(page.locator('#f_description')).toHaveValue('Innenreinigung');
   await expect(page.locator('#f_amount')).toHaveValue('45');
   await page.locator('#f_description').fill('Individuelle Reinigung');

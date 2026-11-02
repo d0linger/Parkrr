@@ -448,7 +448,22 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 	// die Drosselstrafe (kein Refund), um Schleifen/Hammering abzufangen (wie beim Passwort-Login).
 	if u.Disabled {
 		slog.Warn("passkey login rejected: account disabled", "user_id", uid)
+		h.UserLimiter.RecordFailure(strings.ToLower(u.Username))
 		writeError(w, http.StatusUnauthorized, "passkey login failed")
+		return
+	}
+	// Tie the session to the credential that just signed (audit AUTH-04): an admin
+	// 2FA reset or passkey deletion that committed after the assertion verified
+	// must not leave a fresh factor-verified session behind.
+	if err := h.Auth.CreatePasskeySession(r.Context(), w, r, uid, credID); err != nil {
+		if errors.Is(err, auth.ErrCredentialChanged) {
+			slog.Warn("passkey login rejected: credential removed during login", "user_id", uid)
+			h.UserLimiter.RecordFailure(strings.ToLower(u.Username))
+			writeError(w, http.StatusUnauthorized, "passkey login failed")
+			return
+		}
+		h.Limiter.Refund(key)
+		writeError(w, http.StatusInternalServerError, "could not create session")
 		return
 	}
 	h.Limiter.Reset(key)
@@ -458,18 +473,6 @@ func (h *AuthHandler) PasskeyLoginFinish(w http.ResponseWriter, r *http.Request)
 	// throttled even after a successful passkey login. The passkey path is
 	// usernameless, so key the reset by the resolved account name (as UserLimiter is).
 	h.UserLimiter.Reset(strings.ToLower(u.Username))
-	// Tie the session to the credential that just signed (audit AUTH-04): an admin
-	// 2FA reset or passkey deletion that committed after the assertion verified
-	// must not leave a fresh factor-verified session behind.
-	if err := h.Auth.CreatePasskeySession(r.Context(), w, r, uid, credID); err != nil {
-		if errors.Is(err, auth.ErrCredentialChanged) {
-			slog.Warn("passkey login rejected: credential removed during login", "user_id", uid)
-			writeError(w, http.StatusUnauthorized, "passkey login failed")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "could not create session")
-		return
-	}
 	slog.Info("login", "user", u.Username, "user_id", uid, "ip", h.Auth.ClientIP(r),
 		"role", u.Role, "method", "passkey")
 	h.auditAs(r, uid, u.Username, "login", "user", uid, u.Username+" signed in (passkey)")
