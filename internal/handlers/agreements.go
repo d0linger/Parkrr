@@ -181,6 +181,10 @@ func (h *Handler) ListAgreements(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+// maxAgreementVehicles begrenzt die Gefährte einer Pauschale je Anfrage (bestehende,
+// neue und geänderte je für sich); jede ID kostet eigene Prüfungen.
+const maxAgreementVehicles = 100
+
 type agreementRequest struct {
 	Amount     *float64 `json:"amount"`
 	Period     string   `json:"period"`
@@ -367,7 +371,7 @@ func (req *agreementRequest) parse() (models.FlatRatePeriod, string) {
 	if !validNoteLength(req.Note) {
 		return a, "note is too long"
 	}
-	if len(req.VehicleIDs) > 100 || len(req.NewVehicles) > 100 || len(req.EditVehicles) > 100 {
+	if len(req.VehicleIDs) > maxAgreementVehicles || len(req.NewVehicles) > maxAgreementVehicles || len(req.EditVehicles) > maxAgreementVehicles {
 		return a, "too many vehicles specified"
 	}
 	// Vehicles created/edited inline via the Pauschale bypass parseVehicleRequest,

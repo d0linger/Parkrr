@@ -226,6 +226,37 @@ func TestInputLengthValidation(t *testing.T) {
 			errMsg:     "zu viele Tarife angegeben",
 		},
 		{
+			name:       "CreateWaitlist: Name too long",
+			path:       "/api/waitlist",
+			method:     "POST",
+			body:       waitlistIn{Name: longName},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "Eingabe ist zu lang",
+		},
+		{
+			name:   "CreateDeposit: Note too long",
+			path:   "/api/persons/1/deposits",
+			method: "POST",
+			body: struct {
+				Kind   string  `json:"kind"`
+				Amount float64 `json:"amount"`
+				Note   string  `json:"note"`
+			}{Kind: "erhalten", Amount: 10, Note: longNote},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "Eingabe ist zu lang",
+		},
+		{
+			name:   "SaveContractTemplate: Title too long",
+			path:   "/api/contract-template",
+			method: "POST",
+			body: struct {
+				Title string `json:"title"`
+				Body  string `json:"body"`
+			}{Title: strings.Repeat("a", 121), Body: "Valid"},
+			wantStatus: http.StatusBadRequest,
+			errMsg:     "Eingabe ist zu lang",
+		},
+		{
 			name:       "CreateAgreement: EditVehicles Label too long",
 			path:       "/api/persons/1/agreements",
 			method:     "POST",
@@ -624,6 +655,13 @@ func TestInputLengthValidation(t *testing.T) {
 				h.CreateAgreement(w, req)
 			case "ApplyIndexation: CategoryIDs too many items":
 				h.ApplyIndexation(w, req)
+			case "CreateWaitlist: Name too long":
+				h.CreateWaitlist(w, req)
+			case "CreateDeposit: Note too long":
+				req.SetPathValue("id", "1")
+				h.CreateDeposit(w, req)
+			case "SaveContractTemplate: Title too long":
+				h.SaveContractTemplate(w, req)
 			case "CreateHandover: SignerName too long":
 				req.SetPathValue("id", "1")
 				h.CreateHandover(w, req)

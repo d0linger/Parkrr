@@ -441,6 +441,9 @@ func (h *Handler) IndexationPreview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, plan)
 }
 
+// maxIndexationCategories begrenzt die Tarife je Wertsicherungs-Lauf.
+const maxIndexationCategories = 100
+
 // ApplyIndexation: POST /api/indexation/apply {month, category_ids, notify}.
 // Legt die Preisänderungen der Vorschau an (ab der nächsten Periode), setzt den
 // Tarifpreis für neue Verträge und den Basismonat; auf Wunsch eine Mitteilung per Mail.
@@ -459,7 +462,7 @@ func (h *Handler) ApplyIndexation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Monat und mindestens ein Tarif")
 		return
 	}
-	if len(in.CategoryIDs) > 100 {
+	if len(in.CategoryIDs) > maxIndexationCategories {
 		writeError(w, http.StatusBadRequest, "zu viele Tarife angegeben")
 		return
 	}
