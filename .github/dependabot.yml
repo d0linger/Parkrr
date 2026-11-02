@@ -105,3 +105,11 @@ updates:
       - "docker"
     commit-message:
       prefix: "docker"
+    # A PostgreSQL major upgrade is a migration, not a bump: the data directory
+    # needs pg_upgrade or dump/restore, newer images use a different PGDATA layout,
+    # and the app image ships postgresql16-client, whose pg_dump cannot back up a
+    # newer server. Digest and minor updates stay visible.
+    ignore:
+      - dependency-name: "postgres"
+        update-types:
+          - "version-update:semver-major"
