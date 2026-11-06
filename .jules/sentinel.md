@@ -57,3 +57,8 @@
 *Vulnerability:* In `PasskeyLoginFinish`, when a passkey assertion verified for a disabled user account (`u.Disabled`), the handler explicitly refunded the rate-limiter attempt budget via `h.Limiter.Refund(key)`. This allowed repeated passkey login attempts against disabled accounts to bypass IP-based throttling and avoid rate-limiting penalties.
 *Learning:* Authentication rejections due to account status (such as disabled accounts) represent failed login attempts and must retain their consumed rate-limit penalty rather than being treated like transient server/database errors.
 *Prevention:* Never refund rate-limiter reservations on account-status authentication failures; ensure disabled-account login attempts consume rate limiting consistently across all authentication methods.
+
+## 2026-07-21 - [Bypassing Authentication Lockout on TOTP Setup Initiation]
+*Vulnerability:* The `TOTPSetup` endpoint only throttled initiation frequency via `CeremonyLimiter`, failing to consult existing authentication lockouts via `checkRateLimit`. When an account or IP was locked out due to repeated failed login or re-authentication attempts, an attacker holding a session could still initiate TOTP enrolment ceremonies and generate new secrets.
+*Learning:* Enrolment initiation ceremonies must consult existing authentication failure lockouts as a gate, immediately refunding the attempt reservation upon passing so ordinary setup starts do not consume the credential failure budget.
+*Prevention:* Always gate ceremony initiation endpoints with `checkRateLimit` and `refundReauth` before proceeding to ceremony-specific logic.
