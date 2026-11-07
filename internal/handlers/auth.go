@@ -104,6 +104,9 @@ type loginRequest struct {
 // per-IP spray throttle is applied only on the public login path (ipThrottled),
 // not on post-auth endpoints that also use this helper.
 func (h *AuthHandler) checkRateLimit(w http.ResponseWriter, r *http.Request, username string) (key, ip string, ok bool) {
+	if h.Limiter == nil || h.UserLimiter == nil || h.Auth == nil {
+		return "", "", true
+	}
 	ip = h.Auth.ClientIP(r)
 	uname := strings.ToLower(username)
 	key = uname + "|" + ip
@@ -164,19 +167,29 @@ func (h *AuthHandler) recordReauthFailure(key, ip string) {
 }
 
 func (h *AuthHandler) refundReauth(key, ip string) {
-	h.Limiter.Refund(key)
-	h.UserLimiter.Refund(userKeyOf(key, ip))
+	if h.Limiter != nil {
+		h.Limiter.Refund(key)
+	}
+	if h.UserLimiter != nil {
+		h.UserLimiter.Refund(userKeyOf(key, ip))
+	}
 }
 
 func (h *AuthHandler) refundLogin(key, ip string) {
 	h.refundReauth(key, ip)
-	h.IPLimiter.Refund(ip)
+	if h.IPLimiter != nil {
+		h.IPLimiter.Refund(ip)
+	}
 }
 
 // resetReauth clears both counters after a successful re-authentication.
 func (h *AuthHandler) resetReauth(key, ip string) {
-	h.Limiter.Reset(key)
-	h.UserLimiter.Reset(userKeyOf(key, ip))
+	if h.Limiter != nil {
+		h.Limiter.Reset(key)
+	}
+	if h.UserLimiter != nil {
+		h.UserLimiter.Reset(userKeyOf(key, ip))
+	}
 }
 
 // stepUpWindow is how long after a primary-factor login (password or passkey) a
