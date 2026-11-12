@@ -37,6 +37,7 @@ func newPortalToken() (raw, hash string, err error) {
 
 // resolvePortalPerson validates a raw token and, on success, touches last_used_at
 // and returns the owning person id. A missing/expired/revoked token yields false.
+// Tokens of anonymized persons (DSGVO Art. 17) never resolve.
 func (h *Handler) resolvePortalPerson(ctx context.Context, rawToken string) (int64, bool) {
 	rawToken = strings.TrimSpace(rawToken)
 	if rawToken == "" || len(rawToken) > 200 {
@@ -46,6 +47,7 @@ func (h *Handler) resolvePortalPerson(ctx context.Context, rawToken string) (int
 	err := h.Pool.QueryRow(ctx,
 		`UPDATE self_service_tokens SET last_used_at = now()
 		   WHERE token_hash = $1 AND NOT revoked AND expires_at > now()
+		     AND person_id IN (SELECT id FROM persons WHERE NOT anonymized)
 		 RETURNING person_id`, hashPortalToken(rawToken)).Scan(&pid)
 	if err != nil {
 		// No matching row = invalid/expired/revoked token (the normal 404 path).
@@ -93,14 +95,22 @@ func (h *Handler) CreatePortalLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var email, first, last string
+	var anonymized bool
 	if err := h.Pool.QueryRow(r.Context(),
-		`SELECT email, first_name, last_name FROM persons WHERE id=$1`, id,
-	).Scan(&email, &first, &last); err != nil {
+		`SELECT email, first_name, last_name, anonymized FROM persons WHERE id=$1`, id,
+	).Scan(&email, &first, &last, &anonymized); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "person not found")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	// DSGVO Art. 17: Anonymisierte Personen haben keinen aktiven Portalzugang mehr.
+	// Neue Links dürfen nicht erstellt werden, da sie über Invoices/PDFs alte
+	// Stammdaten/Belege exponieren würden (vgl. AnonymizePerson, UpdatePerson).
+	if anonymized {
+		writeError(w, http.StatusConflict, "person is anonymized (DSGVO Art. 17)")
 		return
 	}
 

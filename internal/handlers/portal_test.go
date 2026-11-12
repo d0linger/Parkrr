@@ -222,6 +222,37 @@ func TestAnonymizeRevokesPortalTokens(t *testing.T) {
 	if w := getPortalSummary(t, h, token); w.Code != http.StatusNotFound {
 		t.Errorf("portal token still works after anonymize: got %d, want 404", w.Code)
 	}
+
+	// Creating a new portal link for an anonymized person must be refused (409 Conflict).
+	pids := strconv.FormatInt(pid, 10)
+	creq := httptest.NewRequest(http.MethodPost, "/api/persons/"+pids+"/portal-link", bytes.NewReader([]byte(`{}`)))
+	creq.SetPathValue("id", pids)
+	creq.Header.Set("Content-Type", "application/json")
+	cw := httptest.NewRecorder()
+	h.CreatePortalLink(cw, creq)
+	if cw.Code != http.StatusConflict {
+		t.Errorf("create portal link for anonymized person: got %d, want 409", cw.Code)
+	}
+	if !strings.Contains(cw.Body.String(), "anonymized") {
+		t.Errorf("expected anonymized error message, got: %s", cw.Body.String())
+	}
+
+	// Even if an unrevoked token row existed for the anonymized person, resolvePortalPerson must fail.
+	raw, hash, err := newPortalToken()
+	if err != nil {
+		t.Fatalf("newPortalToken: %v", err)
+	}
+	if _, err := h.Pool.Exec(context.Background(),
+		`INSERT INTO self_service_tokens (token_hash, person_id, expires_at) VALUES ($1,$2,now()+interval '1 day')`,
+		hash, pid); err != nil {
+		t.Fatalf("insert token: %v", err)
+	}
+	if _, ok := h.resolvePortalPerson(context.Background(), raw); ok {
+		t.Error("resolvePortalPerson must not resolve token for anonymized person")
+	}
+	if sw := getPortalSummary(t, h, raw); sw.Code != http.StatusNotFound {
+		t.Errorf("portal summary for anonymized person token: got %d, want 404", sw.Code)
+	}
 }
 
 // Der Portal-Link ist ein Bearer-Link, der einen Kunden um Geld bittet. Ohne den
