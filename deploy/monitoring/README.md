@@ -14,6 +14,9 @@ pre-provisioned datasource and the **Parkrr — Service Overview** dashboard.
 
 ## Run it
 
+Before upgrading Grafana, back up its `grafana-data` volume. Grafana applies
+database migrations on startup; restore that backup if a rollback is needed.
+
 From the repository root, layer the monitoring compose file on top of the main one:
 
 ```sh
@@ -21,7 +24,8 @@ docker compose -f docker-compose.yml \
                -f deploy/monitoring/docker-compose.monitoring.yml up -d
 ```
 
-- Grafana: http://localhost:3000 (`admin` / `admin` on first login — change it).
+- Grafana: http://localhost:3000 (`GRAFANA_ADMIN_USER`, default `admin`, and the
+  required `GRAFANA_ADMIN_PASSWORD`).
   The dashboard is under the **Parkrr** folder.
 - Prometheus: http://localhost:9090
 
