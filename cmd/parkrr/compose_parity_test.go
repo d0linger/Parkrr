@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v4"
 )
 
 // composeApp is the subset of a Compose file we assert parity on: the app service's
@@ -36,6 +36,9 @@ func TestGHCRComposeParity(t *testing.T) {
 	}
 	if ghcr == nil {
 		t.Fatal("docker-compose.ghcr.yml has no services.app")
+	}
+	if len(base.Environment) == 0 || len(base.Volumes) == 0 {
+		t.Fatal("base Compose app must decode nonempty environment and volumes")
 	}
 
 	if !reflect.DeepEqual(base.Environment, ghcr.Environment) {

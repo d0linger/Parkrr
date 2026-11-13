@@ -6,7 +6,7 @@
 # "1.27-alpine" baute also mit einem Compiler, gegen den kein Test lief.
 # scripts/check-go-version.cjs hält alle Stellen gleich; ein Update ändert sie
 # gemeinsam in einem Commit.
-FROM golang:1.27.3-alpine3.24@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS build
+FROM golang:1.27.4-alpine3.24@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf AS build
 
 WORKDIR /src
 
@@ -37,7 +37,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # Alpine (not distroless) so pg_dump/pg_restore are available for the encrypted
 # backup feature; pinned to major 16 to match the postgres:16 server. Runs as a
 # dedicated non-root user.
-FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 
 # `apk upgrade` first: `apk add` never lifts an already-satisfied base-image
 # package, so libcrypto3/libssl3, busybox etc. would otherwise stay on the

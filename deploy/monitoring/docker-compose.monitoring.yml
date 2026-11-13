@@ -11,7 +11,7 @@
 # Prometheus can scrape the app at app:8080/metrics.
 services:
   prometheus:
-    image: prom/prometheus:v2.55.1
+    image: prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06
     container_name: parkrr-prometheus
     restart: unless-stopped
     volumes:
@@ -29,7 +29,7 @@ services:
       - parkrr-net
 
   grafana:
-    image: grafana/grafana:13.2.1@sha256:f772d434e8fab0049deb2b1b30abd43342bcfca1537614aa8d36080232cf4283
+    image: grafana/grafana:13.3.1@sha256:0615ec4fbd4072004b7d86b46ded63013a74b7d6eb1119273dd89e8fa25c13cf
     container_name: parkrr-grafana
     restart: unless-stopped
     depends_on:

@@ -14,6 +14,11 @@ pre-provisioned datasource and the **Parkrr — Service Overview** dashboard.
 
 ## Run it
 
+Before upgrading Grafana, stop it and back up its `grafana-data` volume so its
+SQLite database is copied consistently. Grafana applies database migrations on
+startup; restore that backup if a rollback is needed. See the
+[Grafana backup guidance](https://grafana.com/docs/grafana/latest/administration/back-up-grafana/).
+
 From the repository root, layer the monitoring compose file on top of the main one:
 
 ```sh
@@ -21,7 +26,8 @@ docker compose -f docker-compose.yml \
                -f deploy/monitoring/docker-compose.monitoring.yml up -d
 ```
 
-- Grafana: http://localhost:3000 (`admin` / `admin` on first login — change it).
+- Grafana: http://localhost:3000 (new database: `GRAFANA_ADMIN_USER`, default
+  `admin`, and the required `GRAFANA_ADMIN_PASSWORD`).
   The dashboard is under the **Parkrr** folder.
 - Prometheus: http://localhost:9090
 
@@ -31,6 +37,28 @@ at `app:8080/metrics` — no host port required.
 Override any of these before `up` if the defaults clash:
 `PARKRR_GRAFANA_PORT` (3000), `PARKRR_PROMETHEUS_PORT` (9090),
 `GRAFANA_ADMIN_USER`, `GRAFANA_ADMIN_PASSWORD`.
+
+The Grafana admin settings initialize a new database only. With an existing
+`grafana-data` volume, use its stored credentials; changing these environment
+variables does not rename the account or rotate its password. Change a known
+password in Grafana's user preferences. If the admin password is lost, follow the
+[Grafana CLI reset procedure](https://grafana.com/docs/grafana/latest/administration/cli/#reset-admin-password)
+against that existing database.
+
+## Upgrading Prometheus 2.55 to 3
+
+Stop Prometheus and back up its `prometheus-data` volume before upgrading.
+Prometheus 3 can open the existing 2.55.1 data directory; no export or reset is
+needed. Keep the backup if you need to roll back. Prometheus 3 data can only be
+opened by Prometheus 2.55 or newer, so never downgrade the volume to an older
+2.x release.
+
+The supplied configuration uses no removed flags or experimental PromQL
+functions. Parkrr's `/metrics` handler supplies a supported Content-Type, which
+Prometheus 3 now requires. For additional scrape targets, verify their response
+headers before upgrading rather than adding a global fallback protocol.
+
+See the [upstream migration guide](https://prometheus.io/docs/prometheus/latest/migration/).
 
 ## Securing /metrics
 

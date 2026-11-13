@@ -19,6 +19,14 @@ func (h *AuthHandler) TOTPSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "two-factor is already enabled")
 		return
 	}
+	// Gate on existing authentication lockouts (IP or account-level) from failed
+	// login/re-auth attempts. Refund the reservation on pass so ordinary setup
+	// attempts do not consume the credential failure budget (matching PasskeyRegisterBegin).
+	rlKey, ip, ok := h.checkRateLimit(w, r, u.Username)
+	if !ok {
+		return
+	}
+	h.refundReauth(rlKey, ip)
 	if ok, wait := h.CeremonyLimiter.Consume(strings.ToLower(u.Username)); !ok {
 		w.Header().Set("Retry-After", formatSeconds(wait))
 		writeError(w, http.StatusTooManyRequests, "Zu viele Versuche – bitte in "+formatMinutes(wait)+" erneut versuchen")

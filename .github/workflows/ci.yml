@@ -56,7 +56,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
           cache: true
 
       - name: Download & verify modules
@@ -122,8 +122,8 @@ jobs:
       # so the validation build exercises the shipped, minified assets.
       - name: Minify static JavaScript
         run: |
-          npx --yes esbuild@0.24.2 web/static/js/app.js --minify --allow-overwrite --outfile=web/static/js/app.js
-          npx --yes esbuild@0.24.2 web/static/sw.js     --minify --allow-overwrite --outfile=web/static/sw.js
+          npx --yes esbuild@0.28.2 web/static/js/app.js --minify --allow-overwrite --outfile=web/static/js/app.js
+          npx --yes esbuild@0.28.2 web/static/sw.js     --minify --allow-overwrite --outfile=web/static/sw.js
           node --check web/static/js/app.js
           node --check web/static/sw.js
       - name: Build image
@@ -136,8 +136,8 @@ jobs:
       # ausgetauschtes Release-Asset fällt am Hash auf.
       - name: Scan image (Trivy, pinned + checksummed binary)
         run: |
-          TRIVY_VERSION=0.74.0
-          TRIVY_SHA256=2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+          TRIVY_VERSION=0.76.2
+          TRIVY_SHA256=bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf
           curl -sSfL -o trivy.tgz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
           echo "${TRIVY_SHA256}  trivy.tgz" | sha256sum -c -
           tar -xzf trivy.tgz trivy
