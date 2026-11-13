@@ -36,6 +36,21 @@ Override any of these before `up` if the defaults clash:
 `PARKRR_GRAFANA_PORT` (3000), `PARKRR_PROMETHEUS_PORT` (9090),
 `GRAFANA_ADMIN_USER`, `GRAFANA_ADMIN_PASSWORD`.
 
+## Upgrading Prometheus 2.55 to 3
+
+Stop Prometheus and back up its `prometheus-data` volume before upgrading.
+Prometheus 3 can open the existing 2.55.1 data directory; no export or reset is
+needed. Keep the backup if you need to roll back. Prometheus 3 data can only be
+opened by Prometheus 2.55 or newer, so never downgrade the volume to an older
+2.x release.
+
+The supplied configuration uses no removed flags or experimental PromQL
+functions. Parkrr's `/metrics` handler supplies a supported Content-Type, which
+Prometheus 3 now requires. For additional scrape targets, verify their response
+headers before upgrading rather than adding a global fallback protocol.
+
+See the [upstream migration guide](https://prometheus.io/docs/prometheus/latest/migration/).
+
 ## Securing /metrics
 
 By default `/metrics` is served without authentication — fine on a private
