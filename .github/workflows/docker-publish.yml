@@ -208,7 +208,7 @@ jobs:
         run: |
           set -euo pipefail
           curl --fail --show-error --silent --location \
-            https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz \
+            https://github.com/aquasecurity/trivy/releases/download/v0.76.2/trivy_0.76.2_Linux-64bit.tar.gz \
             --output "$RUNNER_TEMP/trivy.tar.gz"
           printf '%s  %s\n' \
             'bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf' \

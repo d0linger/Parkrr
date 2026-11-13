@@ -75,7 +75,8 @@ func TestTOTPSetup_ExistingLockout(t *testing.T) {
 		ah.recordReauthFailure(key, cip)
 	}
 
-	// IP is locked out: TOTPSetup from that IP must be blocked with 429.
+	// Leave only the username/IP budget locked so it must independently block setup.
+	ah.UserLimiter.Reset(uname)
 	w := httptest.NewRecorder()
 	ah.TOTPSetup(w, reqFrom("192.0.2.1"))
 	if w.Code != http.StatusTooManyRequests {

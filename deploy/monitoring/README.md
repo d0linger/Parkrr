@@ -14,8 +14,10 @@ pre-provisioned datasource and the **Parkrr — Service Overview** dashboard.
 
 ## Run it
 
-Before upgrading Grafana, back up its `grafana-data` volume. Grafana applies
-database migrations on startup; restore that backup if a rollback is needed.
+Before upgrading Grafana, stop it and back up its `grafana-data` volume so its
+SQLite database is copied consistently. Grafana applies database migrations on
+startup; restore that backup if a rollback is needed. See the
+[Grafana backup guidance](https://grafana.com/docs/grafana/latest/administration/back-up-grafana/).
 
 From the repository root, layer the monitoring compose file on top of the main one:
 
@@ -24,8 +26,8 @@ docker compose -f docker-compose.yml \
                -f deploy/monitoring/docker-compose.monitoring.yml up -d
 ```
 
-- Grafana: http://localhost:3000 (`GRAFANA_ADMIN_USER`, default `admin`, and the
-  required `GRAFANA_ADMIN_PASSWORD`).
+- Grafana: http://localhost:3000 (new database: `GRAFANA_ADMIN_USER`, default
+  `admin`, and the required `GRAFANA_ADMIN_PASSWORD`).
   The dashboard is under the **Parkrr** folder.
 - Prometheus: http://localhost:9090
 
@@ -35,6 +37,13 @@ at `app:8080/metrics` — no host port required.
 Override any of these before `up` if the defaults clash:
 `PARKRR_GRAFANA_PORT` (3000), `PARKRR_PROMETHEUS_PORT` (9090),
 `GRAFANA_ADMIN_USER`, `GRAFANA_ADMIN_PASSWORD`.
+
+The Grafana admin settings initialize a new database only. With an existing
+`grafana-data` volume, use its stored credentials; changing these environment
+variables does not rename the account or rotate its password. Change a known
+password in Grafana's user preferences. If the admin password is lost, follow the
+[Grafana CLI reset procedure](https://grafana.com/docs/grafana/latest/administration/cli/#reset-admin-password)
+against that existing database.
 
 ## Upgrading Prometheus 2.55 to 3
 
