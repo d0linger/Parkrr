@@ -11,6 +11,33 @@ der Implementierung („neue Spalte in export.go").
 
 ## [Unreleased]
 
+### Sicherheitsprüfung · November 2026
+
+- Mails aus der Warteschlange gehen an die E-Mail-Adresse, die beim Versand gilt:
+  wird eine Adresse korrigiert, während eine Rechnung noch wartet, erreicht sie
+  nicht mehr das alte Postfach. Ohne hinterlegte Adresse wird nichts gesendet.
+- Anonymisieren wartet, bis eine gerade laufende Mail an die Person hinaus ist,
+  statt Erfolg zu melden, während sie noch versendet wird.
+- Nach einem Restore gelten Kundenportal-Links und Kalender-Abos nur, wenn sie
+  unmittelbar vor dem Restore galten — ein inzwischen widerrufener Link wird nicht
+  wieder gültig. Nach einem unterbrochenen Restore oder einem Restore in eine leere
+  Datenbank werden alle Links widerrufen und müssen neu verschickt werden.
+- Ein Kundenwunsch oder eine Vertragsannahme im Portal, die in eine Anonymisierung
+  oder einen Widerruf hineinläuft, legt nichts mehr an; eine während der Annahme
+  gespeicherte neue Vertragsfassung führt zur Meldung „Vertrag wurde geändert".
+- Ein Passkey, dessen Registrierung während eines Zwei-Faktor-Resets durch den
+  Admin lief, wird nicht mehr gespeichert.
+- Geldbewegungen (Nebenkosten, Kontoauszug-Import, bezahlt/offen, Wertsicherung,
+  VPI) und ihr Protokolleintrag werden gemeinsam gespeichert; scheitert der
+  Eintrag, wird auch die Änderung nicht übernommen.
+- `/metrics` ist ohne `PARKRR_METRICS_TOKEN` jetzt auch ohne Compose-Datei aus;
+  anonym nur noch mit ausdrücklichem `PARKRR_METRICS_REQUIRE_AUTH=false`.
+- Kalender-Abos, Exporte, Berichte und Backups landen in keinem Browser- oder
+  Offline-Cache mehr; das Web-Manifest wird mit korrektem Typ ausgeliefert, die
+  Anmeldeseite hat einen Hauptbereich für Screenreader.
+- Images tragen die Quell-Revision als Label; Release-Tags werden nur
+  veröffentlicht, wenn ihr Commit auf dem Hauptzweig liegt.
+
 ### Review-Nachbesserungen · Oktober 2026
 
 - Bestehende Buchungspreise bleiben bei Tarifänderungen erhalten; noch dynamisch

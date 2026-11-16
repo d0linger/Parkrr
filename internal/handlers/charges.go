@@ -801,7 +801,13 @@ func (h *Handler) SetChargePaid(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		}
-		return nil
+		verb := "charge marked open"
+		if req.Paid {
+			verb = "charge marked paid"
+		}
+		// curPaid is the locked value, so the settlement diff is exact.
+		return h.auditChangeTx(r.Context(), tx, r, "update", "charge", id, verb,
+			diffFields(map[string]any{"paid": curPaid}, map[string]any{"paid": req.Paid}))
 	}); err != nil {
 		var conflict *settlementConflictError
 		if errors.As(err, &conflict) {
@@ -814,12 +820,5 @@ func (h *Handler) SetChargePaid(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, failMsg)
 		return
 	}
-	verb := "charge marked open"
-	if req.Paid {
-		verb = "charge marked paid"
-	}
-	// curPaid was read above for the bound-charge check, so the settlement diff is free.
-	h.auditChange(r, "update", "charge", id, verb,
-		diffFields(map[string]any{"paid": curPaid}, map[string]any{"paid": req.Paid}))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

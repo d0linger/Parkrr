@@ -341,10 +341,42 @@ func (h *Handler) PortalAcceptContract(w http.ResponseWriter, r *http.Request) {
 	}
 	fileName := "Einstellvertrag-v" + strconv.Itoa(c.Version) + "-" + safeFileWord(f["gefaehrt"]) + "-" + now.Format("2006-01-02") + ".pdf"
 	var accID int64
-	var dup bool
+	var dup, revoked, outdated bool
 	err = pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(r.Context(), `SELECT 1 FROM persons WHERE id = $1 FOR UPDATE`, pid); err != nil {
 			return err
+		}
+		if ok, err := portalStillAuthorized(r.Context(), tx, r, pid); err != nil {
+			return err
+		} else if !ok {
+			revoked = true
+			return nil
+		}
+		// The version check above ran before rendering. SHARE conflicts with the
+		// publisher's EXCLUSIVE lock: a new version is either visible here or waits
+		// until this acceptance has committed — never accepted and outdated at once.
+		if _, err := tx.Exec(r.Context(), `LOCK TABLE contract_templates IN SHARE MODE`); err != nil {
+			return err
+		}
+		// The link may have expired while that waited, so check again; revocation and
+		// anonymization cannot commit meanwhile, both rows are locked above. The link
+		// lock stays BEFORE the table lock: DeleteUser's ON DELETE SET NULL reaches
+		// self_service_tokens before contract_templates, and the reverse order here
+		// deadlocks with it.
+		if ok, err := portalStillAuthorized(r.Context(), tx, r, pid); err != nil {
+			return err
+		} else if !ok {
+			revoked = true
+			return nil
+		}
+		var latest int64
+		if err := tx.QueryRow(r.Context(),
+			`SELECT id FROM contract_templates ORDER BY version DESC LIMIT 1`).Scan(&latest); err != nil {
+			return err
+		}
+		if latest != c.ID {
+			outdated = true
+			return nil
 		}
 		var exists bool
 		if err := tx.QueryRow(r.Context(),
@@ -368,6 +400,14 @@ func (h *Handler) PortalAcceptContract(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		serverError(w, r, "could not save", err)
+		return
+	}
+	if revoked {
+		writeError(w, http.StatusNotFound, "Link ungültig oder abgelaufen")
+		return
+	}
+	if outdated {
+		writeError(w, http.StatusConflict, "Der Vertrag wurde inzwischen geändert. Bitte die neue Fassung lesen.")
 		return
 	}
 	if dup {

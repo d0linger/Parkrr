@@ -179,7 +179,10 @@ func checkRestoreClientVersions(ctx context.Context) error {
 
 // restoreArchive spielt ein entschlüsseltes pg_dump-Archiv atomar ein. Genau eine
 // Quelle ist gesetzt: archivePath (eine Datei) oder archive (stdin von pg_restore).
-func restoreArchive(ctx context.Context, dbURL, archivePath string, archive io.Reader) error {
+// epilogue (optional) läuft in derselben Transaktion nach dem Archiv und vor dem
+// COMMIT: schlägt es fehl, bleibt die Datenbank unverändert. pg_restore setzt den
+// search_path leer — das Epilog muss Namen voll qualifizieren.
+func restoreArchive(ctx context.Context, dbURL, archivePath string, archive io.Reader, epilogue string) error {
 	if err := checkRestoreClientVersions(ctx); err != nil {
 		return err
 	}
@@ -231,6 +234,9 @@ func restoreArchive(ctx context.Context, dbURL, archivePath string, archive io.R
 	}
 	scriptWaitErr := script.Wait()
 	committed := false
+	if feedErr == nil && scriptWaitErr == nil && epilogue != "" {
+		_, feedErr = io.WriteString(psqlIn, "\n"+epilogue+"\n")
+	}
 	if feedErr == nil && scriptWaitErr == nil {
 		if _, feedErr = io.WriteString(psqlIn, "\nCOMMIT;\n"); feedErr == nil {
 			committed = true

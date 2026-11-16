@@ -235,6 +235,13 @@ func (h *AuthHandler) PasskeyRegisterFinish(w http.ResponseWriter, r *http.Reque
 	}
 	h.clearCeremony(r.Context(), w, r)
 	if err := h.WebAuthn.FinishRegistration(r.Context(), u, cer.Session, r, cer.Name); err != nil {
+		// The session ended while the ceremony ran (e.g. an admin reset all factors):
+		// nothing was stored, and it is no verification failure either.
+		if errors.Is(err, auth.ErrRegistrationSessionGone) {
+			h.refundReauth(key, ip)
+			writeError(w, http.StatusUnauthorized, "not authenticated")
+			return
+		}
 		// Only a real verification failure counts toward the throttle; a backend
 		// error is transient and must not lock the user out.
 		if errors.Is(err, auth.ErrWebAuthnInternal) {

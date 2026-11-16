@@ -206,6 +206,10 @@ func TestScheduleWeekPDFAndCalendarFeed(t *testing.T) {
 	if f.Code != http.StatusOK || !strings.HasPrefix(f.Header().Get("Content-Type"), "text/calendar") {
 		t.Fatalf("feed: %d %s", f.Code, f.Header().Get("Content-Type"))
 	}
+	// Widerrufbarer Link: kein Cache darf später noch für ihn antworten.
+	if cc := f.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Fatalf("feed Cache-Control: %q", cc)
+	}
 	ics := f.Body.String()
 	for _, want := range []string{"BEGIN:VCALENDAR", "UID:pickup-" + strconv.FormatInt(vid, 10) + "@parkrr", "DTSTART;VALUE=DATE:20261017", "Abholung: Eriba", "BN-627 CK", "Abholwunsch aus dem Portal"} {
 		if !strings.Contains(ics, want) {

@@ -12,6 +12,7 @@ import (
 	"github.com/preining/parkrr/internal/backup"
 	"github.com/preining/parkrr/internal/config"
 	"github.com/preining/parkrr/internal/database"
+	"github.com/preining/parkrr/internal/handlers"
 )
 
 // runRestore implements "parkrr restore <file.dump.enc> [--force]": decrypt and
@@ -75,22 +76,33 @@ func runRestore(args []string) int {
 		return 1
 	}
 	defer func() { _ = lease.Release() }()
-	if err := backup.RestoreFile(ctx, cfg.DatabaseURL, file, cfg.BackupKey); err != nil {
-		fmt.Fprintln(os.Stderr, "restore failed:", err)
-		return 1
-	}
 	pool, err := database.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "restored, but could not reconnect to purge sessions:", err)
+		fmt.Fprintln(os.Stderr, "could not connect to the database:", err)
 		return 1
 	}
 	defer pool.Close()
+	// Links revoked after the snapshot must stay revoked (see handlers.LiveLinks).
+	// The pruning runs inside the restore transaction: if anything later fails or
+	// the process dies, the committed restore already carries it, and a retry that
+	// finds the restore uncommitted captures the original state again.
+	live := handlers.CaptureLiveLinks(ctx, pool)
+	if err := backup.RestoreFileThen(ctx, cfg.DatabaseURL, file, cfg.BackupKey, live.RestoreEpilogue()); err != nil {
+		fmt.Fprintln(os.Stderr, "restore failed:", err)
+		return 1
+	}
+	// pg_restore recreated every table; drop connections holding cached plans.
+	pool.Reset()
 	if err := database.Migrate(ctx, pool); err != nil {
 		fmt.Fprintln(os.Stderr, "restored, but schema migration failed:", err)
 		return 1
 	}
 	if _, err := pool.Exec(ctx, `DELETE FROM sessions`); err != nil {
 		fmt.Fprintln(os.Stderr, "restored, but could not purge sessions:", err)
+		return 1
+	}
+	if err := handlers.New(pool).ReapplyLiveLinks(ctx, live); err != nil {
+		fmt.Fprintln(os.Stderr, "restored, but could not revoke outdated portal links:", err)
 		return 1
 	}
 	fmt.Println("restore complete.")

@@ -182,6 +182,7 @@ func (h *Handler) ExportAudit(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("Content-Disposition",
 		`attachment; filename="parkrr-audit-export-`+h.now().Format("2006-01-02")+`.jsonl"`)
 	bw := bufio.NewWriterSize(w, auditExportBufSize)

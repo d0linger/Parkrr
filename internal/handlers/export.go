@@ -359,6 +359,7 @@ func writeCSVDownload(w http.ResponseWriter, r *http.Request, name string, heade
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("Content-Disposition",
 		`attachment; filename="parkrr-`+name+`-`+now.Format("2006-01-02")+`.csv"`)
 	_, _ = w.Write(buf.Bytes())

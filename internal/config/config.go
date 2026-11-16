@@ -166,8 +166,10 @@ func Load() (*Config, error) {
 		WebAuthnOrigins:        splitList(os.Getenv("PARKRR_WEBAUTHN_ORIGINS")),
 		WebAuthnSuspendOnClone: getenvBool("PARKRR_WEBAUTHN_SUSPEND_ON_CLONE", false),
 
-		MetricsToken:       getenv("PARKRR_METRICS_TOKEN", ""),
-		MetricsRequireAuth: getenvBool("PARKRR_METRICS_REQUIRE_AUTH", false),
+		MetricsToken: getenv("PARKRR_METRICS_TOKEN", ""),
+		// Fail closed like the Compose files: anonymous /metrics only on an explicit
+		// PARKRR_METRICS_REQUIRE_AUTH=false (only if nothing but Prometheus reaches the port).
+		MetricsRequireAuth: getenvBool("PARKRR_METRICS_REQUIRE_AUTH", true),
 		// Default to the 7-year BAO §132 retention window; money-trail rows
 		// (invoice/payment/billing) are never pruned regardless (see PruneAuditLog).
 		AuditRetentionDays: getenvInt("PARKRR_AUDIT_RETENTION_DAYS", 2555),

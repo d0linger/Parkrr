@@ -42,7 +42,12 @@ self.addEventListener('fetch', (event) => {
 
     // Never cache API calls or dynamic status endpoints – always go to the network,
     // so they never enter the cache nor use the ignoreSearch offline fallback below.
-    if (url.pathname.startsWith('/api/') || url.pathname === '/healthz' || url.pathname === '/readyz' || url.pathname === '/metrics') {
+    // /ical/ is a revocable capability link: a cached copy would outlive revocation.
+    // Matched on the DECODED path, as the server routes it: /%69cal/… is /ical/….
+    let path = url.pathname;
+    try { path = decodeURIComponent(path); } catch (_) { /* malformed: keep the raw path */ }
+    if (path.startsWith('/api/') || path.startsWith('/ical/') ||
+        path === '/healthz' || path === '/readyz' || path === '/metrics') {
         return;
     }
 
@@ -52,7 +57,10 @@ self.addEventListener('fetch', (event) => {
     // JS/CSS until the cache name changes.
     event.respondWith(
         fetch(request).then((res) => {
-            if (res && res.ok && url.origin === self.location.origin) {
+            // no-store is the server's word that no cache may keep this response —
+            // whatever path it came from.
+            const noStore = /no-store/i.test((res && res.headers.get('Cache-Control')) || '');
+            if (res && res.ok && !noStore && url.origin === self.location.origin) {
                 const copy = res.clone();
                 // Keep the worker alive until the cache write finishes.
                 event.waitUntil(caches.open(CACHE).then((c) => c.put(request, copy)).catch(() => {}));

@@ -335,6 +335,26 @@ wer ihn hat, sieht Saldo, Rechnungen (mit Zahlungs-QR), Gefährte und
   Konten ausscheidender MITARBEITER dagegen: **sperren statt löschen**
   (Benutzerverwaltung → „Zugang sperren"), sonst verlieren Rechnungen und
   Zahlungen ihre Urheber-Zuordnung.
+- **Änderungsprotokoll nach einer Anonymisierung:** Frühere Einträge zur Person
+  (Anlegen und Ändern mit Name, E-Mail, Telefon, Adresse) bleiben bewusst
+  stehen; der Anonymisierungs-Eintrag selbst enthält keine Personendaten.
+  Begründung: Das Protokoll ist der Nachweis, wem welche Rechnung, Mahnung oder
+  Mitteilung an welche Adresse ging — Teil der Aufzeichnungen, die sieben Jahre
+  nachvollziehbar bleiben müssen (BAO §131/§132), und Beleg für mögliche
+  Rechtsansprüche. Art. 17 Abs. 3 lit. b und e DSGVO nehmen solche Daten von der
+  Löschpflicht aus; Art. 5 Abs. 2 verlangt die Nachweisbarkeit. Damit die
+  Einträge nur diesem Zweck dienen: lesen und exportieren können sie **nur
+  Admins**, ändern niemand (append-only, Hashkette), und nach Ablauf von
+  `PARKRR_AUDIT_RETENTION_DAYS` löscht Parkrr sie automatisch. Der Standard von
+  2555 Tagen sind rund sieben Jahre, nicht genau sieben Kalenderjahre
+  (Schalttage). Wer eine exakte Frist braucht — BAO §132 zählt ab dem Ende des
+  Kalenderjahres —, stellt einen entsprechend größeren Wert ein. Wer
+  anonymisieren lässt, erfährt auf Nachfrage genau das. Diese Abwägung einmal mit
+  Steuer- bzw. Datenschutzberatung bestätigen. Eine kürzere Frist träfe alle
+  Einträge außer Rechnungen, Zahlungen, Abrechnung, Pauschalen und Nebenkosten,
+  nicht nur diese. Deren Einträge bleiben dauerhaft — bis auf Mahn-Vermerke
+  (Aktion „remind“), die wie Anmeldungen und Backup-Meldungen nach
+  `PARKRR_AUDIT_RETENTION_SHORT_DAYS` (Standard 365 Tage) entfallen.
 - **Datenauskunft (Art. 15 DSGVO):** Person → „Datenauskunft (ZIP)“ (nur
   Admins) packt alle Daten zur Person in ein Archiv, samt Rechnungs- und
   Übergabe-PDFs, Fotos, Anhängen und Mail-Protokoll. Der Abruf steht im

@@ -80,6 +80,10 @@ func TestServerWiring(t *testing.T) {
 			t.Errorf("%s: %d", path, rec.Code)
 		}
 	}
+	// Ohne eigenen Typ erschnüffelt der FileServer das Manifest als text/plain.
+	if ct := doReq(t, h, http.MethodGet, "/manifest.webmanifest", nil).Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/manifest+json") {
+		t.Errorf("/manifest.webmanifest Content-Type: %q", ct)
+	}
 
 	// Anonym an die API: 401, nicht 200 und nicht 500.
 	for _, path := range []string{"/api/persons", "/api/vehicles", "/api/backup/status", "/api/users"} {

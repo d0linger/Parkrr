@@ -210,7 +210,7 @@ func (h *Handler) PortalCreateRequest(w http.ResponseWriter, r *http.Request) {
 	// Zahlungsabgleich (payments.go) und bei den Planer-Icons.
 	raw, _ := json.Marshal(payload)
 	var reqID int64
-	var capped, slotTaken bool
+	var capped, slotTaken, revoked bool
 	txErr := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
 		// Über advisoryKey, nicht über `hashtext($1)::bigint`: hashtext liefert einen
 		// vorzeichenbehafteten int4 und schnitte den Schlüsselraum von 2^64 auf 2^32
@@ -220,6 +220,12 @@ func (h *Handler) PortalCreateRequest(w http.ResponseWriter, r *http.Request) {
 		if _, e := tx.Exec(r.Context(), `SELECT pg_advisory_xact_lock($1)`,
 			advisoryKey("parkrr.portal_request."+strconv.FormatInt(pid, 10))); e != nil {
 			return e
+		}
+		if ok, e := portalStillAuthorized(r.Context(), tx, r, pid); e != nil {
+			return e
+		} else if !ok {
+			revoked = true
+			return nil
 		}
 		var open int
 		if e := tx.QueryRow(r.Context(),
@@ -253,6 +259,10 @@ func (h *Handler) PortalCreateRequest(w http.ResponseWriter, r *http.Request) {
 	})
 	if txErr != nil {
 		serverError(w, r, "could not store request", txErr)
+		return
+	}
+	if revoked {
+		writeError(w, http.StatusNotFound, "Link ungültig oder abgelaufen")
 		return
 	}
 	if capped {

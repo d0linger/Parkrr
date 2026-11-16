@@ -62,8 +62,8 @@ See the [upstream migration guide](https://prometheus.io/docs/prometheus/latest/
 
 ## Securing /metrics
 
-By default `/metrics` is served without authentication — fine on a private
-network. To require a token:
+By default `/metrics` is not registered until a token is set (the app fails
+closed). To scrape it:
 
 1. Set `PARKRR_METRICS_TOKEN=<secret>` on the app (see `docker-compose.yml`).
 2. Write the same secret (one line, no trailing newline) to
@@ -71,8 +71,12 @@ network. To require a token:
 3. Uncomment the `authorization:` block in `prometheus.yml` and the matching
    volume mount in `docker-compose.monitoring.yml`, then recreate the stack.
 
-To disable the endpoint entirely, set `PARKRR_METRICS_REQUIRE_AUTH=true` with an
-empty token (the app fails closed and does not register `/metrics`).
+Skipping the token (`PARKRR_METRICS_REQUIRE_AUTH=false`) serves `/metrics`
+without authentication on the app's normal HTTP port. An isolated monitoring
+network does not protect it: anyone who can reach the app — through its
+published port, a reverse proxy or a tunnel — can read the metrics too. Only do
+this when the app port itself is reachable by Prometheus alone (no published
+port, no proxy); otherwise keep the token.
 
 ## Importing the dashboard manually
 

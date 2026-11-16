@@ -140,7 +140,7 @@ func TestRestoreRejectsUnsafeClientsBeforeSQL(t *testing.T) {
 				}
 			}
 			archive := &unreadRestoreArchive{}
-			err := restoreArchive(t.Context(), "postgres://unused.invalid/unused", "", archive)
+			err := restoreArchive(t.Context(), "postgres://unused.invalid/unused", "", archive, "")
 			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
 				t.Fatalf("restore error=%v, want %q", err, tc.wantError)
 			}
@@ -163,7 +163,7 @@ func TestRestoreVersionCheckHonorsContext(t *testing.T) {
 			t.Setenv("PARKRR_TEST_CLIENT_HANG", tool)
 			ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 			defer cancel()
-			err := restoreArchive(ctx, "postgres://unused.invalid/unused", "ignored.dump", nil)
+			err := restoreArchive(ctx, "postgres://unused.invalid/unused", "ignored.dump", nil, "")
 			if !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("restore error=%v, want deadline exceeded", err)
 			}
@@ -181,7 +181,7 @@ func TestRestorePatchedClientsReachAtomicPipeline(t *testing.T) {
 	// A patched psql may be newer than pg_restore. Do not impose a same-major
 	// restriction; archive/server compatibility remains pg_restore's concern.
 	t.Setenv("PARKRR_TEST_PSQL_VERSION", "psql (PostgreSQL) 18.6")
-	if err := restoreArchive(t.Context(), "postgres://unused.invalid/unused", "ignored.dump", nil); err != nil {
+	if err := restoreArchive(t.Context(), "postgres://unused.invalid/unused", "ignored.dump", nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(sql)
@@ -197,5 +197,20 @@ func TestRestorePatchedClientsReachAtomicPipeline(t *testing.T) {
 	}
 	if strings.Count(string(gotCommands), "pg_restore\n") != 1 || strings.Count(string(gotCommands), "psql\n") != 1 {
 		t.Fatalf("restore command executions=%q", gotCommands)
+	}
+}
+
+// The epilogue runs inside the restore transaction: after the archive, before COMMIT.
+func TestRestoreEpilogueRunsBeforeCommit(t *testing.T) {
+	_, _, sql := restoreClientStubs(t)
+	if err := restoreArchive(t.Context(), "postgres://unused.invalid/unused", "ignored.dump", nil, "SELECT 7;"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(sql)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(got), restorePrelude) || !strings.HasSuffix(string(got), "SELECT 42;\n\nSELECT 7;\n\nCOMMIT;\n") {
+		t.Fatalf("epilogue not between archive and COMMIT: %q", got)
 	}
 }

@@ -288,5 +288,5 @@ func Restore(ctx context.Context, dbURL string, enc []byte, key string) error {
 	if err := checkRestorableTOC(toc); err != nil {
 		return err
 	}
-	return restoreArchive(ctx, dbURL, "", bytes.NewReader(plain))
+	return restoreArchive(ctx, dbURL, "", bytes.NewReader(plain), "")
 }

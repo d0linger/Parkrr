@@ -237,6 +237,7 @@ func (h *Handler) WeekSchedulePDF(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("Content-Disposition", `attachment; filename="parkrr-woche-`+from.Format("2006-01-02")+`.pdf"`)
 	if err := pdf.Output(w); err != nil {
 		auth.SetRequestError(r.Context(), err)
@@ -350,7 +351,8 @@ func (h *Handler) CalendarFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
-	w.Header().Set("Cache-Control", "private, max-age=900")
+	// no-store: the URL is a revocable capability; no cache may answer for it later.
+	w.Header().Set("Cache-Control", "private, no-store")
 	_, _ = w.Write([]byte(h.renderICS(r, events)))
 }
 

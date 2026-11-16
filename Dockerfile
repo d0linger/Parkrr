@@ -53,6 +53,13 @@ RUN apk upgrade --no-cache \
 WORKDIR /app
 COPY --from=build /out/parkrr /app/parkrr
 
+# Ties a running container to its source (docker inspect). CI passes the commit
+# and overrides both labels with docker/metadata-action; a local build gets the
+# commit through PARKRR_VERSION (see .env.example).
+ARG VERSION=dev
+LABEL org.opencontainers.image.revision="${VERSION}" \
+      org.opencontainers.image.version="${VERSION}"
+
 EXPOSE 8080
 USER parkrr
 

@@ -136,6 +136,26 @@ jobs:
       contents: read
       packages: write
     steps:
+      # A v* tag promotes the semver tags and `latest`. Publish a tag only when its
+      # commit is on the default branch, so a tag on any other commit (pushed, or
+      # picked for a manual dispatch) cannot release unreviewed source.
+      - name: Require release tags on the default branch
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          status=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${GITHUB_SHA}...${DEFAULT_BRANCH}" --jq .status)
+          case "$status" in
+            identical|ahead) ;;
+            *)
+              echo "::error::${GITHUB_REF_NAME} (${GITHUB_SHA}) is not on ${DEFAULT_BRANCH} (compare: ${status})"
+              exit 1
+              ;;
+          esac
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
