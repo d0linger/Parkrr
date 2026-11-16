@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Regressionen der Daybreak-Prüfung (2026-11): Mails, Portal-Schreibwege und Restore
@@ -349,24 +352,51 @@ func TestRestoreReappliesLinkRevocations(t *testing.T) {
 		users[0], feedHash("restore-feed-"+strconv.FormatInt(users[0], 10))); err != nil {
 		t.Fatal(err)
 	}
+	// Die Bereinigung läuft im Restore selbst, unter dem leeren search_path, den
+	// pg_restore hinterlässt.
+	runEpilogue := func(l LiveLinks) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, h.Pool, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SET LOCAL search_path = ''`); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, l.RestoreEpilogue())
+			return err
+		}); err != nil {
+			t.Fatalf("restore epilogue: %v", err)
+		}
+	}
+	runEpilogue(live)
+	if !isRevoked(revokedTok) || isRevoked(liveTok) {
+		t.Fatalf("after the restore: revoked link revoked=%v, live link revoked=%v", isRevoked(revokedTok), isRevoked(liveTok))
+	}
+	if !isRevoked(anonTok) {
+		t.Fatal("after the restore: the anonymized person's never-revoked link became usable again")
+	}
+	if n := feeds(); n != 1 {
+		t.Fatalf("after the restore: %d calendar feeds, want only the live one", n)
+	}
+	// The post-restore pass finds nothing left to do.
 	if err := h.ReapplyLiveLinks(ctx, live); err != nil {
 		t.Fatal(err)
 	}
-	if !isRevoked(revokedTok) || isRevoked(liveTok) {
-		t.Fatalf("after reapply: revoked link revoked=%v, live link revoked=%v", isRevoked(revokedTok), isRevoked(liveTok))
-	}
-	if !isRevoked(anonTok) {
-		t.Fatal("after reapply: the anonymized person's never-revoked link became usable again")
-	}
-	if n := feeds(); n != 1 {
-		t.Fatalf("after reapply: %d calendar feeds, want only the live one", n)
+	if isRevoked(liveTok) || feeds() != 1 {
+		t.Fatal("the post-restore pass revoked a live link")
 	}
 
+	runEpilogue(LiveLinks{})
+	if !isRevoked(liveTok) || feeds() != 0 {
+		t.Fatal("unknown pre-restore state must revoke every link")
+	}
+	// The recovery path (no epilogue ran) prunes the same way.
+	if _, err := h.Pool.Exec(ctx, `UPDATE self_service_tokens SET revoked=FALSE WHERE token_hash=$1`, hashPortalToken(liveTok)); err != nil {
+		t.Fatal(err)
+	}
 	if err := h.ReapplyLiveLinks(ctx, LiveLinks{}); err != nil {
 		t.Fatal(err)
 	}
-	if !isRevoked(liveTok) || feeds() != 0 {
-		t.Fatal("unknown pre-restore state must revoke every link")
+	if !isRevoked(liveTok) {
+		t.Fatal("recovery with an unknown pre-restore state must revoke every link")
 	}
 }
 
@@ -470,6 +500,159 @@ func TestSaveCPIAuditsTheValueItReplaced(t *testing.T) {
 	}
 	if oldVal != "110" || newVal != "120" {
 		t.Fatalf("audit diff %s → %s, want 110 → 120", oldVal, newVal)
+	}
+}
+
+// Löschen wartet auf ein laufendes Speichern desselben VPI-Monats und protokolliert
+// den Wert, den es tatsächlich löscht.
+func TestDeleteCPIWaitsForSaveOfTheSameMonth(t *testing.T) {
+	h := testHandler(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	const month = "2031-08"
+	t.Cleanup(func() {
+		_, _ = h.Pool.Exec(context.Background(), `DELETE FROM cpi_values WHERE month = '2031-08-01'`)
+	})
+	if w := callJSONRaw(h, h.SaveCPI, http.MethodPut, "/api/cpi", "", `{"month":"`+month+`","value":100}`); w.Code != http.StatusOK {
+		t.Fatalf("save: %d %s", w.Code, w.Body.String())
+	}
+	saving, err := h.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = saving.Rollback(context.Background()) }()
+	if _, err := saving.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, advisoryKey("parkrr.cpi."+month)); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodDelete, "/api/cpi/"+month, nil)
+		req.SetPathValue("month", month)
+		w := httptest.NewRecorder()
+		h.DeleteCPI(w, req)
+		done <- w
+	}()
+	waitLocked(t, ctx, h, "%pg_advisory_xact_lock%", func() bool { return len(done) > 0 })
+	if _, err := saving.Exec(ctx, `UPDATE cpi_values SET value = 110 WHERE month = '2031-08-01'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := saving.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case w := <-done:
+		if w.Code != http.StatusOK {
+			t.Fatalf("delete: %d %s", w.Code, w.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("delete did not finish")
+	}
+	var deleted string
+	if err := h.Pool.QueryRow(ctx, `SELECT changes->'value'->>'old' FROM audit_log
+		WHERE entity = 'cpi' AND summary = 'VPI 08/2031 gelöscht' ORDER BY id DESC LIMIT 1`).Scan(&deleted); err != nil {
+		t.Fatal(err)
+	}
+	if deleted != "110" {
+		t.Fatalf("audit records %s as deleted, want the saved 110", deleted)
+	}
+}
+
+// Ein Link, der abläuft, während die Schreibtransaktion auf die Sperre der
+// Link-Zeile wartet (hier gehalten von einer Berührung wie last_used_at), gilt
+// danach nicht mehr — der Zeitstempel der sperrenden Anweisung liegt vor dem Warten.
+func TestPortalRequestRejectsLinkExpiredDuringLinkLockWait(t *testing.T) {
+	h := testHandler(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pid := createIntegrationPerson(t, h)
+	token := createPortalLink(t, h, pid)
+	if _, err := h.Pool.Exec(ctx, `UPDATE self_service_tokens SET expires_at = clock_timestamp() + interval '2 seconds'
+		WHERE token_hash = $1`, hashPortalToken(token)); err != nil {
+		t.Fatal(err)
+	}
+	// Barrier 1 holds the request inside its transaction, past resolvePortalPerson.
+	gate, err := h.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = gate.Rollback(context.Background()) }()
+	if _, err := gate.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`,
+		advisoryKey("parkrr.portal_request."+strconv.FormatInt(pid, 10))); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- portalRequestReq(t, h, token, map[string]any{"kind": "contact_update", "email": "warten@example.com"})
+	}()
+	waitLocked(t, ctx, h, "%pg_advisory_xact_lock%", func() bool { return len(done) > 0 })
+	// Barrier 2 holds the link row; then barrier 1 lets the request run into it.
+	touch, err := h.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = touch.Rollback(context.Background()) }()
+	if _, err := touch.Exec(ctx, `UPDATE self_service_tokens SET last_used_at = now() WHERE token_hash = $1`, hashPortalToken(token)); err != nil {
+		t.Fatal(err)
+	}
+	if err := gate.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitLocked(t, ctx, h, "%FROM self_service_tokens%FOR SHARE%", func() bool { return len(done) > 0 })
+	var valid bool
+	if err := h.Pool.QueryRow(ctx, `SELECT expires_at > clock_timestamp() FROM self_service_tokens WHERE token_hash = $1`,
+		hashPortalToken(token)).Scan(&valid); err != nil || !valid {
+		t.Fatalf("the link expired before the request reached the link lock (valid=%v err=%v)", valid, err)
+	}
+	time.Sleep(2300 * time.Millisecond)
+	if err := touch.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case w := <-done:
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("request with a link that expired at the link lock: %d %s", w.Code, w.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("portal request did not finish")
+	}
+	var n int
+	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM portal_requests WHERE person_id=$1`, pid).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("%d portal request(s) stored with an expired link", n)
+	}
+}
+
+// Auch der endgültige Fehlschlag hält fest, an welche Adresse zuletzt gesendet
+// wurde — wie Wiederholung und Erfolg.
+func TestOutboxFinalFailureRecordsTheAddressTried(t *testing.T) {
+	h := testHandler(t)
+	ctx := context.Background()
+	pid, iv := mailInvoiceFixture(t, h, "old.final@example.com")
+	fake := &attachSender{}
+	h.Mail = fake
+	_, id, err := h.queueInvoiceMail(ctx, iv.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupMailRows(t, h, id)
+	if _, err := h.Pool.Exec(ctx, `UPDATE persons SET email='new.final@example.com' WHERE id=$1`, pid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Pool.Exec(ctx, `UPDATE mail_outbox SET attempts=$2 WHERE id=$1`, id, len(outboxBackoff)); err != nil {
+		t.Fatal(err)
+	}
+	fake.err = errors.New("relay unavailable")
+	if n := h.ProcessOutbox(ctx); n != 1 {
+		t.Fatalf("processed %d rows, want 1", n)
+	}
+	var status, recipient string
+	if err := h.Pool.QueryRow(ctx, `SELECT status, recipient FROM mail_outbox WHERE id=$1`, id).Scan(&status, &recipient); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" || recipient != "new.final@example.com" || fake.calls != 1 {
+		t.Fatalf("final failure: status=%s recipient=%s calls=%d", status, recipient, fake.calls)
 	}
 }
 

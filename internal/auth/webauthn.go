@@ -322,16 +322,22 @@ func (s *WebAuthnService) saveCredential(ctx context.Context, userID int64, sess
 		// A statement of its own: only a snapshot taken AFTER the lock sees the
 		// reset's session deletion (a subquery of the locking SELECT would not).
 		// FOR SHARE on the session orders logout and session revocation (which
-		// delete only this row) the same way. statement_timestamp, not now(): now()
-		// is the transaction start, before any lock wait.
-		var one int
+		// delete only this row) the same way.
+		var expires time.Time
 		err = tx.QueryRow(ctx,
-			`SELECT 1 FROM sessions WHERE token = $1 AND user_id = $2 AND expires_at > statement_timestamp()
-			    FOR SHARE`, sessionToken, userID).Scan(&one)
+			`SELECT expires_at FROM sessions WHERE token = $1 AND user_id = $2 FOR SHARE`,
+			sessionToken, userID).Scan(&expires)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
+			return err
+		}
+		// Expiry in yet another statement: its statement_timestamp() is taken after
+		// the session lock was granted. now(), or the timestamp of the locking
+		// statement itself, would still be the time before the wait.
+		var live bool
+		if err := tx.QueryRow(ctx, `SELECT $1::timestamptz > statement_timestamp()`, expires).Scan(&live); err != nil || !live {
 			return err
 		}
 		if _, err := tx.Exec(ctx,

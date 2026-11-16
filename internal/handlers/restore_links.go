@@ -2,8 +2,11 @@ package handlers
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -47,6 +50,42 @@ func CaptureLiveLinks(ctx context.Context, q dbQuerier) LiveLinks {
 	return LiveLinks{portal: portal, feeds: feeds}
 }
 
+// reTokenHash is the shape of hashPortalToken's output; anything else is not
+// embedded as a literal (and so counts as not live — fail closed).
+var reTokenHash = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// RestoreEpilogue renders the set as SQL for the restore transaction itself
+// (backup.RestoreFileThen): restored links outside the set are revoked or removed
+// BEFORE the restore commits. Pruning afterwards left a gap — a crash or a failed
+// migration between commit and pruning kept revoked links usable, and a retry would
+// then capture them as live. Tables an older archive lacks are skipped (PL/pgSQL
+// plans a statement only when it runs). pg_restore empties the search_path, hence
+// the qualified names.
+func (l LiveLinks) RestoreEpilogue() string {
+	portal := make([]string, 0, len(l.portal))
+	for _, h := range l.portal {
+		if reTokenHash.MatchString(h) {
+			portal = append(portal, "'"+h+"'")
+		}
+	}
+	feeds := make([]string, 0, len(l.feeds))
+	for _, f := range l.feeds {
+		feeds = append(feeds, "decode('"+hex.EncodeToString(f)+"', 'hex')")
+	}
+	return `DO $parkrr_links$
+BEGIN
+    IF to_regclass('public.self_service_tokens') IS NOT NULL THEN
+        UPDATE public.self_service_tokens SET revoked = TRUE
+         WHERE NOT revoked AND token_hash <> ALL (ARRAY[` + strings.Join(portal, ", ") + `]::text[]);
+    END IF;
+    IF to_regclass('public.calendar_feeds') IS NOT NULL THEN
+        DELETE FROM public.calendar_feeds
+         WHERE token_hash <> ALL (ARRAY[` + strings.Join(feeds, ", ") + `]::bytea[]);
+    END IF;
+END
+$parkrr_links$;`
+}
+
 func collectLinks[T any](ctx context.Context, q dbQuerier, sql string) ([]T, error) {
 	rows, err := q.Query(ctx, sql)
 	if err != nil {
@@ -56,8 +95,9 @@ func collectLinks[T any](ctx context.Context, q dbQuerier, sql string) ([]T, err
 }
 
 // ReapplyLiveLinks revokes every portal link and removes every calendar feed that
-// was not usable before the restore. Run it after Migrate (an older archive may
-// lack the tables) and before the application serves again.
+// was not usable before the restore. RestoreEpilogue already did this inside the
+// restore; this second pass after Migrate is the safety net (a no-op normally) and
+// the only pass for a recovered restore, where the set is unknown.
 func (h *Handler) ReapplyLiveLinks(ctx context.Context, live LiveLinks) error {
 	portal, feeds := live.portal, live.feeds
 	if portal == nil {

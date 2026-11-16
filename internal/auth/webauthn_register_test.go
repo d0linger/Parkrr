@@ -115,6 +115,36 @@ func registerSession(t *testing.T) (*WebAuthnService, int64, string) {
 	return nil, 0, ""
 }
 
+// saveResult carries both outcomes, so a backend error cannot pass as a rejection.
+type saveResult struct {
+	saved bool
+	err   error
+}
+
+// startSave runs saveCredential in the background for a race test.
+func startSave(ctx context.Context, s *WebAuthnService, userID int64, token, tag string) chan saveResult {
+	done := make(chan saveResult, 1)
+	go func() {
+		saved, err := s.saveCredential(ctx, userID, token,
+			&webauthn.Credential{ID: []byte(fmt.Sprintf("%s-%d", tag, time.Now().UnixNano())), PublicKey: []byte{1}}, "key")
+		done <- saveResult{saved, err}
+	}()
+	return done
+}
+
+// wantRejected waits for a race test's save and requires a clean rejection.
+func wantRejected(t *testing.T, done chan saveResult, why string) {
+	t.Helper()
+	select {
+	case r := <-done:
+		if r.err != nil || r.saved {
+			t.Fatalf("%s: saved=%v err=%v, want rejected without error", why, r.saved, r.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s: credential insert did not finish", why)
+	}
+}
+
 // waitForLockWait blocks until a statement matching like waits on a lock.
 func waitForLockWait(t *testing.T, ctx context.Context, s *WebAuthnService, like string, done func() bool) {
 	t.Helper()
@@ -153,24 +183,44 @@ func TestSaveCredentialLosesToConcurrentLogout(t *testing.T) {
 	if _, err := logout.Exec(ctx, `DELETE FROM sessions WHERE token = $1`, token); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan bool, 1)
-	go func() {
-		saved, err := service.saveCredential(ctx, userID, token,
-			&webauthn.Credential{ID: []byte(fmt.Sprintf("logout-race-%d", time.Now().UnixNano())), PublicKey: []byte{1}}, "key")
-		done <- saved && err == nil
-	}()
+	done := startSave(ctx, service, userID, token, "logout-race")
 	waitForLockWait(t, ctx, service, "%FROM sessions WHERE token = $1%FOR SHARE%", func() bool { return len(done) > 0 })
 	if err := logout.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case saved := <-done:
-		if saved {
-			t.Fatal("passkey stored after logout committed")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("credential insert did not finish after logout")
+	wantRejected(t, done, "after logout committed")
+}
+
+// A session that expires while the insert waits for the SESSION row lock (held
+// here by a session touch, as userFromRequest's last_seen update does) must not
+// count: the locking statement's own timestamp predates the wait.
+func TestSaveCredentialRejectsSessionExpiredDuringSessionLockWait(t *testing.T) {
+	service, userID, token := registerSession(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if _, err := service.pool.Exec(ctx,
+		`UPDATE sessions SET expires_at = clock_timestamp() + interval '1 second' WHERE token = $1`, token); err != nil {
+		t.Fatal(err)
 	}
+	touch, err := service.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = touch.Rollback(context.Background()) }()
+	if _, err := touch.Exec(ctx, `UPDATE sessions SET last_seen = now() WHERE token = $1`, token); err != nil {
+		t.Fatal(err)
+	}
+	done := startSave(ctx, service, userID, token, "session-lock-expiry")
+	waitForLockWait(t, ctx, service, "%FROM sessions WHERE token = $1%FOR SHARE%", func() bool { return len(done) > 0 })
+	var stillValid bool
+	if err := service.pool.QueryRow(ctx, `SELECT expires_at > clock_timestamp() FROM sessions WHERE token = $1`, token).Scan(&stillValid); err != nil || !stillValid {
+		t.Fatalf("the session expired before the insert started waiting (valid=%v err=%v)", stillValid, err)
+	}
+	time.Sleep(1300 * time.Millisecond)
+	if err := touch.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	wantRejected(t, done, "session expired during the session lock wait")
 }
 
 // A session that expires while the insert waits for the user lock must not count:
@@ -191,12 +241,7 @@ func TestSaveCredentialRejectsSessionExpiredDuringLockWait(t *testing.T) {
 		`UPDATE sessions SET expires_at = clock_timestamp() + interval '1 second' WHERE token = $1`, token); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan bool, 1)
-	go func() {
-		saved, err := service.saveCredential(ctx, userID, token,
-			&webauthn.Credential{ID: []byte(fmt.Sprintf("expiry-race-%d", time.Now().UnixNano())), PublicKey: []byte{1}}, "key")
-		done <- saved && err == nil
-	}()
+	done := startSave(ctx, service, userID, token, "expiry-race")
 	waitForLockWait(t, ctx, service, "%FROM users WHERE id = $1 FOR SHARE%", func() bool { return len(done) > 0 })
 	var stillValid bool
 	if err := service.pool.QueryRow(ctx, `SELECT expires_at > clock_timestamp() FROM sessions WHERE token = $1`, token).Scan(&stillValid); err != nil || !stillValid {
@@ -206,12 +251,5 @@ func TestSaveCredentialRejectsSessionExpiredDuringLockWait(t *testing.T) {
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case saved := <-done:
-		if saved {
-			t.Fatal("passkey stored for a session that expired during the lock wait")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("credential insert did not finish")
-	}
+	wantRejected(t, done, "session expired during the user lock wait")
 }

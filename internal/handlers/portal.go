@@ -93,8 +93,10 @@ func (h *Handler) portalPerson(r *http.Request) (int64, bool) {
 // otherwise be followed by a fresh portal row carrying personal data. Both write
 // exactly these rows: one that committed first is seen here, one that comes later
 // waits for this write and then purges it with everything else. Person before
-// link, in AnonymizePerson's order. Expiry is checked against
-// statement_timestamp(): now() is the transaction start, before any lock wait.
+// link, in AnonymizePerson's order. Expiry is checked in a statement of its own
+// after the link lock: now() is the transaction start, and the locking
+// statement's own timestamp predates its wait — both could pass a link that
+// expired while the request waited.
 func portalStillAuthorized(ctx context.Context, tx pgx.Tx, r *http.Request, pid int64) (bool, error) {
 	token, ok := portalBearer(r)
 	if !ok {
@@ -108,15 +110,20 @@ func portalStillAuthorized(ctx context.Context, tx pgx.Tx, r *http.Request, pid 
 	if err != nil {
 		return false, err
 	}
-	var one int
+	var expires time.Time
 	err = tx.QueryRow(ctx,
-		`SELECT 1 FROM self_service_tokens
-		  WHERE token_hash = $1 AND person_id = $2 AND NOT revoked AND expires_at > statement_timestamp()
-		  FOR SHARE`, hashPortalToken(token), pid).Scan(&one)
+		`SELECT expires_at FROM self_service_tokens
+		  WHERE token_hash = $1 AND person_id = $2 AND NOT revoked
+		  FOR SHARE`, hashPortalToken(token), pid).Scan(&expires)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
-	return err == nil, err
+	if err != nil {
+		return false, err
+	}
+	var live bool
+	err = tx.QueryRow(ctx, `SELECT $1::timestamptz > statement_timestamp()`, expires).Scan(&live)
+	return live && err == nil, err
 }
 
 // CreatePortalLink issues a self-service magic link for a person (editor+),

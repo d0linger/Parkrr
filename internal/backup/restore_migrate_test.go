@@ -143,3 +143,82 @@ func TestRestoreOlderArchiveThenMigrate(t *testing.T) {
 	}
 	run(`DELETE FROM parkrr_control.restore_jobs`)
 }
+
+// RestoreFileThen's epilogue shares the restore transaction: its change commits with
+// the archive, and its failure leaves the database exactly as before the restore.
+//
+// Destructive: requires the dedicated disposable database parkrr_test_backup.
+func TestRestoreFileThenEpilogueIsAtomic(t *testing.T) {
+	dbURL := os.Getenv("PARKRR_BACKUP_TEST_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("PARKRR_BACKUP_TEST_DATABASE_URL not set")
+	}
+	for _, tool := range []string{"pg_dump", "pg_restore", "psql"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s not installed", tool)
+		}
+	}
+	isolateTempDir(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+	pool, err := database.Connect(ctx, dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	var dbName string
+	if err := pool.QueryRow(ctx, "SELECT current_database()").Scan(&dbName); err != nil {
+		t.Fatal(err)
+	}
+	if dbName != "parkrr_test_backup" {
+		t.Fatal("refusing restore test: dedicated database must be named parkrr_test_backup")
+	}
+	run := func(sql string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	run(`DROP SCHEMA IF EXISTS parkrr_control CASCADE; DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public`)
+	if err := database.Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	run(`CREATE TABLE public.epilogue_probe (v int); INSERT INTO public.epilogue_probe VALUES (1)`)
+	const key = "epilogue-restore-test-key"
+	archive := filepath.Join(t.TempDir(), "probe.dump.enc")
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := DumpEncrypted(ctx, dbURL, key, f); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	probe := func() (v int, marker bool) {
+		t.Helper()
+		pool.Reset()
+		if err := pool.QueryRow(ctx, `SELECT (SELECT v FROM public.epilogue_probe),
+			to_regclass('public.after_backup') IS NOT NULL`).Scan(&v, &marker); err != nil {
+			t.Fatal(err)
+		}
+		return v, marker
+	}
+
+	run(`UPDATE public.epilogue_probe SET v = 2; CREATE TABLE public.after_backup (id int)`)
+	if err := RestoreFileThen(ctx, dbURL, archive, key, `UPDATE public.epilogue_probe SET v = 3;`); err != nil {
+		t.Fatalf("restore with epilogue: %v", err)
+	}
+	if v, marker := probe(); v != 3 || marker {
+		t.Fatalf("after restore+epilogue: v=%d after_backup=%v, want 3 and gone", v, marker)
+	}
+
+	run(`CREATE TABLE public.after_backup (id int)`)
+	if err := RestoreFileThen(ctx, dbURL, archive, key, `SELECT 1/0;`); err == nil {
+		t.Fatal("a failing epilogue did not fail the restore")
+	}
+	if v, marker := probe(); v != 3 || !marker {
+		t.Fatalf("after a failed epilogue: v=%d after_backup=%v, want the database unchanged (3, kept)", v, marker)
+	}
+}

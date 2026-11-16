@@ -114,6 +114,12 @@ func (h *Handler) DeleteCPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		// SaveCPI's per-month lock: a save that read the old value must not have the
+		// row deleted under it, nor re-create it unaudited after this delete.
+		if _, err := tx.Exec(r.Context(), `SELECT pg_advisory_xact_lock($1)`,
+			advisoryKey("parkrr.cpi."+m.Format("2006-01"))); err != nil {
+			return err
+		}
 		var v float64
 		if err := tx.QueryRow(r.Context(), `DELETE FROM cpi_values WHERE month = $1 RETURNING value`, m).Scan(&v); err != nil {
 			return err

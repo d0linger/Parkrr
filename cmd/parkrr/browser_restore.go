@@ -111,7 +111,8 @@ func executeBrowserRestore(
 		return false, errors.Join(err, release())
 	}
 	restoreCtx, cancelRestore := context.WithTimeout(ctx, browserRestoreExecutionTimeout)
-	restoreErr = backup.RestoreFile(restoreCtx, dbURL, path, key)
+	// Pruned inside the restore transaction, so it commits or rolls back with it.
+	restoreErr = backup.RestoreFileThen(restoreCtx, dbURL, path, key, live.RestoreEpilogue())
 	cancelRestore()
 	pool.Reset()
 	if restoreErr != nil {

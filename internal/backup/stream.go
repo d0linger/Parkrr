@@ -429,6 +429,14 @@ func ValidateFile(ctx context.Context, encryptedPath, key string) (ArchiveInfo, 
 // rather than retaining encrypted and plaintext copies in process memory. The
 // public schema is replaced as a whole (see restoreArchive).
 func RestoreFile(ctx context.Context, dbURL, encryptedPath, key string) error {
+	return RestoreFileThen(ctx, dbURL, encryptedPath, key, "")
+}
+
+// RestoreFileThen is RestoreFile plus epilogue: SQL run inside the restore
+// transaction, after the archive and before COMMIT. It commits or rolls back with
+// the restore, so a postcondition it establishes can never be missing from a
+// committed restore — not after a crash, nor after a failed migration.
+func RestoreFileThen(ctx context.Context, dbURL, encryptedPath, key, epilogue string) error {
 	if err := acquireRun(ctx); err != nil {
 		return err
 	}
@@ -445,7 +453,7 @@ func RestoreFile(ctx context.Context, dbURL, encryptedPath, key string) error {
 	if err := checkRestorableTOC(toc); err != nil {
 		return err
 	}
-	return restoreArchive(ctx, dbURL, plainPath, nil)
+	return restoreArchive(ctx, dbURL, plainPath, nil, epilogue)
 }
 
 // ChecksumFile returns SHA-256 and size without loading the archive.

@@ -83,8 +83,11 @@ func runRestore(args []string) int {
 	}
 	defer pool.Close()
 	// Links revoked after the snapshot must stay revoked (see handlers.LiveLinks).
+	// The pruning runs inside the restore transaction: if anything later fails or
+	// the process dies, the committed restore already carries it, and a retry that
+	// finds the restore uncommitted captures the original state again.
 	live := handlers.CaptureLiveLinks(ctx, pool)
-	if err := backup.RestoreFile(ctx, cfg.DatabaseURL, file, cfg.BackupKey); err != nil {
+	if err := backup.RestoreFileThen(ctx, cfg.DatabaseURL, file, cfg.BackupKey, live.RestoreEpilogue()); err != nil {
 		fmt.Fprintln(os.Stderr, "restore failed:", err)
 		return 1
 	}

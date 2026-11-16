@@ -318,7 +318,12 @@ func (h *Handler) sendOutboxRow(ctx context.Context, row outboxRow) error {
 func (h *Handler) retryOrFail(ctx context.Context, row outboxRow, attempts int, sendErr error) {
 	msg := mail.RedactAddrs(sendErr.Error(), []string{row.Recipient})
 	if attempts > len(outboxBackoff) {
-		h.finishOutbox(ctx, row.ID, "failed", "Endgültig fehlgeschlagen nach "+strconv.Itoa(attempts)+" Versuchen: "+msg)
+		// Like the retry and success paths: record the address actually tried.
+		if _, err := h.Pool.Exec(ctx,
+			`UPDATE mail_outbox SET status='failed', attachment=NULL, last_error=$2, recipient=$3 WHERE id=$1`,
+			row.ID, "Endgültig fehlgeschlagen nach "+strconv.Itoa(attempts)+" Versuchen: "+msg, row.Recipient); err != nil {
+			slog.Warn("outbox: Abschluss nicht schreibbar", "id", row.ID, "err", err)
+		}
 		return
 	}
 	wait := outboxBackoff[attempts-1]
