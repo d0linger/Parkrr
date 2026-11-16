@@ -168,7 +168,7 @@ func Load() (*Config, error) {
 
 		MetricsToken: getenv("PARKRR_METRICS_TOKEN", ""),
 		// Fail closed like the Compose files: anonymous /metrics only on an explicit
-		// PARKRR_METRICS_REQUIRE_AUTH=false (isolated monitoring network).
+		// PARKRR_METRICS_REQUIRE_AUTH=false (only if nothing but Prometheus reaches the port).
 		MetricsRequireAuth: getenvBool("PARKRR_METRICS_REQUIRE_AUTH", true),
 		// Default to the 7-year BAO §132 retention window; money-trail rows
 		// (invoice/payment/billing) are never pruned regardless (see PruneAuditLog).

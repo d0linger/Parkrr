@@ -291,6 +291,10 @@ func TestRestoreReappliesLinkRevocations(t *testing.T) {
 	ctx := context.Background()
 	pid := createIntegrationPerson(t, h)
 	revokedTok, liveTok := createPortalLink(t, h, pid), createPortalLink(t, h, pid)
+	// Ältere Daten: anonymisiert, der Link aber nie widerrufen. Er löst nicht auf
+	// und darf durch den Restore eines Stands VOR der Anonymisierung nicht wieder.
+	anonPid := createIntegrationPerson(t, h)
+	anonTok := createPortalLink(t, h, anonPid)
 	var users [2]int64
 	for i := range users {
 		if err := h.Pool.QueryRow(ctx,
@@ -330,9 +334,15 @@ func TestRestoreReappliesLinkRevocations(t *testing.T) {
 	if _, err := h.Pool.Exec(ctx, `DELETE FROM calendar_feeds WHERE user_id=$1`, users[0]); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := h.Pool.Exec(ctx, `UPDATE persons SET anonymized=TRUE WHERE id=$1`, anonPid); err != nil {
+		t.Fatal(err)
+	}
 	live := CaptureLiveLinks(ctx, h.Pool)
 	// Der Restore bringt den älteren Stand zurück.
 	if _, err := h.Pool.Exec(ctx, `UPDATE self_service_tokens SET revoked=FALSE WHERE token_hash=$1`, hashPortalToken(revokedTok)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Pool.Exec(ctx, `UPDATE persons SET anonymized=FALSE WHERE id=$1`, anonPid); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.Pool.Exec(ctx, `INSERT INTO calendar_feeds (user_id, token_hash) VALUES ($1, $2)`,
@@ -345,6 +355,9 @@ func TestRestoreReappliesLinkRevocations(t *testing.T) {
 	if !isRevoked(revokedTok) || isRevoked(liveTok) {
 		t.Fatalf("after reapply: revoked link revoked=%v, live link revoked=%v", isRevoked(revokedTok), isRevoked(liveTok))
 	}
+	if !isRevoked(anonTok) {
+		t.Fatal("after reapply: the anonymized person's never-revoked link became usable again")
+	}
 	if n := feeds(); n != 1 {
 		t.Fatalf("after reapply: %d calendar feeds, want only the live one", n)
 	}
@@ -354,6 +367,109 @@ func TestRestoreReappliesLinkRevocations(t *testing.T) {
 	}
 	if !isRevoked(liveTok) || feeds() != 0 {
 		t.Fatal("unknown pre-restore state must revoke every link")
+	}
+}
+
+// Ein Link, der abläuft, während der Wunsch auf die Sperre der Person wartet, gilt
+// danach nicht mehr: now() wäre der Beginn der Transaktion, vor dem Warten.
+func TestPortalRequestRejectsLinkExpiredDuringLockWait(t *testing.T) {
+	h := testHandler(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pid := createIntegrationPerson(t, h)
+	token := createPortalLink(t, h, pid)
+	holder, err := h.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Rollback(context.Background()) }()
+	if _, err := holder.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`,
+		advisoryKey("parkrr.portal_request."+strconv.FormatInt(pid, 10))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Pool.Exec(ctx, `UPDATE self_service_tokens SET expires_at = clock_timestamp() + interval '1 second'
+		WHERE token_hash = $1`, hashPortalToken(token)); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- portalRequestReq(t, h, token, map[string]any{"kind": "contact_update", "email": "zu.spaet@example.com"})
+	}()
+	waitLocked(t, ctx, h, "%pg_advisory_xact_lock%", func() bool { return len(done) > 0 })
+	var valid bool
+	if err := h.Pool.QueryRow(ctx, `SELECT expires_at > clock_timestamp() FROM self_service_tokens WHERE token_hash = $1`,
+		hashPortalToken(token)).Scan(&valid); err != nil || !valid {
+		t.Fatalf("the link expired before the request started waiting (valid=%v err=%v)", valid, err)
+	}
+	time.Sleep(1300 * time.Millisecond)
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case w := <-done:
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("request with a link that expired while waiting: %d %s", w.Code, w.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("portal request did not finish")
+	}
+	var n int
+	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM portal_requests WHERE person_id=$1`, pid).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("%d portal request(s) stored with an expired link", n)
+	}
+}
+
+// Der Vorher-Wert im Protokoll stammt aus derselben Sperre wie die Speicherung:
+// wartet ein Speichern auf ein anderes, nennt es dessen Ergebnis als alten Wert.
+func TestSaveCPIAuditsTheValueItReplaced(t *testing.T) {
+	h := testHandler(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	const month = "2031-07"
+	t.Cleanup(func() {
+		_, _ = h.Pool.Exec(context.Background(), `DELETE FROM cpi_values WHERE month = '2031-07-01'`)
+	})
+	save := func(v string) *httptest.ResponseRecorder {
+		return callJSONRaw(h, h.SaveCPI, http.MethodPut, "/api/cpi", "", `{"month":"`+month+`","value":`+v+`}`)
+	}
+	if w := save("100"); w.Code != http.StatusOK {
+		t.Fatalf("first save: %d %s", w.Code, w.Body.String())
+	}
+	other, err := h.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = other.Rollback(context.Background()) }()
+	if _, err := other.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, advisoryKey("parkrr.cpi."+month)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.Exec(ctx, `UPDATE cpi_values SET value = 110 WHERE month = '2031-07-01'`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- save("120") }()
+	waitLocked(t, ctx, h, "%pg_advisory_xact_lock%", func() bool { return len(done) > 0 })
+	if err := other.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case w := <-done:
+		if w.Code != http.StatusOK {
+			t.Fatalf("second save: %d %s", w.Code, w.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("save did not finish")
+	}
+	var oldVal, newVal string
+	if err := h.Pool.QueryRow(ctx, `SELECT changes->'value'->>'old', changes->'value'->>'new' FROM audit_log
+		WHERE entity = 'cpi' AND summary = 'VPI 07/2031 gespeichert' ORDER BY id DESC LIMIT 1`).Scan(&oldVal, &newVal); err != nil {
+		t.Fatal(err)
+	}
+	if oldVal != "110" || newVal != "120" {
+		t.Fatalf("audit diff %s → %s, want 110 → 120", oldVal, newVal)
 	}
 }
 

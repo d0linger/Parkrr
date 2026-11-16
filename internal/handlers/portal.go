@@ -93,7 +93,8 @@ func (h *Handler) portalPerson(r *http.Request) (int64, bool) {
 // otherwise be followed by a fresh portal row carrying personal data. Both write
 // exactly these rows: one that committed first is seen here, one that comes later
 // waits for this write and then purges it with everything else. Person before
-// link, in AnonymizePerson's order.
+// link, in AnonymizePerson's order. Expiry is checked against
+// statement_timestamp(): now() is the transaction start, before any lock wait.
 func portalStillAuthorized(ctx context.Context, tx pgx.Tx, r *http.Request, pid int64) (bool, error) {
 	token, ok := portalBearer(r)
 	if !ok {
@@ -110,7 +111,7 @@ func portalStillAuthorized(ctx context.Context, tx pgx.Tx, r *http.Request, pid 
 	var one int
 	err = tx.QueryRow(ctx,
 		`SELECT 1 FROM self_service_tokens
-		  WHERE token_hash = $1 AND person_id = $2 AND NOT revoked AND expires_at > now()
+		  WHERE token_hash = $1 AND person_id = $2 AND NOT revoked AND expires_at > statement_timestamp()
 		  FOR SHARE`, hashPortalToken(token), pid).Scan(&one)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil

@@ -79,10 +79,19 @@ func (h *Handler) SaveCPI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Monat (JJJJ-MM) und Indexwert über 0 angeben")
 		return
 	}
-	var old *float64
-	_ = h.Pool.QueryRow(r.Context(), `SELECT value FROM cpi_values WHERE month = $1`, m).Scan(&old)
-	// Index values drive price changes: value and audit row commit together.
+	// Index values drive price changes: value and audit row commit together, and
+	// the old value is read inside, after a per-month lock — a row lock alone would
+	// not order two first saves of a month that has no row yet.
 	if err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(r.Context(), `SELECT pg_advisory_xact_lock($1)`,
+			advisoryKey("parkrr.cpi."+m.Format("2006-01"))); err != nil {
+			return err
+		}
+		var old *float64
+		if err := tx.QueryRow(r.Context(), `SELECT value FROM cpi_values WHERE month = $1`, m).Scan(&old); err != nil &&
+			!errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
 		if _, err := tx.Exec(r.Context(),
 			`INSERT INTO cpi_values (month, value) VALUES ($1, $2)
 			 ON CONFLICT (month) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, m, round2(in.Value)); err != nil {
@@ -184,19 +193,21 @@ func (h *Handler) SetCategoryIndexation(w http.ResponseWriter, r *http.Request) 
 		}
 		base = &m
 	}
-	var oldBase *time.Time
-	var oldThreshold float64
-	if err := h.Pool.QueryRow(r.Context(), `SELECT index_base_month, index_threshold FROM categories WHERE id = $1`, id).Scan(&oldBase, &oldThreshold); err != nil {
-		writeError(w, http.StatusNotFound, "Tarif nicht gefunden")
-		return
-	}
 	monthStr := func(t *time.Time) any {
 		if t == nil {
 			return nil
 		}
 		return t.Format("2006-01")
 	}
-	if err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		// The diff's old side under the row lock, so a concurrent change is not lost.
+		var oldBase *time.Time
+		var oldThreshold float64
+		if err := tx.QueryRow(r.Context(),
+			`SELECT index_base_month, index_threshold FROM categories WHERE id = $1 FOR UPDATE`, id).
+			Scan(&oldBase, &oldThreshold); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(r.Context(),
 			`UPDATE categories SET index_base_month = $2, index_threshold = $3, updated_at = now() WHERE id = $1`, id, base, round2(in.Threshold)); err != nil {
 			return err
@@ -204,7 +215,12 @@ func (h *Handler) SetCategoryIndexation(w http.ResponseWriter, r *http.Request) 
 		return h.auditChangeTx(r.Context(), tx, r, "update", "category", id, "Wertsicherung des Tarifs geändert", diffFields(
 			map[string]any{"index_base_month": monthStr(oldBase), "index_threshold": oldThreshold},
 			map[string]any{"index_base_month": monthStr(base), "index_threshold": round2(in.Threshold)}))
-	}); err != nil {
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "Tarif nicht gefunden")
+		return
+	}
+	if err != nil {
 		serverError(w, r, "could not save", err)
 		return
 	}

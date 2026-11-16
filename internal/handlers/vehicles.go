@@ -1213,13 +1213,16 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 	if req.Paid {
 		label = "bezahlt"
 	}
+	// Read before the transaction: vehicleDesc queries the pool, and a second
+	// connection per request while the first holds the locks can drain the pool.
+	desc := h.vehicleDesc(r, id)
 	// The settlement and its audit row commit together (BAO §131); curPaid and
 	// curThrough hold the values read under the row lock.
 	if err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
 		if err := settle(tx); err != nil {
 			return err
 		}
-		return h.auditChangeTx(r.Context(), tx, r, "update", "vehicle", id, "Zahlung "+h.vehicleDesc(r, id)+": "+label,
+		return h.auditChangeTx(r.Context(), tx, r, "update", "vehicle", id, "Zahlung "+desc+": "+label,
 			diffFields(map[string]any{"paid": curPaid, "paid_through": dateOrNil(curThrough)},
 				map[string]any{"paid": req.Paid, "paid_through": dateOrNil(newThrough)}))
 	}); err != nil {

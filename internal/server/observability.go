@@ -183,7 +183,7 @@ func registerObservability(mux *http.ServeMux, pool *pgxpool.Pool, metricsToken 
 	}
 	if metricsToken == "" {
 		slog.Warn("/metrics is served WITHOUT authentication (PARKRR_METRICS_REQUIRE_AUTH=false, no token): " +
-			"only safe on an isolated monitoring network. Set PARKRR_METRICS_TOKEN instead (finding P-05).")
+			"anyone who can reach this port can read them. Set PARKRR_METRICS_TOKEN instead (finding P-05).")
 	}
 	reg := registerMetrics(pool)
 	promHandler := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})

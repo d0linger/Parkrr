@@ -71,9 +71,12 @@ closed). To scrape it:
 3. Uncomment the `authorization:` block in `prometheus.yml` and the matching
    volume mount in `docker-compose.monitoring.yml`, then recreate the stack.
 
-Only on an isolated monitoring network may you skip the token instead: set
-`PARKRR_METRICS_REQUIRE_AUTH=false` and `/metrics` is served without
-authentication.
+Skipping the token (`PARKRR_METRICS_REQUIRE_AUTH=false`) serves `/metrics`
+without authentication on the app's normal HTTP port. An isolated monitoring
+network does not protect it: anyone who can reach the app — through its
+published port, a reverse proxy or a tunnel — can read the metrics too. Only do
+this when the app port itself is reachable by Prometheus alone (no published
+port, no proxy); otherwise keep the token.
 
 ## Importing the dashboard manually
 

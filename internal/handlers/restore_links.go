@@ -26,9 +26,15 @@ type LiveLinks struct {
 // CaptureLiveLinks reads the currently usable links. Any failure (an empty or
 // foreign database) leaves the set empty, so every restored link is revoked
 // afterwards — fail closed.
+//
+// "Usable" is resolvePortalPerson's full test, including the person: a link of an
+// anonymized person does not resolve even while unrevoked (older data), and a
+// backup from before the anonymization must not bring it back to life.
 func CaptureLiveLinks(ctx context.Context, q dbQuerier) LiveLinks {
 	portal, err := collectLinks[string](ctx, q,
-		`SELECT token_hash FROM self_service_tokens WHERE NOT revoked AND expires_at > now()`)
+		`SELECT token_hash FROM self_service_tokens
+		  WHERE NOT revoked AND expires_at > now()
+		    AND person_id IN (SELECT id FROM persons WHERE NOT anonymized)`)
 	if err != nil {
 		slog.Warn("restore: current portal links unreadable, all restored links will be revoked", "err", err)
 		return LiveLinks{}

@@ -157,8 +157,8 @@ compose network). Schema migrations run automatically at startup.
 | `PARKRR_RATE_LIMIT_PER_MIN` | general per-IP request budget/minute (`0` = off) | `600` |
 | `PARKRR_AUDIT_RETENTION_DAYS` | long window: prune audit entries older than N days (`0` = disables **this** window only, see below). Records of account (`invoice`, `payment`, `billing`, `flatrate`, `recurring_charge`) are never pruned at any age | `2555` (7 y, BAO §132) |
 | `PARKRR_AUDIT_RETENTION_SHORT_DAYS` | short window for auth/ops noise only (`login`, `logout`, `backup`, `remind`, `import`); `0` disables the short tier | `365` |
-| `PARKRR_METRICS_TOKEN` | Bearer token for `/metrics`. Empty = `/metrics` is disabled — unless `PARKRR_METRICS_REQUIRE_AUTH=false`, then it is open (isolated monitoring network only) | – |
-| `PARKRR_METRICS_REQUIRE_AUTH` | with no token set, disable `/metrics` instead of serving it openly. Set `false` only to scrape anonymously on an isolated network | `true` |
+| `PARKRR_METRICS_TOKEN` | Bearer token for `/metrics`. Empty = `/metrics` is disabled — unless `PARKRR_METRICS_REQUIRE_AUTH=false`, then it is open to everyone who can reach the app | – |
+| `PARKRR_METRICS_REQUIRE_AUTH` | with no token set, disable `/metrics` instead of serving it openly. Set `false` only when the app port is reachable by Prometheus alone (no published port, proxy or tunnel) | `true` |
 | `PARKRR_CHECK_BREACHED_PASSWORDS` | check new passwords against the HIBP range API (fail-open) | `true` |
 | `PARKRR_CHECK_BREACHED_BOOTSTRAP_PASSWORDS` | explicit opt-in for HIBP when creating or force-resetting the ENV admin password; also requires the preceding switch; sends a five-character SHA-1 prefix; ordinary restarts do no lookup | `false` |
 | `PARKRR_BREACH_CHECK_FAIL_CLOSED` | reject a new password if the HIBP check itself fails (instead of the default fail-open) | `false` |
