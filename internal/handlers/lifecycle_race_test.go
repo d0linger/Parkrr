@@ -286,6 +286,76 @@ func TestContractAcceptanceRechecksTemplateInTransaction(t *testing.T) {
 	}
 }
 
+// Ein Link, der abläuft, während die Annahme auf die Sperre der Vertragsvorlagen
+// wartet, gilt danach nicht mehr. Die Prüfung davor lag vor dem Warten.
+func TestContractAcceptanceRejectsLinkExpiredDuringTemplateLockWait(t *testing.T) {
+	h := testHandler(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	t.Cleanup(func() {
+		_, _ = h.Pool.Exec(context.Background(), `DELETE FROM contract_acceptances`)
+		_, _ = h.Pool.Exec(context.Background(), `DELETE FROM contract_templates`)
+	})
+	pid, vid, _ := seasonFixture(t, h, "2027-03-31")
+	w := callJSONRaw(h, h.SaveContractTemplate, http.MethodPost, "/api/contract-template", "",
+		`{"title":"Einstellvertrag","body":"Vertrag für {{name}}."}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("save: %d %s", w.Code, w.Body.String())
+	}
+	var v1 contractTemplate
+	_ = json.Unmarshal(w.Body.Bytes(), &v1)
+	token := createPortalLink(t, h, pid)
+	if _, err := h.Pool.Exec(ctx, `UPDATE self_service_tokens SET expires_at = clock_timestamp() + interval '2 seconds'
+		WHERE token_hash = $1`, hashPortalToken(token)); err != nil {
+		t.Fatal(err)
+	}
+	// Ein Speichern, das die Tabelle sperrt und dann verworfen wird: die Fassung bleibt
+	// aktuell, nur die Zeit vergeht.
+	publish, err := h.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = publish.Rollback(context.Background()) }()
+	if _, err := publish.Exec(ctx, `LOCK TABLE contract_templates IN EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		b, _ := json.Marshal(map[string]any{"vehicle_id": vid, "version": v1.Version})
+		req := httptest.NewRequest(http.MethodPost, "/api/portal/contract/accept", bytes.NewReader(b))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.PortalAcceptContract(rec, req)
+		done <- rec
+	}()
+	waitLocked(t, ctx, h, "%LOCK TABLE contract_templates IN SHARE MODE%", func() bool { return len(done) > 0 })
+	var valid bool
+	if err := h.Pool.QueryRow(ctx, `SELECT expires_at > clock_timestamp() FROM self_service_tokens WHERE token_hash = $1`,
+		hashPortalToken(token)).Scan(&valid); err != nil || !valid {
+		t.Fatalf("the link expired before the acceptance reached the template lock (valid=%v err=%v)", valid, err)
+	}
+	time.Sleep(2300 * time.Millisecond)
+	if err := publish.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case rec := <-done:
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("acceptance with a link that expired at the template lock: %d %s", rec.Code, rec.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("acceptance did not finish")
+	}
+	var n int
+	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM contract_acceptances WHERE person_id=$1`, pid).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("%d acceptance(s) stored with an expired link", n)
+	}
+}
+
 // Ein Restore spielt den Widerrufsstand von Portal-Links und Kalender-Abos zurück.
 // Was vor dem Restore nicht mehr galt, darf danach nicht wieder gelten; was galt,
 // bleibt. Unbekannt (Absturz, leere Datenbank) heißt: alles widerrufen.

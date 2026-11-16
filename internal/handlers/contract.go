@@ -358,6 +358,17 @@ func (h *Handler) PortalAcceptContract(w http.ResponseWriter, r *http.Request) {
 		if _, err := tx.Exec(r.Context(), `LOCK TABLE contract_templates IN SHARE MODE`); err != nil {
 			return err
 		}
+		// The link may have expired while that waited, so check again; revocation and
+		// anonymization cannot commit meanwhile, both rows are locked above. The link
+		// lock stays BEFORE the table lock: DeleteUser's ON DELETE SET NULL reaches
+		// self_service_tokens before contract_templates, and the reverse order here
+		// deadlocks with it.
+		if ok, err := portalStillAuthorized(r.Context(), tx, r, pid); err != nil {
+			return err
+		} else if !ok {
+			revoked = true
+			return nil
+		}
 		var latest int64
 		if err := tx.QueryRow(r.Context(),
 			`SELECT id FROM contract_templates ORDER BY version DESC LIMIT 1`).Scan(&latest); err != nil {
