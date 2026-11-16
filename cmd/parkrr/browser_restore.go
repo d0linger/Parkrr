@@ -105,6 +105,8 @@ func executeBrowserRestore(
 	}
 
 	pool.Reset()
+	// The application is drained: no link can be issued or revoked until restart.
+	live := handlers.CaptureLiveLinks(ctx, pool)
 	if err := restores.UpdatePhase(ctx, job.ID, restorectl.PhaseRestoring); err != nil {
 		return false, errors.Join(err, release())
 	}
@@ -121,7 +123,7 @@ func executeBrowserRestore(
 		return false, errors.Join(err, release())
 	}
 
-	if err := repairRestoredDatabase(ctx, pool, restores, job); err != nil {
+	if err := repairRestoredDatabase(ctx, pool, restores, job, live); err != nil {
 		// Keep the job active. A restarted or surviving replica will claim recovery
 		// after the heartbeat expires; readiness must never return before repair.
 		return false, errors.Join(restoreErr, err, release())
@@ -177,7 +179,9 @@ func recoverInterruptedRestore(
 			"Der Restore-Prozess wurde vor der Datenbankänderung unterbrochen; der bisherige Datenstand blieb erhalten.")
 		return errors.Join(finishErr, lease.Release())
 	}
-	repairErr := repairRestoredDatabase(ctx, pool, restores, job)
+	// Which links were live before the interrupted restore is unknown here: the
+	// zero LiveLinks revokes every restored link (fail closed).
+	repairErr := repairRestoredDatabase(ctx, pool, restores, job, handlers.LiveLinks{})
 	if repairErr != nil {
 		return errors.Join(repairErr, lease.Release())
 	}
@@ -194,6 +198,7 @@ func repairRestoredDatabase(
 	pool *pgxpool.Pool,
 	restores *restorectl.Controller,
 	job restorectl.Job,
+	live handlers.LiveLinks,
 ) error {
 	if err := restores.UpdatePhase(ctx, job.ID, restorectl.PhaseMigrating); err != nil {
 		return err
@@ -208,6 +213,9 @@ func repairRestoredDatabase(
 		return fmt.Errorf("purge restored sessions: %w", err)
 	}
 	post := handlers.New(pool)
+	if err := post.ReapplyLiveLinks(ctx, live); err != nil {
+		return err
+	}
 	if err := post.BackfillPeriodPayments(ctx); err != nil {
 		return fmt.Errorf("backfill restored period payments: %w", err)
 	}

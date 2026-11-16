@@ -42,7 +42,9 @@ self.addEventListener('fetch', (event) => {
 
     // Never cache API calls or dynamic status endpoints – always go to the network,
     // so they never enter the cache nor use the ignoreSearch offline fallback below.
-    if (url.pathname.startsWith('/api/') || url.pathname === '/healthz' || url.pathname === '/readyz' || url.pathname === '/metrics') {
+    // /ical/ is a revocable capability link: a cached copy would outlive revocation.
+    if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/ical/') ||
+        url.pathname === '/healthz' || url.pathname === '/readyz' || url.pathname === '/metrics') {
         return;
     }
 

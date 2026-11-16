@@ -137,11 +137,20 @@ func (s *WebAuthnService) FinishRegistration(ctx context.Context, u *models.User
 	if err != nil {
 		return err
 	}
-	if err := s.saveCredential(ctx, u.ID, cred, name); err != nil {
+	saved, err := s.saveCredential(ctx, u.ID, currentToken(r), cred, name)
+	if err != nil {
 		return internalErr(err)
+	}
+	if !saved {
+		return ErrRegistrationSessionGone
 	}
 	return nil
 }
+
+// ErrRegistrationSessionGone reports a verified registration whose session was
+// revoked while it ran (factor reset, logout, disabled account). No credential
+// was stored.
+var ErrRegistrationSessionGone = errors.New("auth: session ended during passkey registration")
 
 // BeginLogin starts a usernameless (discoverable) passkey login.
 func (s *WebAuthnService) BeginLogin() (*protocol.CredentialAssertion, *webauthn.SessionData, error) {
@@ -286,7 +295,13 @@ func (s *WebAuthnService) loadCredentials(ctx context.Context, userID int64) ([]
 	return out, rows.Err()
 }
 
-func (s *WebAuthnService) saveCredential(ctx context.Context, userID int64, c *webauthn.Credential, name string) error {
+// saveCredential stores a verified credential only while the registering session
+// still exists. The session was checked once at the start of the request; an
+// administrator's factor reset deletes credentials and sessions after locking the
+// user row. Locking that row here (FOR SHARE) orders the two: a reset that
+// committed first has removed the session and nothing is stored (false); a later
+// reset waits for this insert and then deletes the new credential with the rest.
+func (s *WebAuthnService) saveCredential(ctx context.Context, userID int64, sessionToken string, c *webauthn.Credential, name string) (bool, error) {
 	transports := make([]string, 0, len(c.Transport))
 	for _, tr := range c.Transport {
 		transports = append(transports, string(tr))
@@ -294,15 +309,38 @@ func (s *WebAuthnService) saveCredential(ctx context.Context, userID int64, c *w
 	if strings.TrimSpace(name) == "" {
 		name = "Passkey"
 	}
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO webauthn_credentials
-		   (user_id, credential_id, public_key, attestation_type, aaguid, sign_count,
-		    transports, backup_eligible, backup_state, name)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-		userID, c.ID, c.PublicKey, c.AttestationType, c.Authenticator.AAGUID,
-		int64(c.Authenticator.SignCount), strings.Join(transports, ","),
-		c.Flags.BackupEligible, c.Flags.BackupState, strings.TrimSpace(name))
-	return err
+	saved := false
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var disabled bool
+		err := tx.QueryRow(ctx, `SELECT disabled FROM users WHERE id = $1 FOR SHARE`, userID).Scan(&disabled)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && disabled) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		// A statement of its own: only a snapshot taken AFTER the lock sees the
+		// reset's session deletion (a subquery of the locking SELECT would not).
+		var live bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM sessions WHERE token = $1 AND user_id = $2 AND expires_at > now())`,
+			sessionToken, userID).Scan(&live); err != nil || !live {
+			return err
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO webauthn_credentials
+			   (user_id, credential_id, public_key, attestation_type, aaguid, sign_count,
+			    transports, backup_eligible, backup_state, name)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+			userID, c.ID, c.PublicKey, c.AttestationType, c.Authenticator.AAGUID,
+			int64(c.Authenticator.SignCount), strings.Join(transports, ","),
+			c.Flags.BackupEligible, c.Flags.BackupState, strings.TrimSpace(name)); err != nil {
+			return err
+		}
+		saved = true
+		return nil
+	})
+	return saved && err == nil, err
 }
 
 func (s *WebAuthnService) updateSignCount(ctx context.Context, credID []byte, count uint32) error {

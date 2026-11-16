@@ -374,6 +374,7 @@ func (h *Handler) BackupDownloadFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "private, no-store")
 	http.ServeContent(w, r, name, info.ModTime(), f)
 }
 
@@ -877,6 +878,7 @@ func streamBackupFile(w http.ResponseWriter, r *http.Request, name, path string)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "private, no-store")
 	http.ServeContent(w, r, name, info.ModTime(), f)
 	return nil
 }

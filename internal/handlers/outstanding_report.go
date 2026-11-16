@@ -97,6 +97,7 @@ func (h *Handler) OutstandingReportPDF(w http.ResponseWriter, r *http.Request) {
 	pdf.CellFormat(cOpen, 8, tr(pdfMoney(sum)), "T", 1, "R", false, 0, "")
 
 	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("Content-Disposition",
 		`attachment; filename="parkrr-offene-posten-`+h.now().Format("2006-01-02")+`.pdf"`)
 	if err := pdf.Output(w); err != nil {

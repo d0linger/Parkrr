@@ -1,0 +1,396 @@
+package handlers
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"sync"
+	"testing"
+	"time"
+)
+
+// Regressionen der Daybreak-Prüfung (2026-11): Mails, Portal-Schreibwege und Restore
+// gegen Anonymisierung, geänderte E-Mail-Adresse und Widerruf. Die Rennen werden nicht mit
+// Schlafpausen geraten, sondern über pg_stat_activity festgenagelt: der Test wartet,
+// bis PostgreSQL den Gegenspieler nachweislich an der Sperre parkt.
+
+// waitLocked blocks until a statement matching like waits on a lock. finished
+// reports whether the competitor already returned, which means it never waited.
+func waitLocked(t *testing.T, ctx context.Context, h *Handler, like string, finished func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var waiting bool
+		if err := h.Pool.QueryRow(ctx, `SELECT EXISTS (
+			SELECT 1 FROM pg_stat_activity WHERE datname=current_database()
+			   AND wait_event_type='Lock' AND query LIKE $1)`, like).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			return
+		}
+		if finished() {
+			t.Fatalf("finished without waiting on the lock (%s)", like)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("never waited on the lock (%s)", like)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// purgePersonByID räumt eine Person weg, die cleanupPersons nicht mehr findet
+// (nach dem Anonymisieren heißt sie nicht mehr 'Integration').
+func purgePersonByID(t *testing.T, h *Handler, id int64) {
+	t.Cleanup(func() {
+		c := context.Background()
+		if err := purgeExec(c, h.Pool, `DELETE FROM invoices WHERE person_id=$1`, id); err != nil {
+			t.Logf("cleanup invoices: %v", err)
+		}
+		if err := purgeExec(c, h.Pool, `DELETE FROM persons WHERE id=$1`, id); err != nil {
+			t.Logf("cleanup person: %v", err)
+		}
+	})
+}
+
+// Eine eingereihte Rechnung geht an die Adresse, die beim Versand gilt — nicht an die
+// beim Einreihen festgehaltene, die inzwischen korrigiert wurde.
+func TestOutboxSendsToCurrentAddress(t *testing.T) {
+	h := testHandler(t)
+	ctx := context.Background()
+	pid, iv := mailInvoiceFixture(t, h, "old.mailbox@example.com")
+	fake := &attachSender{}
+	h.Mail = fake
+	_, id, err := h.queueInvoiceMail(ctx, iv.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupMailRows(t, h, id)
+	if _, err := h.Pool.Exec(ctx, `UPDATE persons SET email=' new.mailbox@example.com ' WHERE id=$1`, pid); err != nil {
+		t.Fatal(err)
+	}
+	if n := h.ProcessOutbox(ctx); n != 1 {
+		t.Fatalf("processed %d rows, want 1", n)
+	}
+	if len(fake.sent) != 1 || len(fake.sent[0].to) != 1 || fake.sent[0].to[0] != "new.mailbox@example.com" {
+		t.Fatalf("delivered to %+v, want the current address only", fake.sent)
+	}
+	var recipient, status string
+	if err := h.Pool.QueryRow(ctx, `SELECT recipient, status FROM mail_outbox WHERE id=$1`, id).Scan(&recipient, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "sent" || recipient != "new.mailbox@example.com" {
+		t.Fatalf("outbox row: status=%s recipient=%s", status, recipient)
+	}
+
+	// Ohne Adresse geht nichts hinaus, auch nicht an die alte.
+	_, id2, err := h.queueInvoiceMail(ctx, iv.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupMailRows(t, h, id2)
+	if _, err := h.Pool.Exec(ctx, `UPDATE persons SET email='' WHERE id=$1`, pid); err != nil {
+		t.Fatal(err)
+	}
+	h.ProcessOutbox(ctx)
+	if st, _, att, msg := outboxStatus(t, h, id2); st != "failed" || att || msg == "" || len(fake.sent) != 1 {
+		t.Fatalf("no address: status=%s attachment=%v error=%q sent=%d", st, att, msg, len(fake.sent))
+	}
+}
+
+// Ein Versand, der schon beim Mailserver hängt, wenn die Person anonymisiert wird:
+// die Anonymisierung wartet, bis er durch ist, und leert danach auch diese Zeile.
+// Vorher meldete sie Erfolg, während die Rechnung noch hinausging.
+func TestInvoiceDeliverySerializesAnonymization(t *testing.T) {
+	h := testHandler(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pid, iv := mailInvoiceFixture(t, h, "inflight.anon@example.com")
+	purgePersonByID(t, h, pid)
+	fake := &blockingInvoiceSender{started: make(chan struct{}), release: make(chan struct{})}
+	h.Mail = fake
+	_, id, err := h.queueInvoiceMail(ctx, iv.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupMailRows(t, h, id)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(fake.release) }) }
+	var workers sync.WaitGroup
+	defer func() {
+		release()
+		cancel()
+		workers.Wait()
+	}()
+	delivered := make(chan int, 1)
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		delivered <- h.ProcessOutbox(ctx)
+	}()
+	select {
+	case <-fake.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("delivery did not reach sender")
+	}
+	anonymized := make(chan *httptest.ResponseRecorder, 1)
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/persons/"+strconv.FormatInt(pid, 10)+"/anonymize", nil).WithContext(ctx)
+		req.SetPathValue("id", strconv.FormatInt(pid, 10))
+		h.AnonymizePerson(w, req)
+		anonymized <- w
+	}()
+	waitLocked(t, ctx, h, "%first_name = 'Anonymisiert'%", func() bool { return len(anonymized) > 0 })
+	release()
+	select {
+	case n := <-delivered:
+		if n != 1 || len(fake.sent) != 1 {
+			t.Fatalf("delivery before anonymization: processed=%d sent=%d", n, len(fake.sent))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("delivery did not finish")
+	}
+	select {
+	case w := <-anonymized:
+		if w.Code != http.StatusOK {
+			t.Fatalf("anonymize after delivery: %d %s", w.Code, w.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("anonymization did not finish after delivery")
+	}
+	var recipient, status string
+	if err := h.Pool.QueryRow(ctx, `SELECT recipient, status FROM mail_outbox WHERE id=$1`, id).Scan(&recipient, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "sent" || recipient != "anonymisiert" {
+		t.Fatalf("after anonymization: status=%s recipient=%s", status, recipient)
+	}
+}
+
+// Ein Portal-Wunsch, dessen Link am Anfang noch galt, darf nach einer Anonymisierung
+// keinen neuen Datensatz mit Personendaten anlegen. Der Test hält die
+// Anonymisierung offen, bis der Wunsch an der Personenzeile wartet.
+func TestPortalRequestStopsAtAnonymizationCommittedMidRequest(t *testing.T) {
+	h := testHandler(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pid := createIntegrationPerson(t, h)
+	token := createPortalLink(t, h, pid)
+
+	anon, err := h.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = anon.Rollback(context.Background()) }()
+	if _, err := anon.Exec(ctx, `UPDATE persons SET anonymized=TRUE, email='' WHERE id=$1`, pid); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- portalRequestReq(t, h, token, map[string]any{"kind": "contact_update", "email": "nach.loeschung@example.com"})
+	}()
+	waitLocked(t, ctx, h, "%SELECT anonymized FROM persons WHERE id=$1 FOR SHARE%", func() bool { return len(done) > 0 })
+	if _, err := anon.Exec(ctx, `UPDATE self_service_tokens SET revoked=TRUE WHERE person_id=$1`, pid); err != nil {
+		t.Fatal(err)
+	}
+	if err := anon.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case w := <-done:
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("portal request after anonymization: %d %s", w.Code, w.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("portal request did not finish")
+	}
+	var n int
+	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM portal_requests WHERE person_id=$1`, pid).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("%d portal request(s) stored after anonymization", n)
+	}
+}
+
+// Die Versionsprüfung der Annahme lief vor dem PDF und außerhalb der Transaktion.
+// Speichert der Betreiber dazwischen eine neue Fassung, wird jetzt nichts
+// angenommen (409) statt der veralteten.
+func TestContractAcceptanceRechecksTemplateInTransaction(t *testing.T) {
+	h := testHandler(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	t.Cleanup(func() {
+		_, _ = h.Pool.Exec(context.Background(), `DELETE FROM contract_acceptances`)
+		_, _ = h.Pool.Exec(context.Background(), `DELETE FROM contract_templates`)
+	})
+	pid, vid, _ := seasonFixture(t, h, "2027-03-31")
+	w := callJSONRaw(h, h.SaveContractTemplate, http.MethodPost, "/api/contract-template", "",
+		`{"title":"Einstellvertrag","body":"Vertrag für {{name}}."}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("save: %d %s", w.Code, w.Body.String())
+	}
+	var v1 contractTemplate
+	_ = json.Unmarshal(w.Body.Bytes(), &v1)
+	token := createPortalLink(t, h, pid)
+
+	publish, err := h.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = publish.Rollback(context.Background()) }()
+	if _, err := publish.Exec(ctx, `LOCK TABLE contract_templates IN EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publish.Exec(ctx,
+		`INSERT INTO contract_templates (version, title, body) SELECT max(version) + 1, 'Einstellvertrag', 'Neue Fassung.' FROM contract_templates`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		b, _ := json.Marshal(map[string]any{"vehicle_id": vid, "version": v1.Version})
+		req := httptest.NewRequest(http.MethodPost, "/api/portal/contract/accept", bytes.NewReader(b))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.PortalAcceptContract(rec, req)
+		done <- rec
+	}()
+	waitLocked(t, ctx, h, "%LOCK TABLE contract_templates IN SHARE MODE%", func() bool { return len(done) > 0 })
+	if err := publish.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case rec := <-done:
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("accepting the superseded version: %d %s", rec.Code, rec.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("acceptance did not finish")
+	}
+	var n int
+	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM contract_acceptances WHERE person_id=$1`, pid).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("%d acceptance(s) of a superseded template stored", n)
+	}
+}
+
+// Ein Restore spielt den Widerrufsstand von Portal-Links und Kalender-Abos zurück.
+// Was vor dem Restore nicht mehr galt, darf danach nicht wieder gelten; was galt,
+// bleibt. Unbekannt (Absturz, leere Datenbank) heißt: alles widerrufen.
+func TestRestoreReappliesLinkRevocations(t *testing.T) {
+	h := testHandler(t)
+	ctx := context.Background()
+	pid := createIntegrationPerson(t, h)
+	revokedTok, liveTok := createPortalLink(t, h, pid), createPortalLink(t, h, pid)
+	var users [2]int64
+	for i := range users {
+		if err := h.Pool.QueryRow(ctx,
+			`INSERT INTO users (username, email, password_hash, role) VALUES ($1, '', 'x', 'reader') RETURNING id`,
+			"restore-links-"+strconv.Itoa(i)+"-"+strconv.FormatInt(time.Now().UnixNano(), 10)).Scan(&users[i]); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.Pool.Exec(ctx, `INSERT INTO calendar_feeds (user_id, token_hash) VALUES ($1, $2)`,
+			users[i], feedHash("restore-feed-"+strconv.FormatInt(users[i], 10))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = h.Pool.Exec(context.Background(), `DELETE FROM users WHERE id = ANY($1)`, users[:])
+	})
+	isRevoked := func(tok string) bool {
+		t.Helper()
+		var r bool
+		if err := h.Pool.QueryRow(ctx, `SELECT revoked FROM self_service_tokens WHERE token_hash=$1`, hashPortalToken(tok)).Scan(&r); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	feeds := func() int {
+		t.Helper()
+		var n int
+		if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM calendar_feeds WHERE user_id = ANY($1)`, users[:]).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// Vor dem Restore: ein Link widerrufen, ein Abo widerrufen (gelöscht).
+	if _, err := h.Pool.Exec(ctx, `UPDATE self_service_tokens SET revoked=TRUE WHERE token_hash=$1`, hashPortalToken(revokedTok)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Pool.Exec(ctx, `DELETE FROM calendar_feeds WHERE user_id=$1`, users[0]); err != nil {
+		t.Fatal(err)
+	}
+	live := CaptureLiveLinks(ctx, h.Pool)
+	// Der Restore bringt den älteren Stand zurück.
+	if _, err := h.Pool.Exec(ctx, `UPDATE self_service_tokens SET revoked=FALSE WHERE token_hash=$1`, hashPortalToken(revokedTok)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Pool.Exec(ctx, `INSERT INTO calendar_feeds (user_id, token_hash) VALUES ($1, $2)`,
+		users[0], feedHash("restore-feed-"+strconv.FormatInt(users[0], 10))); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.ReapplyLiveLinks(ctx, live); err != nil {
+		t.Fatal(err)
+	}
+	if !isRevoked(revokedTok) || isRevoked(liveTok) {
+		t.Fatalf("after reapply: revoked link revoked=%v, live link revoked=%v", isRevoked(revokedTok), isRevoked(liveTok))
+	}
+	if n := feeds(); n != 1 {
+		t.Fatalf("after reapply: %d calendar feeds, want only the live one", n)
+	}
+
+	if err := h.ReapplyLiveLinks(ctx, LiveLinks{}); err != nil {
+		t.Fatal(err)
+	}
+	if !isRevoked(liveTok) || feeds() != 0 {
+		t.Fatal("unknown pre-restore state must revoke every link")
+	}
+}
+
+// Geldbewegung und Protokolleintrag committen gemeinsam: scheitert der Eintrag, gibt
+// es auch die Nebenkosten nicht (vorher blieben sie ohne Spur stehen).
+func TestRecurringChargeRollsBackWithItsAuditRow(t *testing.T) {
+	h := testHandler(t)
+	ctx := context.Background()
+	pid := createIntegrationPerson(t, h)
+	tag := "audit-reject-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	if _, err := h.Pool.Exec(ctx, `CREATE OR REPLACE FUNCTION parkrr_test_reject_audit() RETURNS trigger
+		LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit rejected by test'; END $$`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Pool.Exec(ctx, `CREATE TRIGGER parkrr_test_reject_audit BEFORE INSERT ON audit_log
+		FOR EACH ROW WHEN (NEW.summary LIKE '%`+tag+`%') EXECUTE FUNCTION parkrr_test_reject_audit()`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = h.Pool.Exec(context.Background(), `DROP TRIGGER IF EXISTS parkrr_test_reject_audit ON audit_log`)
+		_, _ = h.Pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS parkrr_test_reject_audit()`)
+	})
+	amount := 12.5
+	body, _ := json.Marshal(recurringRequest{Description: tag, Amount: &amount, Period: "monthly", StartDate: "2026-01-01"})
+	req := httptest.NewRequest(http.MethodPost, "/api/persons/"+strconv.FormatInt(pid, 10)+"/recurring", bytes.NewReader(body))
+	req.SetPathValue("id", strconv.FormatInt(pid, 10))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.CreateRecurringCharge(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("create with a failing audit write: %d %s", rec.Code, rec.Body.String())
+	}
+	var n int
+	if err := h.Pool.QueryRow(ctx, `SELECT count(*) FROM recurring_charges WHERE description=$1`, tag).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("%d recurring charge(s) persisted without their audit row", n)
+	}
+}

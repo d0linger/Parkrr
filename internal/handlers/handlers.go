@@ -301,6 +301,13 @@ func (h *Handler) audit(r *http.Request, action, entity string, id int64, summar
 	h.auditChange(r, action, entity, id, summary, nil)
 }
 
+// auditTx is audit's transactional twin: a plain summary entry (a bulk run, an
+// import) written through q, so it commits and rolls back with the mutation.
+func (h *Handler) auditTx(ctx context.Context, q execer, r *http.Request, action, entity string, id int64, summary string) error {
+	actorID, actorName := actorFrom(r)
+	return auditExec(ctx, q, actorID, actorName, action, entity, id, summary, nil)
+}
+
 // auditChangeTx writes an audit entry through q — pass the money transaction's
 // pgx.Tx so the row commits atomically with the mutation and rolls back with it.
 // The error is returned so the caller fails (and rolls back) the tx on an audit

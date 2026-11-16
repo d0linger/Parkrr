@@ -8,6 +8,10 @@ test('login screen has no critical accessibility violations', async ({ page }) =
   await page.goto('/');
   // The SPA reveals the login card once bootstrapped.
   await page.waitForSelector('#login-view:not([hidden])', { timeout: 10000 });
+  // Exactly one visible main landmark: the login view itself (the portal and app
+  // mains stay hidden in this state).
+  await expect(page.getByRole('main')).toHaveCount(1);
+  await expect(page.getByRole('main')).toHaveAttribute('id', 'login-view');
 
   const results = await new AxeBuilder({ page })
     .withTags(['wcag2a', 'wcag2aa'])

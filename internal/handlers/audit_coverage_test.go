@@ -560,7 +560,7 @@ func TestEveryMutatingRouteIsAudited(t *testing.T) {
 		byName[hf.Name] = hf
 	}
 	reRoute := regexp.MustCompile(`"(?:POST|PUT|PATCH|DELETE) (/api[^"]*)"[^\n]*?(?:h|ah)\.([A-Za-z0-9_]+)`)
-	reAudit := regexp.MustCompile(`\.(?:audit|auditAs|auditChange|auditChangeTx|auditInsert|auditCreated|auditCreatedTx|auditDeleted|auditDeletedTx|AuditSystem)\(`)
+	reAudit := regexp.MustCompile(`\.(?:audit|auditTx|auditAs|auditChange|auditChangeTx|auditInsert|auditCreated|auditCreatedTx|auditDeleted|auditDeletedTx|AuditSystem)\(`)
 
 	// A guard that silently skips what it cannot parse is worse than no guard: the one
 	// route registered in a shape the pattern misses would be exactly the unaudited

@@ -84,9 +84,13 @@ func TestBootstrapBreachLookupOptIn(t *testing.T) {
 func TestLoadDefaults(t *testing.T) {
 	setRequired(t)
 	t.Setenv("PARKRR_TAX_WRITES_ENABLED", "")
+	t.Setenv("PARKRR_METRICS_REQUIRE_AUTH", "")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.MetricsRequireAuth {
+		t.Error("MetricsRequireAuth should default to true: no anonymous /metrics without an explicit opt-out")
 	}
 	if !cfg.SecureCookies {
 		t.Error("SecureCookies should default to true (secure-by-default)")

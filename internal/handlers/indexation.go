@@ -81,14 +81,19 @@ func (h *Handler) SaveCPI(w http.ResponseWriter, r *http.Request) {
 	}
 	var old *float64
 	_ = h.Pool.QueryRow(r.Context(), `SELECT value FROM cpi_values WHERE month = $1`, m).Scan(&old)
-	if _, err := h.Pool.Exec(r.Context(),
-		`INSERT INTO cpi_values (month, value) VALUES ($1, $2)
-		 ON CONFLICT (month) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, m, round2(in.Value)); err != nil {
+	// Index values drive price changes: value and audit row commit together.
+	if err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(r.Context(),
+			`INSERT INTO cpi_values (month, value) VALUES ($1, $2)
+			 ON CONFLICT (month) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, m, round2(in.Value)); err != nil {
+			return err
+		}
+		return h.auditChangeTx(r.Context(), tx, r, "update", "cpi", 0, "VPI "+m.Format("01/2006")+" gespeichert",
+			diffFields(map[string]any{"value": old, "updated_at": nil}, map[string]any{"value": round2(in.Value), "updated_at": "jetzt"}))
+	}); err != nil {
 		serverError(w, r, "could not save", err)
 		return
 	}
-	h.auditChange(r, "update", "cpi", 0, "VPI "+m.Format("01/2006")+" gespeichert",
-		diffFields(map[string]any{"value": old, "updated_at": nil}, map[string]any{"value": round2(in.Value), "updated_at": "jetzt"}))
 	writeJSON(w, http.StatusOK, cpiValue{Month: m, Value: round2(in.Value)})
 }
 
@@ -99,8 +104,14 @@ func (h *Handler) DeleteCPI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Monat als JJJJ-MM")
 		return
 	}
-	var v float64
-	err := h.Pool.QueryRow(r.Context(), `DELETE FROM cpi_values WHERE month = $1 RETURNING value`, m).Scan(&v)
+	err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		var v float64
+		if err := tx.QueryRow(r.Context(), `DELETE FROM cpi_values WHERE month = $1 RETURNING value`, m).Scan(&v); err != nil {
+			return err
+		}
+		return h.auditDeletedTx(r.Context(), tx, r, "cpi", 0, "VPI "+m.Format("01/2006")+" gelöscht",
+			map[string]any{"month": m.Format("2006-01"), "value": v})
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
@@ -109,7 +120,6 @@ func (h *Handler) DeleteCPI(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, "could not delete", err)
 		return
 	}
-	h.auditDeleted(r, "cpi", 0, "VPI "+m.Format("01/2006")+" gelöscht", map[string]any{"month": m.Format("2006-01"), "value": v})
 	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 }
 
@@ -180,20 +190,24 @@ func (h *Handler) SetCategoryIndexation(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "Tarif nicht gefunden")
 		return
 	}
-	if _, err := h.Pool.Exec(r.Context(),
-		`UPDATE categories SET index_base_month = $2, index_threshold = $3, updated_at = now() WHERE id = $1`, id, base, round2(in.Threshold)); err != nil {
-		serverError(w, r, "could not save", err)
-		return
-	}
 	monthStr := func(t *time.Time) any {
 		if t == nil {
 			return nil
 		}
 		return t.Format("2006-01")
 	}
-	h.auditChange(r, "update", "category", id, "Wertsicherung des Tarifs geändert", diffFields(
-		map[string]any{"index_base_month": monthStr(oldBase), "index_threshold": oldThreshold},
-		map[string]any{"index_base_month": monthStr(base), "index_threshold": round2(in.Threshold)}))
+	if err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(r.Context(),
+			`UPDATE categories SET index_base_month = $2, index_threshold = $3, updated_at = now() WHERE id = $1`, id, base, round2(in.Threshold)); err != nil {
+			return err
+		}
+		return h.auditChangeTx(r.Context(), tx, r, "update", "category", id, "Wertsicherung des Tarifs geändert", diffFields(
+			map[string]any{"index_base_month": monthStr(oldBase), "index_threshold": oldThreshold},
+			map[string]any{"index_base_month": monthStr(base), "index_threshold": round2(in.Threshold)}))
+	}); err != nil {
+		serverError(w, r, "could not save", err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"base_month": monthStr(base), "threshold": round2(in.Threshold)})
 }
 
@@ -530,14 +544,15 @@ func (h *Handler) ApplyIndexation(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		}
-		return nil
+		// The price changes and their trail commit together (BAO §131).
+		return h.auditTx(r.Context(), tx, r, "update", "category", 0,
+			fmt.Sprintf("Wertsicherung VPI %s angewendet: %d Tarife, %d Gefährte, %d Mitteilungen",
+				month.Format("01/2006"), cats, changed, mails))
 	})
 	if err != nil {
 		serverError(w, r, "could not apply", err)
 		return
 	}
-	h.audit(r, "update", "category", 0, fmt.Sprintf("Wertsicherung VPI %s angewendet: %d Tarife, %d Gefährte, %d Mitteilungen",
-		month.Format("01/2006"), cats, changed, mails))
 	if mails > 0 {
 		h.KickOutbox()
 	}
@@ -617,12 +632,18 @@ func (h *Handler) DeleteRateChange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	today := startOfDayUTC(h.now())
-	var vid int64
-	var from time.Time
-	var rate, prev float64
-	err := h.Pool.QueryRow(r.Context(),
-		`DELETE FROM vehicle_rate_changes WHERE id = $1 AND effective_from > $2
-		 RETURNING vehicle_id, effective_from, rate, previous_rate`, id, today).Scan(&vid, &from, &rate, &prev)
+	err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		var vid int64
+		var from time.Time
+		var rate, prev float64
+		if err := tx.QueryRow(r.Context(),
+			`DELETE FROM vehicle_rate_changes WHERE id = $1 AND effective_from > $2
+			 RETURNING vehicle_id, effective_from, rate, previous_rate`, id, today).Scan(&vid, &from, &rate, &prev); err != nil {
+			return err
+		}
+		return h.auditDeletedTx(r.Context(), tx, r, "vehicle", vid, "Preisänderung ab "+from.Format("02.01.2006")+" zurückgenommen",
+			map[string]any{"effective_from": from.Format(dateLayout), "rate": rate, "previous_rate": prev, "rate_change_id": strconv.FormatInt(id, 10)})
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		var exists bool
 		if qerr := h.Pool.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM vehicle_rate_changes WHERE id = $1)`, id).Scan(&exists); qerr == nil && exists {
@@ -636,7 +657,5 @@ func (h *Handler) DeleteRateChange(w http.ResponseWriter, r *http.Request) {
 		serverError(w, r, "could not delete", err)
 		return
 	}
-	h.auditDeleted(r, "vehicle", vid, "Preisänderung ab "+from.Format("02.01.2006")+" zurückgenommen",
-		map[string]any{"effective_from": from.Format(dateLayout), "rate": rate, "previous_rate": prev, "rate_change_id": strconv.FormatInt(id, 10)})
 	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 }

@@ -1114,7 +1114,7 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 	today := businessDay(h.now())
 	newThrough := curThrough // unchanged unless the flag flips
 	failMsg := "could not update payment status"
-	if err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+	settle := func(tx pgx.Tx) error {
 		// CreateInvoice's per-person lock first, then the invoice check: an invoice
 		// can no longer claim the vehicle's periods between the check and the flag
 		// (BIL-05).
@@ -1208,6 +1208,20 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		return nil
+	}
+	label := "offen"
+	if req.Paid {
+		label = "bezahlt"
+	}
+	// The settlement and its audit row commit together (BAO §131); curPaid and
+	// curThrough hold the values read under the row lock.
+	if err := pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+		if err := settle(tx); err != nil {
+			return err
+		}
+		return h.auditChangeTx(r.Context(), tx, r, "update", "vehicle", id, "Zahlung "+h.vehicleDesc(r, id)+": "+label,
+			diffFields(map[string]any{"paid": curPaid, "paid_through": dateOrNil(curThrough)},
+				map[string]any{"paid": req.Paid, "paid_through": dateOrNil(newThrough)}))
 	}); err != nil {
 		var conflict *settlementConflictError
 		if errors.As(err, &conflict) {
@@ -1220,13 +1234,6 @@ func (h *Handler) MarkPaid(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, failMsg)
 		return
 	}
-	label := "offen"
-	if req.Paid {
-		label = "bezahlt"
-	}
-	h.auditChange(r, "update", "vehicle", id, "Zahlung "+h.vehicleDesc(r, id)+": "+label,
-		diffFields(map[string]any{"paid": curPaid, "paid_through": dateOrNil(curThrough)},
-			map[string]any{"paid": req.Paid, "paid_through": dateOrNil(newThrough)}))
 	h.autoArchiveIfClosed(r, id)
 	h.writeVehicle(w, r.Context(), id, http.StatusOK)
 }

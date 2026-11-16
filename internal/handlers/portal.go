@@ -86,6 +86,38 @@ func (h *Handler) portalPerson(r *http.Request) (int64, bool) {
 	return h.resolvePortalPerson(r.Context(), token)
 }
 
+// portalStillAuthorized repeats resolvePortalPerson's check inside a portal write
+// transaction and locks the person and the link FOR SHARE until tx ends. Between
+// the check at the start of the request and the write lie parsing, validation and
+// PDF rendering; an anonymization or revocation that commits in that window would
+// otherwise be followed by a fresh portal row carrying personal data. Both write
+// exactly these rows: one that committed first is seen here, one that comes later
+// waits for this write and then purges it with everything else. Person before
+// link, in AnonymizePerson's order.
+func portalStillAuthorized(ctx context.Context, tx pgx.Tx, r *http.Request, pid int64) (bool, error) {
+	token, ok := portalBearer(r)
+	if !ok {
+		return false, nil
+	}
+	var anonymized bool
+	err := tx.QueryRow(ctx, `SELECT anonymized FROM persons WHERE id=$1 FOR SHARE`, pid).Scan(&anonymized)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && anonymized) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var one int
+	err = tx.QueryRow(ctx,
+		`SELECT 1 FROM self_service_tokens
+		  WHERE token_hash = $1 AND person_id = $2 AND NOT revoked AND expires_at > now()
+		  FOR SHARE`, hashPortalToken(token), pid).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // CreatePortalLink issues a self-service magic link for a person (editor+),
 // optionally e-mailing it. Body (optional JSON): {"days":1..365, "send":bool}.
 func (h *Handler) CreatePortalLink(w http.ResponseWriter, r *http.Request) {

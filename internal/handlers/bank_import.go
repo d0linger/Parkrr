@@ -222,13 +222,13 @@ func (h *Handler) ImportBankStatement(w http.ResponseWriter, r *http.Request) {
 				dupes++
 			}
 		}
-		return nil
+		return h.auditTx(r.Context(), tx, r, "import", "bank_transaction", 0,
+			fmt.Sprintf("Kontoauszug importiert: %d neu, %d schon vorhanden, %d übersprungen", imported, dupes, skipped))
 	})
 	if err != nil {
 		serverError(w, r, "could not import", err)
 		return
 	}
-	h.audit(r, "import", "bank_transaction", 0, fmt.Sprintf("Kontoauszug importiert: %d neu, %d schon vorhanden, %d übersprungen", imported, dupes, skipped))
 	writeJSON(w, http.StatusOK, map[string]int{"imported": imported, "duplicates": dupes, "skipped": skipped})
 }
 

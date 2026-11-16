@@ -485,6 +485,7 @@ func (h *Handler) TaxYearPDF(w http.ResponseWriter, r *http.Request) {
 	pdf.MultiCell(cL+cR, 4.2, tr(note), "", "L", false)
 
 	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("Content-Disposition", `attachment; filename="parkrr-einnahmen-`+ys+`.pdf"`)
 	if err := pdf.Output(w); err != nil {
 		// Header und Rumpf sind schon raus; nur protokollieren (wie OutstandingReportPDF).
@@ -524,6 +525,7 @@ func (h *Handler) TaxYearPackage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("Content-Disposition", `attachment; filename="parkrr-steuerjahr-`+strconv.Itoa(year)+`.zip"`)
 	zw := zip.NewWriter(w)
 	writeBytes := func(name string, data []byte) error {

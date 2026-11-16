@@ -519,6 +519,11 @@ func New(pool *pgxpool.Pool, authMgr *auth.Manager, wa *auth.WebAuthnService, ra
 				if r.URL.Query().Get("v") != "" {
 					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 				}
+				// Neither Go's built-in table nor the Alpine image knows .webmanifest;
+				// the FileServer would sniff it as text/plain.
+				if strings.HasSuffix(path, ".webmanifest") {
+					w.Header().Set("Content-Type", "application/manifest+json; charset=utf-8")
+				}
 				fileServer.ServeHTTP(w, r)
 				return
 			}

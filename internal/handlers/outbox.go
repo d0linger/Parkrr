@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -128,11 +129,80 @@ func (h *Handler) deliverOutbox(ctx context.Context, row outboxRow, attempts int
 		h.deliverInvoice(ctx, row, attempts)
 		return
 	}
-	if err := h.sendOutboxRow(ctx, row); err != nil {
+	lctx, cancel := context.WithTimeout(ctx, 35*time.Second)
+	defer cancel()
+	tx, err := h.Pool.Begin(lctx)
+	if err != nil {
+		h.requeueSoon(ctx, row.ID, "Datenbank ausgelastet")
+		return
+	}
+	defer releaseOutboxLocks(ctx, tx)
+	if !h.holdRecipient(ctx, lctx, tx, &row) {
+		return
+	}
+	if err := h.sendOutboxRow(lctx, row); err != nil {
 		h.retryOrFail(ctx, row, attempts, err)
 		return
 	}
 	h.markSent(ctx, row, func(context.Context, pgx.Tx) error { return nil })
+}
+
+// releaseOutboxLocks ends a delivery's lock transaction. It only read and locked
+// rows, so the rollback merely releases the locks.
+func releaseOutboxLocks(ctx context.Context, tx pgx.Tx) {
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	_ = tx.Rollback(rctx)
+}
+
+// holdRecipient locks the person row FOR SHARE in tx and keeps it until tx ends,
+// i.e. across the whole send. Anonymization, deletion and every address change
+// write exactly this row, so they wait until the mail is out: no send that passed
+// this point is still in flight when an anonymization reports success. The mail
+// goes to the address that is current NOW — the one captured at queue time would
+// send a corrected invoice to the old mailbox. false means do not send; the row
+// has then already been finished or handed back. Bookkeeping uses ctx, the lock
+// queries lctx.
+func (h *Handler) holdRecipient(ctx, lctx context.Context, tx pgx.Tx, row *outboxRow) bool {
+	if row.PersonID == nil {
+		// person_id only disappears when the person is deleted (ON DELETE SET NULL).
+		h.finishOutbox(ctx, row.ID, "failed", "Nicht gesendet: Person gelöscht")
+		return false
+	}
+	var email string
+	var anonymized bool
+	err := tx.QueryRow(lctx, `SELECT email, anonymized FROM persons WHERE id=$1 FOR SHARE`, *row.PersonID).
+		Scan(&email, &anonymized)
+	gone := errors.Is(err, pgx.ErrNoRows)
+	if err != nil && !gone {
+		h.requeueSoon(ctx, row.ID, "Person nicht lesbar")
+		return false
+	}
+	// Only under the lock: an anonymization or deletion that committed first has
+	// already closed the row, and its recipient no longer counts.
+	var status string
+	switch err := tx.QueryRow(lctx, `SELECT status FROM mail_outbox WHERE id=$1`, row.ID).Scan(&status); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return false
+	case err != nil:
+		h.requeueSoon(ctx, row.ID, "Warteschlange nicht lesbar")
+		return false
+	case status != "sending":
+		return false
+	}
+	to := trim(email)
+	switch {
+	case gone || anonymized:
+		h.finishOutbox(ctx, row.ID, "failed", "Person anonymisiert, nicht gesendet")
+		return false
+	case to == "":
+		h.finishOutbox(ctx, row.ID, "failed", "Nicht gesendet: keine E-Mail-Adresse mehr hinterlegt")
+		return false
+	}
+	if !strings.EqualFold(to, row.Recipient) {
+		row.Recipient = to
+	}
+	return true
 }
 
 // The invoice row lock orders delivery against CancelInvoice's UPDATE: either the
@@ -150,11 +220,8 @@ func (h *Handler) deliverInvoice(ctx context.Context, row outboxRow, attempts in
 		h.requeueSoon(ctx, row.ID, "Rechnung nicht lesbar")
 		return
 	}
-	defer func() {
-		rctx, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer rollbackCancel()
-		_ = tx.Rollback(rctx) // Only the invoice lock lives in this transaction.
-	}()
+	// Invoice and person locks live in this transaction.
+	defer releaseOutboxLocks(ctx, tx)
 	var canceled bool
 	var cancelsID *int64
 	err = tx.QueryRow(lctx, `SELECT canceled, cancels_id FROM invoices WHERE id=$1 FOR NO KEY UPDATE`, *row.RefID).
@@ -168,6 +235,9 @@ func (h *Handler) deliverInvoice(ctx context.Context, row outboxRow, attempts in
 		return
 	case canceled || cancelsID != nil:
 		h.finishOutbox(ctx, row.ID, "failed", "Nicht gesendet: Rechnung storniert")
+		return
+	}
+	if !h.holdRecipient(ctx, lctx, tx, &row) {
 		return
 	}
 	if err := h.sendOutboxRow(lctx, row); err != nil {
@@ -205,6 +275,17 @@ func (h *Handler) deliverReminder(ctx context.Context, row outboxRow, attempts i
 			discardLockedConn(conn)
 		}
 	}()
+	// Die Personensperre auf derselben Verbindung; das Rollback läuft vor dem
+	// Freigeben der Sitzungssperre (defer-Reihenfolge).
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		h.requeueSoon(ctx, row.ID, "Datenbank ausgelastet")
+		return
+	}
+	defer releaseOutboxLocks(ctx, tx)
+	if !h.holdRecipient(ctx, ctx, tx, &row) {
+		return
+	}
 	if reason := h.reminderStillDue(ctx, *row.RefID, row.Level); reason != "" {
 		h.finishOutbox(ctx, row.ID, "failed", "Nicht gesendet: "+reason)
 		return
@@ -241,9 +322,10 @@ func (h *Handler) retryOrFail(ctx context.Context, row outboxRow, attempts int, 
 		return
 	}
 	wait := outboxBackoff[attempts-1]
+	// recipient: the address actually tried (holdRecipient may have updated it).
 	if _, err := h.Pool.Exec(ctx,
-		`UPDATE mail_outbox SET status='queued', next_attempt_at=now() + make_interval(secs => $2), last_error=$3 WHERE id=$1`,
-		row.ID, wait.Seconds(), msg); err != nil {
+		`UPDATE mail_outbox SET status='queued', next_attempt_at=now() + make_interval(secs => $2), last_error=$3, recipient=$4 WHERE id=$1`,
+		row.ID, wait.Seconds(), msg, row.Recipient); err != nil {
 		slog.Warn("outbox: Wiederholung nicht planbar", "id", row.ID, "err", err)
 	}
 }
@@ -259,13 +341,15 @@ func (h *Handler) requeueSoon(ctx context.Context, id int64, why string) {
 
 // markSent hält die Zustellung fest und bucht die Folge in derselben Transaktion.
 // Eigene Frist, unabhängig vom Aufrufer: die Mail ist draußen, die Buchung darf nicht
-// verloren gehen.
+// verloren gehen. Läuft, solange holdRecipient die Person noch sperrt — danach
+// schriebe es die Adresse in eine Zeile zurück, die eine Anonymisierung geleert hat.
 func (h *Handler) markSent(ctx context.Context, row outboxRow, after func(context.Context, pgx.Tx) error) {
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	err := pgx.BeginFunc(wctx, h.Pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(wctx,
-			`UPDATE mail_outbox SET status='sent', sent_at=now(), attachment=NULL, last_error='' WHERE id=$1`, row.ID); err != nil {
+			`UPDATE mail_outbox SET status='sent', sent_at=now(), attachment=NULL, last_error='', recipient=$2 WHERE id=$1`,
+			row.ID, row.Recipient); err != nil {
 			return err
 		}
 		if row.Kind == "invoice" && row.RefID != nil {

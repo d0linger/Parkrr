@@ -359,11 +359,24 @@ func (h *Handler) CreateRecurringCharge(w http.ResponseWriter, r *http.Request) 
 	}
 	var id int64
 	var err error
+	// The charge and its audit row commit together (BAO §131): a failed audit
+	// write rolls the charge back instead of leaving it without a trail.
+	insertAudited := func(sql string, args ...any) error {
+		return pgx.BeginFunc(r.Context(), h.Pool, func(tx pgx.Tx) error {
+			if err := tx.QueryRow(r.Context(), sql, args...).Scan(&id); err != nil {
+				return err
+			}
+			return h.auditCreatedTx(r.Context(), tx, r, "recurring_charge", id, "added recurring cost "+desc, map[string]any{
+				"description": desc, "amount": amount, "period": period,
+				"start_date": start.Format("2006-01-02"), "person_id": personID,
+			})
+		})
+	}
 	if idem.key == "" {
-		err = h.Pool.QueryRow(r.Context(),
+		err = insertAudited(
 			`INSERT INTO recurring_charges (person_id, vehicle_id, description, amount, period, start_date, end_date)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-			personID, req.VehicleID, desc, amount, period, start, end).Scan(&id)
+			personID, req.VehicleID, desc, amount, period, start, end)
 	} else {
 		if prior, found, lerr := idempotentRowID(r.Context(), h.Pool, recurringIdempotencyLookup, idem); lerr != nil {
 			writeIdempotencyError(w, lerr)
@@ -372,13 +385,13 @@ func (h *Handler) CreateRecurringCharge(w http.ResponseWriter, r *http.Request) 
 			writeIdempotentReplay(w, prior)
 			return
 		}
-		err = h.Pool.QueryRow(r.Context(),
+		err = insertAudited(
 			`INSERT INTO recurring_charges (person_id, vehicle_id, description, amount, period, start_date, end_date,
 			        idempotency_actor, idempotency_key, request_fingerprint)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 			 ON CONFLICT (COALESCE(idempotency_actor, 0), idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 			 RETURNING id`,
-			personID, req.VehicleID, desc, amount, period, start, end, idem.actor, idem.key, idem.fingerprint).Scan(&id)
+			personID, req.VehicleID, desc, amount, period, start, end, idem.actor, idem.key, idem.fingerprint)
 		if errors.Is(err, pgx.ErrNoRows) {
 			// A concurrent request with the same key won: replay its row.
 			prior, found, lerr := idempotentRowID(r.Context(), h.Pool, recurringIdempotencyLookup, idem)
@@ -398,10 +411,6 @@ func (h *Handler) CreateRecurringCharge(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "could not create recurring charge")
 		return
 	}
-	h.auditCreated(r, "recurring_charge", id, "added recurring cost "+desc, map[string]any{
-		"description": desc, "amount": amount, "period": period,
-		"start_date": start.Format("2006-01-02"), "person_id": personID,
-	})
 	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
 }
 

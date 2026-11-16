@@ -16,8 +16,9 @@
 </head>
 <body>
     <a class="skip-link" href="#page">Zum Inhalt springen</a>
-    <!-- Login view -->
-    <section id="login-view" class="login-view" hidden>
+    <!-- Login view: its own main landmark, like the portal and the app page (only
+         one of the three is ever visible) -->
+    <main id="login-view" class="login-view" hidden>
         <div class="lv-bays" id="login-bays" aria-hidden="true"></div>
         <form id="login-form" class="login-card" autocomplete="on">
             <div class="brand">
@@ -61,7 +62,7 @@
                 <p>Bitte wende dich an die Administration deines Betriebs. Kundenzugänge werden über einen separaten Self-Service-Link geöffnet.</p>
             </details>
         </form>
-    </section>
+    </main>
 
     <!-- Customer self-service portal (public, read-only; rendered for #/portal/<token>) -->
     <main id="portal-view" class="portal-view" hidden></main>
