@@ -106,6 +106,9 @@ hook installation, and the separate handling required for existing Git history.
 
 Requirements: Docker + Docker Compose.
 
+For an existing PostgreSQL 16 installation, follow the
+[database upgrade steps](#updating-an-existing-database) before deploying.
+
 ```bash
 git clone https://github.com/d0linger/Parkrr.git
 cd Parkrr
@@ -124,8 +127,25 @@ docker compose up -d --build
 #    Log in with PARKRR_ADMIN_USERNAME / PARKRR_ADMIN_PASSWORD
 ```
 
-The database runs as a standalone Postgres container (reachable only on the
-compose network). Schema migrations run automatically at startup.
+The database runs as PostgreSQL 18 Alpine on the Compose network. Schema
+migrations run automatically at startup. The database volume mounts at
+`/var/lib/postgresql` and the image stores the cluster in
+`/var/lib/postgresql/18/docker`.
+
+### Updating an existing database
+
+To move from PostgreSQL 16, stop all writers and use PostgreSQL 18 tools to
+make a custom dump of each database and a globals dump for roles and privileges.
+Restore into a fresh PostgreSQL 18 volume or bind directory, verify the restore
+and the application, then switch the stack. Keep the old volume and deployment
+settings. Once the new cluster accepts writes, any rollback must account for
+those writes. On a bind-mounted install, point the host's new PostgreSQL 18
+directory at `/var/lib/postgresql`. Keep the previous directory available for
+recovery.
+
+For routine PostgreSQL 18 patch updates, back up first, review the release notes
+and reuse the existing PostgreSQL 18 volume. Plan a separate migration and
+update the backup clients before switching to a later major.
 
 ---
 
@@ -190,7 +210,7 @@ compose network). Schema migrations run automatically at startup.
 | `PARKRR_TAX_WRITES_ENABLED` | allow manual tax-book changes, receipt uploads, tax settings, payment tax metadata and year locking/unlocking; `false` keeps tax reports, simulations, receipts and exports read-only | `false` |
 | `PARKRR_TAX_EXPORT_MAX_RECEIPT_MB` | total uncompressed receipt bytes staged per tax ZIP export, integer 1–1024; a larger value requires sufficient private `TMPDIR` capacity | `24` |
 
-Restoring requires patched `pg_restore` and `psql` clients: PostgreSQL 16.15+ for the supported server-16 deployment. CLI installations using majors 14/15/17/18 need at least 14.24/15.19/17.11/18.6 respectively. Unsupported or prerelease clients are rejected before any restore SQL runs (CVE-2025-8714, CVE-2026-18408).
+Restore to the default PostgreSQL 18 server with patched `pg_restore` and `psql` from PostgreSQL 18.6 or later in the 18 series. CLI installations using majors 14/15/17/18 need at least 14.24/15.19/17.11/18.6 respectively. Unsupported or prerelease clients are rejected before any restore SQL runs (CVE-2025-8714, CVE-2026-18408).
 
 Tax-book activation is optional: set `PARKRR_TAX_WRITES_ENABLED=true` and restart
 the application (recreate the container to apply changed environment variables).

@@ -3,15 +3,19 @@ package main
 import (
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	"go.yaml.in/yaml/v4"
 )
 
-// composeApp is the subset of a Compose file we assert parity on: the app service's
-// environment (keys AND values) and its volume mounts.
-type composeApp struct {
+// composeSpec contains the Compose settings that must agree in both deployments.
+type composeSpec struct {
 	Services struct {
+		DB struct {
+			Image   string   `yaml:"image"`
+			Volumes []string `yaml:"volumes"`
+		} `yaml:"db"`
 		// Pointer so an entirely MISSING services.app is nil (not a zero-value that
 		// would falsely compare equal to another missing one) — the test then fails.
 		App *struct {
@@ -52,13 +56,25 @@ func TestGHCRComposeParity(t *testing.T) {
 	}
 }
 
-func decodeCompose(t *testing.T, path string) composeApp {
+func TestPostgreSQLComposeParity(t *testing.T) {
+	base := decodeCompose(t, "../../docker-compose.yml").Services.DB
+	ghcr := decodeCompose(t, "../../docker-compose.ghcr.yml").Services.DB
+	if !strings.HasPrefix(base.Image, "postgres:18-alpine@sha256:") || base.Image != ghcr.Image {
+		t.Errorf("both Compose files must use the same pinned PostgreSQL 18 Alpine image: base=%q ghcr=%q", base.Image, ghcr.Image)
+	}
+	wantMounts := []string{"parkrr-db-data:/var/lib/postgresql"}
+	if !reflect.DeepEqual(base.Volumes, wantMounts) || !reflect.DeepEqual(ghcr.Volumes, wantMounts) {
+		t.Errorf("both Compose files must mount %v: base=%v ghcr=%v", wantMounts, base.Volumes, ghcr.Volumes)
+	}
+}
+
+func decodeCompose(t *testing.T, path string) composeSpec {
 	t.Helper()
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
-	var f composeApp
+	var f composeSpec
 	if err := yaml.Unmarshal(b, &f); err != nil {
 		t.Fatalf("parse %s: %v", path, err)
 	}

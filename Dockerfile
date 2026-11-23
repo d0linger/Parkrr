@@ -35,8 +35,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 
 # ---------- Runtime stage ----------
 # Alpine (not distroless) so pg_dump/pg_restore are available for the encrypted
-# backup feature; pinned to major 16 to match the postgres:16 server. Runs as a
-# dedicated non-root user.
+# backup feature. The tools match the PostgreSQL 18 server.
+# Runs as a dedicated non-root user.
 FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 
 # `apk upgrade` first: `apk add` never lifts an already-satisfied base-image
@@ -44,7 +44,7 @@ FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5
 # base tag's (older) -rN even when the repo has a patched build. Upgrading all
 # base packages before adding the extras keeps the runtime image patch-fresh.
 RUN apk upgrade --no-cache \
-    && apk add --no-cache postgresql16-client ca-certificates tzdata \
+    && apk add --no-cache postgresql18-client ca-certificates tzdata \
     && adduser -D -H -u 10001 parkrr \
     # Default backup directory, owned by the app user so a named volume mounted
     # here (docker-compose) inherits writable ownership for the non-root process.

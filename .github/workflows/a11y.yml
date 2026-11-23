@@ -11,15 +11,12 @@ permissions:
 jobs:
   a11y:
     name: Accessibility (Playwright + axe-core)
-    # The live restore test needs PostgreSQL 16 clients, matching the service.
-    # ubuntu-latest now rolls to 26.04 (clients 18): pg_restore then emits
-    # SET transaction_timeout, which PostgreSQL 16 cannot execute.
     runs-on: ubuntu-24.04
     timeout-minutes: 25
 
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_USER: parkrr
           POSTGRES_PASSWORD: parkrr
@@ -43,19 +40,11 @@ jobs:
           go-version: "1.27.4"
           cache: true
 
+      - name: Install PostgreSQL 18 clients
+        run: bash scripts/setup-postgres-client.sh
+
       - name: Build parkrr
         run: go build -o parkrr ./cmd/parkrr
-
-      - name: Check PostgreSQL clients match the test server
-        run: |
-          for tool in pg_dump pg_restore psql; do
-            version=$("$tool" --version)
-            echo "$version"
-            if [[ ! "$version" =~ ^${tool}\ \(PostgreSQL\)\ 16\. ]]; then
-              echo "::error::$tool must use PostgreSQL 16 clients to match the test database"
-              exit 1
-            fi
-          done
 
       - name: Start parkrr
         env:

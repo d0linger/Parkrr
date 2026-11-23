@@ -16,7 +16,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_USER: parkrr
           POSTGRES_PASSWORD: parkrr
@@ -59,6 +59,9 @@ jobs:
           go-version: "1.27.4"
           cache: true
 
+      - name: Install PostgreSQL 18 clients
+        run: bash scripts/setup-postgres-client.sh
+
       - name: Download & verify modules
         run: |
           go mod download
@@ -75,7 +78,7 @@ jobs:
         # default 10-minute package timeout on shared runners. Keep full costs.
         run: go test -race -p 1 -timeout=20m -tags=integration -covermode=atomic -coverprofile=coverage.out ./...
 
-      - name: Verify large backup restore under hardened limits
+      - name: Verify backup restore and rollback under hardened limits
         run: bash scripts/test-backup-restore.sh
 
       # Diagnose zur Abdeckungsluecke: der CI-Wert (56,8 %) liegt weit unter dem lokal
