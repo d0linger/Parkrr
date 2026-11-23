@@ -134,14 +134,22 @@ migrations run automatically at startup. The database volume mounts at
 
 ### Updating an existing database
 
-To move from PostgreSQL 16, stop all writers and use PostgreSQL 18 tools to
-make a custom dump of each database and a globals dump for roles and privileges.
-Restore into a fresh PostgreSQL 18 volume or bind directory, verify the restore
-and the application, then switch the stack. Keep the old volume and deployment
-settings. Once the new cluster accepts writes, any rollback must account for
-those writes. On a bind-mounted install, point the host's new PostgreSQL 18
-directory at `/var/lib/postgresql`. Keep the previous directory available for
-recovery.
+1. Stop the app and all other writers. Use PostgreSQL 18 tools to make a custom
+   dump of each database and a globals dump for roles and privileges.
+2. Start an isolated PostgreSQL 18 database with a new volume such as `parkrr-pg18`
+   or a fresh host bind directory mounted at `/var/lib/postgresql`. Use the source
+   bootstrap role name as `POSTGRES_USER` and set `POSTGRES_DB=postgres`. Keep the
+   app stopped and start the restore target without custom initialization scripts.
+3. Restore globals first with `psql -X -v ON_ERROR_STOP=1`. Keep the original
+   dump and omit only the one duplicate `CREATE ROLE` for the bootstrap role
+   from the restore copy. Apply its attributes and password, all memberships,
+   and all other globals from the dump.
+4. Restore each new database with `pg_restore --exit-on-error --create -d postgres`.
+   For an archive of the existing `postgres` or `template1` database, restore into
+   that database without `--create` and reconcile its database-level settings,
+   owner, and grants with the source. Verify data and privileges before connecting
+   the app to the same restored volume. Keep the old volume and deployment
+   settings. Once the new cluster accepts writes, account for them before rollback.
 
 For routine PostgreSQL 18 patch updates, back up first, review the release notes
 and reuse the existing PostgreSQL 18 volume. Plan a separate migration and
