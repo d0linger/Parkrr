@@ -140,16 +140,32 @@ migrations run automatically at startup. The database volume mounts at
    or a fresh host bind directory mounted at `/var/lib/postgresql`. Use the source
    bootstrap role name as `POSTGRES_USER` and set `POSTGRES_DB=postgres`. Keep the
    app stopped and start the restore target without custom initialization scripts.
+   If the source uses custom tablespaces, prepare empty target directories
+   owned by PostgreSQL's operating-system user. Mount them at the dump's
+   container paths in both the isolated restore and the production database.
 3. Restore globals first with `psql -X -v ON_ERROR_STOP=1`. Keep the original
    dump and omit only the one duplicate `CREATE ROLE` for the bootstrap role
    from the restore copy. Apply its attributes and password, all memberships,
    and all other globals from the dump.
 4. Restore each new database with `pg_restore --exit-on-error --create -d postgres`.
    For an archive of the existing `postgres` or `template1` database, restore into
-   that database without `--create` and reconcile its database-level settings,
-   owner, and grants with the source. Verify data and privileges before connecting
-   the app to the same restored volume. Keep the old volume and deployment
-   settings. Once the new cluster accepts writes, account for them before rollback.
+   that database without `--create`. Compare encoding, locale provider and
+   collation settings first. If they differ, recreate the empty database on the
+   isolated target from `template0` with the source properties. Connect to a
+   separate maintenance database for that step. Clear the template flag before
+   dropping `template1` and restore it when recreating the database. Match
+   database-level settings, owner, and grants with the source.
+5. Verify the restored data and privileges. Update the production `db` mount
+   to `parkrr-pg18:/var/lib/postgresql` for the example named volume and
+   declare `parkrr-pg18` with `external: true` and `name: parkrr-pg18` in the
+   top-level `volumes` section. For a bind mount, use the exact host path used
+   for the restore. Confirm that the production database has mounted the
+   restored storage before starting the app. Keep the old storage and a copy of
+   the previous Compose definition for rollback.
+
+If a restore fails, restart from the original dumps on fresh target storage,
+including any tablespace directories. Reconcile any writes made on PostgreSQL
+18 before rolling back.
 
 For routine PostgreSQL 18 patch updates, back up first, review the release notes
 and reuse the existing PostgreSQL 18 volume. Plan a separate migration and
