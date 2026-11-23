@@ -106,6 +106,9 @@ hook installation, and the separate handling required for existing Git history.
 
 Requirements: Docker + Docker Compose.
 
+For an existing PostgreSQL 16 installation, follow the
+[database upgrade steps](#updating-an-existing-database) before deploying.
+
 ```bash
 git clone https://github.com/d0linger/Parkrr.git
 cd Parkrr
@@ -124,8 +127,49 @@ docker compose up -d --build
 #    Log in with PARKRR_ADMIN_USERNAME / PARKRR_ADMIN_PASSWORD
 ```
 
-The database runs as a standalone Postgres container (reachable only on the
-compose network). Schema migrations run automatically at startup.
+The database runs as PostgreSQL 18 Alpine on the Compose network. Schema
+migrations run automatically at startup. The database volume mounts at
+`/var/lib/postgresql` and the image stores the cluster in
+`/var/lib/postgresql/18/docker`.
+
+### Updating an existing database
+
+1. Stop the app and all other writers. Use PostgreSQL 18 tools to make a custom
+   dump of each database and a globals dump for roles and privileges.
+2. Start an isolated PostgreSQL 18 database with a new volume such as `parkrr-pg18`
+   or a fresh host bind directory mounted at `/var/lib/postgresql`. Use the source
+   bootstrap role name as `POSTGRES_USER` and set `POSTGRES_DB=postgres`. Keep the
+   app stopped and start the restore target without custom initialization scripts.
+   If the source uses custom tablespaces, prepare empty target directories
+   owned by PostgreSQL's operating-system user. Mount them at the dump's
+   container paths in both the isolated restore and the production database.
+3. Restore globals first with `psql -X -v ON_ERROR_STOP=1`. Keep the original
+   dump and omit only the one duplicate `CREATE ROLE` for the bootstrap role
+   from the restore copy. Apply its attributes and password, all memberships,
+   and all other globals from the dump.
+4. Restore each new database with `pg_restore --exit-on-error --create -d postgres`.
+   For an archive of the existing `postgres` or `template1` database, restore into
+   that database without `--create`. Compare encoding, locale provider and
+   collation settings first. If they differ, recreate the empty database on the
+   isolated target from `template0` with the source properties. Connect to a
+   separate maintenance database for that step. Clear the template flag before
+   dropping `template1` and restore it when recreating the database. Match
+   database-level settings, owner, and grants with the source.
+5. Verify the restored data and privileges. Update the production `db` mount
+   to `parkrr-pg18:/var/lib/postgresql` for the example named volume and
+   declare `parkrr-pg18` with `external: true` and `name: parkrr-pg18` in the
+   top-level `volumes` section. For a bind mount, use the exact host path used
+   for the restore. Confirm that the production database has mounted the
+   restored storage before starting the app. Keep the old storage and a copy of
+   the previous Compose definition for rollback.
+
+If a restore fails, restart from the original dumps on fresh target storage,
+including any tablespace directories. Reconcile any writes made on PostgreSQL
+18 before rolling back.
+
+For routine PostgreSQL 18 patch updates, back up first, review the release notes
+and reuse the existing PostgreSQL 18 volume. Plan a separate migration and
+update the backup clients before switching to a later major.
 
 ---
 
@@ -190,7 +234,7 @@ compose network). Schema migrations run automatically at startup.
 | `PARKRR_TAX_WRITES_ENABLED` | allow manual tax-book changes, receipt uploads, tax settings, payment tax metadata and year locking/unlocking; `false` keeps tax reports, simulations, receipts and exports read-only | `false` |
 | `PARKRR_TAX_EXPORT_MAX_RECEIPT_MB` | total uncompressed receipt bytes staged per tax ZIP export, integer 1–1024; a larger value requires sufficient private `TMPDIR` capacity | `24` |
 
-Restoring requires patched `pg_restore` and `psql` clients: PostgreSQL 16.15+ for the supported server-16 deployment. CLI installations using majors 14/15/17/18 need at least 14.24/15.19/17.11/18.6 respectively. Unsupported or prerelease clients are rejected before any restore SQL runs (CVE-2025-8714, CVE-2026-18408).
+Restore to the default PostgreSQL 18 server with patched `pg_restore` and `psql` from PostgreSQL 18.6 or later in the 18 series. CLI installations using majors 14/15/17/18 need at least 14.24/15.19/17.11/18.6 respectively. Unsupported or prerelease clients are rejected before any restore SQL runs (CVE-2025-8714, CVE-2026-18408).
 
 Tax-book activation is optional: set `PARKRR_TAX_WRITES_ENABLED=true` and restart
 the application (recreate the container to apply changed environment variables).

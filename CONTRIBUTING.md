@@ -17,6 +17,8 @@ sind willkommen.
    golangci-lint run
    gofmt -l .        # muss leer sein
    ```
+   Datenbanktests verwenden eine separate PostgreSQL-18-Instanz und
+   `PARKRR_TEST_DATABASE_URL`. Backup- und Restore-Tests benötigen PostgreSQL-18-Clients.
 5. **Pull Request** – beschreibe *was* und *warum*. Kleine, fokussierte PRs sind
    leichter zu reviewen.
 
