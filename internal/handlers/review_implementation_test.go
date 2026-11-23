@@ -384,15 +384,15 @@ func TestReviewAttributionPageMeasurement(t *testing.T) {
 		}
 		var plans []struct {
 			Plan struct {
-				Rows   int `json:"Actual Rows"`
-				Blocks int `json:"Shared Hit Blocks"`
+				Rows   float64 `json:"Actual Rows"`
+				Blocks int     `json:"Shared Hit Blocks"`
 			} `json:"Plan"`
 			Duration float64 `json:"Execution Time"`
 		}
-		if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 || plans[0].Plan.Rows != tc.want {
+		if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 || plans[0].Plan.Rows != float64(tc.want) {
 			t.Fatalf("plan: %s %v", raw, err)
 		}
-		t.Logf("%s: rows=%d shared_hit_blocks=%d execution_ms=%.3f (synthetic warm/local; no production latency claim)", tc.name, plans[0].Plan.Rows, plans[0].Plan.Blocks, plans[0].Duration)
+		t.Logf("%s: rows=%g shared_hit_blocks=%d execution_ms=%.3f (synthetic warm/local; no production latency claim)", tc.name, plans[0].Plan.Rows, plans[0].Plan.Blocks, plans[0].Duration)
 	}
 }
 

@@ -457,5 +457,6 @@ func isUniqueViolation(err error) bool {
 
 func isForeignKeyViolation(err error) bool {
 	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23503"
+	// PostgreSQL 18 reports ON DELETE RESTRICT as restrict_violation (23001).
+	return errors.As(err, &pgErr) && (pgErr.Code == "23503" || pgErr.Code == "23001")
 }
